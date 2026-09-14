@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MoonWolf Panel</title>
+
+  <!-- CodeMirror -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/theme/dracula.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/toml/toml.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/nginx/nginx.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/javascript/javascript.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/yaml/yaml.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/xml/xml.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/properties/properties.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/shell/shell.min.js"></script>
+
+  <link rel="stylesheet" href="styles.css">
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="dashboard.js" defer></script>
+</head>
+
+<body>
+  <div class="app">
+
+    <!-- SIDEBAR -->
+    <nav class="sidebar">
+      <div class="sb-logo">
+        <div class="sb-logo-icon">🌙</div>
+        <div>
+          <h1>MOONWOLF</h1>
+          <small>PANEL v2.0</small>
+        </div>
+      </div>
+
+      <div class="sb-status offline" id="sbStatus">
+        <div class="sb-dot"></div>
+        <span id="sbStatusText">OFFLINE</span>
+      </div>
+
+      <nav class="sb-section">
+        <div class="sb-section-label">Servidor</div>
+        <div class="sb-item active" data-view="terminal"><span class="sb-icon">⬛</span><span>Terminal</span></div>
+        <div class="sb-item" data-view="files"><span class="sb-icon">📁</span><span>Archivos</span></div>
+        <div class="sb-item" data-view="plugins"><span class="sb-icon">🧩</span><span>Plugins</span></div>
+        <div class="sb-item" data-view="versions"><span class="sb-icon">📦</span><span>Versiones</span></div>
+      </nav>
+
+      <nav class="sb-section">
+        <div class="sb-section-label">Sistema</div>
+        <div class="sb-item" data-view="databases"><span class="sb-icon">🗄️</span><span>Bases de datos</span></div>
+        <div class="sb-item" data-view="users"><span class="sb-icon">👤</span><span>Usuarios</span></div>
+        <div class="sb-item" data-view="backups"><span class="sb-icon">💾</span><span>Copias de seguridad</span></div>
+        <div class="sb-item" data-view="ports"><span class="sb-icon">🔌</span><span>Puertos</span></div>
+      </nav>
+
+      <nav class="sb-section">
+        <div class="sb-section-label">Configuración</div>
+        <div class="sb-item" data-view="startup"><span class="sb-icon">⚙️</span><span>Startup</span></div>
+        <div class="sb-item" data-view="settings"><span class="sb-icon">🛠️</span><span>Ajustes</span></div>
+        <div class="sb-item" data-view="activitylog"><span class="sb-icon">📋</span><span>Registro</span></div>
+      </nav>
+
+      <div class="sb-spacer"></div>
+      <div class="sb-version">MOONWOLF · 2025</div>
+    </nav>
+
+    <!-- MAIN -->
+    <div class="main">
+
+      <!-- TERMINAL -->
+      <div class="view active" id="view-terminal">
+        <div class="page-header">
+          <div>
+            <div class="page-title">TERMINAL</div>
+            <div class="page-sub">Consola del servidor en tiempo real</div>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button class="btn btn-start" id="btnStart">
+            <span class="btn-icon">▶</span> ARRANCAR
+          </button>
+          <button class="btn btn-restart" id="btnRestart" disabled>
+            <span class="btn-icon">↺</span> REINICIAR
+          </button>
+          <button class="btn btn-stop" id="btnStop" disabled>
+            <span class="btn-icon">⏹</span> DETENER
+          </button>
+        </div>
+
+        <div class="stats-grid hidden" id="statsGrid">
+          <div class="stat-card">
+            <span class="stat-label">👥 Jugadores</span>
+            <span class="stat-value" id="statPlayers">0<span class="stat-unit">/0</span></span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">⚡ TPS</span>
+            <span class="stat-value" id="statTps">20<span class="stat-unit"> tps</span></span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">⏱️ Uptime</span>
+            <span class="stat-value" id="statUptime">0h 0m</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">💾 Proceso RAM</span>
+            <span class="stat-value" id="statMemProc">0<span class="stat-unit"> MB</span></span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">💽 Sistema RAM</span>
+            <span class="stat-value" id="statMemSys">0<span class="stat-unit"> GB</span></span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">📊 CPU</span>
+            <span class="stat-value" id="statCpu">0<span class="stat-unit"> %</span></span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title"><span>⬛</span> CONSOLA</div>
+            <button class="small-btn" id="btnClearConsole">LIMPIAR</button>
+          </div>
+          <div class="console" id="console">
+            <div class="log-line system">
+              <span class="log-time">--:--:--</span>
+              <span class="log-text">🌙 MoonWolf Panel iniciado. Pulsa ARRANCAR para encender el servidor.</span>
+            </div>
+          </div>
+          <div class="cmd-row">
+            <span class="cmd-prefix">/</span>
+            <input class="cmd-input" id="cmdInput" placeholder="Escribe un comando..." autocomplete="off">
+            <button class="cmd-send" id="btnSendCmd">↵</button>
+          </div>
+          <div class="quick-grid">
+            <button class="quick-btn" data-cmd="list"><span class="qb-label">jugadores</span>list</button>
+            <button class="quick-btn" data-cmd="tps"><span class="qb-label">rendimiento</span>tps</button>
+            <button class="quick-btn" data-cmd="time set day"><span class="qb-label">tiempo</span>time set day</button>
+            <button class="quick-btn" data-cmd="weather clear"><span class="qb-label">clima</span>weather clear</button>
+            <button class="quick-btn" data-cmd="save-all"><span class="qb-label">mundo</span>save-all</button>
+            <button class="quick-btn" data-cmd="difficulty peaceful"><span class="qb-label">dificultad</span>peaceful</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ARCHIVOS -->
+      <div class="view" id="view-files">
+        <div class="page-header">
+          <div>
+            <div class="page-title">ARCHIVOS</div>
+            <div class="page-sub">Explorador de archivos del servidor</div>
+          </div>
+        </div>
+        <div class="files-layout">
+          <div class="files-topbar">
+            <div class="breadcrumb">
+              <span class="crumb-active" id="crumbHome">🏠 MoonWolf</span>
+              <span id="crumbTrail"></span>
+            </div>
+            <button class="small-btn" disabled style="opacity:.4;cursor:not-allowed">＋ Nuevo archivo</button>
+          </div>
+
+          <div class="panel files-table-panel" id="filesTablePanel">
+            <div class="file-table-header">
+              <span style="flex:1">Nombre</span>
+              <span style="width:90px;text-align:right">Tamaño</span>
+              <span style="width:140px;text-align:right">Modificado</span>
+            </div>
+            <div id="fileList"></div>
+          </div>
+
+          <div class="panel files-editor-panel" id="filesEditorPanel" style="display:none">
+            <div class="editor-toolbar">
+              <button class="ed-back-btn" id="btnEditorBack">← Volver</button>
+              <span id="editorFileName" style="display:flex;align-items:center;gap:8px;flex:1">
+                <span style="color:var(--muted2)">—</span>
+              </span>
+              <span id="edSaveMsg" style="font-size:10px;color:var(--muted2)"></span>
+              <button class="ed-save-btn" id="btnSaveFile">💾 GUARDAR</button>
+            </div>
+            <div id="editorContainer"></div>
+            <div class="ed-statusbar">
+              <span>Ln <span id="edLine">—</span></span>
+              <span>Col <span id="edCol">—</span></span>
+              <span>Líneas <span id="edLines">—</span></span>
+              <span style="margin-left:auto;color:var(--muted)">Ctrl+S para guardar</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- PLUGINS -->
+      <div class="view" id="view-plugins">
+        <div class="page-header">
+          <div>
+            <div class="page-title">PLUGINS</div>
+            <div class="page-sub">Busca, descarga e instala plugins desde Modrinth y Spigot</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="plg-tab-btn active" data-tab="search">🔍 Buscar</button>
+            <button class="plg-tab-btn" data-tab="installed">📦 Instalados</button>
+          </div>
+        </div>
+
+        <!-- TAB: BUSCAR -->
+        <div id="plgTabSearch">
+          <div class="plg-search-bar panel">
+            <div class="plg-search-inner">
+              <div class="plg-search-icon">🔍</div>
+              <input id="plgSearchInput" class="plg-search-input" type="text"
+                placeholder="LuckPerms, EssentialsX, WorldEdit..." autocomplete="off">
+              <div class="plg-source-pills">
+                <button class="plg-source active" data-source="all">TODOS</button>
+                <button class="plg-source" data-source="modrinth">🟢 MODRINTH</button>
+                <button class="plg-source" data-source="spigot">🟠 SPIGOT</button>
+              </div>
+              <button class="plg-search-btn" id="btnPluginSearch">BUSCAR</button>
+            </div>
+          </div>
+          <div id="plgResults" class="plg-results">
+            <div class="empty-state">
+              <div class="empty-icon" style="font-size:48px;opacity:.2">🧩</div>
+              <div class="empty-msg">Busca un plugin para empezar<br>
+                <span style="font-size:11px;color:var(--muted)">Ej: LuckPerms · EssentialsX · WorldEdit · Vault</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB: INSTALADOS -->
+        <div id="plgTabInstalled" style="display:none">
+          <div class="panel">
+            <div class="panel-header">
+              <div class="panel-title"><span>📦</span> Plugins instalados</div>
+              <button class="small-btn" id="btnRefreshInstalled">↺ Actualizar</button>
+            </div>
+            <div id="plgInstalledList" class="plg-installed-list">
+              <div class="empty-state">
+                <div class="empty-icon">📂</div>
+                <div class="empty-msg">Cargando...</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- MODAL VERSIONES -->
+      <div id="plgVersionModal" class="plg-modal-overlay" style="display:none">
+        <div class="plg-modal">
+          <div class="plg-modal-header">
+            <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0">
+              <img id="plgModalIcon" width="40" height="40" style="border-radius:10px;flex-shrink:0">
+              <div style="min-width:0">
+                <div id="plgModalName" class="plg-modal-title">—</div>
+                <div id="plgModalMeta" style="font-size:11px;color:var(--muted2);margin-top:2px">—</div>
+              </div>
+            </div>
+            <button class="plg-modal-close" id="btnClosePlgModal">✕</button>
+          </div>
+          <div id="plgModalBody" class="plg-modal-body"></div>
+        </div>
+      </div>
+
+      <!-- VERSIONES MC -->
+      <div class="view" id="view-versions">
+        <div class="page-header">
+          <div>
+            <div class="page-title">VERSIONES DE MINECRAFT</div>
+            <div class="page-sub">
+              Gestiona las versiones de Minecraft disponibles para tu servidor
+            </div>
+          </div>
+        </div>
+        <div class="panel"><div class="version-list" id="versionList"></div></div>
+      </div>  
+      
+      <!-- BASES DE DATOS -->
+      <div class="view" id="view-databases">
+        <div class="page-header">
+          <div>
+            <div class="page-title">BASES DE DATOS</div>
+            <div class="page-sub">Gestión de bases de datos del servidor</div>
+          </div>
+        </div>
+        <div class="panel"><div class="db-list" id="dbList"></div></div>
+      </div>
+
+      <!-- USUARIOS -->
+      <div class="view" id="view-users">
+        <div class="page-header">
+          <div>
+            <div class="page-title">USUARIOS</div>
+            <div class="page-sub">Gestión de usuarios del panel</div>
+          </div>
+        </div>
+        <div class="panel"><div class="user-list" id="userList"></div></div>
+      </div>
+
+      <!-- BACKUPS -->
+      <div class="view" id="view-backups">
+        <div class="page-header">
+          <div>
+            <div class="page-title">COPIAS DE SEGURIDAD</div>
+            <div class="page-sub">Gestiona las copias de seguridad del servidor</div>
+          </div>
+        </div>
+        <div class="panel"><div class="backup-list" id="backupList"></div></div>
+      </div>
+
+      <!-- PUERTOS -->
+      <div class="view" id="view-ports">
+        <div class="page-header">
+          <div>
+            <div class="page-title">PUERTOS</div>
+            <div class="page-sub">Configuración y monitorización de puertos</div>
+          </div>
+        </div>
+        <div class="panel"><div class="port-list" id="portList"></div></div>
+      </div>
+
+      <!-- STARTUP -->
+      <div class="view" id="view-startup">
+        <div class="page-header">
+          <div>
+            <div class="page-title">STARTUP</div>
+            <div class="page-sub">Configuración de arranque del servidor</div>
+          </div>
+        </div>
+        <div class="panel"><div class="startup-list" id="startupList"></div></div>
+      </div>
+
+      <!-- SETTINGS -->
+      <div class="view" id="view-settings">
+        <div class="page-header">
+          <div>
+            <div class="page-title">AJUSTES</div>
+            <div class="page-sub">Configuración general del panel</div>
+          </div>
+        </div>
+        <div class="panel"><div class="settings-list" id="settingsList"></div></div>
+      </div>
+
+      <!-- ACTIVITY LOG -->
+      <div class="view" id="view-activitylog">
+        <div class="page-header">
+          <div>
+            <div class="page-title">REGISTRO DE ACTIVIDAD</div>
+            <div class="page-sub">Historial de acciones y eventos</div>
+          </div>
+        </div>
+        <div class="panel"><div class="activity-list" id="activityList"></div></div>
+      </div>
+
+      <div id="toast" class="toast"></div>
+    </div>
+  </div>
+</body>
+</html>
