@@ -543,9 +543,9 @@ app.post('/api/files/compress', async (req, res) => {
   const full    = safePath(rel);
   if (!full) return fail(res, 'Ruta no permitida');
   const zipName = name.replace(/[^a-zA-Z0-9._-]/g, '_') + '.zip';
-  const zipPath = safePath(currentDir => path.join(path.dirname(rel), zipName));
   const zipDest = path.join(path.dirname(full), zipName);
-  if (!zipDest.startsWith(path.resolve(BASE_DIR))) return fail(res, 'Ruta no permitida');
+  const resolvedBase = path.resolve(BASE_DIR);
+  if (!zipDest.startsWith(resolvedBase + path.sep) && zipDest !== resolvedBase) return fail(res, 'Ruta no permitida');
   try {
     await new Promise((resolve, reject) => {
       const output  = fsSync.createWriteStream(zipDest);

@@ -80,6 +80,7 @@ const BACKUPS_DATA = [
 const $ = id => document.getElementById(id);
 const escJS = str => String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 const escAttr = str => str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+const escHtml = str => String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 async function api(url, opts = {}) {
   const res = await fetch(url, opts);
@@ -132,7 +133,7 @@ function appendLog(entry) {
   const con = $('console');
   const div = document.createElement('div');
   div.className = 'log-line ' + (entry.type || 'info');
-  div.innerHTML = `<span class="log-time">${entry.time}</span><span class="log-text">${entry.line}</span>`;
+  div.innerHTML = `<span class="log-time">${escHtml(entry.time)}</span><span class="log-text">${escHtml(entry.line)}</span>`;
   con.appendChild(div);
   if ($('setAutoScroll')?.checked !== false) con.scrollTop = con.scrollHeight;
 }
@@ -194,7 +195,7 @@ function populateFiles(dir) {
     let pathAcc = '';
     trail.innerHTML = parts.map((part, i) => {
       pathAcc += (i === 0 ? '' : '/') + part;
-      return ` / <span class="crumb" data-path="${escAttr(pathAcc)}">${part}</span>`;
+      return ` / <span class="crumb" data-path="${escAttr(pathAcc)}">${escHtml(part)}</span>`;
     }).join('');
   }
 
@@ -223,9 +224,9 @@ function populateFiles(dir) {
       el.innerHTML = data.items.map(f =>
         `<div class="file-row" data-name="${escAttr(f.name)}" data-type="${f.type}">
         <span class="file-icon">${FILE_ICONS[f.type] || '📄'}</span>
-        <span class="file-name">${f.name}</span>
-        <span class="file-size">${f.size}</span>
-        <span class="file-date">${f.date}</span>
+        <span class="file-name">${escHtml(f.name)}</span>
+        <span class="file-size">${escHtml(f.size)}</span>
+        <span class="file-date">${escHtml(f.date)}</span>
         <button class="file-menu-btn" data-name="${escAttr(f.name)}" data-type="${f.type}" title="Opciones">⋮</button>
         </div>`
       ).join('');
@@ -262,7 +263,7 @@ function openFsItem(name, type) {
       const label = EXT_LABEL[ext] || ext.toUpperCase() || 'TEXT';
 
       $('editorFileName').innerHTML =
-        `<span style="color:var(--text)">📄 ${data.filename}</span>
+        `<span style="color:var(--text)">📄 ${escHtml(data.filename)}</span>
          <span style="font-size:9px;padding:2px 8px;border-radius:999px;
            background:var(--accentDim);border:1px solid rgba(0,200,255,0.3);
            color:var(--accent);letter-spacing:1px">${label}</span>`;
@@ -459,17 +460,17 @@ function renderPluginResults(plugins, errors) {
           ? `<img class="plg-card-icon" src="${p.icon}" width="42" height="42" loading="lazy" onerror="this.style.display='none'">`
           : `<div class="plg-card-icon-placeholder">🧩</div>`}
         <div class="plg-card-info">
-          <div class="plg-card-name">${p.name}</div>
+          <div class="plg-card-name">${escHtml(p.name)}</div>
           <div class="plg-card-tags">
             ${srcBadge}
             <span class="plg-src-badge dl">⬇ ${fmt(p.downloads)}</span>
-            ${gvShort ? `<span class="plg-src-badge mc">MC ${gvShort}</span>` : ''}
+            ${gvShort ? `<span class="plg-src-badge mc">MC ${escHtml(gvShort)}</span>` : ''}
           </div>
         </div>
       </div>
-      <div class="plg-card-desc">${(p.description || '').slice(0, 120)}${(p.description || '').length > 120 ? '…' : ''}</div>
+      <div class="plg-card-desc">${escHtml((p.description || '').slice(0, 120))}${(p.description || '').length > 120 ? '…' : ''}</div>
       <div class="plg-card-footer">
-        <span style="font-size:10px;color:var(--muted2)">${(p.categories || []).slice(0, 3).join(' · ')}</span>
+        <span style="font-size:10px;color:var(--muted2)">${escHtml((p.categories || []).slice(0, 3).join(' · '))}</span>
         <button class="plg-versions-btn">Ver versiones →</button>
       </div>
     </div>`;
@@ -548,19 +549,19 @@ function renderVersionRow(v, plugin, isExternal) {
   }
 
   const changelogHtml = v.changelog
-    ? `<div class="plg-ver-changelog">${v.changelog.replace(/</g, '&lt;').replace(/\n/g, '<br>')}</div>`
+    ? `<div class="plg-ver-changelog">${escHtml(v.changelog).replace(/\n/g, '<br>')}</div>`
     : '';
 
   return `<div class="plg-ver-row">
     <div class="plg-ver-left">
-      <div class="plg-ver-number">${v.versionNumber}</div>
-      ${v.name !== v.versionNumber ? `<div class="plg-ver-name">${v.name}</div>` : ''}
+      <div class="plg-ver-number">${escHtml(v.versionNumber)}</div>
+      ${v.name !== v.versionNumber ? `<div class="plg-ver-name">${escHtml(v.name)}</div>` : ''}
       ${changelogHtml}
     </div>
     <div class="plg-ver-right">
       <div class="plg-ver-meta">
-        <span class="plg-vm">🎮 ${gvShort}</span>
-        <span class="plg-vm">⚙ ${loaders}</span>
+        <span class="plg-vm">🎮 ${escHtml(gvShort)}</span>
+        <span class="plg-vm">⚙ ${escHtml(loaders)}</span>
         <span class="plg-vm">${published}</span>
         ${sizeKb ? `<span class="plg-vm">📦 ${sizeKb}</span>` : ''}
         ${v.downloads ? `<span class="plg-vm">⬇ ${Number(v.downloads).toLocaleString()}</span>` : ''}
@@ -607,8 +608,8 @@ async function loadInstalledPlugins() {
       `<div class="plg-inst-row">
         <span class="plg-inst-icon">☕</span>
         <div class="plg-inst-info">
-          <div class="plg-inst-name">${p.filename}</div>
-          <div class="plg-inst-meta">${p.size} · Modificado ${p.modified}</div>
+          <div class="plg-inst-name">${escHtml(p.filename)}</div>
+          <div class="plg-inst-meta">${escHtml(p.size)} · Modificado ${escHtml(p.modified)}</div>
         </div>
         <button class="icon-btn" title="Eliminar" data-delete="${escAttr(p.filename)}">✕</button>
       </div>`
@@ -1082,7 +1083,7 @@ function renderActivity() {
     ? data.map(a =>
         `<div class="act-row">
           <span class="act-icon">${a.icon}</span>
-          <div class="act-body"><div class="act-msg">${a.msg}</div><div class="act-time">${a.time}</div></div>
+          <div class="act-body"><div class="act-msg">${escHtml(a.msg)}</div><div class="act-time">${escHtml(a.time)}</div></div>
           <span class="act-level ${a.level}">${a.level.toUpperCase()}</span>
         </div>`
       ).join('')
