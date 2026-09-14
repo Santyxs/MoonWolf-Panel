@@ -452,7 +452,7 @@ function renderPluginResults(plugins, errors) {
       ? `<span class="plg-src-badge modrinth">MODRINTH</span>`
       : `<span class="plg-src-badge spigot">SPIGOT</span>`;
     const gvShort   = (p.gameVersions || []).slice(-3).reverse().join(', ');
-    const pluginAttr = escAttr(JSON.stringify(p));
+    const pluginAttr = encodeURIComponent(JSON.stringify(p));
 
     return `<div class="plg-card" data-plugin="${pluginAttr}">
       <div class="plg-card-top">
@@ -1160,7 +1160,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Plugin results — open modal
   $('plgResults').addEventListener('click', e => {
     const card = e.target.closest('.plg-card[data-plugin]');
-    if (card) openVersionModal(JSON.parse(card.dataset.plugin.replace(/&quot;/g, '"')));
+    if (card) openVersionModal(JSON.parse(decodeURIComponent(card.dataset.plugin)));
   });
 
   // Plugin modal — install buttons & close

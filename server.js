@@ -11,7 +11,13 @@ const app    = express();
 const server = http.createServer(app);
 const io     = new Server(server);
 
-app.use(express.static(__dirname));
+// Solo se sirven los assets del frontend, nunca la carpeta completa del proyecto
+// (antes express.static(__dirname) exponía server.js, package.json, .git/, etc. por HTTP)
+const PUBLIC_ASSETS = ['index.html', 'dashboard.js', 'styles.css'];
+app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+for (const asset of PUBLIC_ASSETS) {
+  app.get('/' + asset, (_req, res) => res.sendFile(path.join(__dirname, asset)));
+}
 app.use(express.json({ limit: '50mb' }));
 
 const BASE_DIR    = 'C:\\Users\\HP\\Desktop\\Proyectos\\Minecraft Servers\\MoonWolf';
@@ -52,11 +58,12 @@ async function downloadFile(url, dest) {
 }
 
 function semverCmp(a, b) {
-  const pa = String(a).split('.').map(Number);
-  const pb = String(b).split('.').map(Number);
+  const pa = String(a).split('.').map(n => parseInt(n, 10));
+  const pb = String(b).split('.').map(n => parseInt(n, 10));
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const d = (pa[i] || 0) - (pb[i] || 0);
-    if (d !== 0) return d;
+    const na = Number.isNaN(pa[i]) ? 0 : (pa[i] || 0);
+    const nb = Number.isNaN(pb[i]) ? 0 : (pb[i] || 0);
+    if (na !== nb) return na - nb;
   }
   return 0;
 }
