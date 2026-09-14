@@ -499,7 +499,7 @@ async function openVersionModal(plugin) {
   $('plgModalBody').innerHTML = '<div class="empty-state"><div style="font-size:32px;opacity:.35;animation:spin 1s linear infinite">⟳</div><div class="empty-msg" style="margin-top:8px">Cargando versiones...</div></div>';
 
   try {
-    const data = await api(`/api/plugins/versions?id=${encodeURIComponent(plugin.id)}&source=${plugin.source}`);
+    const data = await api(`/api/plugins/versions?id=${encodeURIComponent(plugin.id)}&source=${plugin.source}&query=${encodeURIComponent(plugin.query || plugin.name)}`);
     if (!data.ok) { $('plgModalBody').innerHTML = plgError(data.error); return; }
     renderVersionList(data.versions, plugin, data.isExternal);
   } catch (e) {
@@ -517,9 +517,12 @@ function renderVersionList(versions, plugin, isExternal) {
     $('plgModalBody').innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-msg">Sin versiones disponibles</div></div>';
     return;
   }
+  const headerLeft = isExternal
+    ? `<span style="color:var(--muted2);font-size:11px">SpigotMC no ofrece descarga directa</span>`
+    : `<span style="color:var(--muted2);font-size:11px">${versions.length} versión${versions.length !== 1 ? 'es' : ''}</span>`;
   $('plgModalBody').innerHTML = `
     <div class="plg-ver-header">
-      <span style="color:var(--muted2);font-size:11px">${versions.length} versión${versions.length !== 1 ? 'es' : ''}</span>
+      ${headerLeft}
       <span style="color:var(--muted2);font-size:11px">Se guarda en <code style="color:var(--accent);background:var(--accentDim);padding:1px 6px;border-radius:4px">plugins/</code></span>
     </div>
     <div class="plg-ver-list">${versions.map(v => renderVersionRow(v, plugin, isExternal)).join('')}</div>`;
@@ -535,8 +538,9 @@ function renderVersionRow(v, plugin, isExternal) {
 
   let dlButton;
   if (isExternal || v.isExternal) {
-    const url = v.externalUrl || `https://www.spigotmc.org/resources/${plugin.id}/`;
-    dlButton = `<a href="${url}" target="_blank" rel="noopener" class="plg-dl-btn external">🔗 SpigotMC</a>`;
+    const searchTerm = v.query || plugin.query || plugin.name;
+    const url = v.externalUrl || `https://www.spigotmc.org/resources/?filter[title]=${encodeURIComponent(searchTerm)}`;
+    dlButton = `<a href="${url}" target="_blank" rel="noopener" class="plg-dl-btn external">🔗 Buscar en SpigotMC</a>`;
   } else if (!primary) {
     dlButton = `<span class="plg-dl-btn disabled">Sin archivo</span>`;
   } else {
@@ -555,7 +559,7 @@ function renderVersionRow(v, plugin, isExternal) {
   return `<div class="plg-ver-row">
     <div class="plg-ver-left">
       <div class="plg-ver-number">${escHtml(v.versionNumber)}</div>
-      ${v.name !== v.versionNumber ? `<div class="plg-ver-name">${escHtml(v.name)}</div>` : ''}
+      ${v.name && v.name !== v.versionNumber ? `<div class="plg-ver-name">${escHtml(v.name)}</div>` : ''}
       ${changelogHtml}
     </div>
     <div class="plg-ver-right">

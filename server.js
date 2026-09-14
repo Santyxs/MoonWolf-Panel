@@ -252,7 +252,7 @@ app.get('/api/plugins/search', async (req, res) => {
       results.push(...d.hits.map(p => ({ id: p.project_id, name: p.title, description: p.description, icon: p.icon_url, downloads: p.downloads, source: 'modrinth', gameVersions: p.game_versions || [], categories: p.categories || [] })));
     }
   } catch { errors.push('Modrinth no disponible'); }
-  if (source === 'all' || source === 'spigot') results.push({ id: `spigot-${q}`, name: q + ' (Spigot)', description: 'Plugin desde SpigotMC.', icon: '', downloads: 0, source: 'spigot', gameVersions: [], categories: [] });
+  if (source === 'all' || source === 'spigot') results.push({ id: `spigot-${q}`, name: q + ' (Spigot)', description: 'Plugin desde SpigotMC.', icon: '', downloads: 0, source: 'spigot', query: q, gameVersions: [], categories: [] });
   ok(res, { results, errors });
 });
 
@@ -266,7 +266,17 @@ app.get('/api/plugins/versions', async (req, res) => {
       const versions = await r.json();
       return ok(res, { versions: versions.map(v => ({ versionId: v.id, versionNumber: v.version_number, name: v.name, downloads: v.downloads, published: v.date_published, gameVersions: v.game_versions, loaders: v.loaders, changelog: v.changelog, files: v.files })) });
     }
-    ok(res, { versions: [], isExternal: true });
+    // SpigotMC no tiene API pública de versiones: devolvemos una entrada
+    // "externa" para que el modal muestre un enlace en vez de una lista vacía.
+    ok(res, {
+      versions: [{
+        versionId: 'external',
+        versionNumber: 'Ver en SpigotMC',
+        isExternal: true,
+        query: req.query.query || id,
+      }],
+      isExternal: true,
+    });
   } catch (e) { fail(res, e.message); }
 });
 
