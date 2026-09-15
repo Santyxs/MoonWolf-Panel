@@ -5,26 +5,29 @@ Set objFSO   = CreateObject("Scripting.FileSystemObject")
 strPath = Left(WScript.ScriptFullName, InStrRev(WScript.ScriptFullName, "\") - 1)
 objShell.CurrentDirectory = strPath
 
-' ============================================================
-' CONFIGURACIÓN
-' ============================================================
 Const SERVER_URL = "http://localhost:3000"
 Const PUBLIC_URL = "https://moonwolf.serveousercontent.com"
 
+Dim nodeProcess
+Dim tunnelProcess
+
 ' ============================================================
-' 1. Instalar dependencias
+' 1. Instalar dependencias solo si no existen
 ' ============================================================
-objShell.Run "cmd /c npm install --silent 2>nul", 0, True
+If Not objFSO.FolderExists(strPath & "\node_modules") Then
+    objShell.Run "cmd /c npm install --silent", 0, True
+End If
 
 ' ============================================================
 ' 2. Arrancar Node.js
 ' ============================================================
-objShell.Run "cmd /c node server.js > nul 2>&1", 0, False
+Set nodeProcess = objShell.Exec("node server.js")
 
 ' ============================================================
 ' 3. Esperar a que Node responda
 ' ============================================================
 Dim xmlHttp, ready, attempts
+
 ready = False
 attempts = 0
 
@@ -39,33 +42,58 @@ Do While Not ready And attempts < 30
     xmlHttp.Send
 
     If Err.Number = 0 Then
-        If xmlHttp.Status = 200 Then ready = True
+        If xmlHttp.Status = 200 Then
+            ready = True
+        End If
     End If
 
     Err.Clear
     On Error GoTo 0
+
+    If Not nodeProcess Is Nothing Then
+        If nodeProcess.Status <> 0 Then
+            MsgBox "server.js se ha cerrado durante el arranque.", vbCritical, "MoonWolf Panel"
+            WScript.Quit 1
+        End If
+    End If
 Loop
 
 If Not ready Then
-    MsgBox "MoonWolf Panel no ha podido iniciar server.js.", vbCritical, "MoonWolf Panel"
+    MsgBox "MoonWolf Panel no pudo iniciar correctamente.", vbCritical, "MoonWolf Panel"
     WScript.Quit 1
 End If
 
 ' ============================================================
-' FUNCIONES
+' 4. Función para iniciar Serveo
 ' ============================================================
-
 Sub StartTunnel()
-    ' Mata cualquier SSH anterior que haya quedado colgado
-    objShell.Run "cmd /c taskkill /IM ssh.exe /F > nul 2>&1", 0, True
 
-    ' Inicia Serveo oculto
-    objShell.Run _
-        "cmd /c ssh -o BatchMode=yes -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -R moonwolf:80:localhost:3000 serveo.net > nul 2>&1", _
-        0, False
+    On Error Resume Next
+
+    If Not tunnelProcess Is Nothing Then
+        If tunnelProcess.Status = 0 Then
+            tunnelProcess.Terminate
+        End If
+    End If
+
+    Set tunnelProcess = objShell.Exec( _
+        "ssh -o ServerAliveInterval=30 " & _
+        "-o ServerAliveCountMax=3 " & _
+        "-o ExitOnForwardFailure=yes " & _
+        "-o StrictHostKeyChecking=yes " & _
+        "-R moonwolf:80:localhost:3000 serveo.net" _
+    )
+
+    Err.Clear
+    On Error GoTo 0
+
 End Sub
 
+' ============================================================
+' 5. Comprobar si Serveo responde
+' ============================================================
 Function TunnelWorks()
+
     TunnelWorks = False
 
     On Error Resume Next
@@ -73,6 +101,7 @@ Function TunnelWorks()
     Set xmlHttp = CreateObject("MSXML2.XMLHTTP")
     xmlHttp.Open "GET", PUBLIC_URL & "/api/files", False
     xmlHttp.setRequestHeader "Cache-Control", "no-cache"
+    xmlHttp.setRequestHeader "serveo-skip-browser-warning", "true"
     xmlHttp.Send
 
     If Err.Number = 0 Then
@@ -83,56 +112,63 @@ Function TunnelWorks()
 
     Err.Clear
     On Error GoTo 0
+
 End Function
 
 ' ============================================================
-' 4. Iniciar túnel
+' 6. Iniciar túnel
 ' ============================================================
 StartTunnel
 
 ' ============================================================
-' 5. Esperar a que Serveo esté disponible
+' 7. Esperar hasta 15 segundos a que esté disponible
 ' ============================================================
 Dim tunnelReady
+
 tunnelReady = False
 
-For attempts = 1 To 30
+For attempts = 1 To 15
+
     WScript.Sleep 1000
 
     If TunnelWorks() Then
         tunnelReady = True
         Exit For
     End If
+
+    If Not tunnelProcess Is Nothing Then
+        If tunnelProcess.Status <> 0 Then
+            Exit For
+        End If
+    End If
+
 Next
 
 ' ============================================================
-' 6. Abrir MoonWolf
+' 8. Abrir el panel
 ' ============================================================
-objShell.Run "cmd /c start " & PUBLIC_URL, 0, False
+objShell.Run "https://moonwolf.serveousercontent.com", 1, False
 
 ' ============================================================
-' 7. SUPERVISOR DEL TÚNEL
+' 9. SUPERVISOR
 ' ============================================================
-'
-' Comprueba cada 30 segundos:
-'
-'   Serveo funciona → no hace nada
-'   Serveo ha caído → mata SSH y lo vuelve a crear
-'
-' ============================================================
-
 Do
+
     WScript.Sleep 30000
 
-    If Not TunnelWorks() Then
+    ' Si SSH ha muerto, reconectar
+    If tunnelProcess Is Nothing Then
+
         StartTunnel
 
-        For attempts = 1 To 20
-            WScript.Sleep 1000
+    ElseIf tunnelProcess.Status <> 0 Then
 
-            If TunnelWorks() Then
-                Exit For
-            End If
-        Next
+        StartTunnel
+
+    ElseIf Not TunnelWorks() Then
+
+        StartTunnel
+
     End If
+
 Loop
