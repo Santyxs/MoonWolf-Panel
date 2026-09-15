@@ -347,10 +347,14 @@ app.post('/api/plugins/install', async (req, res) => {
 app.get('/api/plugins/installed', async (req, res) => {
   try {
     if (!fsSync.existsSync(PLUGINS_DIR)) return ok(res, { plugins: [] });
-    const files = await fs.readdir(PLUGINS_DIR);
-    const plugins = await Promise.all(files.map(async f => {
-      const s = await fs.stat(path.join(PLUGINS_DIR, f));
-      return { filename: f, size: (s.size / 1024 / 1024).toFixed(2) + ' MB', modified: s.mtime.toLocaleString('es-ES') };
+    const entries = await fs.readdir(PLUGINS_DIR, { withFileTypes: true });
+    // Solo archivos .jar: muchos plugins crean su propia carpeta de config
+    // dentro de plugins/ (ej. plugins/WorldEdit/), que no son plugins en sí
+    // y no se pueden "eliminar" como si lo fueran (unlink falla en directorios).
+    const jarFiles = entries.filter(e => e.isFile() && e.name.toLowerCase().endsWith('.jar'));
+    const plugins = await Promise.all(jarFiles.map(async e => {
+      const s = await fs.stat(path.join(PLUGINS_DIR, e.name));
+      return { filename: e.name, size: (s.size / 1024 / 1024).toFixed(2) + ' MB', modified: s.mtime.toLocaleString('es-ES') };
     }));
     ok(res, { plugins });
   } catch (e) { fail(res, e.message); }
@@ -359,8 +363,12 @@ app.get('/api/plugins/installed', async (req, res) => {
 app.delete('/api/plugins/installed/:file', async (req, res) => {
   const dest = safePluginPath(req.params.file);
   if (!dest) return fail(res, 'Nombre no válido');
-  try { await fs.unlink(dest); ok(res); }
-  catch (e) { fail(res, e.message); }
+  try {
+    const stat = await fs.stat(dest);
+    if (!stat.isFile()) return fail(res, 'Solo se pueden eliminar archivos de plugin (.jar)');
+    await fs.unlink(dest);
+    ok(res);
+  } catch (e) { fail(res, e.message); }
 });
 
 /* ══════════════════════════════════════════════════════════════
