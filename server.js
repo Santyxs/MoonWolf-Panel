@@ -54,6 +54,14 @@ async function downloadFile(url, dest) {
   const response = await fetch(url, { headers: { 'User-Agent': PAPER_UA } });
   if (!response.ok) throw new Error(`Download failed: ${response.status} ${response.statusText}`);
   const buffer = Buffer.from(await response.arrayBuffer());
+  // SpigotMC (vía Spiget) a veces responde con una página de verificación
+  // anti-bot de Cloudflare en vez del archivo real, con HTTP 200. Si no lo
+  // detectamos aquí, ese HTML se guardaría como si fuera el .jar del plugin.
+  const contentType = (response.headers.get('content-type') || '').toLowerCase();
+  const head = buffer.subarray(0, 20).toString('utf8').trim().toLowerCase();
+  if (contentType.includes('text/html') || head.startsWith('<!doctype html') || head.startsWith('<html')) {
+    throw new Error('La descarga fue bloqueada por la protección anti-bot de SpigotMC. Instala este plugin manualmente desde su página de recursos.');
+  }
   await fs.writeFile(dest, buffer);
 }
 
@@ -244,15 +252,31 @@ app.get('/api/plugins/search', async (req, res) => {
   const q = (req.query.q || '').trim(), source = req.query.source || 'all';
   if (!q) return fail(res, 'Query vacía');
   const results = [], errors = [];
-  try {
-    if (source === 'all' || source === 'modrinth') {
+  if (source === 'all' || source === 'modrinth') {
+    try {
       const { default: fetch } = await import('node-fetch');
       const r = await fetch(`https://api.modrinth.com/v2/search?query=${encodeURIComponent(q)}&limit=10`);
       const d = await r.json();
       results.push(...d.hits.map(p => ({ id: p.project_id, name: p.title, description: p.description, icon: p.icon_url, downloads: p.downloads, source: 'modrinth', gameVersions: p.game_versions || [], categories: p.categories || [] })));
-    }
-  } catch { errors.push('Modrinth no disponible'); }
-  if (source === 'all' || source === 'spigot') results.push({ id: `spigot-${q}`, name: q + ' (Spigot)', description: 'Plugin desde SpigotMC.', icon: '', downloads: 0, source: 'spigot', query: q, gameVersions: [], categories: [] });
+    } catch { errors.push('Modrinth no disponible'); }
+  }
+  if (source === 'all' || source === 'spigot') {
+    try {
+      const list = await apiFetch(`https://api.spiget.org/v2/search/resources/${encodeURIComponent(q)}?size=10&field=name`);
+      (Array.isArray(list) ? list : []).forEach(p => results.push({
+        id:          String(p.id),
+        name:        p.name,
+        description: p.tag || 'Plugin desde SpigotMC.',
+        icon:        `https://api.spiget.org/v2/resources/${p.id}/icon`,
+        downloads:   p.downloads || 0,
+        source:      'spigot',
+        external:    !!p.external,
+        premium:     !!p.premium,
+        gameVersions: [],
+        categories:  [],
+      }));
+    } catch { errors.push('SpigotMC (Spiget) no disponible'); }
+  }
   ok(res, { results, errors });
 });
 
@@ -266,18 +290,45 @@ app.get('/api/plugins/versions', async (req, res) => {
       const versions = await r.json();
       return ok(res, { versions: versions.map(v => ({ versionId: v.id, versionNumber: v.version_number, name: v.name, downloads: v.downloads, published: v.date_published, gameVersions: v.game_versions, loaders: v.loaders, changelog: v.changelog, files: v.files })) });
     }
-    // SpigotMC no tiene API pública de versiones: devolvemos una entrada
-    // "externa" para que el modal muestre un enlace en vez de una lista vacía.
-    ok(res, {
-      versions: [{
-        versionId: 'external',
-        versionNumber: 'Ver en SpigotMC',
-        isExternal: true,
-        query: req.query.query || id,
-      }],
-      isExternal: true,
-    });
-  } catch (e) { fail(res, e.message); }
+
+    if (source === 'spigot') {
+      const resource = await apiFetch(`https://api.spiget.org/v2/resources/${encodeURIComponent(id)}`);
+      // Spiget solo puede ofrecer descarga directa fiable para recursos
+      // gratuitos alojados en el propio SpigotMC. Los externos o de pago
+      // se resuelven como enlace a la página del recurso.
+      const canDownload = !resource.premium && !resource.external;
+      const resourcePage = `https://www.spigotmc.org/resources/${encodeURIComponent(id)}/`;
+      const rawVersions = await apiFetch(`https://api.spiget.org/v2/resources/${encodeURIComponent(id)}/versions?size=20&sort=-releaseDate`);
+      const safeName = (resource.name || 'plugin').replace(/[^a-zA-Z0-9._-]/g, '_');
+
+      const versions = (Array.isArray(rawVersions) ? rawVersions : []).map(v => {
+        const versionLabel = v.name || `#${v.id}`;
+        return {
+          versionId:  v.id,
+          versionNumber: versionLabel,
+          published:  v.releaseDate ? v.releaseDate * 1000 : null,
+          downloads:  v.downloads,
+          isExternal: !canDownload,
+          externalUrl: !canDownload ? resourcePage : undefined,
+          files: canDownload ? [{
+            primary:  true,
+            url:      `https://api.spiget.org/v2/resources/${encodeURIComponent(id)}/versions/${v.id}/download`,
+            filename: `${safeName}-${String(versionLabel).replace(/[^a-zA-Z0-9._-]/g, '_')}.jar`,
+          }] : [],
+        };
+      });
+
+      if (!versions.length) {
+        versions.push({ versionId: 'external', versionNumber: 'Ver en SpigotMC', isExternal: true, externalUrl: resourcePage });
+      }
+      return ok(res, { versions, isExternal: !canDownload });
+    }
+
+    ok(res, { versions: [], isExternal: true });
+  } catch (e) {
+    console.error('[plugins/versions]', e.message);
+    fail(res, e.message);
+  }
 });
 
 app.post('/api/plugins/install', async (req, res) => {

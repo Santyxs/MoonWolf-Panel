@@ -451,6 +451,11 @@ function renderPluginResults(plugins, errors) {
     const srcBadge = p.source === 'modrinth'
       ? `<span class="plg-src-badge modrinth">MODRINTH</span>`
       : `<span class="plg-src-badge spigot">SPIGOT</span>`;
+    const lockBadge = p.premium
+      ? `<span class="plg-src-badge" style="background:rgba(255,180,0,.18);color:#ffb400">💰 PREMIUM</span>`
+      : p.external
+      ? `<span class="plg-src-badge" style="background:rgba(255,255,255,.1);color:var(--muted2)">🔗 EXTERNO</span>`
+      : '';
     const gvShort   = (p.gameVersions || []).slice(-3).reverse().join(', ');
     const pluginAttr = encodeURIComponent(JSON.stringify(p));
 
@@ -463,6 +468,7 @@ function renderPluginResults(plugins, errors) {
           <div class="plg-card-name">${escHtml(p.name)}</div>
           <div class="plg-card-tags">
             ${srcBadge}
+            ${lockBadge}
             <span class="plg-src-badge dl">⬇ ${fmt(p.downloads)}</span>
             ${gvShort ? `<span class="plg-src-badge mc">MC ${escHtml(gvShort)}</span>` : ''}
           </div>
@@ -499,7 +505,7 @@ async function openVersionModal(plugin) {
   $('plgModalBody').innerHTML = '<div class="empty-state"><div style="font-size:32px;opacity:.35;animation:spin 1s linear infinite">⟳</div><div class="empty-msg" style="margin-top:8px">Cargando versiones...</div></div>';
 
   try {
-    const data = await api(`/api/plugins/versions?id=${encodeURIComponent(plugin.id)}&source=${plugin.source}&query=${encodeURIComponent(plugin.query || plugin.name)}`);
+    const data = await api(`/api/plugins/versions?id=${encodeURIComponent(plugin.id)}&source=${plugin.source}`);
     if (!data.ok) { $('plgModalBody').innerHTML = plgError(data.error); return; }
     renderVersionList(data.versions, plugin, data.isExternal);
   } catch (e) {
@@ -538,9 +544,8 @@ function renderVersionRow(v, plugin, isExternal) {
 
   let dlButton;
   if (isExternal || v.isExternal) {
-    const searchTerm = v.query || plugin.query || plugin.name;
-    const url = v.externalUrl || `https://www.spigotmc.org/resources/?filter[title]=${encodeURIComponent(searchTerm)}`;
-    dlButton = `<a href="${url}" target="_blank" rel="noopener" class="plg-dl-btn external">🔗 Buscar en SpigotMC</a>`;
+    const url = v.externalUrl || `https://www.spigotmc.org/resources/${plugin.id}/`;
+    dlButton = `<a href="${url}" target="_blank" rel="noopener" class="plg-dl-btn external">🔗 Ver en SpigotMC</a>`;
   } else if (!primary) {
     dlButton = `<span class="plg-dl-btn disabled">Sin archivo</span>`;
   } else {
