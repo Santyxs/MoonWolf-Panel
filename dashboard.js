@@ -1,7 +1,7 @@
 'use strict';
 
 /* ═══════════════════════ BACKEND ═══════════════════════ */
-const API_URL = 'https://ea869613a8a661.lhr.life';
+const API_URL = 'https://6a371f0164390b.lhr.life';
 
 /* ═══════════════════════ SOCKET ═══════════════════════ */
 const socket = io(API_URL);
