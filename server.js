@@ -7,12 +7,34 @@ const fs      = require('fs').promises;
 const fsSync  = require('fs');
 const path    = require('path');
 
-const app    = express();
+const app = express();
 const server = http.createServer(app);
-const io     = new Server(server);
 
-// Solo se sirven los assets del frontend, nunca la carpeta completa del proyecto
-// (antes express.static(__dirname) exponía server.js, package.json, .git/, etc. por HTTP)
+const ALLOWED_ORIGIN = 'https://moon-wolf-panel.vercel.app';
+
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
+  res.setHeader(
+    'Access-Control-Allow-Methods',
+    'GET,POST,PUT,PATCH,DELETE,OPTIONS'
+  );
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Vary', 'Origin');
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+
+const io = new Server(server, {
+  cors: {
+    origin: ALLOWED_ORIGIN,
+    methods: ['GET', 'POST']
+  }
+});
+
 const PUBLIC_ASSETS = ['index.html', 'dashboard.js', 'styles.css'];
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 for (const asset of PUBLIC_ASSETS) {
