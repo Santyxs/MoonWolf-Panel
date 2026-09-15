@@ -1,9 +1,12 @@
 'use strict';
 
-/* ═══════════════════════ SOCKET ═══════════════════════ */
-const socket = io();
-let currentStatus = 'offline';
+/* ═══════════════════════ BACKEND ═══════════════════════ */
+const API_URL = 'https://2c40cbbba43bcd.lhr.life';
 
+/* ═══════════════════════ SOCKET ═══════════════════════ */
+const socket = io(API_URL);
+
+let currentStatus = 'offline';
 socket.on('status', setStatus);
 socket.on('log', appendLog);
 socket.on('history', logs => {
