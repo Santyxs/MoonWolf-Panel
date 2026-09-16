@@ -1,174 +1,230 @@
-Dim objShell, objFSO, strPath
-Set objShell = CreateObject("WScript.Shell")
-Set objFSO   = CreateObject("Scripting.FileSystemObject")
+Option Explicit
 
-strPath = Left(WScript.ScriptFullName, InStrRev(WScript.ScriptFullName, "\") - 1)
-objShell.CurrentDirectory = strPath
+Dim shell, fso, scriptDir
+Set shell = CreateObject("WScript.Shell")
+Set fso   = CreateObject("Scripting.FileSystemObject")
 
-Const SERVER_URL = "http://localhost:3000"
+scriptDir = Left(WScript.ScriptFullName, InStrRev(WScript.ScriptFullName, "\") - 1)
+shell.CurrentDirectory = scriptDir
+
+Const LOCAL_URL = "http://localhost:3000"
 Const PUBLIC_URL = "https://moonwolf.serveousercontent.com"
 
-Dim nodeProcess
-Dim tunnelProcess
+' ============================================================
+' Iniciar proceso oculto
+' ============================================================
+Sub StartHidden(command)
+    shell.Run "cmd /c " & command, 0, False
+End Sub
 
 ' ============================================================
-' 1. Instalar dependencias solo si no existen
+' Comprobar si Node.js está ejecutándose
 ' ============================================================
-If Not objFSO.FolderExists(strPath & "\node_modules") Then
-    objShell.Run "cmd /c npm install --silent", 0, True
-End If
+Function NodeRunning()
+    Dim svc, processes, p
 
-' ============================================================
-' 2. Arrancar Node.js
-' ============================================================
-Set nodeProcess = objShell.Exec("node server.js")
-
-' ============================================================
-' 3. Esperar a que Node responda
-' ============================================================
-Dim xmlHttp, ready, attempts
-
-ready = False
-attempts = 0
-
-Do While Not ready And attempts < 30
-    WScript.Sleep 500
-    attempts = attempts + 1
+    NodeRunning = False
 
     On Error Resume Next
 
-    Set xmlHttp = CreateObject("MSXML2.XMLHTTP")
-    xmlHttp.Open "GET", SERVER_URL, False
-    xmlHttp.Send
+    Set svc = GetObject("winmgmts:\\.\root\cimv2")
+    Set processes = svc.ExecQuery("SELECT Name, CommandLine FROM Win32_Process WHERE Name='node.exe'")
+
+    For Each p In processes
+        If InStr(1, p.CommandLine, "server.js", vbTextCompare) > 0 Then
+            NodeRunning = True
+            Exit For
+        End If
+    Next
+
+    Err.Clear
+    On Error GoTo 0
+End Function
+
+' ============================================================
+' Comprobar si nuestro SSH de Serveo está ejecutándose
+' ============================================================
+Function TunnelProcessRunning()
+    Dim svc, processes, p
+
+    TunnelProcessRunning = False
+
+    On Error Resume Next
+
+    Set svc = GetObject("winmgmts:\\.\root\cimv2")
+    Set processes = svc.ExecQuery("SELECT Name, CommandLine FROM Win32_Process WHERE Name='ssh.exe'")
+
+    For Each p In processes
+        If InStr(1, p.CommandLine, "serveo.net", vbTextCompare) > 0 _
+        And InStr(1, p.CommandLine, "moonwolf:80:localhost:3000", vbTextCompare) > 0 Then
+            TunnelProcessRunning = True
+            Exit For
+        End If
+    Next
+
+    Err.Clear
+    On Error GoTo 0
+End Function
+
+' ============================================================
+' Iniciar Node
+' ============================================================
+Sub StartNode()
+    If Not NodeRunning() Then
+        StartHidden "node server.js >nul 2>&1"
+    End If
+End Sub
+
+' ============================================================
+' Iniciar túnel Serveo
+' ============================================================
+Sub StartTunnel()
+    If Not TunnelProcessRunning() Then
+        StartHidden "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -R moonwolf:80:localhost:3000 serveo.net >nul 2>&1"
+    End If
+End Sub
+
+' ============================================================
+' Comprobar localhost
+' ============================================================
+Function LocalWorks()
+    Dim http
+
+    LocalWorks = False
+
+    On Error Resume Next
+
+    Set http = CreateObject("MSXML2.XMLHTTP")
+    http.Open "GET", LOCAL_URL & "/api/files", False
+    http.Send
 
     If Err.Number = 0 Then
-        If xmlHttp.Status = 200 Then
-            ready = True
-        End If
+        If http.Status = 200 Then LocalWorks = True
     End If
 
     Err.Clear
     On Error GoTo 0
+End Function
 
-    If Not nodeProcess Is Nothing Then
-        If nodeProcess.Status <> 0 Then
-            MsgBox "server.js se ha cerrado durante el arranque.", vbCritical, "MoonWolf Panel"
-            WScript.Quit 1
-        End If
+' ============================================================
+' Comprobar Serveo
+' ============================================================
+Function PublicWorks()
+    Dim http
+
+    PublicWorks = False
+
+    On Error Resume Next
+
+    Set http = CreateObject("MSXML2.XMLHTTP")
+    http.Open "GET", PUBLIC_URL & "/api/files", False
+    http.setRequestHeader "serveo-skip-browser-warning", "true"
+    http.Send
+
+    If Err.Number = 0 Then
+        If http.Status = 200 Then PublicWorks = True
     End If
-Loop
 
-If Not ready Then
-    MsgBox "MoonWolf Panel no pudo iniciar correctamente.", vbCritical, "MoonWolf Panel"
+    Err.Clear
+    On Error GoTo 0
+End Function
+
+' ============================================================
+' 1. Dependencias
+' ============================================================
+If Not fso.FolderExists(scriptDir & "\node_modules") Then
+    shell.Run "cmd /c npm install --silent >nul 2>&1", 0, True
+End If
+
+' ============================================================
+' 2. Arrancar Node
+' ============================================================
+StartNode
+
+' ============================================================
+' 3. Esperar a Node
+' ============================================================
+Dim i
+For i = 1 To 30
+    WScript.Sleep 500
+    If LocalWorks() Then Exit For
+Next
+
+If Not LocalWorks() Then
+    MsgBox "MoonWolf Panel no pudo iniciar server.js.", vbCritical, "MoonWolf Panel"
     WScript.Quit 1
 End If
 
 ' ============================================================
-' 4. Función para iniciar Serveo
-' ============================================================
-Sub StartTunnel()
-
-    On Error Resume Next
-
-    If Not tunnelProcess Is Nothing Then
-        If tunnelProcess.Status = 0 Then
-            tunnelProcess.Terminate
-        End If
-    End If
-
-    Set tunnelProcess = objShell.Exec( _
-        "ssh -o ServerAliveInterval=30 " & _
-        "-o ServerAliveCountMax=3 " & _
-        "-o ExitOnForwardFailure=yes " & _
-        "-o StrictHostKeyChecking=yes " & _
-        "-R moonwolf:80:localhost:3000 serveo.net" _
-    )
-
-    Err.Clear
-    On Error GoTo 0
-
-End Sub
-
-' ============================================================
-' 5. Comprobar si Serveo responde
-' ============================================================
-Function TunnelWorks()
-
-    TunnelWorks = False
-
-    On Error Resume Next
-
-    Set xmlHttp = CreateObject("MSXML2.XMLHTTP")
-    xmlHttp.Open "GET", PUBLIC_URL & "/api/files", False
-    xmlHttp.setRequestHeader "Cache-Control", "no-cache"
-    xmlHttp.setRequestHeader "serveo-skip-browser-warning", "true"
-    xmlHttp.Send
-
-    If Err.Number = 0 Then
-        If xmlHttp.Status = 200 Then
-            TunnelWorks = True
-        End If
-    End If
-
-    Err.Clear
-    On Error GoTo 0
-
-End Function
-
-' ============================================================
-' 6. Iniciar túnel
+' 4. Arrancar Serveo
 ' ============================================================
 StartTunnel
 
 ' ============================================================
-' 7. Esperar hasta 15 segundos a que esté disponible
+' 5. Esperar al túnel
 ' ============================================================
-Dim tunnelReady
-
-tunnelReady = False
-
-For attempts = 1 To 15
-
+For i = 1 To 20
     WScript.Sleep 1000
 
-    If TunnelWorks() Then
-        tunnelReady = True
+    If PublicWorks() Then
         Exit For
     End If
 
-    If Not tunnelProcess Is Nothing Then
-        If tunnelProcess.Status <> 0 Then
-            Exit For
-        End If
+    ' Si SSH murió durante el arranque, volver a lanzarlo
+    If Not TunnelProcessRunning() Then
+        StartTunnel
     End If
-
 Next
 
 ' ============================================================
-' 8. Abrir el panel
+' 6. Abrir MoonWolf
 ' ============================================================
-objShell.Run "https://moonwolf.serveousercontent.com", 1, False
+shell.Run PUBLIC_URL, 1, False
 
 ' ============================================================
-' 9. SUPERVISOR
+' 7. Supervisor permanente
 ' ============================================================
 Do
-
     WScript.Sleep 30000
 
-    ' Si SSH ha muerto, reconectar
-    If tunnelProcess Is Nothing Then
+    ' Si Node se cae, volver a iniciarlo
+    If Not NodeRunning() Then
+        StartNode
 
+        For i = 1 To 20
+            WScript.Sleep 500
+            If LocalWorks() Then Exit For
+        Next
+    End If
+
+    ' Si el SSH se cae, volver a iniciarlo
+    If Not TunnelProcessRunning() Then
         StartTunnel
 
-    ElseIf tunnelProcess.Status <> 0 Then
+    ' Si SSH existe pero el túnel no responde, esperar/reiniciar
+    ElseIf Not PublicWorks() Then
 
+        ' No matamos todos los ssh.exe del equipo:
+        ' solo intentamos localizar nuestro túnel.
+        Dim svc, processes, p
+
+        On Error Resume Next
+
+        Set svc = GetObject("winmgmts:\\.\root\cimv2")
+        Set processes = svc.ExecQuery("SELECT Name, CommandLine FROM Win32_Process WHERE Name='ssh.exe'")
+
+        For Each p In processes
+            If InStr(1, p.CommandLine, "serveo.net", vbTextCompare) > 0 _
+            And InStr(1, p.CommandLine, "moonwolf:80:localhost:3000", vbTextCompare) > 0 Then
+                p.Terminate()
+            End If
+        Next
+
+        Err.Clear
+        On Error GoTo 0
+
+        WScript.Sleep 1000
         StartTunnel
-
-    ElseIf Not TunnelWorks() Then
-
-        StartTunnel
-
     End If
 
 Loop
