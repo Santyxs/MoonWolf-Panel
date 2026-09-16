@@ -528,6 +528,7 @@ body::after {
   overflow: hidden;
 }
 .plg-card::before { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, rgba(0,200,255,0.03) 0%, transparent 60%); opacity: 0; transition: opacity var(--t-base); }
+.plg-card-installed { border-color: rgba(60,220,130,.35); }
 .plg-card:hover { border-color: var(--border2); box-shadow: 0 4px 24px rgba(0,0,0,0.3); transform: translateY(-1px); }
 .plg-card:hover::before { opacity: 1; }
 

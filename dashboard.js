@@ -413,6 +413,27 @@ function openCtxMenu(e, name, type) {
    ═══════════════════════════════════════════════════════════════ */
 const PLG = { source: 'all', currentPlugin: null, installing: new Set() };
 
+// Convierte un nombre de plugin o de archivo en una clave comparable:
+// minúsculas, sin ".jar", sin espacios ni símbolos. Así "EssentialsX-2.20.1.jar"
+// y "EssentialsX" coinciden aunque el nombre de archivo real traiga la versión.
+function normalizePluginKey(s) {
+  return String(s || '').toLowerCase().replace(/\.jar$/, '').replace(/[^a-z0-9]/g, '');
+}
+
+async function getInstalledKeys() {
+  try {
+    const data = await api('/api/plugins/installed');
+    if (!data.ok) return [];
+    return data.plugins.map(p => normalizePluginKey(p.filename));
+  } catch { return []; }
+}
+
+function isPluginInstalled(name, installedKeys) {
+  const key = normalizePluginKey(name);
+  if (!key) return false;
+  return installedKeys.some(k => k.includes(key) || key.includes(k));
+}
+
 function pluginSwitchTab(tab) {
   document.querySelectorAll('.plg-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   $('plgTabSearch').style.display    = tab === 'search'    ? '' : 'none';
@@ -433,9 +454,13 @@ async function pluginSearch() {
   results.innerHTML = '<div class="empty-state"><div style="font-size:32px;opacity:.35;animation:spin 1s linear infinite">⟳</div><div class="empty-msg">Buscando...</div></div>';
 
   try {
-    const data = await api(`/api/plugins/search?q=${encodeURIComponent(q)}&source=${PLG.source}`);
+    const [data, installedKeys] = await Promise.all([
+      api(`/api/plugins/search?q=${encodeURIComponent(q)}&source=${PLG.source}`),
+      getInstalledKeys(),
+    ]);
     if (!data.ok) { results.innerHTML = plgError(data.error); return; }
     if (!data.results.length) { results.innerHTML = '<div class="empty-state">Sin resultados</div>'; return; }
+    data.results.forEach(p => { p.installed = isPluginInstalled(p.name, installedKeys); });
     renderPluginResults(data.results, data.errors || []);
   } catch (e) {
     results.innerHTML = plgError('Sin conexión con el backend: ' + e.message);
@@ -456,10 +481,13 @@ function renderPluginResults(plugins, errors) {
       : p.external
       ? `<span class="plg-src-badge" style="background:rgba(255,255,255,.1);color:var(--muted2)">🔗 EXTERNO</span>`
       : '';
+    const installedBadge = p.installed
+      ? `<span class="plg-src-badge" style="background:rgba(60,220,130,.18);color:#3cdc82">✅ INSTALADO</span>`
+      : '';
     const gvShort   = (p.gameVersions || []).slice(-3).reverse().join(', ');
     const pluginAttr = encodeURIComponent(JSON.stringify(p));
 
-    return `<div class="plg-card" data-plugin="${pluginAttr}">
+    return `<div class="plg-card${p.installed ? ' plg-card-installed' : ''}" data-plugin="${pluginAttr}">
       <div class="plg-card-top">
         ${p.icon
           ? `<img class="plg-card-icon" src="${p.icon}" width="42" height="42" loading="lazy" onerror="this.style.display='none'">`
@@ -469,6 +497,7 @@ function renderPluginResults(plugins, errors) {
           <div class="plg-card-tags">
             ${srcBadge}
             ${lockBadge}
+            ${installedBadge}
             <span class="plg-src-badge dl">⬇ ${fmt(p.downloads)}</span>
             ${gvShort ? `<span class="plg-src-badge mc">MC ${escHtml(gvShort)}</span>` : ''}
           </div>
