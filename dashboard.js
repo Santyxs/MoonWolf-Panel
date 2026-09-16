@@ -1,9 +1,12 @@
 'use strict';
 
-/* ═══════════════════════ SOCKET ═══════════════════════ */
-const socket = io();
-let currentStatus = 'offline';
+/* ═══════════════════════ BACKEND ═══════════════════════ */
+const API_URL = 'https://moonwolf.serveousercontent.com';
 
+/* ═══════════════════════ SOCKET ═══════════════════════ */
+const socket = io(API_URL);
+
+let currentStatus = 'offline';
 socket.on('status', setStatus);
 socket.on('log', appendLog);
 socket.on('history', logs => {
@@ -83,7 +86,11 @@ const escAttr = str => str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/
 const escHtml = str => String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 async function api(url, opts = {}) {
-  const res = await fetch(url, opts);
+  const target = url.startsWith('http')
+    ? url
+    : `${API_URL}${url}`;
+
+  const res = await fetch(target, opts);
   return res.json();
 }
 
@@ -387,7 +394,7 @@ function openCtxMenu(e, name, type) {
     }
 
     if (action === 'download') {
-      window.location.href = `/api/files/download?path=${encodeURIComponent(rel)}`;
+      window.location.href = `${API_URL}/api/files/download?path=${encodeURIComponent(rel)}`;
     }
 
     if (action === 'compress') {
