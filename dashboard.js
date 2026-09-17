@@ -676,7 +676,7 @@ function renderVersionRow(v, plugin, isExternal) {
   // Spigot (vía Spiget) lo manda como HTML real (BBCode ya convertido) -> hay que
   // sanitizarlo con DOMPurify en vez de escaparlo, o se verían las etiquetas literales.
   const changelogHtml = v.changelog
-    ? `<div class="plg-ver-changelog">${
+    ? `<div class="plg-ver-changelog${v.changelogIsHtml ? '' : ' plg-ver-changelog--full'}">${
         v.changelogIsHtml
           ? (window.DOMPurify ? DOMPurify.sanitize(v.changelog, { ALLOWED_TAGS: ['b','strong','i','em','u','a','br','p','ul','ol','li','span','code','pre'], ALLOWED_ATTR: ['href','target','rel'] }) : escHtml(v.changelog))
           : escHtml(v.changelog).replace(/\n/g, '<br>')
