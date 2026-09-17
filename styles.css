@@ -560,7 +560,7 @@ body::after {
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: 40px 20px;
+  padding: 14px 12px;
   backdrop-filter: blur(6px);
   overflow-y: auto;
 }
@@ -570,7 +570,7 @@ body::after {
   border: 1px solid var(--border2);
   border-radius: 16px;
   width: 100%;
-  max-width: 820px;
+  max-width: 1500px;
   box-shadow: 0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(0,200,255,0.05);
   display: flex;
   flex-direction: column;
@@ -583,21 +583,21 @@ body::after {
 .plg-modal-title  { font-family: 'Orbitron', sans-serif; font-size: 15px; font-weight: 900; letter-spacing: 1px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .plg-modal-close  { background: none; border: 1px solid var(--border2); color: var(--muted2); width: 32px; height: 32px; border-radius: 8px; cursor: pointer; font-size: 13px; transition: all var(--t-base); flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
 .plg-modal-close:hover { border-color: var(--red); color: var(--red); }
-.plg-modal-body { overflow-y: auto; max-height: calc(80vh - 80px); }
+.plg-modal-body { overflow-y: auto; max-height: calc(97vh - 80px); }
 .plg-modal-body::-webkit-scrollbar       { width: 3px; }
 .plg-modal-body::-webkit-scrollbar-thumb { background: var(--border2); }
 
 .plg-ver-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; background: var(--surface2); border-bottom: 1px solid var(--border); }
 .plg-ver-list   { display: flex; flex-direction: column; }
 
-.plg-ver-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 20px; border-bottom: 1px solid var(--border); transition: background var(--t-fast); }
+.plg-ver-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 28px; padding: 20px 26px; border-bottom: 1px solid var(--border); transition: background var(--t-fast); }
 .plg-ver-row:last-child { border-bottom: none; }
 .plg-ver-row:hover { background: var(--surface2); }
 
 .plg-ver-left    { flex: 1; min-width: 0; }
-.plg-ver-number  { font-family: 'Orbitron', sans-serif; font-size: 12px; font-weight: 700; color: var(--accent); letter-spacing: 0.5px; margin-bottom: 2px; }
-.plg-ver-name    { font-size: 11px; color: var(--text); margin-bottom: 4px; }
-.plg-ver-changelog { font-size: 10px; color: var(--muted2); line-height: 1.5; padding: 6px 10px; background: var(--bg); border-radius: var(--r-sm); border-left: 2px solid var(--border2); margin-top: 6px; }
+.plg-ver-number  { font-family: 'Orbitron', sans-serif; font-size: 14px; font-weight: 700; color: var(--accent); letter-spacing: 0.5px; margin-bottom: 3px; }
+.plg-ver-name    { font-size: 13px; color: var(--text); margin-bottom: 6px; }
+.plg-ver-changelog { font-size: 13px; color: var(--muted2); line-height: 1.7; padding: 12px 16px; background: var(--bg); border-radius: var(--r-sm); border-left: 2px solid var(--border2); margin-top: 8px; }
 .plg-ver-changelog p, .plg-ver-changelog ul, .plg-ver-changelog ol { margin: 0 0 4px; padding-left: 16px; }
 .plg-ver-changelog a { color: var(--accent); }
 
