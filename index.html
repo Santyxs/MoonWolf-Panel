@@ -23,47 +23,8 @@
   <script src="dashboard.js" defer></script>
 </head>
 
-<body>
-  <style>
-    #loginGate {
-      position: fixed; inset: 0; z-index: 9999;
-      display: flex; align-items: center; justify-content: center;
-      background: #0d0f14; font-family: inherit;
-    }
-    #loginGate.hidden { display: none; }
-    .app.locked { display: none; }
-    .login-card {
-      width: 320px; max-width: 90vw; padding: 32px 28px;
-      background: #171a21; border: 1px solid #2a2e38; border-radius: 12px;
-      box-shadow: 0 10px 40px rgba(0,0,0,.4); text-align: center;
-    }
-    .login-card h1 { font-size: 18px; color: #eee; margin: 0 0 4px; letter-spacing: .04em; }
-    .login-card small { color: #888; display: block; margin-bottom: 20px; }
-    .login-card input {
-      width: 100%; padding: 10px 12px; margin-bottom: 12px; box-sizing: border-box;
-      background: #0d0f14; border: 1px solid #2a2e38; border-radius: 8px;
-      color: #eee; font-size: 14px;
-    }
-    .login-card button {
-      width: 100%; padding: 10px; border: none; border-radius: 8px;
-      background: #6c5ce7; color: #fff; font-weight: 600; cursor: pointer; font-size: 14px;
-    }
-    .login-card button:disabled { opacity: .6; cursor: default; }
-    .login-error { color: #ff6b6b; font-size: 13px; min-height: 18px; margin-top: 10px; }
-  </style>
-
-  <div id="loginGate">
-    <div class="login-card">
-      <h1>🌙 MOONWOLF PANEL</h1>
-      <small>Introduce la contraseña del panel</small>
-      <input type="password" id="loginPassword" placeholder="Contraseña" autofocus>
-      <button id="btnLogin">Entrar</button>
-      <div class="login-error" id="loginError"></div>
-    </div>
-  </div>
-
-  <div class="app locked">
-
+<body
+  
     <!-- SIDEBAR -->
     <nav class="sidebar">
       <div class="sb-logo">
@@ -81,7 +42,7 @@
 
       <nav class="sb-section">
         <div class="sb-section-label">Servidor</div>
-        <div class="sb-item active" data-view="terminal"><span class="sb-icon">⬛</span><span>Terminal</span></div>
+        <div class="sb-item active" data-view="terminal"><span class="sb-icon">📟</span><span>Terminal</span></div>
         <div class="sb-item" data-view="files"><span class="sb-icon">📁</span><span>Archivos</span></div>
         <div class="sb-item" data-view="plugins"><span class="sb-icon">🧩</span><span>Plugins</span></div>
         <div class="sb-item" data-view="versions"><span class="sb-icon">📦</span><span>Versiones</span></div>
@@ -89,7 +50,7 @@
 
       <nav class="sb-section">
         <div class="sb-section-label">Sistema</div>
-        <div class="sb-item" data-view="databases"><span class="sb-icon">🗄️</span><span>Bases de datos</span></div>
+        <div class="sb-item" data-view="databases"><span class="sb-icon">🗂️</span><span>Bases de datos</span></div>
         <div class="sb-item" data-view="users"><span class="sb-icon">👤</span><span>Usuarios</span></div>
         <div class="sb-item" data-view="backups"><span class="sb-icon">💾</span><span>Copias de seguridad</span></div>
         <div class="sb-item" data-view="ports"><span class="sb-icon">🔌</span><span>Puertos</span></div>
@@ -99,11 +60,11 @@
         <div class="sb-section-label">Configuración</div>
         <div class="sb-item" data-view="startup"><span class="sb-icon">⚙️</span><span>Startup</span></div>
         <div class="sb-item" data-view="settings"><span class="sb-icon">🛠️</span><span>Ajustes</span></div>
-        <div class="sb-item" data-view="activitylog"><span class="sb-icon">📋</span><span>Registro</span></div>
+        <div class="sb-item" data-view="activitylog"><span class="sb-icon">📑</span><span>Registro</span></div>
       </nav>
 
       <div class="sb-spacer"></div>
-      <div class="sb-version">MOONWOLF · 2025</div>
+      <div class="sb-version">MOONWOLF · 2026</div>
     </nav>
 
     <!-- MAIN -->
@@ -114,7 +75,7 @@
         <div class="page-header">
           <div>
             <div class="page-title">TERMINAL</div>
-            <div class="page-sub">Consola del servidor en tiempo real</div>
+            <div class="page-sub">Consola del servidor</div>
           </div>
         </div>
 
@@ -165,7 +126,7 @@
           <div class="console" id="console">
             <div class="log-line system">
               <span class="log-time">--:--:--</span>
-              <span class="log-text">🌙 MoonWolf Panel iniciado. Pulsa ARRANCAR para encender el servidor.</span>
+              <span class="log-text">🌙 Panel iniciado. Pulsa ARRANCAR para encender el servidor.</span>
             </div>
           </div>
           <div class="cmd-row">
@@ -198,7 +159,7 @@
               <span class="crumb-active" id="crumbHome">🏠 MoonWolf</span>
               <span id="crumbTrail"></span>
             </div>
-            <button class="small-btn" disabled style="opacity:.4;cursor:not-allowed">＋ Nuevo archivo</button>
+            <button class="small-btn" disabled style="opacity:.4;cursor:not-allowed">➕ Nuevo archivo</button>
           </div>
 
           <div class="panel files-table-panel" id="filesTablePanel">
@@ -235,11 +196,11 @@
         <div class="page-header">
           <div>
             <div class="page-title">PLUGINS</div>
-            <div class="page-sub">Busca, descarga e instala plugins desde Modrinth y Spigot</div>
+            <div class="page-sub">Busca, descarga e instala plugins desde Modrinth, Spigot y Hangar</div>
           </div>
           <div style="display:flex;gap:8px;align-items:center">
             <button class="plg-tab-btn active" data-tab="search">🔍 Buscar</button>
-            <button class="plg-tab-btn" data-tab="installed">📦 Instalados</button>
+            <button class="plg-tab-btn" data-tab="installed">📦 Plugins instalados</button>
           </div>
         </div>
 
@@ -254,7 +215,7 @@
                 <button class="plg-source active" data-source="all">TODOS</button>
                 <button class="plg-source" data-source="modrinth">🟢 MODRINTH</button>
                 <button class="plg-source" data-source="spigot">🟠 SPIGOT</button>
-                <button class="plg-source" data-source="hangar">✈️ HANGAR</button>
+                <button class="plg-source" data-source="hangar">🔵 HANGAR</button>
               </div>
               <div class="plg-source-pills plg-price-pills">
                 <button class="plg-price active" data-price="all">TODOS</button>
@@ -271,7 +232,7 @@
             <div class="empty-state">
               <div class="empty-icon" style="font-size:48px;opacity:.2">🧩</div>
               <div class="empty-msg">Busca un plugin para empezar<br>
-                <span style="font-size:11px;color:var(--muted)">Ej: LuckPerms · EssentialsX · WorldEdit · Vault</span>
+                <span style="font-size:11px;color:var(--muted)">Ej: LuckPerms · PowerFly · WorldEdit · Vault</span>
               </div>
             </div>
           </div>
@@ -316,9 +277,7 @@
         <div class="page-header">
           <div>
             <div class="page-title">VERSIONES DE MINECRAFT</div>
-            <div class="page-sub">
-              Gestiona las versiones de Minecraft disponibles para tu servidor
-            </div>
+            <div class="page-sub">Gestión de las versiones de Minecraft disponibles para tu servidor</div>
           </div>
         </div>
         <div class="panel"><div class="version-list" id="versionList"></div></div>
@@ -340,7 +299,7 @@
         <div class="page-header">
           <div>
             <div class="page-title">USUARIOS</div>
-            <div class="page-sub">Gestión de usuarios del panel</div>
+            <div class="page-sub">Gestión de jugadores en el servidor</div>
           </div>
         </div>
         <div class="panel"><div class="user-list" id="userList"></div></div>
@@ -351,7 +310,7 @@
         <div class="page-header">
           <div>
             <div class="page-title">COPIAS DE SEGURIDAD</div>
-            <div class="page-sub">Gestiona las copias de seguridad del servidor</div>
+            <div class="page-sub">Gestión de las copias de seguridad del servidor</div>
           </div>
         </div>
         <div class="panel"><div class="backup-list" id="backupList"></div></div>
