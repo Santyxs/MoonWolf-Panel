@@ -563,7 +563,7 @@ function renderPluginResults(plugins, errors) {
     return `<div class="plg-card${p.installed ? ' plg-card-installed' : ''}" data-plugin="${pluginAttr}">
       <div class="plg-card-top">
         ${p.icon
-          ? `<img class="plg-card-icon" src="${p.icon}" width="42" height="42" loading="lazy" onerror="this.style.display='none'">`
+          ? `<img class="plg-card-icon" src="${escAttr(p.icon)}" width="42" height="42" loading="lazy" onerror="this.style.display='none'">`
           : `<div class="plg-card-icon-placeholder">🧩</div>`}
         <div class="plg-card-info">
           <div class="plg-card-name">${escHtml(p.name)}</div>

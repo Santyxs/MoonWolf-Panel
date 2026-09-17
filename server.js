@@ -110,6 +110,30 @@ function loginRateLimited(ip) {
   return rec.count > 10;
 }
 
+// Rate limit general para TODO /api/*: sin esto, alguien con (o intentando
+// adivinar) un token podía automatizar peticiones sin ningún freno.
+const apiHits = new Map(); // ip -> { count, resetAt }
+const API_RATE_LIMIT     = 120;     // peticiones...
+const API_RATE_WINDOW_MS = 60_000;  // ...por minuto, por IP
+function apiRateLimited(ip) {
+  const now = Date.now();
+  const rec = apiHits.get(ip);
+  if (!rec || now > rec.resetAt) {
+    apiHits.set(ip, { count: 1, resetAt: now + API_RATE_WINDOW_MS });
+    return false;
+  }
+  rec.count++;
+  return rec.count > API_RATE_LIMIT;
+}
+
+// Limpieza periódica para que estos mapas no crezcan indefinidamente en un
+// proceso que puede quedarse corriendo días/semanas.
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, rec] of loginAttempts) if (now > rec.resetAt) loginAttempts.delete(ip);
+  for (const [ip, rec] of apiHits)       if (now > rec.resetAt) apiHits.delete(ip);
+}, 10 * 60 * 1000).unref();
+
 const app = express();
 const server = http.createServer(app);
 
@@ -154,8 +178,15 @@ for (const asset of PUBLIC_ASSETS) {
 app.use(express.json({ limit: '50mb' }));
 
 /* ══════════════════════════════════════════════
-   AUTH API — login + guardia para todo /api/*
+   AUTH API — rate limit general + login + guardia para todo /api/*
    ══════════════════════════════════════════════ */
+app.use('/api', (req, res, next) => {
+  if (apiRateLimited(req.ip)) {
+    return res.status(429).json({ ok: false, error: 'Demasiadas peticiones, espera un momento.' });
+  }
+  next();
+});
+
 app.post('/api/auth/login', (req, res) => {
   const ip = req.ip;
   if (loginRateLimited(ip)) {
