@@ -31,6 +31,11 @@ const ENV_PATH = path.join(__dirname, '.env');
    (ver start.vbs → Serveo). Sin esto, cualquiera con la
    URL del túnel tenía acceso total a la consola, archivos
    y plugins del servidor sin ninguna comprobación.
+
+   PANEL_PASSWORD se define a mano en .env (no se autogenera
+   ni se imprime en consola) porque es la que se comparte con
+   el grupo privado; SESSION_SECRET sí se autogenera porque es
+   un detalle interno de firma de tokens, no algo que compartir.
    ══════════════════════════════════════════════ */
 function ensureEnvSecret(name, bytes) {
   if (process.env[name]) return process.env[name];
@@ -45,17 +50,17 @@ function ensureEnvSecret(name, bytes) {
   return generated;
 }
 
-const isFirstRun    = !process.env.PANEL_PASSWORD;
-const PANEL_PASSWORD = ensureEnvSecret('PANEL_PASSWORD', 24);
-const SESSION_SECRET = ensureEnvSecret('SESSION_SECRET', 32);
+const PANEL_PASSWORD = process.env.PANEL_PASSWORD;
+const SESSION_SECRET  = ensureEnvSecret('SESSION_SECRET', 32);
 
-if (isFirstRun) {
-  console.log('\n══════════════════════════════════════════════');
-  console.log(' MoonWolf Panel: no había PANEL_PASSWORD configurada.');
-  console.log(' Se generó una y se guardó en .env:');
-  console.log(' ' + PANEL_PASSWORD);
-  console.log(' Úsala para entrar al panel. Puedes cambiarla editando .env.');
-  console.log('══════════════════════════════════════════════\n');
+if (!PANEL_PASSWORD) {
+  console.error('\n══════════════════════════════════════════════');
+  console.error(' MoonWolf Panel: falta PANEL_PASSWORD en el .env.');
+  console.error(' Añade una línea así en el .env (junto a server.js):');
+  console.error(' PANEL_PASSWORD=tu_contraseña_aquí');
+  console.error(' El servidor no arrancará sin ella.');
+  console.error('══════════════════════════════════════════════\n');
+  process.exit(1);
 }
 
 function timingSafeEqualStr(a, b) {
