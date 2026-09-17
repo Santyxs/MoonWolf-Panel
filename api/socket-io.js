@@ -94,22 +94,17 @@ io.on('connection', socket => {
   socket.on('rpc_result', packet => {
     if (role !== 'agent') return;
 
-    // Compatibilidad con la versión anterior del Agent, que enviaba { result }.
-    const result = packet && packet.result && typeof packet.result === 'object'
-      ? packet.result
-      : packet;
+    const result = packet && packet.result && typeof packet.result === 'object' ? packet.result : packet;
 
     if (!result || typeof result.id !== 'string') return;
     broadcast(room, 'rpc_result', result);
   });
 
-  // Nombre nuevo usado por el Agent actual.
   socket.on('event', event => {
     if (role !== 'agent') return;
     forwardAgentEvent(room, event);
   });
 
-  // Alias para clientes/Agents antiguos.
   socket.on('agent_event', event => {
     if (role !== 'agent') return;
     forwardAgentEvent(room, event);
