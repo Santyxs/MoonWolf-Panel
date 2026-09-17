@@ -10,6 +10,36 @@ const outDir = path.join(root, 'dist');
 
 fs.mkdirSync(outDir, { recursive: true });
 
+const legacyBaseDir = String.raw`const BASE_DIR    = 'C:\Users\HP\Desktop\Proyectos\Minecraft Servers\MoonWolf';`;
+const portableBaseDir = `const BASE_DIR = process.env.MOONWOLF_SERVER_DIR || path.join(
+  process.env.USERPROFILE || process.env.HOME || process.cwd(),
+  'MoonWolf',
+);`;
+
+const legacyPort = 'const PORT        = 3000;';
+const portablePort = "const PORT = Number(process.env.MOONWOLF_PORT || 3000);";
+
+const portableServerPlugin = {
+  name: 'moonwolf-portable-server',
+  setup(buildApi) {
+    buildApi.onLoad({ filter: /(?:^|[/\\])server\.js$/ }, async args => {
+      let source = await fs.promises.readFile(args.path, 'utf8');
+
+      if (!source.includes(legacyBaseDir)) {
+        throw new Error('No se encontró la BASE_DIR antigua de server.js para convertirla a portable.');
+      }
+      source = source.replace(legacyBaseDir, portableBaseDir);
+      source = source.replace(legacyPort, portablePort);
+      source = source.replace(
+        'server.listen(PORT, () => console.log(`MoonWolf Panel → http://localhost:${PORT}`));',
+        "server.listen(PORT, '127.0.0.1', () => console.log(`MoonWolf Panel → http://127.0.0.1:${PORT}`));",
+      );
+
+      return { contents: source, loader: 'js' };
+    });
+  },
+};
+
 await build({
   entryPoints: [path.join(agentDir, 'index.js')],
   bundle: true,
@@ -20,6 +50,7 @@ await build({
   sourcemap: false,
   minify: false,
   packages: 'bundle',
+  plugins: [portableServerPlugin],
 });
 
 fs.writeFileSync(
