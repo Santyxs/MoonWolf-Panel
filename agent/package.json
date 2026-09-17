@@ -2,12 +2,17 @@
   "name": "moonwolf-agent",
   "version": "1.0.0",
   "private": true,
-  "description": "MoonWolf Agent para conectar un servidor Minecraft con MoonWolf Cloud",
+  "description": "MoonWolf Agent para Windows",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "build:bundle": "node ../build-agent.mjs",
+    "build:exe": "npm run build:bundle"
   },
   "dependencies": {
     "socket.io-client": "^4.8.3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
   }
 }
