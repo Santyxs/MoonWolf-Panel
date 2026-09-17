@@ -20,10 +20,14 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 26.x
+          cache: npm
+
+      - name: Install root dependencies
+        run: npm ci
 
       - name: Install Agent dependencies
         working-directory: agent
-        run: npm install
+        run: npm install --no-package-lock
 
       - name: Bundle Agent
         run: node build-agent.mjs
@@ -34,10 +38,11 @@ jobs:
       - name: Verify executable
         shell: pwsh
         run: |
-          if (-not (Test-Path 'dist/MoonWolf-Agent.exe')) {
-            throw 'No se generó dist/MoonWolf-Agent.exe'
+          $exe = 'dist/MoonWolf-Agent.exe'
+          if (-not (Test-Path $exe)) {
+            throw "No se generó $exe"
           }
-          $size = (Get-Item 'dist/MoonWolf-Agent.exe').Length
+          $size = (Get-Item $exe).Length
           Write-Host "MoonWolf-Agent.exe: $size bytes"
           if ($size -lt 1MB) {
             throw 'El ejecutable generado es sospechosamente pequeño.'
@@ -48,14 +53,19 @@ jobs:
         with:
           name: MoonWolf-Agent-Windows
           path: dist/MoonWolf-Agent.exe
+          if-no-files-found: error
 
-      - name: Publish GitHub Release
+      - name: Publish or update GitHub Release
         if: startsWith(github.ref, 'refs/tags/agent-v')
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            dist/MoonWolf-Agent.exe \
-            --title "MoonWolf Agent $GITHUB_REF_NAME" \
-            --generate-notes
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/MoonWolf-Agent.exe --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              dist/MoonWolf-Agent.exe \
+              --title "MoonWolf Agent $GITHUB_REF_NAME" \
+              --generate-notes
+          fi
