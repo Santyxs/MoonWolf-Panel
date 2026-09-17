@@ -1,1396 +1,907 @@
 'use strict';
 
-/* ═══════════════════════ BACKEND ═══════════════════════ */
-const API_URL = 'https://moonwolf.serveousercontent.com';
+/* ═══════════════════════ MOONWOLF CLOUD ═══════════════════════
+   El navegador no habla nunca directamente con Serveo ni con el servidor
+   Minecraft. Todo pasa por el Agent local + el relay Socket.IO de Vercel.
+   ═══════════════════════════════════════════════════════════════ */
 
-/* ═══════════════════════ AUTH ═══════════════════════
-   El panel viaja por un túnel público (ver start.vbs), así que toda
-   petición al backend necesita el token de sesión obtenido en /api/auth/login.
-   ═══════════════════════════════════════════════════ */
-let AUTH_TOKEN = sessionStorage.getItem('mw_token') || null;
+const CLOUD_URL = location.origin;
+const CLOUD_PATH = '/api/socket-io/socket.io';
+const CODE_RE = /^MW-[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/;
+const CODE_KEY = 'moonwolf_connection_code';
+const $ = id => document.getElementById(id);
+const escHtml = value => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;');
 
-function setAuthToken(token) {
-  AUTH_TOKEN = token;
-  if (token) sessionStorage.setItem('mw_token', token);
-  else sessionStorage.removeItem('mw_token');
-}
-
-function showApp() {
-  document.getElementById('loginGate').classList.add('hidden');
-  document.querySelector('.app').classList.remove('locked');
-}
-
-function showLoginGate(message = '') {
-  document.getElementById('loginGate').classList.remove('hidden');
-  document.querySelector('.app').classList.add('locked');
-  document.getElementById('loginError').textContent = message;
-  if (socket.connected) socket.disconnect();
-}
-
-async function attemptLogin() {
-  const input = document.getElementById('loginPassword');
-  const btn   = document.getElementById('btnLogin');
-  const pass  = input.value;
-  if (!pass) return;
-  btn.disabled = true;
-  try {
-    const res  = await fetch(`${API_URL}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: pass }),
-    });
-    const data = await res.json();
-    if (!res.ok || !data.ok) {
-      document.getElementById('loginError').textContent = data.error || 'No se pudo iniciar sesión';
-      return;
-    }
-    setAuthToken(data.token);
-    input.value = '';
-    showApp();
-    socket.connect();
-  } catch (e) {
-    document.getElementById('loginError').textContent = 'No se pudo contactar con el panel';
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-/* ═══════════════════════ SOCKET ═══════════════════════ */
-const socket = io(API_URL, { autoConnect: false, auth: cb => cb({ token: AUTH_TOKEN }) });
-
-socket.on('connect_error', err => {
-  if (err && err.message === 'unauthorized') {
-    setAuthToken(null);
-    showLoginGate('Tu sesión caducó, vuelve a iniciar sesión.');
-  }
-});
-
-let currentStatus = 'offline';
-socket.on('status', setStatus);
-socket.on('log', appendLog);
-socket.on('history', logs => {
-  document.getElementById('console').innerHTML = '';
-  logs.forEach(appendLog);
-});
-socket.on('stats', updateStats);
-
-/* ═══════════════════════ CONSTANTS ═══════════════════════ */
 const STATUS_LABELS = {
-  online: 'ONLINE', offline: 'OFFLINE',
-  starting: 'STARTING...', restarting: 'RESTARTING...', stopping: 'STOPPING...'
+  online: 'ONLINE',
+  offline: 'OFFLINE',
+  starting: 'STARTING...',
+  restarting: 'RESTARTING...',
+  stopping: 'STOPPING...',
 };
 
 const STATUS_ICONS = {
-  online: '🟢', offline: '🔴', starting: '🟡', restarting: '🟡', stopping: '🟠'
+  online: '🟢',
+  offline: '🔴',
+  starting: '🟡',
+  restarting: '🟡',
+  stopping: '🟠',
 };
 
 const STATUS_LEVELS = {
-  online: 'ok', offline: 'info', starting: 'info', restarting: 'warn', stopping: 'warn'
+  online: 'ok',
+  offline: 'info',
+  starting: 'info',
+  restarting: 'warn',
+  stopping: 'warn',
 };
 
-const STATUS_MESSAGES = {
-  online: 'Server online', offline: 'Server offline',
-  starting: 'Starting...', restarting: 'Restarting...', stopping: 'Stopping...'
-};
+let cloudSocket = null;
+let connectionCode = sessionStorage.getItem(CODE_KEY) || '';
+let requestSequence = 0;
+let connectTimer = null;
+let reconnectDelay = 1000;
+let currentStatus = 'offline';
+let agentOnline = false;
+let editor = null;
+let currentFile = null;
+let currentDir = '';
+let currentPlugin = null;
+let pluginSource = 'all';
+let versionState = { software: null, version: null, builds: [] };
+const pending = new Map();
+const activities = [];
 
-const FILE_ICONS = { dir: '📁', jar: '☕', cfg: '⚙️', txt: '📄', log: '📋', file: '📄' };
-
-const EXT_MODE = {
-  yml: 'yaml', yaml: 'yaml', json: 'javascript', js: 'javascript',
-  ts: 'javascript', xml: 'xml', html: 'xml', htm: 'xml',
-  sh: 'shell', bat: 'shell', cmd: 'shell',
-  properties: 'properties', cfg: 'properties', conf: 'properties', ini: 'properties',
-};
-
-const EXT_LABEL = {
-  yml: 'YAML', yaml: 'YAML', json: 'JSON', js: 'JS', ts: 'TS',
-  xml: 'XML', html: 'HTML', toml: 'TOML', sh: 'SHELL', bat: 'BAT',
-  properties: 'PROPS', cfg: 'CONFIG', conf: 'CONFIG', ini: 'INI', txt: 'TEXT', log: 'LOG',
-};
-
-const USERS_DATA = {
-  whitelist: [
-    { name: 'MoonWolfHost', role: 'op',     last: '2h ago', av: '🐺' },
-    { name: 'PlayerOne',    role: 'member', last: '1d ago', av: '⚔️' },
-    { name: 'CreatorX',     role: 'member', last: '3d ago', av: '🏗️' },
-    { name: 'NightHunter',  role: 'op',     last: 'Now',    av: '🏹' },
-  ],
-  ops: [
-    { name: 'MoonWolfHost', role: 'op', last: '2h ago', av: '🐺' },
-    { name: 'NightHunter',  role: 'op', last: 'Now',    av: '🏹' },
-  ],
-  bans: [],
-};
-
-const BACKUPS_DATA = [
-  { name: 'backup_2025-07-13_18-00.tar.gz', date: 'Today 18:00',     size: '612 MB', auto: true  },
-  { name: 'backup_2025-07-13_12-00.tar.gz', date: 'Today 12:00',     size: '608 MB', auto: true  },
-  { name: 'backup_2025-07-12_18-00.tar.gz', date: 'Yesterday 18:00', size: '601 MB', auto: true  },
-  { name: 'backup_manual_20250712.tar.gz',   date: 'Yesterday 10:22', size: '598 MB', auto: false },
-];
-
-/* ═══════════════════════ HELPERS ═══════════════════════ */
-const $ = id => document.getElementById(id);
-const escJS = str => String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-const escAttr = str => str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
-const escHtml = str => String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-// Cualquier <a> que sobreviva a la sanitización de un changelog externo (Spigot)
-// se fuerza a abrir en pestaña nueva sin dar acceso a window.opener.
-if (window.DOMPurify) {
-  DOMPurify.addHook('afterSanitizeAttributes', node => {
-    if (node.tagName === 'A') {
-      node.setAttribute('target', '_blank');
-      node.setAttribute('rel', 'noopener noreferrer');
+function ensureSocketIo() {
+  if (typeof window.io === 'function') return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-moonwolf-socketio]');
+    if (existing) {
+      existing.addEventListener('load', () => resolve(), { once: true });
+      existing.addEventListener('error', () => reject(new Error('No se pudo cargar Socket.IO.')), { once: true });
+      return;
     }
+    const script = document.createElement('script');
+    script.src = 'https://cdn.socket.io/4.8.3/socket.io.min.js';
+    script.async = true;
+    script.dataset.moonwolfSocketio = '1';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('No se pudo cargar Socket.IO desde CDN.'));
+    document.head.appendChild(script);
   });
 }
 
-async function api(url, opts = {}) {
-  const target = url.startsWith('http')
-    ? url
-    : `${API_URL}${url}`;
+/* ═══════════════════════ CONNECTION UI ═══════════════════════ */
+function ensureLoginGate() {
+  if ($('loginGate')) return;
 
-  const headers = { ...(opts.headers || {}), Authorization: `Bearer ${AUTH_TOKEN}` };
-  const res = await fetch(target, { ...opts, headers });
+  const style = document.createElement('style');
+  style.id = 'mw-cloud-login-style';
+  style.textContent = `
+    #loginGate{position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:#0d0f14;font-family:inherit}
+    #loginGate.hidden{display:none}
+    .mw-cloud-card{width:360px;max-width:90vw;padding:32px 28px;background:#171a21;border:1px solid #2a2e38;border-radius:14px;box-shadow:0 18px 60px rgba(0,0,0,.45);text-align:center}
+    .mw-cloud-card h1{font-size:18px;color:#eee;margin:0 0 6px;letter-spacing:.05em}
+    .mw-cloud-card p{margin:0 0 18px;color:#888;font-size:12px;line-height:1.5}
+    .mw-cloud-card input{width:100%;box-sizing:border-box;padding:12px;background:#0d0f14;border:1px solid #2a2e38;border-radius:9px;color:#eee;font:600 14px/1.2 ui-monospace,monospace;text-align:center;letter-spacing:.12em}
+    .mw-cloud-card button{width:100%;margin-top:12px;padding:11px;border:0;border-radius:9px;background:#6c5ce7;color:#fff;font-weight:700;cursor:pointer}
+    .mw-cloud-card button:disabled{opacity:.55;cursor:default}
+    #mwCloudError{min-height:18px;margin-top:12px;font-size:12px;color:#ff6b6b}
+    .mw-cloud-help{margin-top:16px;color:#666;font-size:11px}
+    .mw-cloud-help b{color:#aaa}
+  `;
+  document.head.appendChild(style);
 
-  if (res.status === 401) {
-    setAuthToken(null);
-    showLoginGate('Tu sesión caducó, vuelve a iniciar sesión.');
-    return { ok: false, error: 'No autorizado' };
-  }
-  return res.json();
+  const gate = document.createElement('div');
+  gate.id = 'loginGate';
+  gate.innerHTML = `
+    <div class="mw-cloud-card">
+      <h1>🌙 MOONWOLF CLOUD</h1>
+      <p>Introduce el código de conexión que muestra MoonWolf Agent en el servidor Minecraft.</p>
+      <input id="loginPassword" type="text" maxlength="19" spellcheck="false" autocomplete="off" placeholder="MW-XXXX-XXXX-XXXX-XXXX">
+      <button id="btnLogin">CONECTAR SERVIDOR</button>
+      <div id="mwCloudError"></div>
+      <div class="mw-cloud-help">El código se guarda solo en esta sesión del navegador.</div>
+    </div>
+  `;
+  document.body.prepend(gate);
+
+  $('loginPassword').addEventListener('input', event => {
+    let value = event.target.value.toUpperCase().replace(/[^A-Z2-9-]/g, '');
+    if (!value.startsWith('MW-') && value.length) value = 'MW-' + value.replace(/-/g, '');
+    value = value.replace(/-/g, '').replace(/^MW/, 'MW');
+    const raw = value.startsWith('MW') ? value.slice(2) : value;
+    const groups = raw.match(/.{1,4}/g) || [];
+    event.target.value = 'MW-' + groups.slice(0, 4).join('-');
+  });
+
+  $('btnLogin').addEventListener('click', attemptLogin);
+  $('loginPassword').addEventListener('keydown', event => {
+    if (event.key === 'Enter') attemptLogin();
+  });
 }
 
-async function postJSON(url, body) {
-  return api(url, {
+function showApp() {
+  ensureLoginGate();
+  $('loginGate')?.classList.add('hidden');
+  document.querySelector('.app')?.classList.remove('locked');
+}
+
+function showLogin(message = '') {
+  ensureLoginGate();
+  $('loginGate')?.classList.remove('hidden');
+  document.querySelector('.app')?.classList.add('locked');
+  if ($('mwCloudError')) $('mwCloudError').textContent = message;
+  if ($('loginPassword')) $('loginPassword').value = connectionCode;
+}
+
+function setCode(code) {
+  connectionCode = String(code || '').trim().toUpperCase();
+  if (connectionCode) sessionStorage.setItem(CODE_KEY, connectionCode);
+  else sessionStorage.removeItem(CODE_KEY);
+}
+
+async function attemptLogin() {
+  const input = $('loginPassword');
+  const button = $('btnLogin');
+  const code = String(input?.value || '').trim().toUpperCase();
+
+  if (!CODE_RE.test(code)) {
+    if ($('mwCloudError')) $('mwCloudError').textContent = 'Formato inválido. Usa MW-XXXX-XXXX-XXXX-XXXX.';
+    return;
+  }
+
+  button.disabled = true;
+  if ($('mwCloudError')) $('mwCloudError').textContent = 'Conectando...';
+  setCode(code);
+
+  try {
+    await connectCloud(true);
+    if ($('mwCloudError')) $('mwCloudError').textContent = '';
+  } catch (error) {
+    if ($('mwCloudError')) $('mwCloudError').textContent = error.message;
+    button.disabled = false;
+  }
+}
+
+function clearPending(errorMessage) {
+  for (const [, resolve] of pending) {
+    resolve({
+      id: null,
+      ok: false,
+      status: 503,
+      data: { ok: false, error: errorMessage },
+    });
+  }
+  pending.clear();
+}
+
+async function connectCloud(manual = false) {
+  clearTimeout(connectTimer);
+
+  if (!connectionCode || !CODE_RE.test(connectionCode)) {
+    showLogin('Introduce un código de conexión.');
+    return Promise.reject(new Error('Código de conexión inválido.'));
+  }
+
+  if (cloudSocket?.connected) {
+    showApp();
+    return;
+  }
+
+  await ensureSocketIo();
+
+  if (cloudSocket) {
+    try { cloudSocket.disconnect(); } catch {}
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      fn(value);
+    };
+
+    cloudSocket = io(CLOUD_URL, {
+      autoConnect: false,
+      path: CLOUD_PATH,
+      transports: ['websocket'],
+      reconnection: false,
+      auth: cb => cb({ role: 'panel', token: connectionCode }),
+    });
+
+    cloudSocket.once('connect', () => {
+      reconnectDelay = 1000;
+      showApp();
+      addActivity('Conectado a MoonWolf Cloud', 'ok', '☁️');
+      finish(resolve);
+    });
+
+    cloudSocket.once('connect_error', error => {
+      const message = error?.message || 'No se pudo conectar con MoonWolf Cloud.';
+      addActivity(message, 'warn', '⚠️');
+      finish(reject, new Error(message));
+    });
+
+    cloudSocket.on('cloud_ready', data => {
+      setAgentOnline(Boolean(data?.agentOnline));
+    });
+
+    cloudSocket.on('agent_status', data => {
+      setAgentOnline(Boolean(data?.online));
+    });
+
+    cloudSocket.on('status', setStatus);
+    cloudSocket.on('log', appendLog);
+    cloudSocket.on('history', logs => {
+      $('console').innerHTML = '';
+      (Array.isArray(logs) ? logs : []).forEach(appendLog);
+    });
+    cloudSocket.on('stats', updateStats);
+
+    cloudSocket.on('rpc_result', result => {
+      const resolveRequest = pending.get(result?.id);
+      if (!resolveRequest) return;
+      pending.delete(result.id);
+      resolveRequest(result);
+    });
+
+    cloudSocket.on('disconnect', reason => {
+      setAgentOnline(false);
+      currentStatus = 'offline';
+      updateStatusUi('offline');
+      clearPending('Conexión con MoonWolf Cloud perdida.');
+      addActivity(`Cloud desconectado (${reason})`, 'warn', '⚠️');
+
+      if (manual) showLogin('La conexión se cerró. Comprueba que el Agent esté ejecutándose.');
+
+      clearTimeout(connectTimer);
+      connectTimer = setTimeout(() => {
+        connectCloud(false).catch(() => {});
+      }, reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+    });
+
+    cloudSocket.connect();
+  });
+}
+
+function setAgentOnline(online) {
+  agentOnline = online;
+  if (!online) {
+    updateStatusUi('offline');
+    return;
+  }
+
+  addActivity('MoonWolf Agent conectado', 'ok', '🟢');
+}
+
+/* ═══════════════════════ RPC / HTTP ═══════════════════════ */
+function parseBody(init) {
+  if (init?.body === undefined || init?.body === null || init.body === '') return undefined;
+  if (typeof init.body !== 'string') return init.body;
+  try { return JSON.parse(init.body); } catch { return init.body; }
+}
+
+function rpcHttp(pathname, init = {}) {
+  if (!cloudSocket?.connected) {
+    return Promise.reject(new Error('MoonWolf Cloud no está conectado.'));
+  }
+
+  const id = `${Date.now()}-${++requestSequence}`;
+  const method = String(init.method || 'GET').toUpperCase();
+  const request = { id, method, path: pathname, body: parseBody(init) };
+
+  return new Promise(resolve => {
+    pending.set(id, resolve);
+    cloudSocket.emit('rpc', request);
+  });
+}
+
+function decodeResultBody(result) {
+  if (result?.bodyBase64 === undefined) return null;
+  const binary = atob(result.bodyBase64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function api(pathname, init = {}) {
+  const result = await rpcHttp(pathname, init);
+  const status = result?.status || 500;
+  const contentType = result?.contentType || 'application/json';
+
+  if (result?.bodyBase64 !== undefined) {
+    const bytes = decodeResultBody(result);
+    const text = new TextDecoder().decode(bytes);
+    if (contentType.includes('application/json') || contentType.includes('text/')) {
+      try { return JSON.parse(text); } catch { return { ok: status >= 200 && status < 300, status, content: text }; }
+    }
+  }
+
+  return result?.data || { ok: Boolean(result?.ok), status, error: 'Respuesta vacía.' };
+}
+
+async function postJSON(pathname, body) {
+  return api(pathname, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
 }
 
-/* ═══════════════════════ STATUS ═══════════════════════ */
-function setStatus(s) {
-  currentStatus = s;
-  $('sbStatus').className = 'sb-status ' + s;
-  $('sbStatusText').textContent = STATUS_LABELS[s] ?? s.toUpperCase();
-  $('btnStart').disabled   = s !== 'offline';
-  $('btnStop').disabled    = s !== 'online';
-  $('btnRestart').disabled = s !== 'online';
+/* ═══════════════════════ TERMINAL ═══════════════════════ */
+function updateStatusUi(status) {
+  currentStatus = status;
+  if ($('sbStatus')) $('sbStatus').className = 'sb-status ' + status;
+  if ($('sbStatusText')) $('sbStatusText').textContent = STATUS_LABELS[status] || String(status).toUpperCase();
+  if ($('btnStart')) $('btnStart').disabled = status !== 'offline';
+  if ($('btnStop')) $('btnStop').disabled = status !== 'online';
+  if ($('btnRestart')) $('btnRestart').disabled = status !== 'online';
 
-  const sg = $('statsGrid');
-  sg.classList.toggle('hidden', s === 'offline');
-  sg.classList.toggle('visible', s !== 'offline');
-
-  addActivity(STATUS_MESSAGES[s] ?? s, STATUS_LEVELS[s] ?? 'info', STATUS_ICONS[s] ?? '📌');
+  const stats = $('statsGrid');
+  if (stats) {
+    stats.classList.toggle('hidden', status === 'offline');
+    stats.classList.toggle('visible', status !== 'offline');
+  }
 }
 
-/* ═══════════════════════ STATS ═══════════════════════ */
-function updateStats(stats) {
-  $('statPlayers').innerHTML = `${stats.players ?? 0}<span class="stat-unit">/${stats.maxPlayers ?? 0}</span>`;
+function setStatus(status) {
+  updateStatusUi(status);
+  addActivity(STATUS_LABELS[status] || status, STATUS_LEVELS[status] || 'info', STATUS_ICONS[status] || '📌');
+}
 
-  const tps = stats.tps ?? 20;
+function updateStats(stats) {
+  if (!$('statPlayers')) return;
+  $('statPlayers').innerHTML = `${stats?.players ?? 0}<span class="stat-unit">/${stats?.maxPlayers ?? 0}</span>`;
+
+  const tps = Number(stats?.tps ?? 20);
   const tpsEl = $('statTps');
   tpsEl.className = `stat-value ${tps < 15 ? 'tps-bad' : tps < 18 ? 'tps-warn' : 'tps-good'}`;
   tpsEl.innerHTML = `${tps}<span class="stat-unit"> tps</span>`;
 
-  $('statUptime').textContent = stats.uptime ?? '0h 0m';
-  $('statMemProc').innerHTML  = `${Number(stats.processMemory) || 0}<span class="stat-unit"> MB</span>`;
+  $('statUptime').textContent = stats?.uptime ?? '0h 0m';
+  $('statMemProc').innerHTML = `${Number(stats?.processMemory) || 0}<span class="stat-unit"> MB</span>`;
 
-  const sys = stats.sysMemory || { used: 0, total: 0 };
-  $('statMemSys').innerHTML = `${(Number(sys.used) || 0).toFixed(2)}/${(Number(sys.total) || 0).toFixed(2)}<span class="stat-unit"> GB</span>`;
-  $('statCpu').innerHTML    = `${Number(stats.cpuUsage) || 0}<span class="stat-unit"> %</span>`;
+  const sys = stats?.sysMemory || { used: 0, total: 0 };
+  $('statMemSys').innerHTML = `${Number(sys.used) || 0}/${Number(sys.total) || 0}<span class="stat-unit"> GB</span>`;
+  $('statCpu').innerHTML = `${Number(stats?.cpuUsage) || 0}<span class="stat-unit"> %</span>`;
 }
 
-/* ═══════════════════════ CONSOLE ═══════════════════════ */
 function appendLog(entry) {
-  const con = $('console');
+  const consoleEl = $('console');
+  if (!consoleEl) return;
   const div = document.createElement('div');
-  div.className = 'log-line ' + (entry.type || 'info');
-  div.innerHTML = `<span class="log-time">${escHtml(entry.time)}</span><span class="log-text">${escHtml(entry.line)}</span>`;
-  con.appendChild(div);
-  if ($('setAutoScroll')?.checked !== false) con.scrollTop = con.scrollHeight;
+  div.className = `log-line ${entry?.type || 'info'}`;
+  div.innerHTML = `<span class="log-time">${escHtml(entry?.time || '--:--:--')}</span><span class="log-text">${escHtml(entry?.line || '')}</span>`;
+  consoleEl.appendChild(div);
+  if ($('setAutoScroll')?.checked !== false) consoleEl.scrollTop = consoleEl.scrollHeight;
 }
 
-async function startServer()   { const d = await api('/api/start',   { method: 'POST' }); if (!d.ok) toast(d.error || 'Error', 'err'); }
-async function stopServer()    { const d = await api('/api/stop',    { method: 'POST' }); if (!d.ok) toast(d.error || 'Error', 'err'); }
+async function startServer() {
+  const data = await api('/api/start', { method: 'POST' });
+  if (!data.ok) toast(data.error || 'Error al arrancar', 'err');
+}
+
+async function stopServer() {
+  const data = await api('/api/stop', { method: 'POST' });
+  if (!data.ok) toast(data.error || 'Error al detener', 'err');
+}
+
 async function restartServer() {
   if (currentStatus === 'restarting' || currentStatus === 'stopping') return;
-  const d = await api('/api/restart', { method: 'POST' });
-  if (!d.ok) toast(d.error || 'Error', 'err');
+  const data = await api('/api/restart', { method: 'POST' });
+  if (!data.ok) toast(data.error || 'Error al reiniciar', 'err');
 }
 
 async function sendCmd() {
   const input = $('cmdInput');
-  const cmd   = input.value.trim();
+  const cmd = input?.value.trim();
   if (!cmd) return;
   input.value = '';
-  if (currentStatus !== 'online') { toast('Server is not online', 'err'); return; }
-  const d = await postJSON('/api/command', { cmd });
-  if (!d.ok) toast(d.error || 'Error', 'err');
-}
-
-/* ═══════════════════════ NAVIGATION ═══════════════════════ */
-const viewInitialized = new Set();
-
-function switchView(id) {
-  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-  document.querySelectorAll('.sb-item').forEach(i => i.classList.remove('active'));
-  $('view-' + id)?.classList.add('active');
-  document.querySelector(`.sb-item[data-view="${id}"]`)?.classList.add('active');
-
-  if (id === 'files') { populateFiles(''); return; }
-
-  if (!viewInitialized.has(id)) {
-    viewInitialized.add(id);
-    const init = {
-      plugins:     () => { /* búsqueda bajo demanda */ },
-      versions:    () => initVersions(),
-      users:       () => populateUsers('whitelist'),
-      backups:     () => populateBackups(),
-      startup:     () => updateStartupPreview(),
-      activitylog: () => renderActivity(),
-    };
-    init[id]?.();
-  }
+  const data = await postJSON('/api/command', { cmd });
+  if (!data.ok) toast(data.error || 'Error al enviar comando', 'err');
 }
 
 /* ═══════════════════════ FILE MANAGER ═══════════════════════ */
-let currentDir = '';
+function fileIcon(type) {
+  return ({ dir: '📁', jar: '☕', log: '📋', file: '📄' })[type] || '📄';
+}
 
-function populateFiles(dir) {
+function populateFiles(dir = '') {
   currentDir = dir;
-  const el = $('fileList');
-  el.innerHTML = '<div class="empty-state"><div class="empty-icon" style="display:inline-block;animation:spin 1s linear infinite">⟳</div><div class="empty-msg">Cargando...</div></div>';
+  const list = $('fileList');
+  if (!list) return;
+  list.innerHTML = '<div class="empty-state"><div class="empty-icon" style="display:inline-block;animation:spin 1s linear infinite">⟳</div><div class="empty-msg">Cargando...</div></div>';
 
-  const parts = dir ? dir.replace(/\\/g, '/').split('/').filter(Boolean) : [];
-  const trail = $('crumbTrail');
-  if (trail) {
-    let pathAcc = '';
-    trail.innerHTML = parts.map((part, i) => {
-      pathAcc += (i === 0 ? '' : '/') + part;
-      return ` / <span class="crumb" data-path="${escAttr(pathAcc)}">${escHtml(part)}</span>`;
-    }).join('');
-  }
+  renderBreadcrumb(dir);
 
   api(`/api/files?dir=${encodeURIComponent(dir)}`)
     .then(data => {
-      if (!data.ok) { 
-        toast(data.error || 'Error al leer la carpeta', 'err'); 
-        el.innerHTML = ''; 
-        return; 
-      }
-      if (!data.items.length) {
-        el.innerHTML = '<div class="empty-state"><div class="empty-icon">📂</div><div class="empty-msg">Carpeta vacía</div></div>';
+      if (!data.ok) throw new Error(data.error || 'No se pudo leer la carpeta.');
+      const items = Array.isArray(data.items) ? data.items.slice() : [];
+      items.sort((a, b) => (a.type === 'dir' ? -1 : 1) - (b.type === 'dir' ? -1 : 1) || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
+      if (!items.length) {
+        list.innerHTML = '<div class="empty-state"><div class="empty-icon">📂</div><div class="empty-msg">Carpeta vacía</div></div>';
         return;
       }
 
-      data.items.sort((a, b) => {
-        const aIsDir = a.type === 'dir';
-        const bIsDir = b.type === 'dir';
+      list.innerHTML = items.map(item => `
+        <div class="file-row" data-name="${escHtml(item.name)}" data-type="${escHtml(item.type)}">
+          <span class="file-name" style="flex:1">${fileIcon(item.type)} <span>${escHtml(item.name)}</span></span>
+          <span style="width:90px;text-align:right;color:var(--muted2)">${escHtml(item.size)}</span>
+          <span style="width:140px;text-align:right;color:var(--muted2)">${escHtml(item.date)}</span>
+        </div>
+      `).join('');
 
-        if (aIsDir && !bIsDir) return -1;
-        if (!aIsDir && bIsDir) return 1;
-
-        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+      list.querySelectorAll('.file-row').forEach(row => {
+        row.addEventListener('dblclick', () => {
+          const name = row.dataset.name;
+          const type = row.dataset.type;
+          const rel = currentDir ? `${currentDir}/${name}` : name;
+          if (type === 'dir') populateFiles(rel);
+          else if (type !== 'jar') openFile(rel);
+        });
+        row.addEventListener('contextmenu', event => openFileContext(event, row.dataset.name, row.dataset.type));
       });
-
-      el.innerHTML = data.items.map(f =>
-        `<div class="file-row" data-name="${escAttr(f.name)}" data-type="${f.type}">
-        <span class="file-icon">${FILE_ICONS[f.type] || '📄'}</span>
-        <span class="file-name">${escHtml(f.name)}</span>
-        <span class="file-size">${escHtml(f.size)}</span>
-        <span class="file-date">${escHtml(f.date)}</span>
-        <button class="file-menu-btn" data-name="${escAttr(f.name)}" data-type="${f.type}" title="Opciones">⋮</button>
-        </div>`
-      ).join('');
     })
-    .catch(() => toast('Sin conexión al backend', 'err'));
+    .catch(error => {
+      list.innerHTML = `<div class="empty-state"><div class="empty-icon" style="color:var(--red)">⚠</div><div class="empty-msg">${escHtml(error.message)}</div></div>`;
+    });
 }
 
-/* ═══════════════════════ CODEMIRROR EDITOR ═══════════════════════ */
-let cmEditor = null;
-let currentEditPath = '';
-
-function closeEditor() {
-  if (cmEditor) {
-    cmEditor.toTextArea();
-    cmEditor = null;
-  }
-  currentEditPath = '';
-  $('filesEditorPanel').style.display = 'none';
-  $('filesTablePanel').style.display  = 'flex';
+function renderBreadcrumb(dir) {
+  const trail = $('crumbTrail');
+  if (!trail) return;
+  const parts = dir ? dir.split('/').filter(Boolean) : [];
+  let acc = '';
+  trail.innerHTML = parts.map((part, index) => {
+    acc += (index ? '/' : '') + part;
+    return ` / <span class="crumb" data-path="${escHtml(acc)}">${escHtml(part)}</span>`;
+  }).join('');
+  trail.querySelectorAll('.crumb').forEach(c => c.addEventListener('click', () => populateFiles(c.dataset.path)));
 }
 
-function openFsItem(name, type) {
-  if (type === 'dir') { populateFiles(currentDir ? `${currentDir}/${name}` : name); return; }
-
+function openFileContext(event, name, type) {
+  event.preventDefault();
+  document.querySelector('.ctx-menu')?.remove();
   const rel = currentDir ? `${currentDir}/${name}` : name;
-  currentEditPath = rel;
-
-  api(`/api/files/content?path=${encodeURIComponent(rel)}`)
-    .then(data => {
-      if (!data.ok) { toast(data.error || 'Error al leer el archivo', 'err'); return; }
-
-      const ext   = data.filename.split('.').pop().toLowerCase();
-      const mode  = EXT_MODE[ext] || null;
-      const label = EXT_LABEL[ext] || ext.toUpperCase() || 'TEXT';
-
-      $('editorFileName').innerHTML =
-        `<span style="color:var(--text)">📄 ${escHtml(data.filename)}</span>
-         <span style="font-size:9px;padding:2px 8px;border-radius:999px;
-           background:var(--accentDim);border:1px solid rgba(0,200,255,0.3);
-           color:var(--accent);letter-spacing:1px">${label}</span>`;
-      $('edSaveMsg').textContent = '';
-
-      const container = $('editorContainer');
-      if (cmEditor) { cmEditor.toTextArea(); cmEditor = null; }
-      container.innerHTML = '<textarea id="cmTA"></textarea>';
-
-      cmEditor = CodeMirror.fromTextArea($('cmTA'), {
-        mode:             mode || 'text/plain',
-        theme:            'dracula',
-        lineNumbers:      true,
-        matchBrackets:    true,
-        autoCloseBrackets: true,
-        styleActiveLine:  true,
-        indentUnit:       2,
-        tabSize:          2,
-        indentWithTabs:   false,
-        lineWrapping:     false,
-        extraKeys:        { 'Ctrl-S': saveFile, 'Cmd-S': saveFile },
-      });
-      cmEditor.setValue(data.content);
-
-      cmEditor.on('cursorActivity', () => {
-        const cur = cmEditor.getCursor();
-        $('edLine').textContent  = cur.line + 1;
-        $('edCol').textContent   = cur.ch + 1;
-        $('edLines').textContent = cmEditor.lineCount();
-      });
-      $('edLine').textContent  = 1;
-      $('edCol').textContent   = 1;
-      $('edLines').textContent = cmEditor.lineCount();
-
-      $('filesTablePanel').style.display  = 'none';
-      $('filesEditorPanel').style.display = 'flex';
-      setTimeout(() => { cmEditor.refresh(); cmEditor.focus(); }, 80);
-    })
-    .catch(() => toast('Error de conexión', 'err'));
-}
-
-async function saveFile() {
-  if (!currentEditPath || !cmEditor) return;
-  const msgEl = $('edSaveMsg');
-  try {
-    const data = await postJSON('/api/files/content', { path: currentEditPath, content: cmEditor.getValue() });
-    if (data.ok) {
-      msgEl.textContent = '✅ Saved';
-      msgEl.style.color = 'var(--green)';
-      populateFiles(currentDir);
-    } else {
-      msgEl.textContent = '❌ ' + (data.error || 'Error');
-      msgEl.style.color = 'var(--red)';
-    }
-  } catch {
-    msgEl.textContent = '❌ No connection';
-    msgEl.style.color = 'var(--red)';
-  }
-  msgEl.classList.add('show');
-  setTimeout(() => msgEl.classList.remove('show'), 2500);
-}
-/* ═══════════════════════ FILE CONTEXT MENU ═══════════════════════ */
-let ctxMenu = null;
-
-function closeCtxMenu() {
-  if (ctxMenu) { ctxMenu.remove(); ctxMenu = null; }
-}
-
-function openCtxMenu(e, name, type) {
-  e.stopPropagation();
-  closeCtxMenu();
-
-  const isDir = type === 'dir';
-  const rel   = currentDir ? `${currentDir}/${name}` : name;
-
   const menu = document.createElement('div');
-  menu.className = 'file-ctx-menu';
+  menu.className = 'ctx-menu';
+  menu.style.left = `${event.clientX}px`;
+  menu.style.top = `${event.clientY}px`;
   menu.innerHTML = `
+    ${type !== 'dir' ? '<div class="ctx-item" data-action="open">✏️ Abrir</div>' : ''}
     <div class="ctx-item" data-action="rename">✏️ Renombrar</div>
     <div class="ctx-item" data-action="copy">📋 Copiar</div>
-    <div class="ctx-item" data-action="move">📂 Mover</div>
-    ${!isDir ? `<div class="ctx-item" data-action="download">⬇️ Descargar</div>` : ''}
+    <div class="ctx-item" data-action="move">📦 Mover</div>
+    ${type !== 'dir' ? '<div class="ctx-item" data-action="download">⬇️ Descargar</div>' : ''}
     <div class="ctx-item" data-action="compress">🗜️ Comprimir (.zip)</div>
     <div class="ctx-sep"></div>
     <div class="ctx-item danger" data-action="delete">🗑️ Eliminar</div>
   `;
-
-  const rect = e.target.getBoundingClientRect();
-  menu.style.top  = rect.bottom + window.scrollY + 4 + 'px';
-  menu.style.left = rect.left   + window.scrollX - 160 + 'px';
   document.body.appendChild(menu);
-  ctxMenu = menu;
 
-  menu.addEventListener('click', async ev => {
-    const action = ev.target.closest('.ctx-item')?.dataset.action;
+  menu.addEventListener('click', async click => {
+    const action = click.target.closest('.ctx-item')?.dataset.action;
     if (!action) return;
-    closeCtxMenu();
+    menu.remove();
 
-    if (action === 'rename') {
-      const newName = prompt(`Nuevo nombre para "${name}":`, name);
-      if (!newName || newName === name) return;
-      const d = await postJSON('/api/files/rename', { path: rel, newName });
-      d.ok ? (toast(`✅ Renombrado a ${newName}`, 'ok'), populateFiles(currentDir))
-           : toast('❌ ' + d.error, 'err');
-    }
-
-    if (action === 'copy') {
-      const dest = prompt(`Copiar "${name}" a (ruta relativa destino):`, currentDir || '');
-      if (dest === null) return;
-      const d = await postJSON('/api/files/copy', { path: rel, dest: dest ? `${dest}/${name}` : name });
-      d.ok ? (toast(`✅ Copiado`, 'ok'), populateFiles(currentDir))
-           : toast('❌ ' + d.error, 'err');
-    }
-
-    if (action === 'move') {
-      const dest = prompt(`Mover "${name}" a carpeta (ruta relativa):`, currentDir || '');
-      if (dest === null) return;
-      const d = await postJSON('/api/files/move', { path: rel, dest: dest ? `${dest}/${name}` : name });
-      d.ok ? (toast(`✅ Movido`, 'ok'), populateFiles(currentDir))
-           : toast('❌ ' + d.error, 'err');
-    }
-
-    if (action === 'download') {
-      window.location.href = `${API_URL}/api/files/download?path=${encodeURIComponent(rel)}`;
-    }
-
-    if (action === 'compress') {
-      toast(`🗜️ Comprimiendo ${name}...`, 'ok');
-      const d = await postJSON('/api/files/compress', { path: rel, name });
-      d.ok ? (toast(`✅ Creado ${d.zipName}`, 'ok'), populateFiles(currentDir))
-           : toast('❌ ' + d.error, 'err');
-    }
-
-    if (action === 'delete') {
-      if (!confirm(`¿Eliminar "${name}"?${isDir ? '\n⚠ Se eliminará la carpeta y todo su contenido.' : ''}`)) return;
-      const d = await postJSON('/api/files/delete', { path: rel, isDir });
-      d.ok ? (toast(`🗑️ Eliminado`, 'ok'), populateFiles(currentDir))
-           : toast('❌ ' + d.error, 'err');
+    try {
+      if (action === 'open') return openFile(rel);
+      if (action === 'rename') {
+        const newName = prompt(`Nuevo nombre para "${name}":`, name);
+        if (!newName || newName === name) return;
+        const d = await postJSON('/api/files/rename', { path: rel, newName });
+        if (!d.ok) throw new Error(d.error);
+      }
+      if (action === 'copy') {
+        const dest = prompt(`Ruta relativa de destino para "${name}":`, currentDir || '');
+        if (dest === null) return;
+        const target = dest ? `${dest.replace(/\\/g, '/').replace(/\/$/, '')}/${name}` : name;
+        const d = await postJSON('/api/files/copy', { path: rel, dest: target });
+        if (!d.ok) throw new Error(d.error);
+      }
+      if (action === 'move') {
+        const dest = prompt(`Carpeta relativa de destino para "${name}":`, currentDir || '');
+        if (dest === null) return;
+        const target = dest ? `${dest.replace(/\\/g, '/').replace(/\/$/, '')}/${name}` : name;
+        const d = await postJSON('/api/files/move', { path: rel, dest: target });
+        if (!d.ok) throw new Error(d.error);
+      }
+      if (action === 'download') return downloadFile(rel, name);
+      if (action === 'compress') {
+        const d = await postJSON('/api/files/compress', { path: rel, name });
+        if (!d.ok) throw new Error(d.error);
+      }
+      if (action === 'delete') {
+        if (!confirm(`¿Eliminar "${name}"?`)) return;
+        const d = await postJSON('/api/files/delete', { path: rel, isDir: type === 'dir' });
+        if (!d.ok) throw new Error(d.error);
+      }
+      toast('✅ Operación completada', 'ok');
+      populateFiles(currentDir);
+    } catch (error) {
+      toast(`❌ ${error.message}`, 'err');
     }
   });
 
-  setTimeout(() => document.addEventListener('click', closeCtxMenu, { once: true }), 0);
+  setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   PLUGINS — Sistema completo (Modrinth + Spigot)
-   ═══════════════════════════════════════════════════════════════ */
-const PLG = { source: 'all', price: 'all', currentPlugin: null, installing: new Set(), lastResults: [], lastErrors: [] };
-
-// Convierte un nombre de plugin o de archivo en una clave comparable:
-// minúsculas, sin ".jar", sin espacios ni símbolos. Así "EssentialsX-2.20.1.jar"
-// y "EssentialsX" coinciden aunque el nombre de archivo real traiga la versión.
-function normalizePluginKey(s) {
-  return String(s || '').toLowerCase().replace(/\.jar$/, '').replace(/[^a-z0-9]/g, '');
-}
-
-async function getInstalledKeys() {
-  try {
-    const data = await api('/api/plugins/installed');
-    if (!data.ok) return [];
-    return data.plugins.map(p => normalizePluginKey(p.filename));
-  } catch { return []; }
-}
-
-function isPluginInstalled(name, installedKeys) {
-  const key = normalizePluginKey(name);
-  if (!key) return false;
-  // La coincidencia por "includes" en ambos sentidos existe para tolerar que
-  // el .jar instalado traiga la versión en el nombre (p.ej. "EssentialsX-2.20.1.jar"
-  // vs "EssentialsX"). Pero con textos cortos (3-4 caracteres) esa misma
-  // permisividad daba falsos positivos: cualquier .jar instalado cuyo nombre
-  // contuviera esas pocas letras marcaba como "instalado" un plugin que no lo
-  // estaba. Por debajo de 5 caracteres solo aceptamos coincidencia exacta.
-  const MIN_FUZZY_LEN = 5;
-  return installedKeys.some(k => {
-    if (k === key) return true;
-    if (key.length < MIN_FUZZY_LEN || k.length < MIN_FUZZY_LEN) return false;
-    return k.includes(key) || key.includes(k);
-  });
-}
-
-function pluginSwitchTab(tab) {
-  document.querySelectorAll('.plg-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-  $('plgTabSearch').style.display    = tab === 'search'    ? '' : 'none';
-  $('plgTabInstalled').style.display = tab === 'installed' ? '' : 'none';
-  if (tab === 'installed') loadInstalledPlugins();
-}
-
-function pluginSetSource(src) {
-  PLG.source = src;
-  document.querySelectorAll('.plg-source').forEach(b => b.classList.toggle('active', b.dataset.source === src));
-}
-
-// Solo Spigot puede traer plugins de pago (campo p.premium desde Spiget);
-// Modrinth y Hangar son siempre gratis, así que "premium" filtra únicamente
-// dentro de los resultados de Spigot y "free" deja pasar todo lo demás.
-function pluginSetPrice(price) {
-  PLG.price = price;
-  document.querySelectorAll('.plg-price').forEach(b => b.classList.toggle('active', b.dataset.price === price));
-  $('plgTabSearchNote').style.display = price === 'all' ? 'none' : '';
-  if (PLG.lastResults.length) renderPluginResults(applyPriceFilter(PLG.lastResults), PLG.lastErrors);
-}
-
-function applyPriceFilter(list) {
-  if (PLG.price === 'premium') return list.filter(p => p.premium);
-  if (PLG.price === 'free')    return list.filter(p => !p.premium);
-  return list;
-}
-
-async function pluginSearch() {
-  const q       = $('plgSearchInput').value.trim();
-  const results = $('plgResults');
-  if (!q) return;
-
-  results.innerHTML = '<div class="empty-state"><div style="font-size:32px;opacity:.35;animation:spin 1s linear infinite">⟳</div><div class="empty-msg">Buscando...</div></div>';
-
-  try {
-    const [data, installedKeys] = await Promise.all([
-      api(`/api/plugins/search?q=${encodeURIComponent(q)}&source=${PLG.source}`),
-      getInstalledKeys(),
-    ]);
-    if (!data.ok) { results.innerHTML = plgError(data.error); return; }
-    if (!data.results.length) { results.innerHTML = '<div class="empty-state">Sin resultados</div>'; return; }
-    data.results.forEach(p => { p.installed = isPluginInstalled(p.name, installedKeys); });
-    PLG.lastResults = data.results;
-    PLG.lastErrors  = data.errors || [];
-    const filtered = applyPriceFilter(PLG.lastResults);
-    if (!filtered.length) { results.innerHTML = '<div class="empty-state">Sin resultados con ese filtro de precio</div>'; return; }
-    renderPluginResults(filtered, PLG.lastErrors);
-  } catch (e) {
-    results.innerHTML = plgError('Sin conexión con el backend: ' + e.message);
-  }
-}
-
-function renderPluginResults(plugins, errors) {
-  const results = $('plgResults');
-  const errHtml = errors.length ? `<div class="plg-warn-bar">⚠ ${errors.join(' · ')}</div>` : '';
-  const fmt = n => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1000 ? Math.round(n / 1000) + 'k' : String(n || 0);
-
-  const cards = plugins.map(p => {
-    const srcBadge = p.source === 'modrinth'
-      ? `<span class="plg-src-badge modrinth">MODRINTH</span>`
-      : p.source === 'hangar'
-      ? `<span class="plg-src-badge hangar">HANGAR</span>`
-      : `<span class="plg-src-badge spigot">SPIGOT</span>`;
-    const lockBadge = p.premium
-      ? `<span class="plg-src-badge" style="background:rgba(255,180,0,.18);color:#ffb400">💰 PREMIUM</span>`
-      : p.external
-      ? `<span class="plg-src-badge" style="background:rgba(255,255,255,.1);color:var(--muted2)">🔗 EXTERNO</span>`
-      : '';
-    const installedBadge = p.installed
-      ? `<span class="plg-src-badge" style="background:rgba(60,220,130,.18);color:#3cdc82">✅ INSTALADO</span>`
-      : '';
-    const gvShort   = (p.gameVersions || []).slice(-3).reverse().join(', ');
-    const pluginAttr = encodeURIComponent(JSON.stringify(p));
-
-    return `<div class="plg-card${p.installed ? ' plg-card-installed' : ''}" data-plugin="${pluginAttr}">
-      <div class="plg-card-top">
-        ${p.icon
-          ? `<img class="plg-card-icon" src="${escAttr(p.icon)}" width="42" height="42" loading="lazy" onerror="this.style.display='none'">`
-          : `<div class="plg-card-icon-placeholder">🧩</div>`}
-        <div class="plg-card-info">
-          <div class="plg-card-name">${escHtml(p.name)}</div>
-          <div class="plg-card-tags">
-            ${srcBadge}
-            ${lockBadge}
-            ${installedBadge}
-            <span class="plg-src-badge dl">⬇ ${fmt(p.downloads)}</span>
-            ${gvShort ? `<span class="plg-src-badge mc">MC ${escHtml(gvShort)}</span>` : ''}
-          </div>
-        </div>
-      </div>
-      <div class="plg-card-desc">${escHtml((p.description || '').slice(0, 120))}${(p.description || '').length > 120 ? '…' : ''}</div>
-      <div class="plg-card-footer">
-        <span style="font-size:10px;color:var(--muted2)">${escHtml((p.categories || []).slice(0, 3).join(' · '))}</span>
-        <button class="plg-versions-btn">Ver versiones →</button>
-      </div>
-    </div>`;
-  }).join('');
-
-  results.innerHTML = errHtml + '<div class="plg-grid">' + cards + '</div>';
-}
-
-function plgError(msg) {
-  return `<div class="empty-state"><div class="empty-icon" style="color:var(--red)">⚠</div><div class="empty-msg">${msg}</div></div>`;
-}
-
-/* ── MODAL VERSIONES ── */
-async function openVersionModal(plugin) {
-  PLG.currentPlugin = plugin;
-  const modal = $('plgVersionModal');
-  modal.style.display = 'flex';
-
-  $('plgModalName').textContent = plugin.name;
-  $('plgModalMeta').innerHTML = `${escHtml(plugin.source === 'modrinth' ? 'Modrinth' : plugin.source === 'hangar' ? 'Hangar' : 'Spigot')} · ${Number(plugin.downloads || 0).toLocaleString()} descargas${
-    plugin.premium ? ` · <span style="color:#ffb400">💰 Premium</span>` : ''
-  }`;
-
-  const iconEl = $('plgModalIcon');
-  if (plugin.icon) { iconEl.src = plugin.icon; iconEl.style.display = ''; }
-  else iconEl.style.display = 'none';
-
-  $('plgModalBody').innerHTML = '<div class="empty-state"><div style="font-size:32px;opacity:.35;animation:spin 1s linear infinite">⟳</div><div class="empty-msg" style="margin-top:8px">Cargando versiones...</div></div>';
-
-  try {
-    const data = await api(`/api/plugins/versions?id=${encodeURIComponent(plugin.id)}&source=${plugin.source}`);
-    if (!data.ok) { $('plgModalBody').innerHTML = plgError(data.error); return; }
-    renderVersionList(data.versions, plugin, data.isExternal);
-  } catch (e) {
-    $('plgModalBody').innerHTML = plgError('Error: ' + e.message);
-  }
-}
-
-function closePlgModal() {
-  $('plgVersionModal').style.display = 'none';
-  PLG.currentPlugin = null;
-}
-
-function renderVersionList(versions, plugin, isExternal) {
-  if (!versions?.length) {
-    $('plgModalBody').innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-msg">Sin versiones disponibles</div></div>';
+async function downloadFile(rel, filename) {
+  const result = await rpcHttp(`/api/files/download?path=${encodeURIComponent(rel)}`);
+  if (!result?.bodyBase64) {
+    toast(result?.data?.error || 'No se pudo descargar el archivo.', 'err');
     return;
   }
-  const srcLabel = plugin.source === 'modrinth' ? 'Modrinth' : plugin.source === 'hangar' ? 'Hangar' : 'SpigotMC';
-  const headerLeft = isExternal
-    ? `<span style="color:var(--muted2);font-size:11px">${srcLabel} no ofrece descarga directa</span>`
-    : `<span style="color:var(--muted2);font-size:11px">${versions.length} versión${versions.length !== 1 ? 'es' : ''}</span>`;
-  $('plgModalBody').innerHTML = `
-    <div class="plg-ver-header">
-      ${headerLeft}
-      <span style="color:var(--muted2);font-size:11px">Se guarda en <code style="color:var(--accent);background:var(--accentDim);padding:1px 6px;border-radius:4px">plugins/</code></span>
-    </div>
-    <div class="plg-ver-list">${versions.map(v => renderVersionRow(v, plugin, isExternal)).join('')}</div>`;
+  const bytes = decodeResultBody(result);
+  const blob = new Blob([bytes], { type: result.contentType || 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function renderVersionRow(v, plugin, isExternal) {
-  const btnId     = `ver_${v.versionId}`.replace(/[^a-zA-Z0-9_]/g, '_');
-  const gvShort   = (v.gameVersions || []).slice(-4).reverse().join(', ') || '—';
-  const loaders   = (v.loaders || []).map(l => l.toUpperCase()).join(' · ') || '—';
-  const published = v.published ? new Date(v.published).toLocaleDateString('es-ES') : '—';
-  const primary   = v.files?.find(f => f.primary) || v.files?.[0];
-  const sizeKb    = primary?.size ? Math.round(primary.size / 1024) + ' KB' : '';
+async function openFile(rel) {
+  try {
+    const d = await api(`/api/files/content?path=${encodeURIComponent(rel)}`);
+    if (!d.ok) throw new Error(d.error);
+    currentFile = rel;
+    $('filesTablePanel').style.display = 'none';
+    $('filesEditorPanel').style.display = '';
+    $('editorFileName').innerHTML = `📄 ${escHtml(d.filename || rel.split('/').pop())}`;
+    $('edSaveMsg').textContent = '';
 
-  // El texto y el link de fallback estaban hardcodeados a SpigotMC sin
-  // importar la fuente real del plugin (bug visible ahora que existe Hangar,
-  // que también puede traer versiones sin .jar directo).
-  let dlButton;
-  if (isExternal || v.isExternal) {
-    const srcLabel  = plugin.source === 'modrinth' ? 'Modrinth' : plugin.source === 'hangar' ? 'Hangar' : 'SpigotMC';
-    const fallbacks = { spigot: `https://www.spigotmc.org/resources/${plugin.id}/`, hangar: `https://hangar.papermc.io/${plugin.id}`, modrinth: `https://modrinth.com/plugin/${plugin.id}` };
-    const url = v.externalUrl || fallbacks[plugin.source] || '#';
-    dlButton = `<a href="${url}" target="_blank" rel="noopener" class="plg-dl-btn external">🔗 Ver en ${srcLabel}</a>`;
-  } else if (!primary) {
-    dlButton = `<span class="plg-dl-btn disabled">Sin archivo</span>`;
-  } else {
-    dlButton = `<button id="${btnId}" class="plg-dl-btn"
-      data-url="${escAttr(primary.url)}"
-      data-filename="${escAttr(primary.filename)}"
-      data-source="${escAttr(plugin.source)}"
-      data-rid="${escAttr(String(plugin.id))}"
-      data-vid="${escAttr(String(v.versionId))}">⬇ INSTALAR</button>`;
+    if (editor) editor.toTextArea?.();
+    $('editorContainer').innerHTML = '<textarea id="mwEditorArea"></textarea>';
+    const ext = String(rel.split('.').pop() || '').toLowerCase();
+    const mode = ({ yml: 'yaml', yaml: 'yaml', json: 'javascript', js: 'javascript', xml: 'xml', properties: 'properties', conf: 'properties', cfg: 'properties', sh: 'shell', bat: 'shell', cmd: 'shell' })[ext] || 'text/plain';
+
+    if (window.CodeMirror) {
+      editor = CodeMirror.fromTextArea($('mwEditorArea'), { lineNumbers: true, mode, theme: 'dracula', lineWrapping: false, viewportMargin: Infinity });
+      editor.setValue(d.content || '');
+      editor.on('cursorActivity', updateEditorStatus);
+      updateEditorStatus();
+    } else {
+      $('mwEditorArea').value = d.content || '';
+    }
+  } catch (error) {
+    toast(`❌ ${error.message}`, 'err');
   }
-
-  // Modrinth manda el changelog en texto/markdown plano -> escapar y saltos de línea.
-  // Spigot (vía Spiget) lo manda como HTML real (BBCode ya convertido) -> hay que
-  // sanitizarlo con DOMPurify en vez de escaparlo, o se verían las etiquetas literales.
-  const changelogHtml = v.changelog
-    ? `<div class="plg-ver-changelog">${
-        v.changelogIsHtml
-          ? (window.DOMPurify ? DOMPurify.sanitize(v.changelog, { ALLOWED_TAGS: ['b','strong','i','em','u','a','br','p','ul','ol','li','span','code','pre'], ALLOWED_ATTR: ['href','target','rel'] }) : escHtml(v.changelog))
-          : escHtml(v.changelog).replace(/\n/g, '<br>')
-      }</div>`
-    : '';
-
-  return `<div class="plg-ver-row">
-    <div class="plg-ver-left">
-      <div class="plg-ver-number">${escHtml(v.versionNumber)}</div>
-      ${v.name && v.name !== v.versionNumber ? `<div class="plg-ver-name">${escHtml(v.name)}</div>` : ''}
-      ${changelogHtml}
-    </div>
-    <div class="plg-ver-right">
-      <div class="plg-ver-meta">
-        <span class="plg-vm">🎮 ${escHtml(gvShort)}</span>
-        <span class="plg-vm">⚙ ${escHtml(loaders)}</span>
-        <span class="plg-vm">${published}</span>
-        ${sizeKb ? `<span class="plg-vm">📦 ${sizeKb}</span>` : ''}
-        ${v.downloads ? `<span class="plg-vm">⬇ ${Number(v.downloads).toLocaleString()}</span>` : ''}
-      </div>
-      ${dlButton}
-    </div>
-  </div>`;
 }
 
-async function installPlugin(btnId, url, filename, source, resourceId, versionId) {
-  if (PLG.installing.has(btnId)) return;
-  PLG.installing.add(btnId);
-  const btn = $(btnId);
-  if (btn) { btn.textContent = '⏳ Descargando...'; btn.disabled = true; btn.classList.add('loading'); }
-  toast(`⬇ Descargando ${filename}...`, 'ok');
+function updateEditorStatus() {
+  if (!editor) return;
+  const cursor = editor.getCursor();
+  $('edLine').textContent = cursor.line + 1;
+  $('edCol').textContent = cursor.ch + 1;
+  $('edLines').textContent = editor.lineCount();
+}
+
+async function saveCurrentFile() {
+  if (!currentFile) return;
+  const content = editor ? editor.getValue() : $('mwEditorArea')?.value || '';
+  const d = await postJSON('/api/files/content', { path: currentFile, content });
+  if (!d.ok) {
+    toast(`❌ ${d.error}`, 'err');
+    return;
+  }
+  $('edSaveMsg').textContent = 'Guardado';
+  toast('💾 Archivo guardado', 'ok');
+}
+
+/* ═══════════════════════ PLUGINS ═══════════════════════ */
+async function pluginSearch() {
+  const q = $('plgSearchInput')?.value.trim();
+  if (!q) return;
+  $('plgResults').innerHTML = '<div class="empty-state"><div style="font-size:32px;animation:spin 1s linear infinite">⟳</div><div class="empty-msg">Buscando...</div></div>';
+  try {
+    const d = await api(`/api/plugins/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(pluginSource)}`);
+    if (!d.ok) throw new Error(d.error);
+    renderPluginResults(d.results || [], d.errors || []);
+  } catch (error) {
+    $('plgResults').innerHTML = `<div class="empty-state"><div class="empty-msg">${escHtml(error.message)}</div></div>`;
+  }
+}
+
+function renderPluginResults(results, errors) {
+  const fmt = n => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n || 0);
+  const warning = errors.length ? `<div class="plg-warn-bar">⚠ ${errors.map(escHtml).join(' · ')}</div>` : '';
+  $('plgResults').innerHTML = warning + results.map((plugin, index) => {
+    const tag = plugin.source === 'modrinth' ? 'MODRINTH' : 'SPIGOT';
+    const external = plugin.external ? '<span class="plg-src-badge">🔗 EXTERNO</span>' : '';
+    const premium = plugin.premium ? '<span class="plg-src-badge">💰 PREMIUM</span>' : '';
+    return `
+      <div class="plg-card" data-index="${index}">
+        <div class="plg-card-top">
+          ${plugin.icon ? `<img class="plg-card-icon" src="${escHtml(plugin.icon)}" width="42" height="42" loading="lazy">` : '<div class="plg-card-icon-placeholder">🧩</div>'}
+          <div class="plg-card-info">
+            <div class="plg-card-name">${escHtml(plugin.name)}</div>
+            <div class="plg-card-tags"><span class="plg-src-badge">${tag}</span>${premium}${external}<span class="plg-src-badge dl">⬇ ${fmt(plugin.downloads)}</span></div>
+          </div>
+        </div>
+        <div class="plg-card-desc">${escHtml(plugin.description || '')}</div>
+        <div class="plg-card-footer"><span></span><button class="plg-versions-btn">Ver versiones →</button></div>
+      </div>`;
+  }).join('') || '<div class="empty-state"><div class="empty-msg">Sin resultados</div></div>';
+
+  $('plgResults').querySelectorAll('.plg-card').forEach(card => {
+    card.addEventListener('click', () => openPluginVersions(results[Number(card.dataset.index)]));
+  });
+}
+
+async function openPluginVersions(plugin) {
+  currentPlugin = plugin;
+  $('plgVersionModal').style.display = '';
+  $('plgModalIcon').src = plugin.icon || '';
+  $('plgModalName').textContent = plugin.name;
+  $('plgModalMeta').textContent = `${plugin.source.toUpperCase()} · ${plugin.downloads || 0} descargas`;
+  $('plgModalBody').innerHTML = '<div class="empty-state"><div style="animation:spin 1s linear infinite;font-size:28px">⟳</div><div class="empty-msg">Cargando versiones...</div></div>';
 
   try {
-    const data = await postJSON('/api/plugins/install', { url, filename, source, resourceId, versionId });
-    if (data.ok) {
-      if (btn) { btn.textContent = '✓ Instalado'; btn.classList.replace('loading', 'done'); }
-      toast(`✅ ${data.filename} instalado (${data.size})`, 'ok');
-      addActivity(`Plugin instalado: ${data.filename}`, 'ok', '🧩');
-    } else {
-      if (btn) { btn.textContent = '❌ Error'; btn.classList.replace('loading', 'err'); }
-      toast('❌ ' + (data.error || 'Error desconocido'), 'err');
-    }
-  } catch (e) {
-    if (btn) { btn.textContent = '❌ Sin conexión'; btn.classList.remove('loading'); }
-    toast('❌ ' + e.message, 'err');
+    const d = await api(`/api/plugins/versions?id=${encodeURIComponent(plugin.id)}&source=${encodeURIComponent(plugin.source)}`);
+    if (!d.ok) throw new Error(d.error);
+    $('plgModalBody').innerHTML = (d.versions || []).map((version, index) => `
+      <div class="plg-version-row">
+        <div><strong>${escHtml(version.versionNumber || version.name || 'Versión')}</strong><div style="font-size:11px;color:var(--muted2)">${version.published ? new Date(version.published).toLocaleString('es-ES') : ''}</div></div>
+        ${version.isExternal ? `<a class="plg-install-btn" href="${escHtml(version.externalUrl)}" target="_blank" rel="noopener">ABRIR</a>` : `<button class="plg-install-btn" data-version="${index}">INSTALAR</button>`}
+      </div>
+    `).join('') || '<div class="empty-state">No hay versiones.</div>';
+
+    $('plgModalBody').querySelectorAll('[data-version]').forEach(button => {
+      button.addEventListener('click', () => installPlugin(d.versions[Number(button.dataset.version)]));
+    });
+  } catch (error) {
+    $('plgModalBody').innerHTML = `<div class="empty-state"><div class="empty-msg">${escHtml(error.message)}</div></div>`;
   }
-  PLG.installing.delete(btnId);
+}
+
+async function installPlugin(version) {
+  const file = (version.files || []).find(f => f.primary) || version.files?.[0];
+  if (!file?.url) {
+    toast('Esta versión requiere instalación externa.', 'err');
+    return;
+  }
+  const filename = file.filename || `${String(currentPlugin?.name || 'plugin').replace(/[^a-zA-Z0-9._-]/g, '_')}.jar`;
+  $('plgModalBody').insertAdjacentHTML('afterbegin', '<div class="plg-warn-bar">⬇️ Instalando...</div>');
+  const d = await postJSON('/api/plugins/install', { url: file.url, filename });
+  if (!d.ok) {
+    toast(`❌ ${d.error}`, 'err');
+    return;
+  }
+  toast(`✅ ${filename} instalado`, 'ok');
+  loadInstalledPlugins();
 }
 
 async function loadInstalledPlugins() {
   const el = $('plgInstalledList');
-  el.innerHTML = '<div class="empty-state"><div style="font-size:32px;opacity:.35;animation:spin 1s linear infinite">⟳</div><div class="empty-msg" style="margin-top:8px">Cargando...</div></div>';
-  try {
-    const data = await api('/api/plugins/installed');
-    if (!data.ok || !data.plugins.length) {
-      el.innerHTML = '<div class="empty-state"><div class="empty-icon">📂</div><div class="empty-msg">No hay plugins instalados<br><span style="font-size:10px;color:var(--muted)">Busca un plugin y pulsa INSTALAR</span></div></div>';
-      return;
-    }
-    el.innerHTML = data.plugins.map(p =>
-      `<div class="plg-inst-row">
-        <span class="plg-inst-icon">☕</span>
-        <div class="plg-inst-info">
-          <div class="plg-inst-name">${escHtml(p.filename)}</div>
-          <div class="plg-inst-meta">${escHtml(p.size)} · Modificado ${escHtml(p.modified)}</div>
-        </div>
-        <button class="icon-btn" title="Eliminar" data-delete="${escAttr(p.filename)}">✕</button>
-      </div>`
-    ).join('');
-  } catch (e) {
-    el.innerHTML = plgError('Error: ' + e.message);
+  if (!el) return;
+  el.innerHTML = '<div class="empty-state"><div style="animation:spin 1s linear infinite;font-size:28px">⟳</div><div class="empty-msg">Cargando...</div></div>';
+  const d = await api('/api/plugins/installed');
+  if (!d.ok) {
+    el.innerHTML = `<div class="empty-state">${escHtml(d.error)}</div>`;
+    return;
   }
-}
-
-async function deletePlugin(filename, btn) {
-  if (!confirm(`¿Eliminar ${filename}?`)) return;
-  btn.disabled = true;
-  try {
-    const data = await api(`/api/plugins/installed/${encodeURIComponent(filename)}`, { method: 'DELETE' });
-    if (data.ok) { toast(`🗑 ${filename} eliminado`, 'ok'); loadInstalledPlugins(); }
-    else { toast('❌ ' + data.error, 'err'); btn.disabled = false; }
-  } catch (e) {
-    toast('❌ ' + e.message, 'err');
-    btn.disabled = false;
-  }
-}
-
-/* ═══════════════════════ VERSIONS ═══════════════════════ */
-
-const VER = {
-  software:  null,   // software seleccionado
-  version:   null,   // versión MC seleccionada
-  builds:    [],     // builds cargados
-  isFabric:  false,
-  installing: false,
-};
-
-/* ── Inicializar vista de versiones ── */
-async function initVersions() {
-  renderVersionsShell();
-  loadCurrentJar();
-  loadSoftwareList();
-}
-
-/* ── Estructura base del panel ── */
-function renderVersionsShell() {
-  const view = $('view-versions');
-  view.innerHTML = `
-    <div class="page-header">
-      <div>
-        <div class="page-title">VERSIONES MC</div>
-        <div class="page-sub">Descarga e instala cualquier software de servidor</div>
-      </div>
-      <div class="ver-current-badge" id="verCurrentBadge">
-        <span class="vcb-dot"></span>
-        <span id="verCurrentText">Cargando server.jar...</span>
-      </div>
+  el.innerHTML = (d.plugins || []).map(plugin => `
+    <div class="installed-plugin-row">
+      <div><strong>☕ ${escHtml(plugin.filename)}</strong><div style="font-size:11px;color:var(--muted2)">${escHtml(plugin.size)} · ${escHtml(plugin.modified)}</div></div>
+      <button class="small-btn danger" data-delete-plugin="${escHtml(plugin.filename)}">Eliminar</button>
     </div>
-
-    <!-- PASO 1: Software -->
-    <div class="ver-step">
-      <div class="ver-step-label">① Software</div>
-      <div class="ver-sw-grid" id="verSwGrid">
-        <div class="ver-loading">⟳ Cargando...</div>
-      </div>
-    </div>
-
-    <!-- PASO 2: Versión MC -->
-    <div class="ver-step" id="verStepVersion" style="display:none">
-      <div class="ver-step-label">② Versión de Minecraft</div>
-      <div class="ver-version-bar">
-        <input class="ver-search-input" id="verVersionSearch" type="text" placeholder="Filtrar versión... (ej: 1.21)">
-        <div class="ver-version-grid" id="verVersionGrid"></div>
-      </div>
-    </div>
-
-    <!-- PASO 3: Build -->
-    <div class="ver-step" id="verStepBuilds" style="display:none">
-      <div class="ver-step-label">③ Build</div>
-      <div class="panel" id="verBuildsPanel">
-        <div class="panel-header">
-          <div class="panel-title" id="verBuildsPanelTitle"><span>📦</span> BUILDS</div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <label class="ver-toggle-label">
-              <input type="checkbox" id="verShowAll"> Solo estables
-            </label>
-          </div>
-        </div>
-        <div id="verBuildsList"></div>
-      </div>
-    </div>
-
-    <!-- MODAL instalación -->
-    <div id="verInstallModal" class="plg-modal-overlay" style="display:none">
-      <div class="plg-modal" style="max-width:560px">
-        <div class="plg-modal-header">
-          <div class="plg-modal-title" id="verModalTitle">Instalando...</div>
-          <button class="plg-modal-close" id="btnCloseVerModal">✕</button>
-        </div>
-        <div id="verModalBody" class="plg-modal-body" style="padding:24px"></div>
-      </div>
-    </div>
-  `;
-
-  // Eventos locales
-  $('verVersionSearch').addEventListener('input', filterVersionList);
-  $('verShowAll').addEventListener('change', () => renderBuildsList(VER.builds));
-  $('btnCloseVerModal').addEventListener('click', () => $('verInstallModal').style.display = 'none');
-  $('verInstallModal').addEventListener('click', e => { if (e.target === $('verInstallModal')) $('verInstallModal').style.display = 'none'; });
-}
-
-/* ── server.jar actual ── */
-async function loadCurrentJar() {
-  try {
-    const d   = await api('/api/versions/current');
-    const el  = $('verCurrentText');
-    const dot = document.querySelector('.vcb-dot');
-    if (d.exists) {
-      el.textContent = `server.jar · ${d.size} · mod. ${d.modified}`;
-      dot.style.background = 'var(--green)';
-      dot.style.boxShadow  = '0 0 6px var(--green)';
-    } else {
-      el.textContent = 'Sin server.jar';
-      dot.style.background = 'var(--red)';
-    }
-  } catch { /* silencioso */ }
-}
-
-/* ── PASO 1: Lista de softwares ── */
-async function loadSoftwareList() {
-  const grid = $('verSwGrid');
-  try {
-    const d = await api('/api/versions/software');
-    renderSoftwareGrid(d.software);
-  } catch (e) {
-    grid.innerHTML = `<div class="empty-state"><div class="empty-icon" style="color:var(--red)">⚠</div><div class="empty-msg">${e.message}</div></div>`;
-  }
-}
-
-const SW_ICONS = {
-  paper: '📄', purpur: '🟣', folia: '🌿', fabric: '🧵', vanilla: '🎮', forge: '⚒️', velocity: '⚡', waterfall: '💧', bungeecord: '🔗',
-};
-
-function renderSoftwareGrid(list) {
-  const categories = { server: list.filter(s => s.category === 'server'), proxy: list.filter(s => s.category === 'proxy') };
-  let html = '';
-
-  for (const [cat, items] of Object.entries(categories)) {
-    html += `<div class="ver-sw-category"><div class="ver-sw-cat-label">${cat === 'server' ? '🖥️ Servidores' : '🔀 Proxies'}</div><div class="ver-sw-row">`;
-    html += items.map(s => `
-      <div class="ver-sw-card ${s.external ? 'ver-sw-external' : ''}" data-sw="${s.id}" style="--sw-color:${s.color}">
-        <div class="ver-sw-icon">${SW_ICONS[s.id] || '📦'}</div>
-        <div class="ver-sw-name">${s.label}</div>
-        <div class="ver-sw-desc">${s.desc}</div>
-        ${s.external ? `<a class="ver-ext-link" href="${s.external}" target="_blank" rel="noopener">Descargar →</a>` : ''}
-      </div>`).join('');
-    html += '</div></div>';
-  }
-  $('verSwGrid').innerHTML = html;
-
-  $('verSwGrid').addEventListener('click', e => {
-    const card = e.target.closest('.ver-sw-card:not(.ver-sw-external)');
-    if (!card) return;
-    selectSoftware(card.dataset.sw);
+  `).join('') || '<div class="empty-state">No hay plugins .jar instalados.</div>';
+  el.querySelectorAll('[data-delete-plugin]').forEach(button => {
+    button.addEventListener('click', async () => {
+      if (!confirm(`¿Eliminar ${button.dataset.deletePlugin}?`)) return;
+      const d2 = await api(`/api/plugins/installed/${encodeURIComponent(button.dataset.deletePlugin)}`, { method: 'DELETE' });
+      if (!d2.ok) toast(`❌ ${d2.error}`, 'err');
+      else loadInstalledPlugins();
+    });
   });
 }
 
-/* ── Seleccionar software ── */
-async function selectSoftware(swId) {
-  VER.software = swId;
-  VER.version  = null;
-
-  document.querySelectorAll('.ver-sw-card').forEach(c => c.classList.toggle('active', c.dataset.sw === swId));
-
-  const stepVer = $('verStepVersion');
-  const grid    = $('verVersionGrid');
-  stepVer.style.display = '';
-  $('verStepBuilds').style.display = 'none';
-  grid.innerHTML = '<div class="ver-loading" style="animation:spin 1s linear infinite;font-size:24px;padding:20px">⟳</div>';
-  $('verVersionSearch').value = '';
-
-  // Scroll suave al paso 2
-  stepVer.scrollIntoView({ behavior: 'smooth', block: 'start' });
-
-  try {
-    const d = await api(`/api/versions/list?software=${swId}`);
-    if (!d.ok) throw new Error(d.error);
-    renderVersionGrid(d.versions);
-  } catch (e) {
-    grid.innerHTML = `<div class="empty-state"><div class="empty-icon" style="color:var(--red)">⚠</div><div class="empty-msg">${e.message}</div></div>`;
-  }
-}
-
-/* ── PASO 2: Grid de versiones ── */
-let _allVersions = [];
-
-function renderVersionGrid(versions) {
-  _allVersions = versions;
-  _renderVersionPills(versions);
-}
-
-function _renderVersionPills(list) {
-  if (!list.length) {
-    $('verVersionGrid').innerHTML = '<div class="empty-state"><div class="empty-msg">Sin versiones disponibles</div></div>';
-    return;
-  }
-  $('verVersionGrid').innerHTML = list.map(v =>
-    `<button class="ver-pill ${VER.version === v ? 'active' : ''}" data-ver="${v}">${v}</button>`
-  ).join('');
-
-  $('verVersionGrid').onclick = e => {
-    const pill = e.target.closest('.ver-pill');
-    if (pill) selectVersion(pill.dataset.ver);
-  };
-}
-
-function filterVersionList() {
-  const q      = $('verVersionSearch').value.toLowerCase();
-  const filtered = q ? _allVersions.filter(v => v.includes(q)) : _allVersions;
-  _renderVersionPills(filtered);
-}
-
-/* ── Seleccionar versión ── */
-async function selectVersion(ver) {
-  VER.version = ver;
-  document.querySelectorAll('.ver-pill').forEach(p => p.classList.toggle('active', p.dataset.ver === ver));
-
-  const stepBuilds = $('verStepBuilds');
-  const list       = $('verBuildsList');
-  stepBuilds.style.display = '';
-  list.innerHTML = '<div class="ver-loading" style="animation:spin 1s linear infinite;font-size:24px;padding:20px;text-align:center">⟳</div>';
-  $('verBuildsPanelTitle').innerHTML = `<span>📦</span> BUILDS — <span style="color:var(--accent)">${VER.software?.toUpperCase()} ${ver}</span>`;
-
-  stepBuilds.scrollIntoView({ behavior: 'smooth', block: 'start' });
-
-  try {
-    const d = await api(`/api/versions/builds?software=${VER.software}&version=${encodeURIComponent(ver)}`);
-    if (!d.ok) throw new Error(d.error);
-    VER.builds   = d.builds || [];
-    VER.isFabric = !!d.isFabric;
-    renderBuildsList(VER.builds);
-  } catch (e) {
-    list.innerHTML = `<div class="empty-state"><div class="empty-icon" style="color:var(--red)">⚠</div><div class="empty-msg">${e.message}</div></div>`;
-  }
-}
-
-/* ── PASO 3: Lista de builds ── */
-function renderBuildsList(builds) {
-  const el        = $('verBuildsList');
-  const stableOnly = $('verShowAll').checked;
-  const list      = stableOnly ? builds.filter(b => b.channel === 'STABLE') : builds;
-
-  if (!list.length) {
-    el.innerHTML = '<div class="empty-state"><div class="empty-msg">No hay builds disponibles</div></div>';
-    return;
-  }
-
-  el.innerHTML = list.map((b, i) => {
-    const isLatest  = i === 0;
-    const isStable  = b.channel === 'STABLE';
-    const channelBadge = isStable
-      ? `<span class="ver-channel stable">STABLE</span>`
-      : `<span class="ver-channel experimental">EXPERIMENTAL</span>`;
-    const timeStr = b.time ? new Date(b.time).toLocaleString('es-ES') : '';
-
-    return `<div class="ver-build-row ${isLatest ? 'ver-build-latest' : ''}">
-      <div class="ver-build-left">
-        <div class="ver-build-num">
-          ${VER.isFabric ? `Loader ${b.loaderVersion}` : `Build #${b.build}`}
-          ${isLatest ? '<span class="ver-latest-tag">LATEST</span>' : ''}
-        </div>
-        ${timeStr ? `<div class="ver-build-time">${timeStr}</div>` : ''}
-        ${b.changes ? `<div class="ver-build-changes">${b.changes}</div>` : ''}
-      </div>
-      <div class="ver-build-right">
-        ${channelBadge}
-        <button class="ver-install-btn" data-idx="${i}">⬇ INSTALAR</button>
-      </div>
-    </div>`;
-  }).join('');
-
-  el.onclick = e => {
-    const btn = e.target.closest('.ver-install-btn');
-    if (btn) confirmInstall(list[parseInt(btn.dataset.idx)]);
-  };
-}
-
-/* ── Modal de confirmación + instalación ── */
-function confirmInstall(build) {
-  if (VER.installing) return;
-
-  const isLatest = VER.builds.indexOf(build) === 0;
-  const sw       = VER.software;
-  const ver      = VER.version;
-
-  $('verModalTitle').textContent = `Instalar ${sw?.toUpperCase()} ${ver}`;
-  $('verInstallModal').style.display = 'flex';
-
-  let extraInfo = '';
-  if (VER.isFabric) {
-    extraInfo = `<div class="ver-modal-info">
-      <b>Fabric Loader:</b> ${build.loaderVersion}<br>
-      <small style="color:var(--yellow)">⚠ Fabric requiere ejecutar el installer. Se generará el comando tras confirmar.</small>
-    </div>`;
-  } else if (build.sha256) {
-    extraInfo = `<div class="ver-modal-info"><b>SHA:</b> <code style="font-size:9px;color:var(--muted2)">${build.sha256.substring(0, 16)}…</code></div>`;
-  }
-
-  $('verModalBody').innerHTML = `
-    <div class="ver-confirm-box">
-      <div class="ver-confirm-icon">${SW_ICONS[sw] || '📦'}</div>
-      <div class="ver-confirm-info">
-        <div class="ver-confirm-title">${sw?.toUpperCase()} ${ver}</div>
-        <div class="ver-confirm-sub">${VER.isFabric ? `Loader ${build.loaderVersion}` : `Build #${build.build} · ${build.channel}`}</div>
-      </div>
+/* ═══════════════════════ MINECRAFT VERSIONS ═══════════════════════ */
+async function loadSoftware() {
+  const d = await api('/api/versions/software');
+  if (!d.ok) throw new Error(d.error);
+  const list = d.software || [];
+  const el = $('versionList');
+  el.innerHTML = `
+    <div style="padding:8px 0 18px;color:var(--muted2)">Selecciona un software para consultar sus versiones y builds.</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">
+      ${list.map(sw => `<button class="small-btn" data-software="${escHtml(sw.id)}">${escHtml(sw.label)}</button>`).join('')}
     </div>
-    ${extraInfo}
-    <div class="ver-modal-warning">
-      ⚠ El server.jar actual se guardará como backup automáticamente.<br>
-      Deberás reiniciar el servidor para aplicar los cambios.
-    </div>
-    <div style="display:flex;gap:10px;margin-top:20px">
-      <button class="ver-cancel-btn" id="btnVerCancel">Cancelar</button>
-      <button class="ver-confirm-btn" id="btnVerConfirm">✓ Confirmar instalación</button>
-    </div>
-    <div id="verInstallProgress" style="display:none;margin-top:16px"></div>
+    <div id="mwVersionDetails" style="margin-top:18px"></div>
   `;
+  el.querySelectorAll('[data-software]').forEach(button => button.addEventListener('click', () => selectSoftware(button.dataset.software, list.find(sw => sw.id === button.dataset.software))));
 
-  $('btnVerCancel').onclick  = () => $('verInstallModal').style.display = 'none';
-  $('btnVerConfirm').onclick = () => runInstall(build);
-}
-
-async function runInstall(build) {
-  if (VER.installing) return;
-  VER.installing = true;
-
-  const confirmBtn = $('btnVerConfirm');
-  const cancelBtn  = $('btnVerCancel');
-  const progress   = $('verInstallProgress');
-
-  confirmBtn.disabled = true;
-  cancelBtn.disabled  = true;
-  confirmBtn.textContent = '⏳ Instalando...';
-  progress.style.display = '';
-  progress.innerHTML = '<div class="ver-progress-bar"><div class="ver-progress-fill"></div></div><div class="ver-progress-text">Descargando...</div>';
-
-  try {
-    const body = {
-      software:      VER.software,
-      version:       VER.version,
-      build:         build.build,
-      url:           build.url,
-      loaderVersion: build.loaderVersion || null,
-    };
-
-    const d = await postJSON('/api/versions/install', body);
-
-    if (!d.ok) throw new Error(d.error);
-
-    VER.installing = false;
-
-    if (d.type === 'fabric-installer') {
-      progress.innerHTML = `
-        <div style="color:var(--green);font-size:13px;margin-bottom:10px">✅ Installer descargado correctamente</div>
-        <div style="font-size:11px;color:var(--muted2);margin-bottom:8px">Ejecuta este comando en tu carpeta de servidor:</div>
-        <div class="ver-cmd-box" id="verFabricCmd">${d.installCmd}</div>
-        <button class="small-btn" style="margin-top:8px" onclick="navigator.clipboard.writeText('${d.installCmd.replace(/'/g,"\\'")}');toast('Copiado','ok')">📋 Copiar</button>
-        <div style="font-size:10px;color:var(--yellow);margin-top:10px">⚠ ${d.note}</div>`;
-      confirmBtn.textContent = 'Hecho';
-      confirmBtn.disabled    = false;
-      confirmBtn.onclick     = () => $('verInstallModal').style.display = 'none';
-    } else {
-      progress.innerHTML = `
-        <div style="color:var(--green);font-size:14px;margin-bottom:6px">✅ Instalado correctamente</div>
-        <div style="font-size:11px;color:var(--muted2)">${d.software?.toUpperCase()} ${d.version} · Build #${d.build} · ${d.size}</div>
-        <div style="font-size:10px;color:var(--yellow);margin-top:8px">⚠ ${d.note}</div>`;
-      confirmBtn.textContent = 'Cerrar';
-      confirmBtn.disabled    = false;
-      confirmBtn.onclick     = () => $('verInstallModal').style.display = 'none';
-
-      toast(`✅ ${d.software?.toUpperCase()} ${d.version} instalado`, 'ok');
-      addActivity(`Versión instalada: ${d.software} ${d.version} build #${d.build}`, 'ok', '📦');
-      loadCurrentJar(); // actualizar badge
-    }
-  } catch (e) {
-    VER.installing = false;
-    progress.innerHTML = `<div style="color:var(--red)">❌ ${e.message}</div>`;
-    confirmBtn.textContent = 'Reintentar';
-    confirmBtn.disabled    = false;
-    cancelBtn.disabled     = false;
-    confirmBtn.onclick     = () => runInstall(build);
-    toast('❌ Error al instalar: ' + e.message, 'err');
+  const current = await api('/api/versions/current');
+  if (current.ok) {
+    $('mwVersionDetails').insertAdjacentHTML('afterbegin', `<div class="panel" style="margin-bottom:12px;padding:12px">📦 server.jar: ${current.exists ? `✅ ${escHtml(current.size)} · ${escHtml(current.modified)}` : '❌ no encontrado'}</div>`);
   }
 }
 
-/* ═══════════════════════ USERS ═══════════════════════ */
-function populateUsers(tab) {
-  const data = USERS_DATA[tab] || [];
-  const el   = $('userList');
-  if (!data.length) {
-    el.innerHTML = '<div class="empty-state"><div class="empty-icon">🚫</div><div class="empty-msg">No entries</div></div>';
+async function selectSoftware(id, meta) {
+  versionState = { software: id, version: null, builds: [] };
+  const details = $('mwVersionDetails');
+  details.innerHTML = `<div class="panel" style="padding:12px"><strong>${escHtml(meta?.label || id)}</strong><div style="margin-top:12px">Cargando versiones...</div></div>`;
+  const d = await api(`/api/versions/list?software=${encodeURIComponent(id)}`);
+  if (!d.ok) {
+    details.innerHTML = `<div class="empty-state">${escHtml(d.error)}</div>`;
     return;
   }
-  el.innerHTML = data.map(u =>
-    `<div class="user-row">
-      <div class="user-avatar">${u.av}</div>
-      <span class="user-name">${u.name}</span>
-      <span class="user-role ${u.role}">${u.role === 'op' ? 'OPERATOR' : 'MEMBER'}</span>
-      <span class="user-last">${u.last}</span>
-      <div class="user-actions">
-        <button class="icon-btn edit">✎</button>
-        <button class="icon-btn">✕</button>
-      </div>
-    </div>`
-  ).join('');
-}
-
-/* ═══════════════════════ BACKUPS ═══════════════════════ */
-function populateBackups() {
-  $('backupList').innerHTML = BACKUPS_DATA.map(b =>
-    `<div class="backup-row">
-      <span class="bk-icon">${b.auto ? '🔄' : '💾'}</span>
-      <div class="bk-name">${b.name}<small>${b.date} · ${b.auto ? 'Automatic' : 'Manual'}</small></div>
-      <span class="bk-size">${b.size}</span>
-      <div class="bk-actions">
-        <button class="icon-btn edit" data-action="restore">↩</button>
-        <button class="icon-btn" data-action="download">⬇</button>
-        <button class="icon-btn" data-action="delete">✕</button>
-      </div>
-    </div>`
-  ).join('');
-}
-
-/* ═══════════════════════ STARTUP ═══════════════════════ */
-function updateStartupPreview() {
-  const jar   = $('cfgJar')?.value       || 'server.jar';
-  const xms   = $('cfgXms')?.value       || '1G';
-  const xmx   = $('cfgXmx')?.value       || '2G';
-  const extra = $('cfgExtraArgs')?.value || '';
-  const prev  = $('cfgPreview');
-  if (prev) prev.textContent = `java -Xms${xms} -Xmx${xmx}${extra ? ' ' + extra.trim() : ''} -jar ${jar} nogui`;
-}
-
-async function saveStartup() {
-  // Los campos de este formulario (#cfgJar, #cfgXms, etc.) y el endpoint
-  // /api/config todavía no existen (Startup es una vista sin terminar) — antes
-  // esto reventaba con un TypeError si algo llegaba a llamarlo, o si el fetch
-  // fallaba, mentía mostrando "✅ Config saved" igual. Ahora falla de forma
-  // honesta en vez de simular un guardado que no pasó.
-  const fields = { jar: $('cfgJar'), xms: $('cfgXms'), xmx: $('cfgXmx'), extraArgs: $('cfgExtraArgs'), path: $('cfgPath') };
-  if (Object.values(fields).some(el => !el)) {
-    toast('El formulario de Startup todavía no está disponible', 'err');
-    return;
-  }
-  const body = {
-    jar:       fields.jar.value,
-    xms:       fields.xms.value,
-    xmx:       fields.xmx.value,
-    extraArgs: fields.extraArgs.value,
-    path:      fields.path.value,
+  const versions = d.versions || [];
+  details.innerHTML = `
+    <div class="panel" style="padding:12px">
+      <strong>Versiones</strong>
+      <input id="mwVersionSearch" class="cmd-input" style="margin-top:10px;width:100%" placeholder="Buscar versión...">
+      <div id="mwVersionPills" style="display:flex;flex-wrap:wrap;gap:7px;margin-top:12px"></div>
+      <div id="mwBuilds" style="margin-top:14px"></div>
+    </div>
+  `;
+  const render = list => {
+    $('mwVersionPills').innerHTML = list.map(version => `<button class="small-btn" data-version="${escHtml(version)}">${escHtml(version)}</button>`).join('');
+    $('mwVersionPills').querySelectorAll('[data-version]').forEach(button => button.addEventListener('click', () => selectVersion(button.dataset.version)));
   };
-  try {
-    const d = await postJSON('/api/config', body);
-    if (d.ok) { toast('✅ Configuration saved', 'ok'); addActivity('Startup updated', 'ok', '⚙️'); }
-    else toast(d.error || 'Error', 'err');
-  } catch (e) {
-    toast('No se pudo guardar: ' + e.message, 'err');
-  }
+  render(versions);
+  $('mwVersionSearch').addEventListener('input', e => {
+    const q = e.target.value.toLowerCase();
+    render(q ? versions.filter(v => v.toLowerCase().includes(q)) : versions);
+  });
 }
 
-/* ═══════════════════════ ACTIVITY LOG ═══════════════════════ */
-const activityLog = [];
-let activityFilter = 'all';
+async function selectVersion(version) {
+  versionState.version = version;
+  $('mwBuilds').innerHTML = '<div style="padding:8px">Cargando builds...</div>';
+  const d = await api(`/api/versions/builds?software=${encodeURIComponent(versionState.software)}&version=${encodeURIComponent(version)}`);
+  if (!d.ok) {
+    $('mwBuilds').innerHTML = `<div class="empty-state">${escHtml(d.error)}</div>`;
+    return;
+  }
+  versionState.builds = d.builds || [];
+  $('mwBuilds').innerHTML = versionState.builds.map((build, index) => `
+    <div class="installed-plugin-row">
+      <div><strong>${versionState.software === 'fabric' ? `Loader ${escHtml(build.loaderVersion)}` : `Build #${escHtml(build.build)}`}</strong><div style="font-size:11px;color:var(--muted2)">${escHtml(build.channel || '')} ${build.time ? '· ' + new Date(build.time).toLocaleString('es-ES') : ''}</div></div>
+      <button class="small-btn" data-build="${index}">INSTALAR</button>
+    </div>
+  `).join('') || '<div class="empty-state">No hay builds disponibles.</div>';
+  $('mwBuilds').querySelectorAll('[data-build]').forEach(button => button.addEventListener('click', () => installServerBuild(versionState.builds[Number(button.dataset.build)])));
+}
 
-function addActivity(msg, level = 'info', icon = '📌') {
-  activityLog.unshift({ msg, level, icon, time: new Date().toLocaleTimeString('en-US') });
-  if (activityLog.length > 100) activityLog.pop();
-  if ($('view-activitylog').classList.contains('active')) renderActivity();
+async function installServerBuild(build) {
+  if (!confirm(`Actualizar server.jar a ${versionState.software} ${versionState.version}?`)) return;
+  const d = await postJSON('/api/versions/install', {
+    software: versionState.software,
+    version: versionState.version,
+    build: build.build,
+    url: build.url,
+    loaderVersion: build.loaderVersion,
+  });
+  if (!d.ok) toast(`❌ ${d.error}`, 'err');
+  else toast(`✅ ${d.note || 'server.jar actualizado'}`, 'ok');
+}
+
+/* ═══════════════════════ NAVIGATION / INFO VIEWS ═══════════════════════ */
+function switchView(id) {
+  document.querySelectorAll('.view').forEach(view => view.classList.remove('active'));
+  document.querySelectorAll('.sb-item').forEach(item => item.classList.remove('active'));
+  $(`view-${id}`)?.classList.add('active');
+  document.querySelector(`.sb-item[data-view="${id}"]`)?.classList.add('active');
+
+  if (id === 'files') populateFiles(currentDir);
+  if (id === 'versions') loadSoftware().catch(error => toast(error.message, 'err'));
+  if (id === 'plugins') loadInstalledPlugins();
+  if (id === 'activitylog') renderActivity();
+  if (id === 'settings') renderSettings();
 }
 
 function renderActivity() {
-  const el   = $('activityList');
+  const el = $('activityList');
   if (!el) return;
-  const data = activityFilter === 'all' ? activityLog : activityLog.filter(a => a.level === activityFilter);
-  el.innerHTML = data.length
-    ? data.map(a =>
-        `<div class="act-row">
-          <span class="act-icon">${a.icon}</span>
-          <div class="act-body"><div class="act-msg">${escHtml(a.msg)}</div><div class="act-time">${escHtml(a.time)}</div></div>
-          <span class="act-level ${a.level}">${a.level.toUpperCase()}</span>
-        </div>`
-      ).join('')
-    : '<div class="empty-state"><div class="empty-icon">📋</div><div class="empty-msg">No events yet</div></div>';
+  el.innerHTML = activities.length
+    ? activities.slice().reverse().map(item => `<div class="activity-row"><span>${escHtml(item.icon)}</span><div><strong>${escHtml(item.message)}</strong><div style="font-size:10px;color:var(--muted2)">${escHtml(item.time)}</div></div></div>`).join('')
+    : '<div class="empty-state">No hay actividad todavía.</div>';
 }
 
-/* ═══════════════════════ TOAST ═══════════════════════ */
-let toastTimer;
-function toast(msg, type = 'ok') {
-  const t = $('toast');
-  t.textContent = msg;
-  t.className   = 'toast show ' + type;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.className = 'toast', 3200);
+function renderSettings() {
+  const el = $('settingsList');
+  if (!el) return;
+  el.innerHTML = `
+    <div class="settings-row"><div><strong>MoonWolf Cloud</strong><div style="font-size:11px;color:var(--muted2)">WebSocket</div></div><span>${agentOnline ? '🟢 Agent conectado' : '🔴 Agent desconectado'}</span></div>
+    <div class="settings-row"><div><strong>Código de conexión</strong><div style="font-size:11px;color:var(--muted2)">Identificador de este servidor</div></div><code>${escHtml(connectionCode || '—')}</code></div>
+    <div class="settings-row"><div><strong>Conexión</strong><div style="font-size:11px;color:var(--muted2)">Vercel WebSocket</div></div><span>${cloudSocket?.connected ? '🟢 ONLINE' : '🔴 OFFLINE'}</span></div>
+    <div style="padding-top:12px"><button class="small-btn" id="btnDisconnectCloud">Desconectar</button></div>
+  `;
+  $('btnDisconnectCloud')?.addEventListener('click', () => {
+    cloudSocket?.disconnect();
+    setCode('');
+    showLogin('Desconectado.');
+  });
 }
 
-/* ═══════════════════════ EVENT DELEGATION ═══════════════════════ */
-document.addEventListener('DOMContentLoaded', () => {
+/* ═══════════════════════ GENERAL UI ═══════════════════════ */
+function addActivity(message, level = 'info', icon = '📌') {
+  activities.push({ message, level, icon, time: new Date().toLocaleTimeString('es-ES') });
+  if (activities.length > 200) activities.shift();
+  if ($('view-activitylog')?.classList.contains('active')) renderActivity();
+}
 
-  // Login
-  document.getElementById('btnLogin').addEventListener('click', attemptLogin);
-  document.getElementById('loginPassword').addEventListener('keydown', e => {
-    if (e.key === 'Enter') attemptLogin();
+function toast(message, type = 'info') {
+  const el = $('toast');
+  if (!el) return;
+  el.textContent = message;
+  el.className = `toast show ${type}`;
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => { el.className = 'toast'; }, 3000);
+}
+
+function bindEvents() {
+  ensureLoginGate();
+
+  document.querySelectorAll('.sb-item').forEach(item => item.addEventListener('click', () => switchView(item.dataset.view)));
+  $('btnStart')?.addEventListener('click', startServer);
+  $('btnStop')?.addEventListener('click', stopServer);
+  $('btnRestart')?.addEventListener('click', restartServer);
+  $('btnSendCmd')?.addEventListener('click', sendCmd);
+  $('cmdInput')?.addEventListener('keydown', event => { if (event.key === 'Enter') sendCmd(); });
+  document.querySelectorAll('.quick-btn').forEach(button => button.addEventListener('click', () => {
+    $('cmdInput').value = button.dataset.cmd || '';
+    sendCmd();
+  }));
+  $('btnClearConsole')?.addEventListener('click', () => { $('console').innerHTML = ''; });
+
+  $('crumbHome')?.addEventListener('click', () => populateFiles(''));
+  $('btnEditorBack')?.addEventListener('click', () => {
+    $('filesEditorPanel').style.display = 'none';
+    $('filesTablePanel').style.display = '';
+    if (editor?.toTextArea) editor.toTextArea();
+    editor = null;
+    currentFile = null;
+  });
+  $('btnSaveFile')?.addEventListener('click', saveCurrentFile);
+  document.addEventListener('keydown', event => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's' && currentFile) {
+      event.preventDefault();
+      saveCurrentFile();
+    }
   });
 
-  if (AUTH_TOKEN) {
-    // Sesión previa guardada: la damos por válida de forma optimista y
-    // dejamos que la primera petición/el socket la invaliden si expiró.
-    showApp();
-    socket.connect();
+  document.querySelectorAll('.plg-source').forEach(button => button.addEventListener('click', () => {
+    pluginSource = button.dataset.source;
+    document.querySelectorAll('.plg-source').forEach(item => item.classList.toggle('active', item === button));
+  }));
+  document.querySelectorAll('.plg-tab-btn').forEach(button => button.addEventListener('click', () => {
+    const tab = button.dataset.tab;
+    document.querySelectorAll('.plg-tab-btn').forEach(item => item.classList.toggle('active', item === button));
+    $('plgTabSearch').style.display = tab === 'search' ? '' : 'none';
+    $('plgTabInstalled').style.display = tab === 'installed' ? '' : 'none';
+    if (tab === 'installed') loadInstalledPlugins();
+  }));
+  $('btnPluginSearch')?.addEventListener('click', pluginSearch);
+  $('plgSearchInput')?.addEventListener('keydown', event => { if (event.key === 'Enter') pluginSearch(); });
+  $('btnRefreshInstalled')?.addEventListener('click', loadInstalledPlugins);
+  $('btnClosePlgModal')?.addEventListener('click', () => { $('plgVersionModal').style.display = 'none'; });
+  $('plgVersionModal')?.addEventListener('click', event => { if (event.target === $('plgVersionModal')) $('plgVersionModal').style.display = 'none'; });
+
+  $('loginPassword').value = connectionCode;
+
+  if (connectionCode && CODE_RE.test(connectionCode)) {
+    connectCloud(false).catch(() => showLogin('No se pudo conectar. Comprueba que el Agent esté ejecutándose.'));
+  } else {
+    showLogin('');
   }
+}
 
-  // Sidebar navigation
-  document.querySelector('.sidebar').addEventListener('click', e => {
-    const item = e.target.closest('.sb-item[data-view]');
-    if (item) switchView(item.dataset.view);
-  });
-
-  // Server controls
-  $('btnStart').addEventListener('click', startServer);
-  $('btnStop').addEventListener('click', stopServer);
-  $('btnRestart').addEventListener('click', restartServer);
-
-  // Console
-  $('btnClearConsole').addEventListener('click', () => $('console').innerHTML = '');
-  $('btnSendCmd').addEventListener('click', sendCmd);
-  $('cmdInput').addEventListener('keydown', e => { if (e.key === 'Enter') sendCmd(); });
-  $('console').parentElement.addEventListener('click', e => {
-    const btn = e.target.closest('.quick-btn[data-cmd]');
-    if (btn) { $('cmdInput').value = btn.dataset.cmd; sendCmd(); }
-  });
-
-  // File manager
-  $('crumbHome').addEventListener('click', () => populateFiles(''));
-  $('crumbTrail').addEventListener('click', e => {
-    const crumb = e.target.closest('.crumb[data-path]');
-    if (crumb) populateFiles(crumb.dataset.path);
-  });
-
-  // Menú contextual de archivos
-  $('fileList').addEventListener('click', e => {
-    const menuBtn = e.target.closest('.file-menu-btn');
-    if (menuBtn) {
-      e.stopPropagation();
-      openCtxMenu(e, menuBtn.dataset.name, menuBtn.dataset.type);
-      return;
-    }
-    const row = e.target.closest('.file-row');
-    if (row) openFsItem(row.dataset.name, row.dataset.type);
-  });
-
-  // Editor — volver y guardar
-  $('btnEditorBack').addEventListener('click', closeEditor);
-  $('btnSaveFile').addEventListener('click', saveFile);
-
-  // Plugins tabs & source
-  // OJO: hay un .page-header por cada vista (dashboard, archivos, plugins...);
-  // querySelector('.page-header') agarraba siempre el primero del documento
-  // (el del Dashboard), así que el tab "Instalados" nunca respondía. Se
-  // delega directamente sobre la vista de Plugins.
-  $('view-plugins').addEventListener('click', e => {
-    const tab = e.target.closest('.plg-tab-btn[data-tab]');
-    if (tab) pluginSwitchTab(tab.dataset.tab);
-    const src = e.target.closest('.plg-source[data-source]');
-    if (src) pluginSetSource(src.dataset.source);
-    const price = e.target.closest('.plg-price[data-price]');
-    if (price) pluginSetPrice(price.dataset.price);
-  });
-  $('btnPluginSearch').addEventListener('click', pluginSearch);
-  $('plgSearchInput').addEventListener('keydown', e => { if (e.key === 'Enter') pluginSearch(); });
-  $('btnRefreshInstalled').addEventListener('click', loadInstalledPlugins);
-
-  // Plugin results — open modal
-  $('plgResults').addEventListener('click', e => {
-    const card = e.target.closest('.plg-card[data-plugin]');
-    if (card) openVersionModal(JSON.parse(decodeURIComponent(card.dataset.plugin)));
-  });
-
-  // Plugin modal — install buttons & close
-  $('btnClosePlgModal').addEventListener('click', closePlgModal);
-  $('plgVersionModal').addEventListener('click', e => { if (e.target === $('plgVersionModal')) closePlgModal(); });
-  $('plgModalBody').addEventListener('click', e => {
-    const btn = e.target.closest('.plg-dl-btn[data-url]');
-    if (btn) installPlugin(btn.id, btn.dataset.url, btn.dataset.filename, btn.dataset.source, btn.dataset.rid, btn.dataset.vid);
-  });
-
-  // Installed plugins — delete
-  $('plgInstalledList').addEventListener('click', e => {
-    const btn = e.target.closest('[data-delete]');
-    if (btn) deletePlugin(btn.dataset.delete, btn);
-  });
-
-  // Version list — download
-  $('versionList').addEventListener('click', e => {
-    const btn = e.target.closest('.dl-btn[data-ver]');
-    if (btn && !btn.classList.contains('current')) {
-      toast(`⬇ Downloading ${btn.dataset.type} ${btn.dataset.ver}...`, 'ok');
-      addActivity(`Downloading ${btn.dataset.type} ${btn.dataset.ver}`, 'info', '📦');
-    }
-  });
-
-  // Backups
-  $('backupList').addEventListener('click', e => {
-    const btn = e.target.closest('[data-action]');
-    if (!btn) return;
-    const actions = { restore: 'Restoring...', download: 'Downloading...', delete: 'Deleting...' };
-    toast(actions[btn.dataset.action] || '...', 'ok');
-  });
-
-  // Cerrar menú contextual con Escape
-  document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') {
-      closeCtxMenu();
-      if ($('filesEditorPanel').style.display !== 'none') closeEditor();
-    }
-  });
-
-  addActivity('MoonWolf Panel started', 'info', '🌙');
-});
+/* ═══════════════════════ START ═══════════════════════ */
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', bindEvents, { once: true });
+} else {
+  bindEvents();
+}

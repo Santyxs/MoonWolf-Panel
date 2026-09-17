@@ -1,0 +1,13 @@
+{
+  "name": "moonwolf-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MoonWolf Agent para conectar un servidor Minecraft con MoonWolf Cloud",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.8.3"
+  }
+}
