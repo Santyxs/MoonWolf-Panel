@@ -1293,7 +1293,11 @@ document.addEventListener('DOMContentLoaded', () => {
   $('btnSaveFile').addEventListener('click', saveFile);
 
   // Plugins tabs & source
-  document.querySelector('.page-header').addEventListener('click', e => {
+  // OJO: hay un .page-header por cada vista (dashboard, archivos, plugins...);
+  // querySelector('.page-header') agarraba siempre el primero del documento
+  // (el del Dashboard), así que el tab "Instalados" nunca respondía. Se
+  // delega directamente sobre la vista de Plugins.
+  $('view-plugins').addEventListener('click', e => {
     const tab = e.target.closest('.plg-tab-btn[data-tab]');
     if (tab) pluginSwitchTab(tab.dataset.tab);
     const src = e.target.closest('.plg-source[data-source]');
