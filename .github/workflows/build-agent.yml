@@ -14,16 +14,15 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Setup Node.js 26
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v4
         with:
           node-version: 26.x
-          cache: npm
 
       - name: Install root dependencies
-        run: npm ci
+        run: npm install --include=dev
 
       - name: Install Agent dependencies
         working-directory: agent
@@ -49,7 +48,7 @@ jobs:
           }
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: MoonWolf-Agent-Windows
           path: dist/MoonWolf-Agent.exe
