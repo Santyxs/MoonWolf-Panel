@@ -495,7 +495,7 @@ function openCtxMenu(e, name, type) {
 /* ═══════════════════════════════════════════════════════════════
    PLUGINS — Sistema completo (Modrinth + Spigot)
    ═══════════════════════════════════════════════════════════════ */
-const PLG = { source: 'all', currentPlugin: null, installing: new Set() };
+const PLG = { source: 'all', price: 'all', currentPlugin: null, installing: new Set(), lastResults: [], lastErrors: [] };
 
 // Convierte un nombre de plugin o de archivo en una clave comparable:
 // minúsculas, sin ".jar", sin espacios ni símbolos. Así "EssentialsX-2.20.1.jar"
@@ -530,6 +530,22 @@ function pluginSetSource(src) {
   document.querySelectorAll('.plg-source').forEach(b => b.classList.toggle('active', b.dataset.source === src));
 }
 
+// Solo Spigot puede traer plugins de pago (campo p.premium desde Spiget);
+// Modrinth y Hangar son siempre gratis, así que "premium" filtra únicamente
+// dentro de los resultados de Spigot y "free" deja pasar todo lo demás.
+function pluginSetPrice(price) {
+  PLG.price = price;
+  document.querySelectorAll('.plg-price').forEach(b => b.classList.toggle('active', b.dataset.price === price));
+  $('plgTabSearchNote').style.display = price === 'all' ? 'none' : '';
+  if (PLG.lastResults.length) renderPluginResults(applyPriceFilter(PLG.lastResults), PLG.lastErrors);
+}
+
+function applyPriceFilter(list) {
+  if (PLG.price === 'premium') return list.filter(p => p.premium);
+  if (PLG.price === 'free')    return list.filter(p => !p.premium);
+  return list;
+}
+
 async function pluginSearch() {
   const q       = $('plgSearchInput').value.trim();
   const results = $('plgResults');
@@ -545,7 +561,11 @@ async function pluginSearch() {
     if (!data.ok) { results.innerHTML = plgError(data.error); return; }
     if (!data.results.length) { results.innerHTML = '<div class="empty-state">Sin resultados</div>'; return; }
     data.results.forEach(p => { p.installed = isPluginInstalled(p.name, installedKeys); });
-    renderPluginResults(data.results, data.errors || []);
+    PLG.lastResults = data.results;
+    PLG.lastErrors  = data.errors || [];
+    const filtered = applyPriceFilter(PLG.lastResults);
+    if (!filtered.length) { results.innerHTML = '<div class="empty-state">Sin resultados con ese filtro de precio</div>'; return; }
+    renderPluginResults(filtered, PLG.lastErrors);
   } catch (e) {
     results.innerHTML = plgError('Sin conexión con el backend: ' + e.message);
   }
@@ -1302,6 +1322,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (tab) pluginSwitchTab(tab.dataset.tab);
     const src = e.target.closest('.plg-source[data-source]');
     if (src) pluginSetSource(src.dataset.source);
+    const price = e.target.closest('.plg-price[data-price]');
+    if (price) pluginSetPrice(price.dataset.price);
   });
   $('btnPluginSearch').addEventListener('click', pluginSearch);
   $('plgSearchInput').addEventListener('keydown', e => { if (e.key === 'Enter') pluginSearch(); });

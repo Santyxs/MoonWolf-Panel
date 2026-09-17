@@ -502,9 +502,10 @@ body::after {
 .plg-search-input::placeholder { color: var(--muted); }
 
 .plg-source-pills { display: flex; gap: 5px; flex-shrink: 0; }
-.plg-source { display: flex; align-items: center; background: var(--surface2); border: 1px solid var(--border2); color: var(--muted2); font-family: 'Orbitron', sans-serif; font-size: 9px; font-weight: 700; letter-spacing: 1px; padding: 5px 11px; border-radius: var(--r-full); cursor: pointer; transition: all var(--t-base); white-space: nowrap; }
-.plg-source:hover  { border-color: var(--accent); color: var(--accent); }
-.plg-source.active { background: var(--accentDim); border-color: rgba(0,200,255,0.4); color: var(--accent); }
+.plg-source, .plg-price { display: flex; align-items: center; background: var(--surface2); border: 1px solid var(--border2); color: var(--muted2); font-family: 'Orbitron', sans-serif; font-size: 9px; font-weight: 700; letter-spacing: 1px; padding: 5px 11px; border-radius: var(--r-full); cursor: pointer; transition: all var(--t-base); white-space: nowrap; }
+.plg-source:hover, .plg-price:hover  { border-color: var(--accent); color: var(--accent); }
+.plg-source.active, .plg-price.active { background: var(--accentDim); border-color: rgba(0,200,255,0.4); color: var(--accent); }
+.plg-price-note { font-size: 10px; color: var(--muted2); padding: 0 16px 10px; }
 
 .plg-search-btn { background: rgba(0,200,255,0.1); border: 1px solid rgba(0,200,255,0.35); color: var(--accent); font-family: 'Orbitron', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 1.5px; padding: 9px 20px; border-radius: var(--r-md); cursor: pointer; transition: all var(--t-base); flex-shrink: 0; }
 .plg-search-btn:hover { background: rgba(0,200,255,0.18); box-shadow: 0 0 16px rgba(0,200,255,0.12); }
@@ -1044,7 +1045,7 @@ body::after {
   .files-editor-panel { left: 58px; }
 
   .plg-search-inner { flex-wrap: wrap; }
-  .plg-source-pills { order: 3; width: 100%; }
+  .plg-source-pills, .plg-price-pills { order: 3; width: 100%; }
   .plg-ver-row      { flex-direction: column; }
   .plg-ver-right    { align-items: flex-start; }
   .plg-modal-overlay { padding: 0; }
