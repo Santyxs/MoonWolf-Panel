@@ -95,7 +95,7 @@ Function LocalWorks()
     On Error Resume Next
 
     Set http = CreateObject("MSXML2.XMLHTTP")
-    http.Open "GET", LOCAL_URL & "/api/files", False
+    http.Open "GET", LOCAL_URL & "/api/health", False
     http.Send
 
     If Err.Number = 0 Then
@@ -117,7 +117,7 @@ Function PublicWorks()
     On Error Resume Next
 
     Set http = CreateObject("MSXML2.XMLHTTP")
-    http.Open "GET", PUBLIC_URL & "/api/files", False
+    http.Open "GET", PUBLIC_URL & "/api/health", False
     http.setRequestHeader "serveo-skip-browser-warning", "true"
     http.Send
 

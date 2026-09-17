@@ -175,6 +175,14 @@ app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 for (const asset of PUBLIC_ASSETS) {
   app.get('/' + asset, (_req, res) => res.sendFile(path.join(__dirname, asset)));
 }
+
+// Endpoint de salud SIN autenticación: no expone nada del servidor, solo
+// confirma que el proceso está arriba. Antes start.vbs usaba /api/files
+// para esto, pero esa ruta ahora exige token y devolvía 401 aunque todo
+// estuviera bien — eso hacía creer al supervisor de start.vbs que el
+// túnel estaba caído y lo reiniciaba constantemente.
+app.get('/api/health', (_req, res) => res.json({ ok: true }));
+
 app.use(express.json({ limit: '50mb' }));
 
 /* ══════════════════════════════════════════════
