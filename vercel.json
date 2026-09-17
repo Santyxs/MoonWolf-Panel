@@ -1,16 +1,3 @@
 {
-  "builds": [
-    {
-      "src": "index.html",
-      "use": "@vercel/static"
-    },
-    {
-      "src": "styles.css",
-      "use": "@vercel/static"
-    },
-    {
-      "src": "dashboard.js",
-      "use": "@vercel/static"
-    }
-  ]
+  "version": 2
 }

@@ -37,6 +37,12 @@ function broadcast(room, event, payload) {
   }
 }
 
+function forwardAgentEvent(room, event) {
+  if (!event || typeof event.name !== 'string') return;
+  if (!['status', 'log', 'history', 'stats'].includes(event.name)) return;
+  broadcast(room, event.name, event.payload);
+}
+
 io.use((socket, next) => {
   const auth = socket.handshake.auth || {};
   const role = auth.role;
@@ -85,16 +91,28 @@ io.on('connection', socket => {
     room.agent.emit('rpc', request);
   });
 
-  socket.on('rpc_result', result => {
+  socket.on('rpc_result', packet => {
     if (role !== 'agent') return;
+
+    // Compatibilidad con la versión anterior del Agent, que enviaba { result }.
+    const result = packet && packet.result && typeof packet.result === 'object'
+      ? packet.result
+      : packet;
+
+    if (!result || typeof result.id !== 'string') return;
     broadcast(room, 'rpc_result', result);
   });
 
+  // Nombre nuevo usado por el Agent actual.
+  socket.on('event', event => {
+    if (role !== 'agent') return;
+    forwardAgentEvent(room, event);
+  });
+
+  // Alias para clientes/Agents antiguos.
   socket.on('agent_event', event => {
     if (role !== 'agent') return;
-    const name = typeof event?.name === 'string' ? event.name : '';
-    if (!['status', 'log', 'history', 'stats'].includes(name)) return;
-    broadcast(room, name, event.payload);
+    forwardAgentEvent(room, event);
   });
 
   socket.on('disconnect', () => {

@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node index.js",
     "build:bundle": "node ../build-agent.mjs",
-    "build:exe": "npm run build:bundle"
+    "build:exe": "npm run build:bundle && node --build-sea ../sea-config.json"
   },
   "dependencies": {
     "socket.io-client": "^4.8.3"

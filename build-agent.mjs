@@ -7,6 +7,7 @@ const agentDir = path.join(root, 'agent');
 const require = createRequire(path.join(agentDir, 'package.json'));
 const { build } = require('esbuild');
 const outDir = path.join(root, 'dist');
+
 fs.mkdirSync(outDir, { recursive: true });
 
 await build({
@@ -18,16 +19,24 @@ await build({
   outfile: path.join(outDir, 'agent.bundle.cjs'),
   sourcemap: false,
   minify: false,
+  packages: 'bundle',
 });
 
-fs.writeFileSync(path.join(root, 'sea-config.json'), JSON.stringify({
-  main: path.join(outDir, 'agent.bundle.cjs'),
-  mainFormat: 'commonjs',
-  output: path.join(outDir, 'MoonWolf-Agent.exe'),
-  disableExperimentalSEAWarning: true,
-  useCodeCache: true,
-  useVfs: true,
-}, null, 2));
+fs.writeFileSync(
+  path.join(root, 'sea-config.json'),
+  JSON.stringify(
+    {
+      main: path.join(outDir, 'agent.bundle.cjs'),
+      mainFormat: 'commonjs',
+      output: path.join(outDir, 'MoonWolf-Agent.exe'),
+      disableExperimentalSEAWarning: true,
+      useCodeCache: false,
+      useVfs: false,
+    },
+    null,
+    2,
+  ),
+);
 
 console.log('Bundle creado:', path.join(outDir, 'agent.bundle.cjs'));
 console.log('SEA config creado:', path.join(root, 'sea-config.json'));

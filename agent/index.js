@@ -9,7 +9,7 @@ const { io } = require('socket.io-client');
 
 const PANEL_URL = process.env.MOONWOLF_PANEL_URL || 'https://moon-wolf-panel.vercel.app';
 const CLOUD_PATH = process.env.MOONWOLF_CLOUD_PATH || '/api/socket-io/socket.io';
-const DEFAULT_SERVER_DIR = path.join(os.homedir(), 'MoonWolf');
+const DEFAULT_SERVER_DIR = process.env.MOONWOLF_SERVER_DIR || path.join(os.homedir(), 'MoonWolf');
 const CONFIG_DIR = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'MoonWolf');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'agent.json');
 const TOKEN_RE = /^MW-[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/;
@@ -29,10 +29,12 @@ function makeToken() {
 function loadConfig() {
   ensureConfigDir();
   let config = {};
-  try { config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch {}
+  try {
+    config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  } catch {}
 
   if (!TOKEN_RE.test(config.token || '')) config.token = makeToken();
-  if (!config.serverDir) config.serverDir = process.env.MOONWOLF_SERVER_DIR || DEFAULT_SERVER_DIR;
+  if (!config.serverDir) config.serverDir = DEFAULT_SERVER_DIR;
   if (typeof config.autoStart !== 'boolean') config.autoStart = false;
   if (typeof config.startLocalServer !== 'boolean') config.startLocalServer = false;
 
@@ -48,11 +50,15 @@ function saveConfig(config) {
 function parseEnv(file) {
   const result = {};
   if (!fs.existsSync(file)) return result;
+
   for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
     const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
     if (!match) continue;
     let value = match[2];
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
       value = value.slice(1, -1);
     }
     result[match[1]] = value;
@@ -63,16 +69,30 @@ function parseEnv(file) {
 function findNode() {
   if (process.env.MOONWOLF_NODE) return process.env.MOONWOLF_NODE;
   if (process.platform !== 'win32') return process.execPath;
-  const candidates = [
-    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'nodejs', 'node.exe'),
-    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'nodejs', 'node.exe'),
-  ];
-  for (const candidate of candidates) if (fs.existsSync(candidate)) return candidate;
+
+  const candidates = [];
+  if (process.env.ProgramFiles) {
+    candidates.push(path.join(process.env.ProgramFiles, 'nodejs', 'node.exe'));
+  }
+  if (process.env.ProgramFilesW6432 && process.env.ProgramFilesW6432 !== process.env.ProgramFiles) {
+    candidates.push(path.join(process.env.ProgramFilesW6432, 'nodejs', 'node.exe'));
+  }
+  if (process.env.LOCALAPPDATA) {
+    candidates.push(path.join(process.env.LOCALAPPDATA, 'Programs', 'nodejs', 'node.exe'));
+  }
+  candidates.push('node.exe');
+
+  for (const candidate of candidates) {
+    if (candidate.endsWith('node.exe') && path.isAbsolute(candidate) && !fs.existsSync(candidate)) continue;
+    return candidate;
+  }
+
   return 'node.exe';
 }
 
 function spawnLocalServer(config) {
   if (!config.startLocalServer) return null;
+
   const serverScript = path.join(config.serverDir, 'server.js');
   if (!fs.existsSync(serverScript)) {
     console.error(`[MoonWolf] No existe ${serverScript}; startLocalServer queda desactivado.`);
@@ -90,7 +110,9 @@ function spawnLocalServer(config) {
   child.on('exit', code => {
     console.log(`[MoonWolf] server.js terminó (${code ?? 'sin código'}).`);
   });
-  child.on('error', error => console.error('[MoonWolf] No se pudo arrancar server.js:', error.message));
+  child.on('error', error => {
+    console.error('[MoonWolf] No se pudo arrancar server.js:', error.message);
+  });
   return child;
 }
 
@@ -99,6 +121,13 @@ async function main() {
   const localUrl = process.env.MOONWOLF_LOCAL_URL || 'http://127.0.0.1:3000';
   const env = parseEnv(path.join(config.serverDir, '.env'));
   const panelPassword = process.env.PANEL_PASSWORD || env.PANEL_PASSWORD || '';
+
+  if (env.PANEL_PASSWORD && !process.env.PANEL_PASSWORD) {
+    process.env.PANEL_PASSWORD = env.PANEL_PASSWORD;
+  }
+  if (env.SESSION_SECRET && !process.env.SESSION_SECRET) {
+    process.env.SESSION_SECRET = env.SESSION_SECRET;
+  }
 
   console.log('');
   console.log('🌙 MoonWolf Agent');
@@ -136,12 +165,17 @@ async function main() {
     try {
       const token = await loginLocal();
       const headers = { Authorization: `Bearer ${token}` };
-      if (request.body !== undefined && request.body !== null) headers['Content-Type'] = 'application/json';
+      if (request.body !== undefined && request.body !== null) {
+        headers['Content-Type'] = 'application/json';
+      }
 
       const response = await fetch(`${localUrl}${request.path}`, {
         method: request.method || 'GET',
         headers,
-        body: request.body !== undefined && request.body !== null ? JSON.stringify(request.body) : undefined,
+        body:
+          request.body !== undefined && request.body !== null
+            ? JSON.stringify(request.body)
+            : undefined,
       });
       const type = response.headers.get('content-type') || 'application/octet-stream';
       const bytes = Buffer.from(await response.arrayBuffer());
@@ -167,8 +201,11 @@ async function main() {
     localSocket?.disconnect();
     localSocket = io(localUrl, {
       auth: async callback => {
-        try { callback({ token: await loginLocal() }); }
-        catch { callback({ token: '' }); }
+        try {
+          callback({ token: await loginLocal() });
+        } catch {
+          callback({ token: '' });
+        }
       },
       transports: ['websocket', 'polling'],
       reconnection: true,
@@ -178,7 +215,9 @@ async function main() {
 
     for (const event of ['status', 'log', 'history', 'stats']) {
       localSocket.on(event, payload => {
-        if (cloudSocket?.connected) cloudSocket.emit('event', { name: event, payload });
+        if (cloudSocket?.connected) {
+          cloudSocket.emit('event', { name: event, payload });
+        }
       });
     }
 
@@ -213,7 +252,7 @@ async function main() {
 
     cloudSocket.on('rpc', async request => {
       const result = await forwardHttp(request || {});
-      cloudSocket?.emit('rpc_result', { result });
+      cloudSocket?.emit('rpc_result', result);
     });
 
     cloudSocket.on('connect_error', error => {
@@ -234,8 +273,14 @@ async function main() {
     if (localChild && !localChild.killed) localChild.kill();
   }
 
-  process.on('SIGINT', () => { shutdown(); process.exit(0); });
-  process.on('SIGTERM', () => { shutdown(); process.exit(0); });
+  process.on('SIGINT', () => {
+    shutdown();
+    process.exit(0);
+  });
+  process.on('SIGTERM', () => {
+    shutdown();
+    process.exit(0);
+  });
 
   connectCloud();
 }
