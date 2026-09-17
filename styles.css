@@ -542,6 +542,7 @@ body::after {
 .plg-src-badge { font-size: 9px; font-family: 'Orbitron', sans-serif; font-weight: 700; letter-spacing: 0.5px; padding: 2px 8px; border-radius: var(--r-full); display: inline-flex; align-items: center; }
 .plg-src-badge.modrinth { background: rgba(30,198,130,0.1); border: 1px solid rgba(30,198,130,0.3); color: #1ec682; }
 .plg-src-badge.spigot   { background: rgba(255,138,0,0.1);  border: 1px solid rgba(255,138,0,0.3);  color: #ff8a00; }
+.plg-src-badge.hangar   { background: rgba(58,168,255,0.1); border: 1px solid rgba(58,168,255,0.3); color: #3aa8ff; }
 .plg-src-badge.dl       { background: var(--accentDim); border: 1px solid rgba(0,200,255,0.2); color: var(--accent); }
 .plg-src-badge.mc       { background: rgba(170,136,255,0.1); border: 1px solid rgba(170,136,255,0.2); color: var(--purple); }
 

@@ -559,6 +559,8 @@ function renderPluginResults(plugins, errors) {
   const cards = plugins.map(p => {
     const srcBadge = p.source === 'modrinth'
       ? `<span class="plg-src-badge modrinth">MODRINTH</span>`
+      : p.source === 'hangar'
+      ? `<span class="plg-src-badge hangar">HANGAR</span>`
       : `<span class="plg-src-badge spigot">SPIGOT</span>`;
     const lockBadge = p.premium
       ? `<span class="plg-src-badge" style="background:rgba(255,180,0,.18);color:#ffb400">💰 PREMIUM</span>`
@@ -609,7 +611,7 @@ async function openVersionModal(plugin) {
   modal.style.display = 'flex';
 
   $('plgModalName').textContent = plugin.name;
-  $('plgModalMeta').innerHTML = `${escHtml(plugin.source === 'modrinth' ? 'Modrinth' : 'Spigot')} · ${Number(plugin.downloads || 0).toLocaleString()} descargas${
+  $('plgModalMeta').innerHTML = `${escHtml(plugin.source === 'modrinth' ? 'Modrinth' : plugin.source === 'hangar' ? 'Hangar' : 'Spigot')} · ${Number(plugin.downloads || 0).toLocaleString()} descargas${
     plugin.premium ? ` · <span style="color:#ffb400">💰 Premium</span>` : ''
   }`;
 

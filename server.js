@@ -465,6 +465,21 @@ app.get('/api/plugins/search', async (req, res) => {
       }));
     } catch { errors.push('SpigotMC (Spiget) no disponible'); }
   }
+  if (source === 'all' || source === 'hangar') {
+    try {
+      const d = await apiFetch(`https://hangar.papermc.io/api/v1/projects?limit=10&offset=0&q=${encodeURIComponent(q)}&sort=-stars`);
+      (d.result || []).forEach(p => results.push({
+        id:          `${p.namespace.owner}/${p.namespace.slug}`,
+        name:        p.name,
+        description: p.description || '',
+        icon:        p.avatarUrl,
+        downloads:   p.stats?.downloads || 0,
+        source:      'hangar',
+        gameVersions: [],
+        categories:  p.category ? [p.category] : [],
+      }));
+    } catch { errors.push('Hangar no disponible'); }
+  }
   ok(res, { results, errors });
 });
 
@@ -536,6 +551,45 @@ app.get('/api/plugins/versions', async (req, res) => {
         versions.push({ versionId: 'external', versionNumber: 'Ver en SpigotMC', isExternal: true, externalUrl: resourcePage });
       }
       return ok(res, { versions, isExternal: !canDownload });
+    }
+
+    if (source === 'hangar') {
+      const [owner, slug] = String(id).split('/');
+      if (!owner || !slug) return fail(res, 'ID de Hangar inválido');
+      const projectPage = `https://hangar.papermc.io/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}`;
+      const rawVersions = await apiFetch(`https://hangar.papermc.io/api/v1/projects/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}/versions?limit=20&offset=0`);
+      const list = Array.isArray(rawVersions.result) ? rawVersions.result : [];
+
+      const versions = list.map(v => {
+        const platforms = Object.keys(v.downloads || {});
+        // Preferimos PAPER si está, si no la primera plataforma que tenga (Velocity, Waterfall...).
+        const platform = platforms.includes('PAPER') ? 'PAPER' : platforms[0];
+        const platDL = platform ? v.downloads[platform] : null;
+        const totalDownloads = Object.values(v.downloads || {}).reduce((a, p) => a + (p?.downloads || 0), 0);
+        // Hangar permite marcar una plataforma como enlace externo en vez de
+        // .jar alojado por ellos (igual que "external" en Spiget/Modrinth).
+        const isExternal = !platform || !!platDL?.externalUrl;
+        return {
+          versionId:   v.name,
+          versionNumber: v.name,
+          published:   v.createdAt ? new Date(v.createdAt).getTime() : null,
+          downloads:   totalDownloads,
+          isExternal,
+          externalUrl: isExternal ? (platDL?.externalUrl || `${projectPage}/versions/${encodeURIComponent(v.name)}`) : undefined,
+          changelog:   v.description || null,
+          changelogIsHtml: false, // Hangar manda el changelog en markdown/texto plano, como Modrinth
+          files: (!isExternal && platform) ? [{
+            primary:  true,
+            url:      `https://hangar.papermc.io/api/v1/projects/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(v.name)}/${platform}/download`,
+            filename: `${slug}-${v.name}.jar`,
+          }] : [],
+        };
+      });
+
+      if (!versions.length) {
+        versions.push({ versionId: 'external', versionNumber: 'Ver en Hangar', isExternal: true, externalUrl: projectPage });
+      }
+      return ok(res, { versions });
     }
 
     ok(res, { versions: [], isExternal: true });
