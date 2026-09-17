@@ -2,10 +2,108 @@
 
 const express = require('express');
 const http    = require('http');
+const crypto  = require('crypto');
 const { Server } = require('socket.io');
 const fs      = require('fs').promises;
 const fsSync  = require('fs');
 const path    = require('path');
+
+/* ══════════════════════════════════════════════
+   .env (mini-loader, sin dependencias externas)
+   ══════════════════════════════════════════════ */
+const ENV_PATH = path.join(__dirname, '.env');
+(function loadDotEnv() {
+  if (!fsSync.existsSync(ENV_PATH)) return;
+  for (const line of fsSync.readFileSync(ENV_PATH, 'utf8').split(/\r?\n/)) {
+    const m = line.match(/^\s*([\w.-]+)\s*=\s*(.*)\s*$/);
+    if (!m) continue;
+    let val = m[2] || '';
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    if (!(m[1] in process.env)) process.env[m[1]] = val;
+  }
+})();
+
+/* ══════════════════════════════════════════════
+   AUTENTICACIÓN
+   El panel se expone públicamente a través de un túnel
+   (ver start.vbs → Serveo). Sin esto, cualquiera con la
+   URL del túnel tenía acceso total a la consola, archivos
+   y plugins del servidor sin ninguna comprobación.
+   ══════════════════════════════════════════════ */
+function ensureEnvSecret(name, bytes) {
+  if (process.env[name]) return process.env[name];
+  const generated = crypto.randomBytes(bytes).toString('hex');
+  process.env[name] = generated;
+  try {
+    const sep = fsSync.existsSync(ENV_PATH) ? '\n' : '';
+    fsSync.appendFileSync(ENV_PATH, `${sep}${name}=${generated}\n`);
+  } catch (e) {
+    console.error(`[auth] No se pudo guardar ${name} en .env:`, e.message);
+  }
+  return generated;
+}
+
+const isFirstRun    = !process.env.PANEL_PASSWORD;
+const PANEL_PASSWORD = ensureEnvSecret('PANEL_PASSWORD', 24);
+const SESSION_SECRET = ensureEnvSecret('SESSION_SECRET', 32);
+
+if (isFirstRun) {
+  console.log('\n══════════════════════════════════════════════');
+  console.log(' MoonWolf Panel: no había PANEL_PASSWORD configurada.');
+  console.log(' Se generó una y se guardó en .env:');
+  console.log(' ' + PANEL_PASSWORD);
+  console.log(' Úsala para entrar al panel. Puedes cambiarla editando .env.');
+  console.log('══════════════════════════════════════════════\n');
+}
+
+function timingSafeEqualStr(a, b) {
+  const bufA = Buffer.from(String(a ?? ''));
+  const bufB = Buffer.from(String(b ?? ''));
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function sign(payload) {
+  return crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('hex');
+}
+
+// Token de sesión firmado: <timestamp>.<random>.<firma>. No hay estado en
+// servidor que revocar, pero está atado a SESSION_SECRET (se regenera si se
+// borra .env) y expira a las 12h.
+const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+function makeSessionToken() {
+  const payload = `${Date.now()}.${crypto.randomBytes(16).toString('hex')}`;
+  return `${payload}.${sign(payload)}`;
+}
+function verifySessionToken(token) {
+  if (typeof token !== 'string') return false;
+  const parts = token.split('.');
+  if (parts.length !== 3) return false;
+  const [ts, rand, sig] = parts;
+  const payload  = `${ts}.${rand}`;
+  const expected = sign(payload);
+  if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
+    return false;
+  }
+  const issued = Number(ts);
+  return Number.isFinite(issued) && (Date.now() - issued) < SESSION_MAX_AGE_MS;
+}
+
+// Rate limit del login: el panel es accesible por un túnel público, así que
+// hay que frenar intentos de fuerza bruta contra la contraseña.
+const loginAttempts = new Map(); // ip -> { count, resetAt }
+function loginRateLimited(ip) {
+  const now = Date.now();
+  const rec = loginAttempts.get(ip);
+  if (!rec || now > rec.resetAt) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + 5 * 60 * 1000 });
+    return false;
+  }
+  rec.count++;
+  return rec.count > 10;
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -18,7 +116,7 @@ app.use((req, res, next) => {
     'Access-Control-Allow-Methods',
     'GET,POST,PUT,PATCH,DELETE,OPTIONS'
   );
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Vary', 'Origin');
 
   if (req.method === 'OPTIONS') {
@@ -35,12 +133,44 @@ const io = new Server(server, {
   }
 });
 
+// Igual que las rutas HTTP: sin esto cualquiera podía abrir el socket y
+// recibir la consola en vivo del servidor sin autenticarse.
+io.use((socket, next) => {
+  const token = socket.handshake.auth && socket.handshake.auth.token;
+  if (!verifySessionToken(token)) return next(new Error('unauthorized'));
+  next();
+});
+
 const PUBLIC_ASSETS = ['index.html', 'dashboard.js', 'styles.css'];
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 for (const asset of PUBLIC_ASSETS) {
   app.get('/' + asset, (_req, res) => res.sendFile(path.join(__dirname, asset)));
 }
 app.use(express.json({ limit: '50mb' }));
+
+/* ══════════════════════════════════════════════
+   AUTH API — login + guardia para todo /api/*
+   ══════════════════════════════════════════════ */
+app.post('/api/auth/login', (req, res) => {
+  const ip = req.ip;
+  if (loginRateLimited(ip)) {
+    return res.status(429).json({ ok: false, error: 'Demasiados intentos. Espera unos minutos.' });
+  }
+  const { password } = req.body || {};
+  if (!password || !timingSafeEqualStr(password, PANEL_PASSWORD)) {
+    return res.status(401).json({ ok: false, error: 'Contraseña incorrecta' });
+  }
+  res.json({ ok: true, token: makeSessionToken() });
+});
+
+app.use('/api', (req, res, next) => {
+  const header = req.headers.authorization || '';
+  const token  = header.startsWith('Bearer ') ? header.slice(7) : '';
+  if (!verifySessionToken(token)) {
+    return res.status(401).json({ ok: false, error: 'No autorizado' });
+  }
+  next();
+});
 
 const BASE_DIR    = 'C:\\Users\\HP\\Desktop\\Proyectos\\Minecraft Servers\\MoonWolf';
 const PLUGINS_DIR = path.join(BASE_DIR, 'plugins');

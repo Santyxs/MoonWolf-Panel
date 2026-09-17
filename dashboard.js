@@ -3,8 +3,67 @@
 /* ═══════════════════════ BACKEND ═══════════════════════ */
 const API_URL = 'https://moonwolf.serveousercontent.com';
 
+/* ═══════════════════════ AUTH ═══════════════════════
+   El panel viaja por un túnel público (ver start.vbs), así que toda
+   petición al backend necesita el token de sesión obtenido en /api/auth/login.
+   ═══════════════════════════════════════════════════ */
+let AUTH_TOKEN = sessionStorage.getItem('mw_token') || null;
+
+function setAuthToken(token) {
+  AUTH_TOKEN = token;
+  if (token) sessionStorage.setItem('mw_token', token);
+  else sessionStorage.removeItem('mw_token');
+}
+
+function showApp() {
+  document.getElementById('loginGate').classList.add('hidden');
+  document.querySelector('.app').classList.remove('locked');
+}
+
+function showLoginGate(message = '') {
+  document.getElementById('loginGate').classList.remove('hidden');
+  document.querySelector('.app').classList.add('locked');
+  document.getElementById('loginError').textContent = message;
+  if (socket.connected) socket.disconnect();
+}
+
+async function attemptLogin() {
+  const input = document.getElementById('loginPassword');
+  const btn   = document.getElementById('btnLogin');
+  const pass  = input.value;
+  if (!pass) return;
+  btn.disabled = true;
+  try {
+    const res  = await fetch(`${API_URL}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pass }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      document.getElementById('loginError').textContent = data.error || 'No se pudo iniciar sesión';
+      return;
+    }
+    setAuthToken(data.token);
+    input.value = '';
+    showApp();
+    socket.connect();
+  } catch (e) {
+    document.getElementById('loginError').textContent = 'No se pudo contactar con el panel';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 /* ═══════════════════════ SOCKET ═══════════════════════ */
-const socket = io(API_URL);
+const socket = io(API_URL, { autoConnect: false, auth: cb => cb({ token: AUTH_TOKEN }) });
+
+socket.on('connect_error', err => {
+  if (err && err.message === 'unauthorized') {
+    setAuthToken(null);
+    showLoginGate('Tu sesión caducó, vuelve a iniciar sesión.');
+  }
+});
 
 let currentStatus = 'offline';
 socket.on('status', setStatus);
@@ -90,7 +149,14 @@ async function api(url, opts = {}) {
     ? url
     : `${API_URL}${url}`;
 
-  const res = await fetch(target, opts);
+  const headers = { ...(opts.headers || {}), Authorization: `Bearer ${AUTH_TOKEN}` };
+  const res = await fetch(target, { ...opts, headers });
+
+  if (res.status === 401) {
+    setAuthToken(null);
+    showLoginGate('Tu sesión caducó, vuelve a iniciar sesión.');
+    return { ok: false, error: 'No autorizado' };
+  }
   return res.json();
 }
 
@@ -1147,6 +1213,19 @@ function toast(msg, type = 'ok') {
 
 /* ═══════════════════════ EVENT DELEGATION ═══════════════════════ */
 document.addEventListener('DOMContentLoaded', () => {
+
+  // Login
+  document.getElementById('btnLogin').addEventListener('click', attemptLogin);
+  document.getElementById('loginPassword').addEventListener('keydown', e => {
+    if (e.key === 'Enter') attemptLogin();
+  });
+
+  if (AUTH_TOKEN) {
+    // Sesión previa guardada: la damos por válida de forma optimista y
+    // dejamos que la primera petición/el socket la invaliden si expiró.
+    showApp();
+    socket.connect();
+  }
 
   // Sidebar navigation
   document.querySelector('.sidebar').addEventListener('click', e => {
