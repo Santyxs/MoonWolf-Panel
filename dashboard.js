@@ -108,15 +108,6 @@ const EXT_LABEL = {
   properties: 'PROPS', cfg: 'CONFIG', conf: 'CONFIG', ini: 'INI', txt: 'TEXT', log: 'LOG',
 };
 
-const VERSIONS = [
-  { ver: '1.21.4', type: 'paper',   date: '2025-01-15', build: '#195',   current: true  },
-  { ver: '1.21.4', type: 'vanilla', date: '2025-01-15', build: '—',      current: false },
-  { ver: '1.21.3', type: 'paper',   date: '2024-11-20', build: '#188',   current: false },
-  { ver: '1.21.3', type: 'fabric',  date: '2024-11-21', build: '0.16.9', current: false },
-  { ver: '1.21.1', type: 'paper',   date: '2024-08-08', build: '#182',   current: false },
-  { ver: '1.21.1', type: 'spigot',  date: '2024-08-10', build: '—',      current: false },
-];
-
 const USERS_DATA = {
   whitelist: [
     { name: 'MoonWolfHost', role: 'op',     last: '2h ago', av: '🐺' },
@@ -515,7 +506,18 @@ async function getInstalledKeys() {
 function isPluginInstalled(name, installedKeys) {
   const key = normalizePluginKey(name);
   if (!key) return false;
-  return installedKeys.some(k => k.includes(key) || key.includes(k));
+  // La coincidencia por "includes" en ambos sentidos existe para tolerar que
+  // el .jar instalado traiga la versión en el nombre (p.ej. "EssentialsX-2.20.1.jar"
+  // vs "EssentialsX"). Pero con textos cortos (3-4 caracteres) esa misma
+  // permisividad daba falsos positivos: cualquier .jar instalado cuyo nombre
+  // contuviera esas pocas letras marcaba como "instalado" un plugin que no lo
+  // estaba. Por debajo de 5 caracteres solo aceptamos coincidencia exacta.
+  const MIN_FUZZY_LEN = 5;
+  return installedKeys.some(k => {
+    if (k === key) return true;
+    if (key.length < MIN_FUZZY_LEN || k.length < MIN_FUZZY_LEN) return false;
+    return k.includes(key) || key.includes(k);
+  });
 }
 
 function pluginSwitchTab(tab) {
@@ -1208,19 +1210,29 @@ function updateStartupPreview() {
 }
 
 async function saveStartup() {
+  // Los campos de este formulario (#cfgJar, #cfgXms, etc.) y el endpoint
+  // /api/config todavía no existen (Startup es una vista sin terminar) — antes
+  // esto reventaba con un TypeError si algo llegaba a llamarlo, o si el fetch
+  // fallaba, mentía mostrando "✅ Config saved" igual. Ahora falla de forma
+  // honesta en vez de simular un guardado que no pasó.
+  const fields = { jar: $('cfgJar'), xms: $('cfgXms'), xmx: $('cfgXmx'), extraArgs: $('cfgExtraArgs'), path: $('cfgPath') };
+  if (Object.values(fields).some(el => !el)) {
+    toast('El formulario de Startup todavía no está disponible', 'err');
+    return;
+  }
   const body = {
-    jar:       $('cfgJar').value,
-    xms:       $('cfgXms').value,
-    xmx:       $('cfgXmx').value,
-    extraArgs: $('cfgExtraArgs').value,
-    path:      $('cfgPath').value,
+    jar:       fields.jar.value,
+    xms:       fields.xms.value,
+    xmx:       fields.xmx.value,
+    extraArgs: fields.extraArgs.value,
+    path:      fields.path.value,
   };
   try {
     const d = await postJSON('/api/config', body);
     if (d.ok) { toast('✅ Configuration saved', 'ok'); addActivity('Startup updated', 'ok', '⚙️'); }
     else toast(d.error || 'Error', 'err');
-  } catch {
-    toast('✅ Config saved (no backend yet)', 'ok');
+  } catch (e) {
+    toast('No se pudo guardar: ' + e.message, 'err');
   }
 }
 
