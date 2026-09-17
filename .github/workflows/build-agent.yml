@@ -28,11 +28,14 @@ jobs:
         working-directory: agent
         run: npm install --no-package-lock
 
-      - name: Bundle Agent
+      - name: Bundle Agent with esbuild
         run: node build-agent.mjs
 
-      - name: Build Windows executable
-        run: node --build-sea sea-config.json
+      - name: Install Yao-pkg
+        run: npm install -g @yao-pkg/pkg
+
+      - name: Build Windows executable with Yao-pkg
+        run: pkg dist/agent.cjs --targets node26-win-x64 --output dist/MoonWolf-Agent.exe
 
       - name: Verify executable
         shell: pwsh
