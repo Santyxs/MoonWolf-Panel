@@ -609,7 +609,9 @@ async function openVersionModal(plugin) {
   modal.style.display = 'flex';
 
   $('plgModalName').textContent = plugin.name;
-  $('plgModalMeta').textContent = `${plugin.source === 'modrinth' ? 'Modrinth' : 'Spigot'} · ${Number(plugin.downloads || 0).toLocaleString()} descargas`;
+  $('plgModalMeta').innerHTML = `${escHtml(plugin.source === 'modrinth' ? 'Modrinth' : 'Spigot')} · ${Number(plugin.downloads || 0).toLocaleString()} descargas${
+    plugin.premium ? ` · <span style="color:#ffb400">💰 Premium</span>` : ''
+  }`;
 
   const iconEl = $('plgModalIcon');
   if (plugin.icon) { iconEl.src = plugin.icon; iconEl.style.display = ''; }
