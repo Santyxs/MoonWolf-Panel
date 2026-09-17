@@ -6,7 +6,7 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { io } = require('socket.io-client');
 
-const PANEL_URL = process.env.MOONWOLF_PANEL_URL || 'https://moon-wolf-panel.vercel.app';
+const PANEL_URL = process.env.MOONWOLF_PANEL_URL || 'https://moonwolf-panel.vercel.app';
 const CLOUD_PATH = process.env.MOONWOLF_CLOUD_PATH || '/api/socket-io/socket.io';
 const DEFAULT_SERVER_DIR = process.env.MOONWOLF_SERVER_DIR || path.join(os.homedir(), 'MoonWolf');
 const CONFIG_DIR = path.join(
