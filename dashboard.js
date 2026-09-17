@@ -660,8 +660,9 @@ function renderVersionList(versions, plugin, isExternal) {
     $('plgModalBody').innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-msg">Sin versiones disponibles</div></div>';
     return;
   }
+  const srcLabel = plugin.source === 'modrinth' ? 'Modrinth' : plugin.source === 'hangar' ? 'Hangar' : 'SpigotMC';
   const headerLeft = isExternal
-    ? `<span style="color:var(--muted2);font-size:11px">SpigotMC no ofrece descarga directa</span>`
+    ? `<span style="color:var(--muted2);font-size:11px">${srcLabel} no ofrece descarga directa</span>`
     : `<span style="color:var(--muted2);font-size:11px">${versions.length} versión${versions.length !== 1 ? 'es' : ''}</span>`;
   $('plgModalBody').innerHTML = `
     <div class="plg-ver-header">
@@ -679,10 +680,15 @@ function renderVersionRow(v, plugin, isExternal) {
   const primary   = v.files?.find(f => f.primary) || v.files?.[0];
   const sizeKb    = primary?.size ? Math.round(primary.size / 1024) + ' KB' : '';
 
+  // El texto y el link de fallback estaban hardcodeados a SpigotMC sin
+  // importar la fuente real del plugin (bug visible ahora que existe Hangar,
+  // que también puede traer versiones sin .jar directo).
   let dlButton;
   if (isExternal || v.isExternal) {
-    const url = v.externalUrl || `https://www.spigotmc.org/resources/${plugin.id}/`;
-    dlButton = `<a href="${url}" target="_blank" rel="noopener" class="plg-dl-btn external">🔗 Ver en SpigotMC</a>`;
+    const srcLabel  = plugin.source === 'modrinth' ? 'Modrinth' : plugin.source === 'hangar' ? 'Hangar' : 'SpigotMC';
+    const fallbacks = { spigot: `https://www.spigotmc.org/resources/${plugin.id}/`, hangar: `https://hangar.papermc.io/${plugin.id}`, modrinth: `https://modrinth.com/plugin/${plugin.id}` };
+    const url = v.externalUrl || fallbacks[plugin.source] || '#';
+    dlButton = `<a href="${url}" target="_blank" rel="noopener" class="plg-dl-btn external">🔗 Ver en ${srcLabel}</a>`;
   } else if (!primary) {
     dlButton = `<span class="plg-dl-btn disabled">Sin archivo</span>`;
   } else {
