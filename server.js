@@ -9,219 +9,6 @@ const fsSync  = require('fs');
 const path    = require('path');
 
 /* ══════════════════════════════════════════════
-   .env (mini-loader, sin dependencias externas)
-   ══════════════════════════════════════════════ */
-const ENV_PATH = path.join(__dirname, '.env');
-(function loadDotEnv() {
-  if (!fsSync.existsSync(ENV_PATH)) return;
-  for (const line of fsSync.readFileSync(ENV_PATH, 'utf8').split(/\r?\n/)) {
-    const m = line.match(/^\s*([\w.-]+)\s*=\s*(.*)\s*$/);
-    if (!m) continue;
-    let val = m[2] || '';
-    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-      val = val.slice(1, -1);
-    }
-    if (!(m[1] in process.env)) process.env[m[1]] = val;
-  }
-})();
-
-/* ══════════════════════════════════════════════
-   AUTENTICACIÓN
-   El panel se expone públicamente a través de un túnel
-   (ver start.vbs → Serveo). Sin esto, cualquiera con la
-   URL del túnel tenía acceso total a la consola, archivos
-   y plugins del servidor sin ninguna comprobación.
-
-   PANEL_PASSWORD se define a mano en .env (no se autogenera
-   ni se imprime en consola) porque es la que se comparte con
-   el grupo privado; SESSION_SECRET sí se autogenera porque es
-   un detalle interno de firma de tokens, no algo que compartir.
-   ══════════════════════════════════════════════ */
-function ensureEnvSecret(name, bytes) {
-  if (process.env[name]) return process.env[name];
-  const generated = crypto.randomBytes(bytes).toString('hex');
-  process.env[name] = generated;
-  try {
-    const sep = fsSync.existsSync(ENV_PATH) ? '\n' : '';
-    fsSync.appendFileSync(ENV_PATH, `${sep}${name}=${generated}\n`);
-  } catch (e) {
-    console.error(`[auth] No se pudo guardar ${name} en .env:`, e.message);
-  }
-  return generated;
-}
-
-const PANEL_PASSWORD = process.env.PANEL_PASSWORD;
-const SESSION_SECRET  = ensureEnvSecret('SESSION_SECRET', 32);
-
-if (!PANEL_PASSWORD) {
-  console.error('\n══════════════════════════════════════════════');
-  console.error(' MoonWolf Panel: falta PANEL_PASSWORD en el .env.');
-  console.error(' Añade una línea así en el .env (junto a server.js):');
-  console.error(' PANEL_PASSWORD=tu_contraseña_aquí');
-  console.error(' El servidor no arrancará sin ella.');
-  console.error('══════════════════════════════════════════════\n');
-  process.exit(1);
-}
-
-function timingSafeEqualStr(a, b) {
-  const bufA = Buffer.from(String(a ?? ''));
-  const bufB = Buffer.from(String(b ?? ''));
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
-}
-
-function sign(payload) {
-  return crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('hex');
-}
-
-// Token de sesión firmado: <timestamp>.<random>.<firma>. No hay estado en
-// servidor que revocar, pero está atado a SESSION_SECRET (se regenera si se
-// borra .env) y expira a las 12h.
-const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
-function makeSessionToken() {
-  const payload = `${Date.now()}.${crypto.randomBytes(16).toString('hex')}`;
-  return `${payload}.${sign(payload)}`;
-}
-function verifySessionToken(token) {
-  if (typeof token !== 'string') return false;
-  const parts = token.split('.');
-  if (parts.length !== 3) return false;
-  const [ts, rand, sig] = parts;
-  const payload  = `${ts}.${rand}`;
-  const expected = sign(payload);
-  if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
-    return false;
-  }
-  const issued = Number(ts);
-  return Number.isFinite(issued) && (Date.now() - issued) < SESSION_MAX_AGE_MS;
-}
-
-// Rate limit del login: el panel es accesible por un túnel público, así que
-// hay que frenar intentos de fuerza bruta contra la contraseña.
-const loginAttempts = new Map(); // ip -> { count, resetAt }
-function loginRateLimited(ip) {
-  const now = Date.now();
-  const rec = loginAttempts.get(ip);
-  if (!rec || now > rec.resetAt) {
-    loginAttempts.set(ip, { count: 1, resetAt: now + 5 * 60 * 1000 });
-    return false;
-  }
-  rec.count++;
-  return rec.count > 10;
-}
-
-// Rate limit general para TODO /api/*: sin esto, alguien con (o intentando
-// adivinar) un token podía automatizar peticiones sin ningún freno.
-const apiHits = new Map(); // ip -> { count, resetAt }
-const API_RATE_LIMIT     = 120;     // peticiones...
-const API_RATE_WINDOW_MS = 60_000;  // ...por minuto, por IP
-function apiRateLimited(ip) {
-  const now = Date.now();
-  const rec = apiHits.get(ip);
-  if (!rec || now > rec.resetAt) {
-    apiHits.set(ip, { count: 1, resetAt: now + API_RATE_WINDOW_MS });
-    return false;
-  }
-  rec.count++;
-  return rec.count > API_RATE_LIMIT;
-}
-
-// Limpieza periódica para que estos mapas no crezcan indefinidamente en un
-// proceso que puede quedarse corriendo días/semanas.
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, rec] of loginAttempts) if (now > rec.resetAt) loginAttempts.delete(ip);
-  for (const [ip, rec] of apiHits)       if (now > rec.resetAt) apiHits.delete(ip);
-}, 10 * 60 * 1000).unref();
-
-const app = express();
-const server = http.createServer(app);
-
-const ALLOWED_ORIGIN = 'https://moon-wolf-panel.vercel.app';
-
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
-  res.setHeader(
-    'Access-Control-Allow-Methods',
-    'GET,POST,PUT,PATCH,DELETE,OPTIONS'
-  );
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Vary', 'Origin');
-
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(204);
-  }
-
-  next();
-});
-
-const io = new Server(server, {
-  cors: {
-    origin: ALLOWED_ORIGIN,
-    methods: ['GET', 'POST']
-  }
-});
-
-// Igual que las rutas HTTP: sin esto cualquiera podía abrir el socket y
-// recibir la consola en vivo del servidor sin autenticarse.
-io.use((socket, next) => {
-  const token = socket.handshake.auth && socket.handshake.auth.token;
-  if (!verifySessionToken(token)) return next(new Error('unauthorized'));
-  next();
-});
-
-const PUBLIC_ASSETS = ['index.html', 'dashboard.js', 'styles.css'];
-app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-for (const asset of PUBLIC_ASSETS) {
-  app.get('/' + asset, (_req, res) => res.sendFile(path.join(__dirname, asset)));
-}
-
-// Endpoint de salud SIN autenticación: no expone nada del servidor, solo
-// confirma que el proceso está arriba. Antes start.vbs usaba /api/files
-// para esto, pero esa ruta ahora exige token y devolvía 401 aunque todo
-// estuviera bien — eso hacía creer al supervisor de start.vbs que el
-// túnel estaba caído y lo reiniciaba constantemente.
-app.get('/api/health', (_req, res) => res.json({ ok: true }));
-
-app.use(express.json({ limit: '50mb' }));
-
-/* ══════════════════════════════════════════════
-   AUTH API — rate limit general + login + guardia para todo /api/*
-   ══════════════════════════════════════════════ */
-app.use('/api', (req, res, next) => {
-  if (apiRateLimited(req.ip)) {
-    return res.status(429).json({ ok: false, error: 'Demasiadas peticiones, espera un momento.' });
-  }
-  next();
-});
-
-app.post('/api/auth/login', (req, res) => {
-  const ip = req.ip;
-  if (loginRateLimited(ip)) {
-    return res.status(429).json({ ok: false, error: 'Demasiados intentos. Espera unos minutos.' });
-  }
-  const { password } = req.body || {};
-  if (!password || !timingSafeEqualStr(password, PANEL_PASSWORD)) {
-    return res.status(401).json({ ok: false, error: 'Contraseña incorrecta' });
-  }
-  res.json({ ok: true, token: makeSessionToken() });
-});
-
-app.use('/api', (req, res, next) => {
-  const header = req.headers.authorization || '';
-  const token  = header.startsWith('Bearer ') ? header.slice(7) : '';
-  if (!verifySessionToken(token)) {
-    return res.status(401).json({ ok: false, error: 'No autorizado' });
-  }
-  next();
-});
-
-const BASE_DIR    = 'C:\\Users\\HP\\Desktop\\Proyectos\\Minecraft Servers\\MoonWolf';
-const PLUGINS_DIR = path.join(BASE_DIR, 'plugins');
-const PORT        = 3000;
-const PAPER_UA    = 'MoonWolfPanel/2.0 (contact@moonwolf.local)';
-
-/* ══════════════════════════════════════════════
    HELPERS
    ══════════════════════════════════════════════ */
 function safePath(rel) {
@@ -250,13 +37,10 @@ async function downloadFile(url, dest) {
   const response = await fetch(url, { headers: { 'User-Agent': PAPER_UA } });
   if (!response.ok) throw new Error(`Download failed: ${response.status} ${response.statusText}`);
   const buffer = Buffer.from(await response.arrayBuffer());
-  // SpigotMC (vía Spiget) a veces responde con una página de verificación
-  // anti-bot de Cloudflare en vez del archivo real, con HTTP 200. Si no lo
-  // detectamos aquí, ese HTML se guardaría como si fuera el .jar del plugin.
   const contentType = (response.headers.get('content-type') || '').toLowerCase();
   const head = buffer.subarray(0, 20).toString('utf8').trim().toLowerCase();
   if (contentType.includes('text/html') || head.startsWith('<!doctype html') || head.startsWith('<html')) {
-    throw new Error('La descarga fue bloqueada por la protección anti-bot de SpigotMC. Instala este plugin manualmente desde su página de recursos.');
+    throw new Error('La descarga fue bloqueada por la protección anti-bot de SpigotMC. Instala este plugin manualmente desde su página.');
   }
   await fs.writeFile(dest, buffer);
 }
@@ -504,19 +288,11 @@ app.get('/api/plugins/versions', async (req, res) => {
 
     if (source === 'spigot') {
       const resource = await apiFetch(`https://api.spiget.org/v2/resources/${encodeURIComponent(id)}`);
-      // Spiget solo puede ofrecer descarga directa fiable para recursos
-      // gratuitos alojados en el propio SpigotMC. Los externos o de pago
-      // se resuelven como enlace a la página del recurso.
       const canDownload = !resource.premium && !resource.external;
       const resourcePage = `https://www.spigotmc.org/resources/${encodeURIComponent(id)}/`;
       const rawVersions = await apiFetch(`https://api.spiget.org/v2/resources/${encodeURIComponent(id)}/versions?size=20&sort=-releaseDate`);
       const safeName = (resource.name || 'plugin').replace(/[^a-zA-Z0-9._-]/g, '_');
 
-      // Spiget no incluye el texto del changelog en /versions (a diferencia de
-      // Modrinth). SpigotMC lo publica aparte como "Update Log", expuesto por
-      // Spiget en /resources/{id}/updates (title + description en HTML, sin
-      // vínculo directo a un versionId). Lo emparejamos por cercanía de fecha
-      // con cada versión para poder mostrarlo igual que en Modrinth.
       let updates = [];
       try {
         updates = await apiFetch(`https://api.spiget.org/v2/resources/${encodeURIComponent(id)}/updates?size=20&sort=-date`);
@@ -531,8 +307,6 @@ app.get('/api/plugins/versions', async (req, res) => {
           const diff = Math.abs(u.date - releaseDateSec);
           if (diff < bestDiff) { bestDiff = diff; best = u; }
         }
-        // Tolerancia de 7 días: más allá de eso no es fiable asumir que
-        // pertenece a esa versión concreta.
         return best && bestDiff <= 7 * 86400 ? best.description : null;
       };
 
@@ -546,7 +320,7 @@ app.get('/api/plugins/versions', async (req, res) => {
           isExternal: !canDownload,
           externalUrl: !canDownload ? resourcePage : undefined,
           changelog:  findChangelog(v.releaseDate),
-          changelogIsHtml: true, // el texto de Spiget viene en HTML (BBCode convertido), no markdown/plano como Modrinth
+          changelogIsHtml: true,
           files: canDownload ? [{
             primary:  true,
             url:      `https://api.spiget.org/v2/resources/${encodeURIComponent(id)}/versions/${v.id}/download`,
@@ -570,12 +344,9 @@ app.get('/api/plugins/versions', async (req, res) => {
 
       const versions = list.map(v => {
         const platforms = Object.keys(v.downloads || {});
-        // Preferimos PAPER si está, si no la primera plataforma que tenga (Velocity, Waterfall...).
         const platform = platforms.includes('PAPER') ? 'PAPER' : platforms[0];
         const platDL = platform ? v.downloads[platform] : null;
         const totalDownloads = Object.values(v.downloads || {}).reduce((a, p) => a + (p?.downloads || 0), 0);
-        // Hangar permite marcar una plataforma como enlace externo en vez de
-        // .jar alojado por ellos (igual que "external" en Spiget/Modrinth).
         const isExternal = !platform || !!platDL?.externalUrl;
         return {
           versionId:   v.name,
@@ -585,7 +356,7 @@ app.get('/api/plugins/versions', async (req, res) => {
           isExternal,
           externalUrl: isExternal ? (platDL?.externalUrl || `${projectPage}/versions/${encodeURIComponent(v.name)}`) : undefined,
           changelog:   v.description || null,
-          changelogIsHtml: false, // Hangar manda el changelog en markdown/texto plano, como Modrinth
+          changelogIsHtml: false,
           files: (!isExternal && platform) ? [{
             primary:  true,
             url:      `https://hangar.papermc.io/api/v1/projects/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(v.name)}/${platform}/download`,
@@ -624,9 +395,6 @@ app.get('/api/plugins/installed', async (req, res) => {
   try {
     if (!fsSync.existsSync(PLUGINS_DIR)) return ok(res, { plugins: [] });
     const entries = await fs.readdir(PLUGINS_DIR, { withFileTypes: true });
-    // Solo archivos .jar: muchos plugins crean su propia carpeta de config
-    // dentro de plugins/ (ej. plugins/WorldEdit/), que no son plugins en sí
-    // y no se pueden "eliminar" como si lo fueran (unlink falla en directorios).
     const jarFiles = entries.filter(e => e.isFile() && e.name.toLowerCase().endsWith('.jar'));
     const plugins = await Promise.all(jarFiles.map(async e => {
       const s = await fs.stat(path.join(PLUGINS_DIR, e.name));
@@ -661,8 +429,8 @@ app.get('/api/versions/software', (_req, res) => {
       { id: 'fabric',    label: 'Fabric',     category: 'server', color: '#d4aa70', desc: 'Ligero, orientado a mods. 1.14+' },
       { id: 'vanilla',   label: 'Vanilla',    category: 'server', color: '#c9d8e8', desc: 'Oficial de Mojang. Sin mods ni plugins. 1.0+' },
       { id: 'forge',     label: 'Forge',      category: 'server', color: '#c0873f', desc: 'El cargador de mods clásico. Descarga manual.', external: 'https://files.minecraftforge.net/' },
-      { id: 'velocity',  label: 'Velocity',   category: 'proxy',  color: '#ffcc00', desc: 'Proxy moderno. Recomendado.' },
-      { id: 'waterfall', label: 'Waterfall',  category: 'proxy',  color: '#ff8844', desc: 'Fork de BungeeCord (EOL). Usa Velocity mejor.' },
+      { id: 'velocity',  label: 'Velocity',   category: 'proxy',  color: '#ffcc00', desc: 'Proxy moderno y estable.' },
+      { id: 'waterfall', label: 'Waterfall',  category: 'proxy',  color: '#ff8844', desc: 'Fork de BungeeCord (EOL).' },
       { id: 'bungeecord',label: 'BungeeCord', category: 'proxy',  color: '#ff4455', desc: 'Proxy original. Descarga desde SpigotMC.', external: 'https://ci.md-5.net/job/BungeeCord/' },
     ],
   });
@@ -770,7 +538,7 @@ app.get('/api/versions/builds', async (req, res) => {
   }
 });
 
-// Instalar: descargar y reemplazar server.jar (con backup automático)
+// Instalar: descargar y reemplazar server.jar
 app.post('/api/versions/install', async (req, res) => {
   const { software: sw, version, build, url, loaderVersion } = req.body;
   if (!sw || !version) return fail(res, 'software y version requeridos');
