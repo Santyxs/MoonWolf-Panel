@@ -1,73 +1,60 @@
-import { createRequire } from 'node:module';
-import fs from 'node:fs';
+import * as esbuild from 'esbuild';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 
-const root = path.resolve(import.meta.dirname);
-const agentDir = path.join(root, 'agent');
-const require = createRequire(path.join(agentDir, 'package.json'));
-const { build } = require('esbuild');
-const outDir = path.join(root, 'dist');
+const LEGACY_BASE_DIR_PATTERNS = [
+  /const\s+BASE_DIR\s*=\s*['"]C:\\Users\\HP\\Desktop\\Proyectos\\Minecraft Servers\\MoonWolf['"]\s*;?/,
+  /let\s+BASE_DIR\s*=\s*['"]C:\\Users\\HP\\Desktop\\Proyectos\\Minecraft Servers\\MoonWolf['"]\s*;?/,
+  /var\s+BASE_DIR\s*=\s*['"]C:\\Users\\HP\\Desktop\\Proyectos\\Minecraft Servers\\MoonWolf['"]\s*;?/,
+];
 
-fs.mkdirSync(outDir, { recursive: true });
-
-const legacyBaseDir = String.raw`const BASE_DIR    = 'C:\Users\HP\Desktop\Proyectos\Minecraft Servers\MoonWolf';`;
-const portableBaseDir = `const BASE_DIR = process.env.MOONWOLF_SERVER_DIR || path.join(
-  process.env.USERPROFILE || process.env.HOME || process.cwd(),
-  'MoonWolf',
-);`;
-
-const legacyPort = 'const PORT        = 3000;';
-const portablePort = "const PORT = Number(process.env.MOONWOLF_PORT || 3000);";
+const PORTABLE_BASE_DIR ="const BASE_DIR = process.env.MOONWOLF_BASE_DIR || path.join(process.cwd());";
 
 const portableServerPlugin = {
   name: 'moonwolf-portable-server',
-  setup(buildApi) {
-    buildApi.onLoad({ filter: /(?:^|[/\\])server\.js$/ }, async args => {
-      let source = await fs.promises.readFile(args.path, 'utf8');
+  setup(build) {
+    build.onLoad({ filter: /server\.js$/ }, async (args) => {
+      let source = await fs.readFile(args.path, 'utf8');
 
-      if (!source.includes(legacyBaseDir)) {
-        throw new Error('No se encontró la BASE_DIR antigua de server.js para convertirla a portable.');
+      const normalized = source.replace(/\r\n/g, '\n');
+
+      let replaced = false;
+      let output = normalized;
+
+      for (const pattern of LEGACY_BASE_DIR_PATTERNS) {
+        if (pattern.test(output)) {
+          output = output.replace(pattern, PORTABLE_BASE_DIR);
+          replaced = true;
+          break;
+        }
       }
-      source = source.replace(legacyBaseDir, portableBaseDir);
-      source = source.replace(legacyPort, portablePort);
-      source = source.replace(
-        'server.listen(PORT, () => console.log(`MoonWolf Panel → http://localhost:${PORT}`));',
-        "server.listen(PORT, '127.0.0.1', () => console.log(`MoonWolf Panel → http://127.0.0.1:${PORT}`));",
-      );
 
-      return { contents: source, loader: 'js' };
+      if (!replaced) {
+        console.warn(`[moonwolf-portable-server] BASE_DIR antigua no encontrada en ${path.basename(args.path)}; se deja el archivo tal cual.`);
+        return { contents: normalized, loader: 'js' };
+      }
+
+      console.log(`[moonwolf-portable-server] BASE_DIR portabilizada en ${path.basename(args.path)}`
+      );
+      return { contents: output, loader: 'js' };
     });
   },
 };
 
-await build({
-  entryPoints: [path.join(agentDir, 'index.js')],
-  bundle: true,
-  platform: 'node',
-  target: 'node26',
-  format: 'cjs',
-  outfile: path.join(outDir, 'agent.bundle.cjs'),
-  sourcemap: false,
-  minify: false,
-  packages: 'bundle',
-  plugins: [portableServerPlugin],
+async function main() {
+  await esbuild.build({
+    entryPoints: ['agent/index.js'],
+    bundle: true,
+    platform: 'node',
+    target: 'node20',
+    format: 'cjs',
+    outfile: 'dist/agent.cjs',
+    plugins: [portableServerPlugin],
+    logLevel: 'info',
+  });
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
 });
-
-fs.writeFileSync(
-  path.join(root, 'sea-config.json'),
-  JSON.stringify(
-    {
-      main: path.join(outDir, 'agent.bundle.cjs'),
-      mainFormat: 'commonjs',
-      output: path.join(outDir, 'MoonWolf-Agent.exe'),
-      disableExperimentalSEAWarning: true,
-      useCodeCache: false,
-      useVfs: false,
-    },
-    null,
-    2,
-  ),
-);
-
-console.log('Bundle creado:', path.join(outDir, 'agent.bundle.cjs'));
-console.log('SEA config creado:', path.join(root, 'sea-config.json'));
