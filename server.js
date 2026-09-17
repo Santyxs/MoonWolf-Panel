@@ -489,6 +489,30 @@ app.get('/api/plugins/versions', async (req, res) => {
       const rawVersions = await apiFetch(`https://api.spiget.org/v2/resources/${encodeURIComponent(id)}/versions?size=20&sort=-releaseDate`);
       const safeName = (resource.name || 'plugin').replace(/[^a-zA-Z0-9._-]/g, '_');
 
+      // Spiget no incluye el texto del changelog en /versions (a diferencia de
+      // Modrinth). SpigotMC lo publica aparte como "Update Log", expuesto por
+      // Spiget en /resources/{id}/updates (title + description en HTML, sin
+      // vínculo directo a un versionId). Lo emparejamos por cercanía de fecha
+      // con cada versión para poder mostrarlo igual que en Modrinth.
+      let updates = [];
+      try {
+        updates = await apiFetch(`https://api.spiget.org/v2/resources/${encodeURIComponent(id)}/updates?size=20&sort=-date`);
+        if (!Array.isArray(updates)) updates = [];
+      } catch { /* changelog opcional: si falla, seguimos sin él */ }
+
+      const findChangelog = releaseDateSec => {
+        if (!releaseDateSec || !updates.length) return null;
+        let best = null, bestDiff = Infinity;
+        for (const u of updates) {
+          if (!u.date) continue;
+          const diff = Math.abs(u.date - releaseDateSec);
+          if (diff < bestDiff) { bestDiff = diff; best = u; }
+        }
+        // Tolerancia de 7 días: más allá de eso no es fiable asumir que
+        // pertenece a esa versión concreta.
+        return best && bestDiff <= 7 * 86400 ? best.description : null;
+      };
+
       const versions = (Array.isArray(rawVersions) ? rawVersions : []).map(v => {
         const versionLabel = v.name || `#${v.id}`;
         return {
@@ -498,6 +522,8 @@ app.get('/api/plugins/versions', async (req, res) => {
           downloads:  v.downloads,
           isExternal: !canDownload,
           externalUrl: !canDownload ? resourcePage : undefined,
+          changelog:  findChangelog(v.releaseDate),
+          changelogIsHtml: true, // el texto de Spiget viene en HTML (BBCode convertido), no markdown/plano como Modrinth
           files: canDownload ? [{
             primary:  true,
             url:      `https://api.spiget.org/v2/resources/${encodeURIComponent(id)}/versions/${v.id}/download`,

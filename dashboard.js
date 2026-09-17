@@ -144,6 +144,17 @@ const escJS = str => String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 const escAttr = str => str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
 const escHtml = str => String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+// Cualquier <a> que sobreviva a la sanitización de un changelog externo (Spigot)
+// se fuerza a abrir en pestaña nueva sin dar acceso a window.opener.
+if (window.DOMPurify) {
+  DOMPurify.addHook('afterSanitizeAttributes', node => {
+    if (node.tagName === 'A') {
+      node.setAttribute('target', '_blank');
+      node.setAttribute('rel', 'noopener noreferrer');
+    }
+  });
+}
+
 async function api(url, opts = {}) {
   const target = url.startsWith('http')
     ? url
@@ -659,8 +670,15 @@ function renderVersionRow(v, plugin, isExternal) {
       data-vid="${escAttr(String(v.versionId))}">⬇ INSTALAR</button>`;
   }
 
+  // Modrinth manda el changelog en texto/markdown plano -> escapar y saltos de línea.
+  // Spigot (vía Spiget) lo manda como HTML real (BBCode ya convertido) -> hay que
+  // sanitizarlo con DOMPurify en vez de escaparlo, o se verían las etiquetas literales.
   const changelogHtml = v.changelog
-    ? `<div class="plg-ver-changelog">${escHtml(v.changelog).replace(/\n/g, '<br>')}</div>`
+    ? `<div class="plg-ver-changelog">${
+        v.changelogIsHtml
+          ? (window.DOMPurify ? DOMPurify.sanitize(v.changelog, { ALLOWED_TAGS: ['b','strong','i','em','u','a','br','p','ul','ol','li','span','code','pre'], ALLOWED_ATTR: ['href','target','rel'] }) : escHtml(v.changelog))
+          : escHtml(v.changelog).replace(/\n/g, '<br>')
+      }</div>`
     : '';
 
   return `<div class="plg-ver-row">
