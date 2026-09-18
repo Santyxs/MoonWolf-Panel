@@ -136,11 +136,6 @@ setInterval(() => {
 
 const app = express();
 const server = http.createServer(app);
-
-// En Render el frontend (index.html/dashboard.js) se sirve desde el mismo
-// servicio que la API, así que por defecto no hace falta restringir origen
-// (mismo origen). Si se quiere restringir de todas formas, se puede fijar
-// ALLOWED_ORIGIN como variable de entorno en Render.
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 
 app.use((req, res, next) => {
@@ -167,8 +162,26 @@ const io = new Server(server, {
 });
 
 io.use((socket, next) => {
-  const token = socket.handshake.auth && socket.handshake.auth.token;
-  if (!verifySessionToken(token)) return next(new Error('unauthorized'));
+  const auth = socket.handshake.auth || {};
+  const token = auth.token || '';
+
+  if (auth.role === 'agent') {
+    if (
+      !AGENT_AUTH_TOKEN ||
+      !timingSafeEqualStr(token, AGENT_AUTH_TOKEN)
+    ) {
+      return next(new Error('unauthorized'));
+    }
+
+    socket.data.role = 'agent';
+    return next();
+  }
+
+  if (!verifySessionToken(token)) {
+    return next(new Error('unauthorized'));
+  }
+
+  socket.data.role = 'user';
   next();
 });
 
