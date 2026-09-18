@@ -165,7 +165,7 @@ io.use((socket, next) => {
   const auth = socket.handshake.auth || {};
   const token = auth.token || '';
 
-  if (auth.role === 'agent') {
+  if (auth.role === 'agent' || auth.role === 'panel') {
     if (
       !AGENT_AUTH_TOKEN ||
       !timingSafeEqualStr(token, AGENT_AUTH_TOKEN)
@@ -173,7 +173,7 @@ io.use((socket, next) => {
       return next(new Error('unauthorized'));
     }
 
-    socket.data.role = 'agent';
+    socket.data.role = auth.role;
     return next();
   }
 
@@ -307,9 +307,144 @@ function semverCmp(a, b) {
   return 0;
 }
 
+let agentSocket = null;
+const panelSockets = new Set();
+
 io.on('connection', socket => {
-  console.log('Cliente conectado:', socket.id);
-  socket.on('disconnect', () => console.log('Cliente desconectado:', socket.id));
+  console.log('Cliente conectado:', socket.id, socket.data.role);
+
+  /*
+   * ══════════════════════════════════════════════
+   * AGENT
+   * ══════════════════════════════════════════════
+   */
+  if (socket.data.role === 'agent') {
+    agentSocket = socket;
+
+    console.log('🌙 MoonWolf Agent conectado:', socket.id);
+
+    // Avisar a todos los paneles de que el Agent está online.
+    for (const panel of panelSockets) {
+      panel.emit('cloud_ready', {
+        agentOnline: true,
+      });
+
+      panel.emit('agent_status', {
+        online: true,
+      });
+    }
+
+    /*
+     * Eventos procedentes del Agent:
+     *
+     * status
+     * log
+     * history
+     * stats
+     */
+    socket.on('event', event => {
+      if (!event?.name) return;
+
+      for (const panel of panelSockets) {
+        panel.emit(event.name, event.payload);
+      }
+    });
+
+    /*
+     * Resultado de una petición RPC.
+     *
+     * Agent → Cloud → Panel
+     */
+    socket.on('rpc_result', result => {
+      if (!result?.id) return;
+
+      for (const panel of panelSockets) {
+        if (panel.data.pendingRpc?.has(result.id)) {
+          panel.data.pendingRpc.delete(result.id);
+          panel.emit('rpc_result', result);
+          break;
+        }
+      }
+    });
+
+    socket.on('disconnect', () => {
+      if (agentSocket === socket) {
+        agentSocket = null;
+      }
+
+      console.log('🌙 MoonWolf Agent desconectado:', socket.id);
+
+      for (const panel of panelSockets) {
+        panel.emit('cloud_ready', {
+          agentOnline: false,
+        });
+
+        panel.emit('agent_status', {
+          online: false,
+        });
+      }
+    });
+
+    return;
+  }
+
+  /*
+   * ══════════════════════════════════════════════
+   * PANEL
+   * ══════════════════════════════════════════════
+   */
+  if (socket.data.role === 'panel') {
+    socket.data.pendingRpc = new Set();
+    panelSockets.add(socket);
+
+    console.log('🖥️ Panel conectado:', socket.id);
+
+    socket.emit('cloud_ready', {
+      agentOnline: Boolean(agentSocket?.connected),
+    });
+
+    socket.emit('agent_status', {
+      online: Boolean(agentSocket?.connected),
+    });
+
+    socket.on('rpc', request => {
+      if (!agentSocket?.connected) {
+        return socket.emit('rpc_result', {
+          id: request?.id || null,
+          ok: false,
+          status: 503,
+          contentType: 'application/json',
+          data: {
+            ok: false,
+            error: 'MoonWolf Agent no está conectado.',
+          },
+        });
+      }
+
+      const id = request?.id;
+
+      if (!id) {
+        return;
+      }
+
+      socket.data.pendingRpc.add(id);
+
+      agentSocket.emit('rpc', request);
+    });
+
+    socket.on('disconnect', () => {
+      panelSockets.delete(socket);
+      socket.data.pendingRpc?.clear();
+
+      console.log('🖥️ Panel desconectado:', socket.id);
+    });
+
+    return;
+  }
+
+  socket.on('disconnect', () => {
+    console.log('Cliente desconectado:', socket.id);
+  });
 });
 
 app.get('/api/files', async (req, res) => {
