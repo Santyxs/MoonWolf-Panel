@@ -2,9 +2,15 @@ name: Build Agent
 
 on:
   workflow_dispatch:
+
   push:
     branches:
       - main
+    paths:
+      - 'agent/**'
+      - 'build-agent.mjs'
+      - 'package.json'
+      - 'package-lock.json'
 
 permissions:
   contents: write
