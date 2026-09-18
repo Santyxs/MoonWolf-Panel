@@ -47,7 +47,7 @@ function loadConfig() {
     config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
   } catch {}
 
-  if (process.env.MOONWOLF_AGENT_TOKEN) {
+  if (process.env.AGENT_TOKEN) {
     config.token = process.env.AGENT_TOKEN;
   }
 
