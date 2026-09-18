@@ -1,9 +1,10 @@
 {
   "name": "moonwolf-panel",
   "version": "1.0.0",
-  "description": "Panel web para servidor Minecraft",
+  "description": "Panel web para servidores de Minecraft",
   "main": "server.js",
   "scripts": {
+    "start": "node server.js",
     "build:agent": "node build-agent.mjs"
   },
   "dependencies": {
@@ -12,7 +13,8 @@
     "express": "^4.22.1",
     "node-fetch": "^3.3.2",
     "rcon-client": "^4.2.4",
-    "socket.io": "^4.8.3"
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3"
   },
   "devDependencies": {
     "prettier": "^3.0.0",
