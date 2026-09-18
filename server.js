@@ -9,8 +9,209 @@ const fsSync  = require('fs');
 const path    = require('path');
 
 /* ══════════════════════════════════════════════
-   HELPERS
+   .env (mini-loader, sin dependencias externas)
    ══════════════════════════════════════════════ */
+const ENV_PATH = path.join(__dirname, '.env');
+(function loadDotEnv() {
+  if (!fsSync.existsSync(ENV_PATH)) return;
+  for (const line of fsSync.readFileSync(ENV_PATH, 'utf8').split(/\r?\n/)) {
+    const m = line.match(/^\s*([\w.-]+)\s*=\s*(.*)\s*$/);
+    if (!m) continue;
+    let val = m[2] || '';
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    if (!(m[1] in process.env)) process.env[m[1]] = val;
+  }
+})();
+
+/* ══════════════════════════════════════════════
+   AUTENTICACIÓN
+   ══════════════════════════════════════════════ */
+function ensureEnvSecret(name, bytes) {
+  if (process.env[name]) return process.env[name];
+  const generated = crypto.randomBytes(bytes).toString('hex');
+  process.env[name] = generated;
+  try {
+    const sep = fsSync.existsSync(ENV_PATH) ? '\n' : '';
+    fsSync.appendFileSync(ENV_PATH, `${sep}${name}=${generated}\n`);
+  } catch (e) {
+    console.error(`[auth] No se pudo guardar ${name} en .env:`, e.message);
+  }
+  return generated;
+}
+
+const PANEL_PASSWORD = process.env.PANEL_PASSWORD;
+// En Render, define PANEL_PASSWORD y SESSION_SECRET como variables de entorno
+// desde el dashboard (Environment). Si no defines SESSION_SECRET, se genera
+// una al vuelo, pero como el disco es efímero se perderá en cada redeploy y
+// todas las sesiones activas se invalidarán; fijarla a mano evita eso.
+const SESSION_SECRET  = ensureEnvSecret('SESSION_SECRET', 32);
+
+if (!PANEL_PASSWORD) {
+  console.error('\n══════════════════════════════════════════════');
+  console.error(' MoonWolf Panel: falta PANEL_PASSWORD en el .env.');
+  console.error(' Añade una línea así en el .env (junto a server.js):');
+  console.error(' PANEL_PASSWORD=tu_contraseña_aquí');
+  console.error(' El servidor no arrancará sin ella.');
+  console.error('══════════════════════════════════════════════\n');
+  process.exit(1);
+}
+
+function timingSafeEqualStr(a, b) {
+  const bufA = Buffer.from(String(a ?? ''));
+  const bufB = Buffer.from(String(b ?? ''));
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function sign(payload) {
+  return crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('hex');
+}
+
+const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+function makeSessionToken() {
+  const payload = `${Date.now()}.${crypto.randomBytes(16).toString('hex')}`;
+  return `${payload}.${sign(payload)}`;
+}
+function verifySessionToken(token) {
+  if (typeof token !== 'string') return false;
+  const parts = token.split('.');
+  if (parts.length !== 3) return false;
+  const [ts, rand, sig] = parts;
+  const payload  = `${ts}.${rand}`;
+  const expected = sign(payload);
+  if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
+    return false;
+  }
+  const issued = Number(ts);
+  return Number.isFinite(issued) && (Date.now() - issued) < SESSION_MAX_AGE_MS;
+}
+
+const loginAttempts = new Map();
+function loginRateLimited(ip) {
+  const now = Date.now();
+  const rec = loginAttempts.get(ip);
+  if (!rec || now > rec.resetAt) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + 5 * 60 * 1000 });
+    return false;
+  }
+  rec.count++;
+  return rec.count > 10;
+}
+
+const apiHits = new Map();
+const API_RATE_LIMIT     = 120;
+const API_RATE_WINDOW_MS = 60_000;
+function apiRateLimited(ip) {
+  const now = Date.now();
+  const rec = apiHits.get(ip);
+  if (!rec || now > rec.resetAt) {
+    apiHits.set(ip, { count: 1, resetAt: now + API_RATE_WINDOW_MS });
+    return false;
+  }
+  rec.count++;
+  return rec.count > API_RATE_LIMIT;
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, rec] of loginAttempts) if (now > rec.resetAt) loginAttempts.delete(ip);
+  for (const [ip, rec] of apiHits)       if (now > rec.resetAt) apiHits.delete(ip);
+}, 10 * 60 * 1000).unref();
+
+const app = express();
+const server = http.createServer(app);
+
+// En Render el frontend (index.html/dashboard.js) se sirve desde el mismo
+// servicio que la API, así que por defecto no hace falta restringir origen
+// (mismo origen). Si se quiere restringir de todas formas, se puede fijar
+// ALLOWED_ORIGIN como variable de entorno en Render.
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
+
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
+  res.setHeader(
+    'Access-Control-Allow-Methods',
+    'GET,POST,PUT,PATCH,DELETE,OPTIONS'
+  );
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Vary', 'Origin');
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+
+const io = new Server(server, {
+  cors: {
+    origin: ALLOWED_ORIGIN,
+    methods: ['GET', 'POST']
+  }
+});
+
+io.use((socket, next) => {
+  const token = socket.handshake.auth && socket.handshake.auth.token;
+  if (!verifySessionToken(token)) return next(new Error('unauthorized'));
+  next();
+});
+
+const PUBLIC_ASSETS = ['index.html', 'dashboard.js', 'styles.css'];
+app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+for (const asset of PUBLIC_ASSETS) {
+  app.get('/' + asset, (_req, res) => res.sendFile(path.join(__dirname, asset)));
+}
+app.use(express.json({ limit: '50mb' }));
+
+app.use('/api', (req, res, next) => {
+  if (apiRateLimited(req.ip)) {
+    return res.status(429).json({ ok: false, error: 'Demasiadas peticiones, espera un momento.' });
+  }
+  next();
+});
+
+app.post('/api/auth/login', (req, res) => {
+  const ip = req.ip;
+  if (loginRateLimited(ip)) {
+    return res.status(429).json({ ok: false, error: 'Demasiados intentos. Espera unos minutos.' });
+  }
+  const { password } = req.body || {};
+  if (!password || !timingSafeEqualStr(password, PANEL_PASSWORD)) {
+    return res.status(401).json({ ok: false, error: 'Contraseña incorrecta' });
+  }
+  res.json({ ok: true, token: makeSessionToken() });
+});
+
+app.use('/api', (req, res, next) => {
+  const header = req.headers.authorization || '';
+  const token  = header.startsWith('Bearer ') ? header.slice(7) : '';
+  if (!verifySessionToken(token)) {
+    return res.status(401).json({ ok: false, error: 'No autorizado' });
+  }
+  next();
+});
+
+// En tu PC (start.vbs) esto sigue siendo la ruta fija de Windows. En Render
+// no existe esa ruta ni ese sistema de archivos, así que BASE_DIR es
+// configurable por variable de entorno; si no se define, se usa una carpeta
+// dentro del propio proyecto (se crea sola si no existe).
+//
+// ⚠ Importante: el disco de Render es efímero por defecto (se borra en cada
+// redeploy/restart salvo que se añada un "Persistent Disk" de pago). Además,
+// Render no permite lanzar un proceso `java -jar server.jar` como el que
+// arranca /api/start: los Web Services de Render solo aceptan un proceso web
+// escuchando en $PORT, así que el panel funcionará (login, archivos, gestión
+// de plugins, etc.), pero "ARRANCAR" no podrá levantar un servidor de
+// Minecraft real ahí. Para eso, este backend debe seguir corriendo en tu
+// propio PC/VPS con Java instalado.
+const BASE_DIR    = process.env.BASE_DIR || path.join(__dirname, 'mc-server');
+if (!fsSync.existsSync(BASE_DIR)) fsSync.mkdirSync(BASE_DIR, { recursive: true });
+const PLUGINS_DIR = path.join(BASE_DIR, 'plugins');
+const PORT        = process.env.PORT || 3000;
+const PAPER_UA    = 'MoonWolfPanel/2.0 (contact@moonwolf.local)';
+
 function safePath(rel) {
   const full = path.resolve(path.join(BASE_DIR, rel));
   return full.startsWith(path.resolve(BASE_DIR) + path.sep) || full === path.resolve(BASE_DIR)
@@ -40,7 +241,7 @@ async function downloadFile(url, dest) {
   const contentType = (response.headers.get('content-type') || '').toLowerCase();
   const head = buffer.subarray(0, 20).toString('utf8').trim().toLowerCase();
   if (contentType.includes('text/html') || head.startsWith('<!doctype html') || head.startsWith('<html')) {
-    throw new Error('La descarga fue bloqueada por la protección anti-bot de SpigotMC. Instala este plugin manualmente desde su página.');
+    throw new Error('La descarga fue bloqueada por la protección anti-bot de SpigotMC. Instala este plugin manualmente desde su página de recursos.');
   }
   await fs.writeFile(dest, buffer);
 }
@@ -56,17 +257,11 @@ function semverCmp(a, b) {
   return 0;
 }
 
-/* ══════════════════════════════════════════════
-   SOCKET
-   ══════════════════════════════════════════════ */
 io.on('connection', socket => {
   console.log('Cliente conectado:', socket.id);
   socket.on('disconnect', () => console.log('Cliente desconectado:', socket.id));
 });
 
-/* ══════════════════════════════════════════════
-   FILES API
-   ══════════════════════════════════════════════ */
 app.get('/api/files', async (req, res) => {
   const fullPath = safePath(req.query.dir || '');
   if (!fullPath) return fail(res, 'Ruta no permitida');
@@ -101,9 +296,6 @@ app.post('/api/files/content', async (req, res) => {
   catch { fail(res, 'No se puede guardar'); }
 });
 
-/* ══════════════════════════════════════════════
-   SERVER CONTROL
-   ══════════════════════════════════════════════ */
 const { spawn } = require('child_process');
 let mcProcess  = null;
 let startTime  = null;
@@ -225,9 +417,6 @@ app.post('/api/command', (req, res) => {
   ok(res);
 });
 
-/* ══════════════════════════════════════════════
-   PLUGINS API
-   ══════════════════════════════════════════════ */
 app.get('/api/plugins/search', async (req, res) => {
   const q = (req.query.q || '').trim(), source = req.query.source || 'all';
   if (!q) return fail(res, 'Query vacía');
@@ -415,11 +604,6 @@ app.delete('/api/plugins/installed/:file', async (req, res) => {
   } catch (e) { fail(res, e.message); }
 });
 
-/* ══════════════════════════════════════════════════════════════
-   VERSIONS API
-   ══════════════════════════════════════════════════════════════ */
-
-// Catálogo de softwares
 app.get('/api/versions/software', (_req, res) => {
   ok(res, {
     software: [
@@ -429,14 +613,13 @@ app.get('/api/versions/software', (_req, res) => {
       { id: 'fabric',    label: 'Fabric',     category: 'server', color: '#d4aa70', desc: 'Ligero, orientado a mods. 1.14+' },
       { id: 'vanilla',   label: 'Vanilla',    category: 'server', color: '#c9d8e8', desc: 'Oficial de Mojang. Sin mods ni plugins. 1.0+' },
       { id: 'forge',     label: 'Forge',      category: 'server', color: '#c0873f', desc: 'El cargador de mods clásico. Descarga manual.', external: 'https://files.minecraftforge.net/' },
-      { id: 'velocity',  label: 'Velocity',   category: 'proxy',  color: '#ffcc00', desc: 'Proxy moderno y estable.' },
-      { id: 'waterfall', label: 'Waterfall',  category: 'proxy',  color: '#ff8844', desc: 'Fork de BungeeCord (EOL).' },
+      { id: 'velocity',  label: 'Velocity',   category: 'proxy',  color: '#ffcc00', desc: 'Proxy moderno. Recomendado.' },
+      { id: 'waterfall', label: 'Waterfall',  category: 'proxy',  color: '#ff8844', desc: 'Fork de BungeeCord (EOL). Usa Velocity mejor.' },
       { id: 'bungeecord',label: 'BungeeCord', category: 'proxy',  color: '#ff4455', desc: 'Proxy original. Descarga desde SpigotMC.', external: 'https://ci.md-5.net/job/BungeeCord/' },
     ],
   });
 });
 
-// Versiones de Minecraft disponibles
 app.get('/api/versions/list', async (req, res) => {
   const sw = req.query.software || '';
   if (!sw) return fail(res, 'software requerido');
@@ -467,7 +650,6 @@ app.get('/api/versions/list', async (req, res) => {
   }
 });
 
-// Builds disponibles para una versión
 app.get('/api/versions/builds', async (req, res) => {
   const { software: sw, version } = req.query;
   if (!sw || !version) return fail(res, 'software y version requeridos');
@@ -538,13 +720,11 @@ app.get('/api/versions/builds', async (req, res) => {
   }
 });
 
-// Instalar: descargar y reemplazar server.jar
 app.post('/api/versions/install', async (req, res) => {
   const { software: sw, version, build, url, loaderVersion } = req.body;
   if (!sw || !version) return fail(res, 'software y version requeridos');
 
   try {
-    // Genera comando de instalación
     if (sw === 'fabric') {
       if (!loaderVersion) return fail(res, 'loaderVersion requerido para Fabric');
       const installers = await apiFetch('https://meta.fabricmc.net/v2/versions/installer');
@@ -560,10 +740,8 @@ app.post('/api/versions/install', async (req, res) => {
       });
     }
 
-    // Descarga directa
     if (!url) return fail(res, 'URL de descarga requerida');
 
-    // Backup automático
     const currentJar = path.join(BASE_DIR, 'server.jar');
     if (fsSync.existsSync(currentJar)) {
       const bakName = `server.bak_${Date.now()}.jar`;
@@ -589,7 +767,6 @@ app.post('/api/versions/install', async (req, res) => {
   }
 });
 
-// Info del server.jar actual
 app.get('/api/versions/current', async (_req, res) => {
   const jarPath = path.join(BASE_DIR, 'server.jar');
   try {
@@ -600,12 +777,8 @@ app.get('/api/versions/current', async (_req, res) => {
   }
 });
 
-/* ══════════════════════════════════════════════
-   FILES EXTENDED API
-   ══════════════════════════════════════════════ */
-   const archiver = require('archiver');
+const archiver = require('archiver');
 
-// Renombrar
 app.post('/api/files/rename', async (req, res) => {
   const { path: rel, newName } = req.body;
   if (!rel || !newName) return fail(res, 'Parámetros requeridos');
@@ -617,7 +790,6 @@ app.post('/api/files/rename', async (req, res) => {
   catch (e) { fail(res, e.message); }
 });
 
-// Copiar
 app.post('/api/files/copy', async (req, res) => {
   const { path: rel, dest } = req.body;
   if (!rel || dest === undefined) return fail(res, 'Parámetros requeridos');
@@ -631,7 +803,6 @@ app.post('/api/files/copy', async (req, res) => {
   } catch (e) { fail(res, e.message); }
 });
 
-// Mover
 app.post('/api/files/move', async (req, res) => {
   const { path: rel, dest } = req.body;
   if (!rel || dest === undefined) return fail(res, 'Parámetros requeridos');
@@ -645,7 +816,6 @@ app.post('/api/files/move', async (req, res) => {
   } catch (e) { fail(res, e.message); }
 });
 
-// Descargar
 app.get('/api/files/download', async (req, res) => {
   const full = safePath(req.query.path || '');
   if (!full) return res.status(403).send('Ruta no permitida');
@@ -656,7 +826,6 @@ app.get('/api/files/download', async (req, res) => {
   } catch { res.status(404).send('Archivo no encontrado'); }
 });
 
-// Comprimir
 app.post('/api/files/compress', async (req, res) => {
   const { path: rel, name } = req.body;
   if (!rel || !name) return fail(res, 'Parámetros requeridos');
@@ -682,7 +851,6 @@ app.post('/api/files/compress', async (req, res) => {
   } catch (e) { fail(res, e.message); }
 });
 
-// Eliminar (archivo o carpeta)
 app.post('/api/files/delete', async (req, res) => {
   const { path: rel, isDir } = req.body;
   if (!rel) return fail(res, 'Parámetros requeridos');
@@ -695,10 +863,7 @@ app.post('/api/files/delete', async (req, res) => {
   } catch (e) { fail(res, e.message); }
 });
 
-/* ══════════════════════════════════════════════
-   DEBUG
-   ══════════════════════════════════════════════ */
-   app.get('/api/debug/start', async (_req, res) => {
+app.get('/api/debug/start', async (_req, res) => {
   const jarPath = path.join(BASE_DIR, 'server.jar');
   const exists  = fsSync.existsSync(jarPath);
   const javaCheck = await new Promise(resolve => {
@@ -712,7 +877,4 @@ app.post('/api/files/delete', async (req, res) => {
   res.json({ BASE_DIR, jarExists: exists, jarPath, java: javaCheck });
 });
 
-/* ══════════════════════════════════════════════
-   START
-   ══════════════════════════════════════════════ */
 server.listen(PORT, () => console.log(`MoonWolf Panel → http://localhost:${PORT}`));
