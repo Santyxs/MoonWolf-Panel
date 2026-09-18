@@ -70,6 +70,30 @@ function sign(payload) {
 }
 
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+const ACCOUNTS_PATH = process.env.ACCOUNTS_PATH || path.join(__dirname, 'data', 'accounts.json');
+const ACCOUNT_NAME_RE = /^[a-zA-Z0-9_.-]{3,32}$/;
+let accounts = [];
+
+function loadAccounts() {
+  try { accounts = JSON.parse(fsSync.readFileSync(ACCOUNTS_PATH, 'utf8')); }
+  catch { accounts = []; }
+}
+function saveAccounts() {
+  fsSync.mkdirSync(path.dirname(ACCOUNTS_PATH), { recursive: true });
+  fsSync.writeFileSync(ACCOUNTS_PATH, JSON.stringify(accounts, null, 2) + '\n', { mode: 0o600 });
+}
+function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+  return { salt, hash: crypto.scryptSync(String(password), salt, 64).toString('hex') };
+}
+function verifyPassword(password, account) {
+  const actual = crypto.scryptSync(String(password), account.salt, 64);
+  const expected = Buffer.from(account.hash, 'hex');
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
+function publicAccount(account) {
+  return { id: account.id, username: account.username, role: account.role, createdAt: account.createdAt };
+}
+loadAccounts();
 function makeSessionToken() {
   const payload = `${Date.now()}.${crypto.randomBytes(16).toString('hex')}`;
   return `${payload}.${sign(payload)}`;
@@ -177,11 +201,30 @@ app.post('/api/auth/login', (req, res) => {
   if (loginRateLimited(ip)) {
     return res.status(429).json({ ok: false, error: 'Demasiados intentos. Espera unos minutos.' });
   }
-  const { password } = req.body || {};
-  if (!password || !timingSafeEqualStr(password, PANEL_PASSWORD)) {
+  const { username, password } = req.body || {};
+  const account = username && accounts.find(item => item.username.toLowerCase() === String(username).toLowerCase());
+  const validAccount = account && password && verifyPassword(password, account);
+  const validLegacy = !username && password && PANEL_PASSWORD && timingSafeEqualStr(password, PANEL_PASSWORD);
+  if (!validAccount && !validLegacy) {
     return res.status(401).json({ ok: false, error: 'Contraseña incorrecta' });
   }
-  res.json({ ok: true, token: makeSessionToken() });
+  res.json({ ok: true, token: makeSessionToken(), account: account ? publicAccount(account) : { username: 'admin', role: 'admin' } });
+});
+
+app.post('/api/auth/register', (req, res) => {
+  const { username, password, role = 'user', bootstrapPassword } = req.body || {};
+  if (!ACCOUNT_NAME_RE.test(String(username || ''))) return res.status(400).json({ ok: false, error: 'Usuario inválido (3-32 caracteres).' });
+  if (typeof password !== 'string' || password.length < 8) return res.status(400).json({ ok: false, error: 'La contraseña debe tener al menos 8 caracteres.' });
+  if (accounts.some(item => item.username.toLowerCase() === username.toLowerCase())) return res.status(409).json({ ok: false, error: 'El usuario ya existe.' });
+  if (role !== 'user' && role !== 'admin') return res.status(400).json({ ok: false, error: 'Rol inválido.' });
+  if (role === 'admin' && (!PANEL_PASSWORD || !timingSafeEqualStr(bootstrapPassword, PANEL_PASSWORD))) {
+    return res.status(403).json({ ok: false, error: 'Crear un administrador requiere la contraseña de arranque del panel.' });
+  }
+  const credentials = hashPassword(password);
+  const account = { id: crypto.randomUUID(), username, role, ...credentials, createdAt: new Date().toISOString() };
+  accounts.push(account);
+  saveAccounts();
+  res.status(201).json({ ok: true, account: publicAccount(account) });
 });
 
 app.use('/api', (req, res, next) => {
@@ -191,6 +234,19 @@ app.use('/api', (req, res, next) => {
     return res.status(401).json({ ok: false, error: 'No autorizado' });
   }
   next();
+});
+
+app.get('/api/auth/me', (req, res) => res.json({ ok: true, account: { username: 'admin', role: 'admin' } }));
+app.get('/api/auth/accounts', (req, res) => res.json({ ok: true, accounts: accounts.map(publicAccount) }));
+app.delete('/api/auth/accounts/:id', (req, res) => {
+  const index = accounts.findIndex(item => item.id === req.params.id);
+  if (index < 0) return res.status(404).json({ ok: false, error: 'Cuenta no encontrada.' });
+  if (accounts[index].role === 'admin' && accounts.filter(item => item.role === 'admin').length === 1) {
+    return res.status(400).json({ ok: false, error: 'Debe existir al menos un administrador.' });
+  }
+  accounts.splice(index, 1);
+  saveAccounts();
+  res.json({ ok: true });
 });
 
 // En tu PC (start.vbs) esto sigue siendo la ruta fija de Windows. En Render
