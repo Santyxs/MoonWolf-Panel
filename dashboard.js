@@ -1,12 +1,7 @@
 'use strict';
 
-/* ═══════════════════════ MOONWOLF CLOUD ═══════════════════════
-   El navegador no habla nunca directamente con Serveo ni con el servidor
-   Minecraft. Todo pasa por el Agent local + el relay Socket.IO de Vercel.
-   ═══════════════════════════════════════════════════════════════ */
-
 const CLOUD_URL = location.origin;
-const CLOUD_PATH = '/api/socket-io/socket.io';
+const CLOUD_PATH = '/socket.io';
 const CODE_RE = /^MW-[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/;
 const CODE_KEY = 'moonwolf_connection_code';
 const $ = id => document.getElementById(id);
@@ -112,13 +107,13 @@ function ensureLoginGate() {
 
   $('loginPassword').addEventListener('input', event => {
     let value = event.target.value.toUpperCase().replace(/[^A-Z2-9]/g, '');
-    // Deja borrar completamente el campo; el prefijo solo se añade si hay código.
-    if (!value || (value === 'MW' && String(event.inputType || '').startsWith('delete'))) {
+
+     if (!value || (value === 'MW' && String(event.inputType || '').startsWith('delete'))) {
       event.target.value = '';
       return;
     }
-    // Permite teclear o borrar la primera letra del prefijo sin que se bloquee.
-    if (value === 'M') {
+
+     if (value === 'M') {
       event.target.value = 'M';
       return;
     }
