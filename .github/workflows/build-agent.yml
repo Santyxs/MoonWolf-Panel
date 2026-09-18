@@ -40,11 +40,37 @@ jobs:
       - name: Bundle Agent with esbuild
         run: node build-agent.mjs
 
-      - name: Install Yao-pkg
-        run: npm install -g @yao-pkg/pkg
+      - name: Create SEA configuration
+        shell: pwsh
+        run: |
+          @'
+          {
+            "main": "dist/agent.cjs",
+            "output": "dist/moonwolf-agent.blob",
+            "disableExperimentalSEAWarning": true,
+            "useSnapshot": false,
+            "useCodeCache": false
+          }
+          '@ | Set-Content -Path sea-config.json -Encoding utf8
 
-      - name: Build Windows executable with Yao-pkg
-        run: pkg dist/agent.cjs --targets node26-win-x64 --output dist/MoonWolf-Agent.exe
+      - name: Generate SEA blob
+        run: node --experimental-sea-config sea-config.json
+
+      - name: Copy Node.js executable
+        shell: pwsh
+        run: |
+          Copy-Item `
+            "$env:RUNNER_TOOL_CACHE\node\26*\x64\node.exe" `
+            "dist\MoonWolf-Agent.exe"
+
+      - name: Inject SEA blob
+        shell: pwsh
+        run: |
+          npx postject `
+            dist\MoonWolf-Agent.exe `
+            NODE_SEA_BLOB `
+            dist\moonwolf-agent.blob `
+            --sentinel-fuse NODE_SEA_FUSE_fce680f5c4c0f3c6c0d6b1f5d6c7e5a1
 
       - name: Verify executable
         shell: pwsh
@@ -111,7 +137,6 @@ jobs:
 
       - name: Create Agent tag
         env:
-          GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ steps.version.outputs.tag }}
         shell: bash
         run: |
