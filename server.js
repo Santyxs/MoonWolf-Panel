@@ -47,6 +47,12 @@ function ensureEnvSecret(name, bytes) {
 // todas las sesiones activas se invalidarán; fijarla a mano evita eso.
 const SESSION_SECRET  = ensureEnvSecret('SESSION_SECRET', 32);
 const AGENT_AUTH_TOKEN = process.env.MOONWOLF_AGENT_AUTH_TOKEN || '';
+// Un ejecutable empaquetado no puede escribir dentro de __dirname (snapshot).
+// Mantener datos y archivos del servidor en una ruta real del sistema.
+const RUNTIME_DIR = process.env.MOONWOLF_SERVER_DIR
+  || process.env.BASE_DIR
+  || process.env.MOONWOLF_BASE_DIR
+  || path.join(process.cwd(), 'mc-server');
 
 function timingSafeEqualStr(a, b) {
   const bufA = Buffer.from(String(a ?? ''));
@@ -60,7 +66,7 @@ function sign(payload) {
 }
 
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
-const ACCOUNTS_PATH = process.env.ACCOUNTS_PATH || path.join(__dirname, 'data', 'accounts.json');
+const ACCOUNTS_PATH = process.env.ACCOUNTS_PATH || path.join(RUNTIME_DIR, '.moonwolf', 'accounts.json');
 const ACCOUNT_NAME_RE = /^[a-zA-Z0-9_.-]{3,32}$/;
 let accounts = [];
 
@@ -249,7 +255,7 @@ app.delete('/api/auth/accounts/:id', (req, res) => {
 // de plugins, etc.), pero "ARRANCAR" no podrá levantar un servidor de
 // Minecraft real ahí. Para eso, este backend debe seguir corriendo en tu
 // propio PC/VPS con Java instalado.
-const BASE_DIR    = process.env.BASE_DIR || path.join(__dirname, 'mc-server');
+const BASE_DIR    = RUNTIME_DIR;
 if (!fsSync.existsSync(BASE_DIR)) fsSync.mkdirSync(BASE_DIR, { recursive: true });
 const PLUGINS_DIR = path.join(BASE_DIR, 'plugins');
 const PORT        = process.env.PORT || 3000;

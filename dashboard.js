@@ -102,7 +102,7 @@ function ensureLoginGate() {
     <div class="mw-cloud-card">
       <h1>🌙 MOONWOLF CLOUD</h1>
       <p>Introduce el código de conexión que muestra MoonWolf Agent en el servidor Minecraft.</p>
-      <input id="loginPassword" type="text" maxlength="19" spellcheck="false" autocomplete="off" placeholder="MW-XXXX-XXXX-XXXX-XXXX">
+      <input id="loginPassword" type="text" maxlength="22" spellcheck="false" autocomplete="off" placeholder="MW-XXXX-XXXX-XXXX-XXXX">
       <button id="btnLogin">CONECTAR SERVIDOR</button>
       <div id="mwCloudError"></div>
       <div class="mw-cloud-help">El código se guarda solo en esta sesión del navegador.</div>
