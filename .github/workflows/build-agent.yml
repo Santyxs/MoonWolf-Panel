@@ -123,5 +123,5 @@ jobs:
         run: |
           gh release create "$TAG_NAME" \
             dist/MoonWolf-Agent.exe \
-            --title "MoonWolf Agent $TAG_NAME" \
+            --title "MoonWolf Agent v${TAG_NAME#agent-v}" \
             --generate-notes
