@@ -41,14 +41,8 @@ function ensureEnvSecret(name, bytes) {
   return generated;
 }
 
-// En Render, define SESSION_SECRET como variable de entorno desde el dashboard
-// (Environment). Si no se define, se genera
-// una al vuelo, pero como el disco es efímero se perderá en cada redeploy y
-// todas las sesiones activas se invalidarán; fijarla a mano evita eso.
 const SESSION_SECRET  = ensureEnvSecret('SESSION_SECRET', 32);
-const AGENT_AUTH_TOKEN = process.env.MOONWOLF_AGENT_AUTH_TOKEN || '';
-// Un ejecutable empaquetado no puede escribir dentro de __dirname (snapshot).
-// Mantener datos y archivos del servidor en una ruta real del sistema.
+const AGENT_AUTH_TOKEN = process.env.AGENT_AUTH_TOKEN || '';
 const RUNTIME_DIR = process.env.MOONWOLF_SERVER_DIR
   || process.env.BASE_DIR
   || process.env.MOONWOLF_BASE_DIR
@@ -185,6 +179,13 @@ for (const asset of PUBLIC_ASSETS) {
 }
 app.use(express.json({ limit: '50mb' }));
 
+app.get('/api/health', (_req, res) => {
+  res.json({
+    ok: true,
+    service: 'moonwolf-local',
+  });
+});
+
 app.use('/api', (req, res, next) => {
   if (apiRateLimited(req.ip)) {
     return res.status(429).json({ ok: false, error: 'Demasiadas peticiones, espera un momento.' });
@@ -242,23 +243,10 @@ app.delete('/api/auth/accounts/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// En tu PC (start.vbs) esto sigue siendo la ruta fija de Windows. En Render
-// no existe esa ruta ni ese sistema de archivos, así que BASE_DIR es
-// configurable por variable de entorno; si no se define, se usa una carpeta
-// dentro del propio proyecto (se crea sola si no existe).
-//
-// ⚠ Importante: el disco de Render es efímero por defecto (se borra en cada
-// redeploy/restart salvo que se añada un "Persistent Disk" de pago). Además,
-// Render no permite lanzar un proceso `java -jar server.jar` como el que
-// arranca /api/start: los Web Services de Render solo aceptan un proceso web
-// escuchando en $PORT, así que el panel funcionará (login, archivos, gestión
-// de plugins, etc.), pero "ARRANCAR" no podrá levantar un servidor de
-// Minecraft real ahí. Para eso, este backend debe seguir corriendo en tu
-// propio PC/VPS con Java instalado.
 const BASE_DIR    = RUNTIME_DIR;
 if (!fsSync.existsSync(BASE_DIR)) fsSync.mkdirSync(BASE_DIR, { recursive: true });
 const PLUGINS_DIR = path.join(BASE_DIR, 'plugins');
-const PORT        = process.env.PORT || 3000;
+const PORT = Number(process.env.MOONWOLF_PORT || process.env.PORT || 3000);
 const PAPER_UA    = 'MoonWolfPanel/2.0 (contact@moonwolf.local)';
 
 function safePath(rel) {
