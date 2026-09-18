@@ -100,7 +100,7 @@ function startEmbeddedLocalServer(config) {
 
   process.env.MOONWOLF_SERVER_DIR = config.serverDir;
   process.env.MOONWOLF_PORT = String(LOCAL_PORT);
-  process.env.PANEL_PASSWORD = localSecret;
+  process.env.MOONWOLF_AGENT_AUTH_TOKEN = localSecret;
   process.env.SESSION_SECRET = sessionSecret;
 
   require('../server.js');
@@ -143,7 +143,7 @@ async function main() {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        password: process.env.PANEL_PASSWORD,
+        agentToken: process.env.MOONWOLF_AGENT_AUTH_TOKEN,
       }),
     });
 

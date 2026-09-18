@@ -41,22 +41,12 @@ function ensureEnvSecret(name, bytes) {
   return generated;
 }
 
-const PANEL_PASSWORD = process.env.PANEL_PASSWORD;
-// En Render, define PANEL_PASSWORD y SESSION_SECRET como variables de entorno
-// desde el dashboard (Environment). Si no defines SESSION_SECRET, se genera
+// En Render, define SESSION_SECRET como variable de entorno desde el dashboard
+// (Environment). Si no se define, se genera
 // una al vuelo, pero como el disco es efímero se perderá en cada redeploy y
 // todas las sesiones activas se invalidarán; fijarla a mano evita eso.
 const SESSION_SECRET  = ensureEnvSecret('SESSION_SECRET', 32);
-
-if (!PANEL_PASSWORD) {
-  console.error('\n══════════════════════════════════════════════');
-  console.error(' MoonWolf Panel: falta PANEL_PASSWORD en el .env.');
-  console.error(' Añade una línea así en el .env (junto a server.js):');
-  console.error(' PANEL_PASSWORD=tu_contraseña_aquí');
-  console.error(' El servidor no arrancará sin ella.');
-  console.error('══════════════════════════════════════════════\n');
-  process.exit(1);
-}
+const AGENT_AUTH_TOKEN = process.env.MOONWOLF_AGENT_AUTH_TOKEN || '';
 
 function timingSafeEqualStr(a, b) {
   const bufA = Buffer.from(String(a ?? ''));
@@ -201,25 +191,22 @@ app.post('/api/auth/login', (req, res) => {
   if (loginRateLimited(ip)) {
     return res.status(429).json({ ok: false, error: 'Demasiados intentos. Espera unos minutos.' });
   }
-  const { username, password } = req.body || {};
+  const { username, password, agentToken } = req.body || {};
   const account = username && accounts.find(item => item.username.toLowerCase() === String(username).toLowerCase());
   const validAccount = account && password && verifyPassword(password, account);
-  const validLegacy = !username && password && PANEL_PASSWORD && timingSafeEqualStr(password, PANEL_PASSWORD);
-  if (!validAccount && !validLegacy) {
+  const validAgent = AGENT_AUTH_TOKEN && agentToken && timingSafeEqualStr(agentToken, AGENT_AUTH_TOKEN);
+  if (!validAccount && !validAgent) {
     return res.status(401).json({ ok: false, error: 'Contraseña incorrecta' });
   }
-  res.json({ ok: true, token: makeSessionToken(), account: account ? publicAccount(account) : { username: 'admin', role: 'admin' } });
+  res.json({ ok: true, token: makeSessionToken(), account: account ? publicAccount(account) : { username: 'agent', role: 'admin' } });
 });
 
 app.post('/api/auth/register', (req, res) => {
-  const { username, password, role = 'user', bootstrapPassword } = req.body || {};
+  const { username, password } = req.body || {};
   if (!ACCOUNT_NAME_RE.test(String(username || ''))) return res.status(400).json({ ok: false, error: 'Usuario inválido (3-32 caracteres).' });
   if (typeof password !== 'string' || password.length < 8) return res.status(400).json({ ok: false, error: 'La contraseña debe tener al menos 8 caracteres.' });
   if (accounts.some(item => item.username.toLowerCase() === username.toLowerCase())) return res.status(409).json({ ok: false, error: 'El usuario ya existe.' });
-  if (role !== 'user' && role !== 'admin') return res.status(400).json({ ok: false, error: 'Rol inválido.' });
-  if (role === 'admin' && (!PANEL_PASSWORD || !timingSafeEqualStr(bootstrapPassword, PANEL_PASSWORD))) {
-    return res.status(403).json({ ok: false, error: 'Crear un administrador requiere la contraseña de arranque del panel.' });
-  }
+  const role = accounts.length === 0 ? 'admin' : 'user';
   const credentials = hashPassword(password);
   const account = { id: crypto.randomUUID(), username, role, ...credentials, createdAt: new Date().toISOString() };
   accounts.push(account);
