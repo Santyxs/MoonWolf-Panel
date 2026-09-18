@@ -111,9 +111,17 @@ function ensureLoginGate() {
   document.body.prepend(gate);
 
   $('loginPassword').addEventListener('input', event => {
-    let value = event.target.value.toUpperCase().replace(/[^A-Z2-9-]/g, '');
-    if (!value.startsWith('MW-') && value.length) value = 'MW-' + value.replace(/-/g, '');
-    value = value.replace(/-/g, '').replace(/^MW/, 'MW');
+    let value = event.target.value.toUpperCase().replace(/[^A-Z2-9]/g, '');
+    // Deja borrar completamente el campo; el prefijo solo se añade si hay código.
+    if (!value || (value === 'MW' && String(event.inputType || '').startsWith('delete'))) {
+      event.target.value = '';
+      return;
+    }
+    // Permite teclear o borrar la primera letra del prefijo sin que se bloquee.
+    if (value === 'M') {
+      event.target.value = 'M';
+      return;
+    }
     const raw = value.startsWith('MW') ? value.slice(2) : value;
     const groups = raw.match(/.{1,4}/g) || [];
     event.target.value = 'MW-' + groups.slice(0, 4).join('-');
