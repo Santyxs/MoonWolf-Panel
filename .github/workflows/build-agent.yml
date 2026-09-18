@@ -28,142 +28,143 @@ jobs:
       - name: Setup Node.js 26
         uses: actions/setup-node@v7
         with:
-          node-version: 26.x
+          node-version: 26.9.0
 
-  - name: Show Node version
-    run: node --version
+      - name: Show Node version
+        run: node --version
 
-  - name: Install root dependencies
-    run: npm install --include=dev
+      - name: Install root dependencies
+        run: npm install --include=dev
 
-  - name: Install Agent dependencies
-    working-directory: agent
-    run: npm install --no-package-lock
+      - name: Install Agent dependencies
+        working-directory: agent
+        run: npm install --no-package-lock
 
-  - name: Bundle Agent with esbuild
-    run: node build-agent.mjs
+      - name: Bundle Agent with esbuild
+        run: node build-agent.mjs
 
-  - name: Create SEA configuration
-    shell: pwsh
-    run: |
-      @'
-      {
-        "main": "dist/agent.cjs",
-        "output": "dist/moonwolf-agent.blob",
-        "disableExperimentalSEAWarning": true,
-        "useSnapshot": false,
-        "useCodeCache": false
-      }
-      '@ | Set-Content -Path sea-config.json -Encoding utf8
+      - name: Create SEA configuration
+        shell: pwsh
+        run: |
+          @'
+          {
+            "main": "dist/agent.cjs",
+            "output": "dist/moonwolf-agent.blob",
+            "disableExperimentalSEAWarning": true,
+            "useSnapshot": false,
+            "useCodeCache": false
+          }
+          '@ | Set-Content -Path sea-config.json -Encoding utf8
 
-  - name: Generate SEA blob
-    run: node --experimental-sea-config sea-config.json
+      - name: Generate SEA blob
+        run: node --experimental-sea-config sea-config.json
 
-  - name: Copy Node.js executable
-    shell: pwsh
-    run: |
-      $nodePath = (Get-Command node).Source
+      - name: Copy Node.js executable
+        shell: pwsh
+        run: |
+          $nodePath = (Get-Command node).Source
 
-      Write-Host "Node executable: $nodePath"
+          Write-Host "Node executable: $nodePath"
 
-      Copy-Item `
-        $nodePath `
-        "dist\MoonWolf-Agent.exe" `
-        -Force
+          Copy-Item `
+            $nodePath `
+            "dist\MoonWolf-Agent.exe" `
+            -Force
 
-  - name: Install postject
-    run: npm install --no-save postject@1.0.0-alpha.6
+      - name: Install postject
+        run: npm install --no-save postject@1.0.0-alpha.6
 
-  - name: Inject SEA blob
-    shell: pwsh
-    run: |
-      npx postject `
-        dist\MoonWolf-Agent.exe `
-        NODE_SEA_BLOB `
-        dist\moonwolf-agent.blob `
-        --sentinel-fuse NODE_SEA_FUSE_fce680f5c4c0f3c6c0d6b1f5d6c7e5a1
+      - name: Inject SEA blob
+        shell: pwsh
+        run: |
+          npx postject `
+            dist\MoonWolf-Agent.exe `
+            NODE_SEA_BLOB `
+            dist\moonwolf-agent.blob `
+            --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
 
-  - name: Verify executable
-    shell: pwsh
-    run: |
-      $exe = 'dist/MoonWolf-Agent.exe'
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          $exe = 'dist/MoonWolf-Agent.exe'
 
-      if (-not (Test-Path $exe)) {
-        throw "No se generó $exe"
-      }
+          if (-not (Test-Path $exe)) {
+            throw "No se generó $exe"
+          }
 
-      $size = (Get-Item $exe).Length
+          $size = (Get-Item $exe).Length
 
-      Write-Host "MoonWolf-Agent.exe: $size bytes"
+          Write-Host "MoonWolf-Agent.exe: $size bytes"
 
-      if ($size -lt 1MB) {
-        throw 'El ejecutable generado es sospechosamente pequeño.'
-      }
+          if ($size -lt 1MB) {
+            throw 'El ejecutable generado es sospechosamente pequeño.'
+          }
 
-  - name: Upload workflow artifact
-    uses: actions/upload-artifact@v7
-    with:
-      name: MoonWolf-Agent-Windows
-      path: dist/MoonWolf-Agent.exe
-      if-no-files-found: error
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: MoonWolf-Agent-Windows
+          path: dist/MoonWolf-Agent.exe
+          if-no-files-found: error
 
-  - name: Determine next Agent version
-    id: version
-    shell: bash
-    env:
-      GH_TOKEN: ${{ github.token }}
-    run: |
-      latest=$(
-        gh release list \
-          --limit 100 \
-          --json tagName,isDraft,isPrerelease \
-          --jq '
-            [.[] |
-              select(.isDraft == false and .isPrerelease == false) |
-              .tagName |
-              select(test("^agent-v[0-9]+\\.[0-9]+$"))
-            ] |
-            sort_by(
-              split("-v")[1] |
-              split(".") |
-              map(tonumber)
-            ) |
-            last
-          '
-      )
+      - name: Determine next Agent version
+        id: version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(
+            gh release list \
+              --limit 100 \
+              --json tagName,isDraft,isPrerelease \
+              --jq '
+                [.[] |
+                  select(.isDraft == false and .isPrerelease == false) |
+                  .tagName |
+                  select(test("^agent-v[0-9]+\\.[0-9]+$"))
+                ] |
+                sort_by(
+                  split("-v")[1] |
+                  split(".") |
+                  map(tonumber)
+                ) |
+                last
+              '
+          )
 
-      if [ -z "$latest" ]; then
-        next="agent-v1.0"
-      else
-        version="${latest#agent-v}"
-        major="${version%%.*}"
-        minor="${version#*.}"
-        next="agent-v${major}.$((minor + 1))"
-      fi
+          if [ -z "$latest" ]; then
+            next="agent-v1.0"
+          else
+            version="${latest#agent-v}"
+            major="${version%%.*}"
+            minor="${version#*.}"
+            next="agent-v${major}.$((minor + 1))"
+          fi
 
-      echo "Última versión: ${latest:-ninguna}"
-      echo "Nueva versión: $next"
+          echo "Última versión: ${latest:-ninguna}"
+          echo "Nueva versión: $next"
 
-      echo "tag=$next" >> "$GITHUB_OUTPUT"
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
 
-  - name: Create Agent tag
-    env:
-      TAG_NAME: ${{ steps.version.outputs.tag }}
-    shell: bash
-    run: |
-      git config user.name "github-actions[bot]"
-      git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Create Agent tag
+        env:
+          TAG_NAME: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      git tag "$TAG_NAME" "$GITHUB_SHA"
-      git push origin "$TAG_NAME"
+          git tag "$TAG_NAME" "$GITHUB_SHA"
+          git push origin "$TAG_NAME"
 
-  - name: Create GitHub Release
-    env:
-      GH_TOKEN: ${{ github.token }}
-      TAG_NAME: ${{ steps.version.outputs.tag }}
-    shell: bash
-    run: |
-      gh release create "$TAG_NAME" \
-        dist/MoonWolf-Agent.exe \
-        --title "MoonWolf Agent v${TAG_NAME#agent-v}" \
-        --generate-notes
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          gh release create "$TAG_NAME" \
+            dist/MoonWolf-Agent.exe \
+            --title "MoonWolf Agent v${TAG_NAME#agent-v}" \
+            --generate-notes
+            
