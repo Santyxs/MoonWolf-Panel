@@ -9,13 +9,10 @@
   },
   "dependencies": {
     "archiver": "^7.0.1",
-    "cors": "^2.8.5",
     "express": "^4.22.1",
     "node-fetch": "^3.3.2",
     "pg": "^8.23.0",
-    "rcon-client": "^4.2.4",
-    "socket.io": "^4.8.3",
-    "socket.io-client": "^4.8.3"
+    "socket.io": "^4.8.3"
   },
   "devDependencies": {
     "esbuild": "^0.24.0",
