@@ -11,7 +11,7 @@ const CLOUD_PATH = '/socket.io';
 
 const DEFAULT_SERVER_DIR = process.env.MOONWOLF_SERVER_DIR || path.join(os.homedir(), 'MoonWolf');
 
-const CONFIG_DIR = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'MoonWolf',);
+const CONFIG_DIR = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'MoonWolf');
 
 const CONFIG_PATH = path.join(CONFIG_DIR, 'agent.json');
 
@@ -44,14 +44,17 @@ function loadConfig() {
   let config = {};
 
   try {
-    config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')
+    );
   } catch {}
 
   if (process.env.AGENT_TOKEN) {
     config.token = process.env.AGENT_TOKEN;
   }
 
-  if (!TOKEN_RE.test(config.token || '') && !process.env.AGENT_TOKEN) {
+  if (
+    !TOKEN_RE.test(config.token || '') && !process.env.AGENT_TOKEN
+  ) {
     config.token = makeToken();
   }
 
@@ -66,7 +69,7 @@ function loadConfig() {
   fs.writeFileSync(
     CONFIG_PATH,
     JSON.stringify(config, null, 2),
-    'utf8',
+    'utf8'
   );
 
   return config;
@@ -79,9 +82,11 @@ function wait(ms) {
 async function waitForLocalServer(localUrl) {
   for (let attempt = 1; attempt <= 30; attempt++) {
     try {
-      const response = await fetch(`${localUrl}/api/health`, {
-        signal: AbortSignal.timeout(1000),
-      });
+      const response = await fetch(`${localUrl}/api/health`,
+        {
+          signal: AbortSignal.timeout(1000),
+        }
+      );
 
       if (response.ok) {
         return;
@@ -91,7 +96,7 @@ async function waitForLocalServer(localUrl) {
     await wait(Math.min(250 * attempt, 1500));
   }
 
-  throw new Error('El servidor local de MoonWolf no respondió a tiempo.',);
+  throw new Error('El servidor local de MoonWolf no respondió a tiempo.');
 }
 
 function startEmbeddedLocalServer(config) {
@@ -123,7 +128,7 @@ async function main() {
 
   await waitForLocalServer(localUrl);
 
-  console.log(`✅ Servidor local MoonWolf iniciado en ${localUrl}`,);
+  console.log(`✅ Servidor local MoonWolf iniciado en ${localUrl}`);
 
   let localToken = null;
   let localSocket = null;
@@ -137,20 +142,27 @@ async function main() {
       return localToken;
     }
 
-    const response = await fetch(`${localUrl}/api/auth/login`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        agentToken: process.env.MOONWOLF_AGENT_AUTH_TOKEN,
-      }),
-    });
+    const response = await fetch(
+      `${localUrl}/api/auth/login`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          agentToken:
+            process.env.MOONWOLF_AGENT_AUTH_TOKEN,
+        }),
+      }
+    );
 
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok || !data.ok || !data.token) {
-      throw new Error(data.error || `Login local rechazado (${response.status})`,);
+      throw new Error(
+        data.error ||
+          `Login local rechazado (${response.status})`
+      );
     }
 
     localToken = data.token;
@@ -173,7 +185,8 @@ async function main() {
         headers['Content-Type'] = 'application/json';
       }
 
-      const response = await fetch(`${localUrl}${request.path}`,
+      const response = await fetch(
+        `${localUrl}${request.path}`,
         {
           method: request.method || 'GET',
           headers,
@@ -182,12 +195,16 @@ async function main() {
             request.body !== null
               ? JSON.stringify(request.body)
               : undefined,
-        },
+        }
       );
 
-      const type = response.headers.get('content-type') || 'application/octet-stream';
+      const type =
+        response.headers.get('content-type') ||
+        'application/octet-stream';
 
-      const bytes = Buffer.from(await response.arrayBuffer(),);
+      const bytes = Buffer.from(
+        await response.arrayBuffer()
+      );
 
       return {
         id: request.id,
@@ -241,7 +258,8 @@ async function main() {
       localSocket.on(event, payload => {
         if (cloudSocket?.connected) {
           cloudSocket.emit('event', {
-            name: event,payload,
+            name: event,
+            payload,
           });
         }
       });
@@ -261,11 +279,14 @@ async function main() {
 
     clearTimeout(reconnectTimer);
 
-    reconnectTimer = setTimeout(connectCloud,reconnectDelay,);
+    reconnectTimer = setTimeout(
+      connectCloud,
+      reconnectDelay
+    );
 
     reconnectDelay = Math.min(
       reconnectDelay * 2,
-      30000,
+      30000
     );
   }
 
@@ -298,20 +319,21 @@ async function main() {
 
     cloudSocket.on('rpc', async request => {
       const result = await forwardHttp(
-        request || {},
+        request || {}
       );
 
-      cloudSocket?.emit('rpc_result',result,);
+      cloudSocket?.emit('rpc_result', result);
     });
 
     cloudSocket.on('connect_error', error => {
-      console.log(`⚠ Cloud: ${error?.message || 'error de conexión'
-        }`,
+      console.log(`⚠ Cloud: ${
+          error?.message || 'error de conexión'
+        }`
       );
     });
 
     cloudSocket.on('disconnect', reason => {
-      console.log(`⚠ Cloud desconectado (${reason}).`,);
+      console.log(`⚠ Cloud desconectado (${reason}).`);
 
       scheduleReconnect();
     });
@@ -340,10 +362,7 @@ async function main() {
 }
 
 main().catch(error => {
-  console.error(
-    '❌ MoonWolf Agent:',
-    error.message,
-  );
+  console.error('❌ MoonWolf Agent:', error.message);
 
   process.exitCode = 1;
 });
