@@ -292,14 +292,19 @@ jobs:
                 [.[] |
                   select(.isDraft == false and .isPrerelease == false) |
                   .tagName |
-                  select(test("^agent-v[0-9]+\.[0-9]+$"))
-                ] |
-                sort_by(
+                  select(startswith("agent-v")) |
                   split("-v")[1] |
                   split(".") |
+                  select(length == 2) |
                   map(tonumber)
-                ) |
-                last
+                ] |
+                sort |
+                last |
+                if . == null then
+                  ""
+                else
+                  "agent-v" + (.[0] | tostring) + "." + (.[1] | tostring)
+                end
               '
           )
 
