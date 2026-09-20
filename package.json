@@ -4,8 +4,7 @@
   "description": "Panel web para servidores de Minecraft",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "build:agent": "node build-agent.mjs"
+    "start": "node server.js"
   },
   "dependencies": {
     "archiver": "^7.0.1",
