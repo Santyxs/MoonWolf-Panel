@@ -47,18 +47,18 @@ jobs:
 
           $native = "agent/node_modules/@webviewjs/webview-win32-x64-msvc/webview.win32-x64-msvc.node"
 
-          if (-not (Test-Path $native)) {
+          if (-not (Test-Path -LiteralPath $native)) {
             throw "No se encontró el addon nativo de WebViewJS: $native"
           }
 
           Write-Host "Addon nativo encontrado:"
-          Write-Host (Resolve-Path $native)
+          Write-Host (Resolve-Path -LiteralPath $native)
 
       - name: Prepare Agent build directory
         shell: pwsh
         run: |
-          if (Test-Path "dist") {
-            Remove-Item "dist" -Recurse -Force
+          if (Test-Path -LiteralPath "dist") {
+            Remove-Item -LiteralPath "dist" -Recurse -Force
           }
 
           New-Item -ItemType Directory -Force -Path "dist" | Out-Null
@@ -93,11 +93,11 @@ jobs:
         run: |
           $bundle = "dist/agent.cjs"
 
-          if (-not (Test-Path $bundle)) {
+          if (-not (Test-Path -LiteralPath $bundle)) {
             throw "No se generó $bundle"
           }
 
-          $size = (Get-Item $bundle).Length
+          $size = (Get-Item -LiteralPath $bundle).Length
 
           Write-Host "agent.cjs: $size bytes"
 
@@ -163,26 +163,90 @@ jobs:
             throw "Node SEA terminó con código $LASTEXITCODE"
           }
 
+          if (-not (Test-Path -LiteralPath "dist/MoonWolf-Agent.exe")) {
+            throw "Node SEA no generó dist/MoonWolf-Agent.exe"
+          }
+
+      - name: Find editbin
+        id: find-editbin
+        shell: pwsh
+        run: |
+          $editbin = $null
+
+          $roots = @(
+            "${env:ProgramFiles(x86)}\Microsoft Visual Studio",
+            "${env:ProgramFiles}\Microsoft Visual Studio"
+          )
+
+          foreach ($root in $roots) {
+            if (-not (Test-Path -LiteralPath $root)) {
+              continue
+            }
+
+            Write-Host "Buscando editbin en:"
+            Write-Host $root
+
+            $editbin = Get-ChildItem `
+              -Path $root `
+              -Filter "editbin.exe" `
+              -File `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+
+            if ($editbin) {
+              break
+            }
+          }
+
+          if (-not $editbin) {
+            $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+
+            if (Test-Path -LiteralPath $vswhere) {
+              Write-Host "Usando vswhere para localizar Visual Studio."
+
+              $installationPath = & $vswhere `
+                -latest `
+                -products * `
+                -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+                -property installationPath
+
+              if ($installationPath) {
+                $editbin = Get-ChildItem `
+                  -Path $installationPath `
+                  -Filter "editbin.exe" `
+                  -File `
+                  -Recurse `
+                  -ErrorAction SilentlyContinue |
+                  Select-Object -First 1
+              }
+            }
+          }
+
+          if (-not $editbin) {
+            throw "No se encontró editbin.exe en el runner de GitHub Actions."
+          }
+
+          Write-Host "editbin encontrado:"
+          Write-Host $editbin.FullName
+
+          "EDITBIN_PATH=$($editbin.FullName)" >> $env:GITHUB_ENV
+
       - name: Hide console window
         shell: pwsh
         run: |
-          $editbin = Get-ChildItem `
-            -Path "${env:ProgramFiles(x86)}\Microsoft Visual Studio" `
-            -Filter editbin.exe `
-            -Recurse `
-            -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-
-          if (-not $editbin) {
-            throw "No se encontró editbin.exe."
+          if (-not $env:EDITBIN_PATH) {
+            throw "EDITBIN_PATH no está definido."
           }
 
-          Write-Host "Usando editbin:"
-          Write-Host $editbin.FullName
+          $exe = (Resolve-Path "dist/MoonWolf-Agent.exe").Path
 
-          & $editbin.FullName `
+          Write-Host "Configurando MoonWolf-Agent como aplicación Windows:"
+          Write-Host $exe
+
+          & $env:EDITBIN_PATH `
             /SUBSYSTEM:WINDOWS `
-            "dist\MoonWolf-Agent.exe"
+            $exe
 
           if ($LASTEXITCODE -ne 0) {
             throw "editbin terminó con código $LASTEXITCODE"
@@ -193,11 +257,11 @@ jobs:
         run: |
           $exe = "dist/MoonWolf-Agent.exe"
 
-          if (-not (Test-Path $exe)) {
+          if (-not (Test-Path -LiteralPath $exe)) {
             throw "No se generó $exe"
           }
 
-          $size = (Get-Item $exe).Length
+          $size = (Get-Item -LiteralPath $exe).Length
 
           Write-Host "MoonWolf-Agent.exe: $size bytes"
 
@@ -250,6 +314,7 @@ jobs:
 
           echo "Última versión: ${latest:-ninguna}"
           echo "Nueva versión: $next"
+
           echo "tag=$next" >> "$GITHUB_OUTPUT"
 
       - name: Create Agent tag
