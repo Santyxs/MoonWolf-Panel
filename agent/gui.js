@@ -5,11 +5,9 @@ const path = require('node:path');
 const os = require('node:os');
 const { execFile } = require('node:child_process');
 
-const PANEL_URL =
-  'https://moonwolf-panel.onrender.com';
+const PANEL_URL = 'https://moonwolf-panel.onrender.com';
 
-const NATIVE_ASSET =
-  'native/webview.win32-x64-msvc.node';
+const NATIVE_ASSET = 'native/webview.win32-x64-msvc.node';
 
 const UI_ASSETS = {
   '/': 'ui/index.html',
@@ -87,7 +85,10 @@ let stateProvider = () => ({
   configPath: '',
   cloudConnected: false,
   localServerReady: false,
+  logs: [],
 });
+
+let actions = {};
 
 function mimeType(filePath) {
   const extension =
@@ -291,6 +292,28 @@ function createWindow() {
       return true;
     },
 
+    clearLogs: () => {
+      if (
+        typeof actions.clearLogs ===
+        'function'
+      ) {
+        return actions.clearLogs();
+      }
+
+      return false;
+    },
+
+    saveLogs: () => {
+      if (
+        typeof actions.saveLogs ===
+        'function'
+      ) {
+        return actions.saveLogs();
+      }
+
+      return false;
+    },
+
     close: () => {
       app?.exit();
 
@@ -339,8 +362,12 @@ function notifyStateChanged() {
   } catch {}
 }
 
-function startGui(getState) {
+function startGui(
+  getState,
+  guiActions = {}
+) {
   stateProvider = getState;
+  actions = guiActions;
 
   createWindow();
 
