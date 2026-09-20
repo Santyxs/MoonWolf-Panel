@@ -198,20 +198,25 @@ jobs:
             throw "La generación del blob SEA terminó con código $LASTEXITCODE"
           }
 
-          $nodePath = (Get-Command node).Source
-          $exe = Join-Path (Resolve-Path "dist").Path "MoonWolf-Agent.exe"
-          $blob = Join-Path (Resolve-Path "dist").Path "sea-prep.blob"
+          $blob = "dist/sea-prep.blob"
+          $exe = "dist/MoonWolf-Agent.exe"
 
           if (-not (Test-Path -LiteralPath $blob)) {
             throw "No se generó $blob"
           }
+
+          $nodePath = (Get-Command node).Source
 
           Copy-Item `
             -LiteralPath $nodePath `
             -Destination $exe `
             -Force
 
-          npx --yes postject@1.0.0-beta.6 `
+          if (-not (Test-Path -LiteralPath $exe)) {
+            throw "No se pudo crear $exe"
+          }
+
+          npx --yes postject `
             $exe `
             NODE_SEA_BLOB `
             $blob `
