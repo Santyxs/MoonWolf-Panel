@@ -1,4 +1,3 @@
-```yaml
 name: Build Agent
 
 on:
@@ -73,20 +72,20 @@ jobs:
             throw "No se encontró la línea esperada en js-bindings.js."
           }
 
-          $new = @"
-const nativeModule = {
-        exports: {}
-      };
+          $new = @(
+            'const nativeModule = {'
+            '  exports: {}'
+            '};'
+            ''
+            'process.dlopen('
+            '  nativeModule,'
+            '  process.env.NAPI_RS_NATIVE_LIBRARY_PATH'
+            ');'
+            ''
+            'return nativeModule.exports;'
+          ) -join "`n"
 
-      process.dlopen(
-        nativeModule,
-        process.env.NAPI_RS_NATIVE_LIBRARY_PATH
-      );
-
-      return nativeModule.exports;
-"@
-
-          $content = $content.Replace($old, $new.Trim())
+          $content = $content.Replace($old, $new)
 
           Set-Content `
             -LiteralPath $file `
@@ -110,11 +109,16 @@ const nativeModule = {
       - name: Create WebViewJS native shim
         shell: pwsh
         run: |
-          @'
-          module.exports = {};
-          '@ | Set-Content `
+          Set-Content `
             -Path "agent/webview-native-shim.js" `
+            -Value "module.exports = {};" `
             -Encoding utf8
+
+          if (-not (Test-Path -LiteralPath "agent/webview-native-shim.js")) {
+            throw "No se creó agent/webview-native-shim.js"
+          }
+
+          Write-Host "Shim creado correctamente."
 
       - name: Bundle Agent
         shell: pwsh
@@ -124,7 +128,7 @@ const nativeModule = {
             --platform=node `
             --target=node24 `
             --format=cjs `
-            --alias:@webviewjs/webview-win32-x64-msvc=./webview-native-shim.js `
+            "--alias:@webviewjs/webview-win32-x64-msvc=./agent/webview-native-shim.js" `
             --outfile=dist/agent.cjs `
             --log-level=info
 
@@ -136,7 +140,6 @@ const nativeModule = {
         shell: pwsh
         run: |
           $bundle = "dist/agent.cjs"
-
           if (-not (Test-Path -LiteralPath $bundle)) {
             throw "No se generó $bundle"
           }
@@ -391,4 +394,3 @@ const nativeModule = {
             dist/MoonWolf-Agent.exe \
             --title "MoonWolf Agent v${TAG_NAME#agent-v}" \
             --generate-notes
-```
