@@ -63,41 +63,21 @@ jobs:
             throw "No se encontró js-bindings.js"
           }
 
-          $content = Get-Content `
-            -LiteralPath $file `
-            -Raw
+          $content = Get-Content -LiteralPath $file -Raw
 
-          $old = @'
-    try {
-      return require(process.env.NAPI_RS_NATIVE_LIBRARY_PATH)
-    } catch (err) {
-      loadErrors.push(err)
-    }
-'@
-
-          $new = @'
-    try {
-      const nativeModule = {
-        exports: {}
-      }
-
-      process.dlopen(
-        nativeModule,
-        process.env.NAPI_RS_NATIVE_LIBRARY_PATH
-      )
-
-      return nativeModule.exports
-    } catch (err) {
-      loadErrors.push(err)
-    }
-'@
+          $old = "    try {`r`n      return require(process.env.NAPI_RS_NATIVE_LIBRARY_PATH)`r`n    } catch (err) {`r`n      loadErrors.push(err)`r`n    }"
 
           if (-not $content.Contains($old)) {
-            Write-Host "No se encontró el bloque exacto esperado."
+            $old = "    try {`n      return require(process.env.NAPI_RS_NATIVE_LIBRARY_PATH)`n    } catch (err) {`n      loadErrors.push(err)`n    }"
+          }
+
+          if (-not $content.Contains($old)) {
             Write-Host "Contenido actual de js-bindings.js:"
             Get-Content -LiteralPath $file
-            throw "No se pudo aplicar el parche de carga nativa."
+            throw "No se encontró el bloque esperado de carga nativa."
           }
+
+          $new = "    try {`n      const nativeModule = {`n        exports: {}`n      }`n`n      process.dlopen(`n        nativeModule,`n        process.env.NAPI_RS_NATIVE_LIBRARY_PATH`n      )`n`n      return nativeModule.exports`n    } catch (err) {`n      loadErrors.push(err)`n    }"
 
           $content = $content.Replace($old, $new)
 
@@ -124,11 +104,10 @@ jobs:
       - name: Create WebViewJS native shim
         shell: pwsh
         run: |
-          @'
-          module.exports = {};
-          '@ | Set-Content `
-            -Path "agent/webview-native-shim.js" `
-            -Encoding utf8
+          "module.exports = {};" |
+            Set-Content `
+              -Path "agent/webview-native-shim.js" `
+              -Encoding utf8
 
       - name: Bundle Agent with esbuild
         shell: pwsh
