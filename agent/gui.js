@@ -57,7 +57,7 @@ function prepareNativeAddon() {
 
       fs.writeFileSync(
         nativePath,
-        nativeBuffer
+        Buffer.from(nativeBuffer)
       );
     }
   } catch (error) {
