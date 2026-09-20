@@ -7,12 +7,11 @@ const crypto = require('node:crypto');
 const { io } = require('socket.io-client');
 const { startGui } = require('./gui');
 
-const PANEL_URL =
-  'https://moonwolf-panel.onrender.com';
+const PANEL_URL = 'https://moonwolf-panel.onrender.com';
 
 const CLOUD_PATH = '/socket.io';
 
-const VERSION = '1.0.0';
+const VERSION = '1.0';
 
 const DEFAULT_SERVER_DIR =
   process.env.MOONWOLF_SERVER_DIR ||
@@ -216,6 +215,9 @@ async function main() {
   let localServerReady = false;
   let cloudConnected = false;
 
+  const logs = [];
+  const MAX_LOGS = 500;
+
   let localToken = null;
   let localSocket = null;
   let cloudSocket = null;
@@ -224,6 +226,43 @@ async function main() {
   let reconnectDelay = 1000;
 
   let shuttingDown = false;
+
+  let gui = null;
+
+  function addLog(
+    message,
+    level = 'info'
+  ) {
+    logs.push({
+      time:
+        new Date().toISOString(),
+      level,
+      message: String(message),
+    });
+
+    if (logs.length > MAX_LOGS) {
+      logs.splice(
+        0,
+        logs.length - MAX_LOGS
+      );
+    }
+
+    gui?.update();
+  }
+
+  function logError(
+    error,
+    context = 'Error'
+  ) {
+    addLog(
+      `${context}: ${
+        error?.stack ||
+        error?.message ||
+        error
+      }`,
+      'error'
+    );
+  }
 
   const getState = () => ({
     version: VERSION,
@@ -240,19 +279,86 @@ async function main() {
     cloudConnected,
 
     localServerReady,
+
+    logs,
   });
 
-  const gui = startGui(
-    getState
+  gui = startGui(
+    getState,
+    {
+      clearLogs: () => {
+        logs.length = 0;
+
+        addLog(
+          'Registro de logs limpiado.'
+        );
+
+        return true;
+      },
+
+      saveLogs: () => {
+        ensureConfigDir();
+
+        const logPath =
+          path.join(
+            CONFIG_DIR,
+            'agent.log'
+          );
+
+        const content =
+          logs
+            .map(entry => {
+              const date =
+                new Date(
+                  entry.time
+                );
+
+              const time =
+                date
+                  .toLocaleString(
+                    'es-ES'
+                  );
+
+              return (
+                `[${time}] ` +
+                `[${entry.level.toUpperCase()}] ` +
+                entry.message
+              );
+            })
+            .join('\n\n');
+
+        fs.writeFileSync(
+          logPath,
+          content +
+            (content ? '\n' : ''),
+          'utf8'
+        );
+
+        return logPath;
+      },
+    }
   );
 
-  function updateGui() {
-    gui?.update();
+  addLog(
+    `MoonWolf Agent v${VERSION} iniciado.`
+  );
+
+  try {
+    addLog(
+      'Iniciando servidor local...'
+    );
+
+    startEmbeddedLocalServer(
+      config
+    );
+  } catch (error) {
+    logError(
+      error,
+      'No se pudo iniciar el servidor local'
+    );
+
+    throw error;
   }
-
-  startEmbeddedLocalServer(
-    config
-  );
 
   try {
     await waitForLocalServer(
@@ -261,11 +367,20 @@ async function main() {
 
     localServerReady = true;
 
-    updateGui();
+    addLog(
+      'Servidor local iniciado correctamente.'
+    );
+
+    gui.update();
   } catch (error) {
     localServerReady = false;
 
-    updateGui();
+    logError(
+      error,
+      'El servidor local no respondió'
+    );
+
+    gui.update();
 
     throw error;
   }
@@ -389,6 +504,11 @@ async function main() {
           ),
       };
     } catch (error) {
+      logError(
+        error,
+        'Error reenviando petición'
+      );
+
       return {
         id: request.id,
 
@@ -469,6 +589,15 @@ async function main() {
     }
 
     localSocket.on(
+      'connect',
+      () => {
+        addLog(
+          'Socket local conectado.'
+        );
+      }
+    );
+
+    localSocket.on(
       'connect_error',
       error => {
         if (
@@ -477,6 +606,28 @@ async function main() {
         ) {
           localToken = null;
         }
+
+        addLog(
+          `Error del Socket local: ${
+            error?.message ||
+            error
+          }`,
+          'error'
+        );
+      }
+    );
+
+    localSocket.on(
+      'disconnect',
+      reason => {
+        addLog(
+          `Socket local desconectado${
+            reason
+              ? `: ${reason}`
+              : '.'
+          }`,
+          'warn'
+        );
       }
     );
   }
@@ -512,7 +663,11 @@ async function main() {
 
     cloudConnected = false;
 
-    updateGui();
+    gui.update();
+
+    addLog(
+      'Conectando con MoonWolf Cloud...'
+    );
 
     cloudSocket =
       io(
@@ -543,7 +698,11 @@ async function main() {
 
         cloudConnected = true;
 
-        updateGui();
+        addLog(
+          'Conectado a MoonWolf Cloud.'
+        );
+
+        gui.update();
 
         connectLocalSocket();
       }
@@ -566,19 +725,36 @@ async function main() {
 
     cloudSocket.on(
       'connect_error',
-      () => {
+      error => {
         cloudConnected = false;
 
-        updateGui();
+        addLog(
+          `Error de conexión con Cloud: ${
+            error?.message ||
+            error
+          }`,
+          'error'
+        );
+
+        gui.update();
       }
     );
 
     cloudSocket.on(
       'disconnect',
-      () => {
+      reason => {
         cloudConnected = false;
 
-        updateGui();
+        addLog(
+          `Desconectado de MoonWolf Cloud${
+            reason
+              ? `: ${reason}`
+              : '.'
+          }`,
+          'warn'
+        );
+
+        gui.update();
 
         scheduleReconnect();
       }
@@ -601,8 +777,32 @@ async function main() {
 
     cloudConnected = false;
 
-    updateGui();
+    addLog(
+      'MoonWolf Agent cerrado.'
+    );
+
+    gui.update();
   }
+
+  process.on(
+    'uncaughtException',
+    error => {
+      logError(
+        error,
+        'Error no controlado'
+      );
+    }
+  );
+
+  process.on(
+    'unhandledRejection',
+    reason => {
+      logError(
+        reason,
+        'Promesa rechazada'
+      );
+    }
+  );
 
   process.on(
     'SIGINT',
