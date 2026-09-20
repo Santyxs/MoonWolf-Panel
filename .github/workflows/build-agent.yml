@@ -8,7 +8,6 @@ on:
       - main
     paths:
       - 'agent/**'
-      - 'build-agent.mjs'
       - 'package.json'
       - 'package-lock.json'
 
@@ -41,7 +40,7 @@ jobs:
         run: npm install --no-package-lock
 
       - name: Bundle Agent with esbuild
-        run: node build-agent.mjs
+        run: npx esbuild agent/index.js --bundle --platform=node --target=node20 --format=cjs --outfile=dist/agent.cjs --log-level=info
 
       - name: Create SEA configuration
         shell: pwsh
@@ -167,4 +166,3 @@ jobs:
             dist/MoonWolf-Agent.exe \
             --title "MoonWolf Agent v${TAG_NAME#agent-v}" \
             --generate-notes
-            
