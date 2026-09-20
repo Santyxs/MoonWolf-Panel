@@ -9,12 +9,14 @@ on:
     paths:
       - 'agent/**'
       - '.github/workflows/build-agent.yml'
+      - 'package.json'
+      - 'package-lock.json'
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
 
     steps:
@@ -26,39 +28,90 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: 26.9.0
+          node-version: '24'
+
+      - name: Show Node version
+        run: node --version
+
+      - name: Install root dependencies
+        run: npm install --include=dev
 
       - name: Install Agent dependencies
         working-directory: agent
         run: npm install --no-package-lock
 
-      - name: Prepare WebViewJS
+      - name: Verify WebViewJS
+        shell: pwsh
+        run: |
+          Write-Host "WebViewJS:"
+          npm --prefix agent list @webviewjs/webview --depth=0
+
+          $native = "agent/node_modules/@webviewjs/webview-win32-x64-msvc/webview.win32-x64-msvc.node"
+
+          if (-not (Test-Path -LiteralPath $native)) {
+            throw "No se encontró el addon nativo de WebViewJS: $native"
+          }
+
+          Write-Host "Addon nativo encontrado:"
+          Write-Host (Resolve-Path -LiteralPath $native)
+
+      - name: Patch WebViewJS native loader for SEA
         shell: pwsh
         run: |
           $file = "agent/node_modules/@webviewjs/webview/js-bindings.js"
-          $content = Get-Content $file -Raw
 
-          if (-not $content.Contains(
-            "return require(process.env.NAPI_RS_NATIVE_LIBRARY_PATH);"
-          )) {
-            throw "No se encontró el cargador nativo de WebViewJS."
+          if (-not (Test-Path -LiteralPath $file)) {
+            throw "No se encontró js-bindings.js"
           }
 
-          $content = $content.Replace(
-            "return require(process.env.NAPI_RS_NATIVE_LIBRARY_PATH);",
-            @"
+          $content = Get-Content -LiteralPath $file -Raw
 
-      - name: Prepare build
+          $old = "return require(process.env.NAPI_RS_NATIVE_LIBRARY_PATH);"
+
+          if (-not $content.Contains($old)) {
+            throw "No se encontró la línea esperada en js-bindings.js."
+          }
+
+          $new = @(
+            'const nativeModule = {'
+            '  exports: {}'
+            '};'
+            ''
+            'process.dlopen('
+            '  nativeModule,'
+            '  process.env.NAPI_RS_NATIVE_LIBRARY_PATH,'
+            '  2'
+            ');'
+            ''
+            'return nativeModule.exports;'
+          ) -join "`n"
+
+          $content = $content.Replace($old, $new)
+
+          Set-Content -LiteralPath $file -Value $content -Encoding utf8
+
+          Write-Host "Parche aplicado correctamente."
+
+      - name: Prepare Agent build directory
         shell: pwsh
         run: |
-          Remove-Item dist -Recurse -Force -ErrorAction SilentlyContinue
-          New-Item dist -ItemType Directory -Force | Out-Null
+          if (Test-Path -LiteralPath "dist") {
+            Remove-Item -LiteralPath "dist" -Recurse -Force
+          }
 
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+
+      - name: Create WebViewJS native shim
+        shell: pwsh
+        run: |
           @'
           module.exports = {};
-          '@ | Set-Content agent/webview-native-shim.js -Encoding utf8
+          '@ | Set-Content `
+            -Path "agent/webview-native-shim.js" `
+            -Encoding utf8
 
       - name: Bundle Agent
+        shell: pwsh
         run: |
           npx esbuild agent/index.js `
             --bundle `
@@ -66,67 +119,136 @@ jobs:
             --target=node24 `
             --format=cjs `
             --alias:@webviewjs/webview-win32-x64-msvc=./webview-native-shim.js `
-            --outfile=dist/agent.cjs
+            --outfile=dist/agent.cjs `
+            --log-level=info
 
-      - name: Create SEA configuration
-        shell: pwsh
-        run: |
-          $root = (Get-Location).Path
-
-          @{
-            main = "$root\dist\agent.cjs"
-            mainFormat = "commonjs"
-            output = "$root\dist\MoonWolf-Agent.exe"
-            disableExperimentalSEAWarning = $true
-            useSnapshot = $false
-            useCodeCache = $false
-            assets = @{
-              "ui/index.html" = "$root\agent\ui\index.html"
-              "ui/style.css" = "$root\agent\ui\style.css"
-              "ui/app.js" = "$root\agent\ui\app.js"
-              "native/webview.win32-x64-msvc.node" = "$root\agent\node_modules\@webviewjs\webview-win32-x64-msvc\webview.win32-x64-msvc.node"
-            }
-          } |
-            ConvertTo-Json -Depth 10 |
-            Set-Content dist/sea-config.json -Encoding utf8
-
-      - name: Build Agent
-        run: node --build-sea dist/sea-config.json
-
-      - name: Hide console
-        shell: pwsh
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-
-          $vs = & $vswhere `
-            -latest `
-            -products * `
-            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-            -property installationPath
-
-          $editbin = Get-ChildItem `
-            "$vs" `
-            -Filter editbin.exe `
-            -Recurse `
-            -File |
-            Select-Object -First 1
-
-          if (-not $editbin) {
-            throw "No se encontró editbin.exe."
+          if ($LASTEXITCODE -ne 0) {
+            throw "esbuild terminó con código $LASTEXITCODE"
           }
 
-          & $editbin.FullName `
-            /SUBSYSTEM:WINDOWS `
-            "dist\MoonWolf-Agent.exe"
+      - name: Verify bundle
+        shell: pwsh
+        run: |
+          $bundle = "dist/agent.cjs"
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+          if (-not (Test-Path -LiteralPath $bundle)) {
+            throw "No se generó $bundle"
+          }
+
+          $size = (Get-Item -LiteralPath $bundle).Length
+
+          Write-Host "agent.cjs: $size bytes"
+
+          if ($size -lt 100KB) {
+            throw "El bundle generado es sospechosamente pequeño."
+          }
+
+      - name: Create Node SEA configuration
+        shell: pwsh
+        run: |
+          $native = (Resolve-Path `
+            "agent/node_modules/@webviewjs/webview-win32-x64-msvc/webview.win32-x64-msvc.node").Path
+
+          $main = (Resolve-Path `
+            "dist/agent.cjs").Path
+
+          $output = Join-Path `
+            (Resolve-Path "dist").Path `
+            "MoonWolf-Agent.exe"
+
+          $indexHtml = (Resolve-Path `
+            "agent/ui/index.html").Path
+
+          $styleCss = (Resolve-Path `
+            "agent/ui/style.css").Path
+
+          $appJs = (Resolve-Path `
+            "agent/ui/app.js").Path
+
+          $config = @{
+            main = $main
+            mainFormat = "commonjs"
+            output = $output
+
+            disableExperimentalSEAWarning = $true
+
+            useSnapshot = $false
+            useCodeCache = $false
+
+            assets = @{
+              "ui/index.html" = $indexHtml
+              "ui/style.css" = $styleCss
+              "ui/app.js" = $appJs
+              "native/webview.win32-x64-msvc.node" = $native
+            }
+          }
+
+          $config |
+            ConvertTo-Json -Depth 10 |
+            Set-Content `
+              -Path "dist/sea-config.json" `
+              -Encoding utf8
+
+      - name: Build MoonWolf Agent executable
+        shell: pwsh
+        run: |
+          node --experimental-sea-config dist/sea-config.json
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Node SEA terminó con código $LASTEXITCODE"
+          }
+
+          if (-not (Test-Path -LiteralPath "dist/sea-prep.blob")) {
+            throw "No se generó dist/sea-prep.blob"
+          }
+
+          node -e "require('fs').copyFileSync(process.execPath, 'dist/MoonWolf-Agent.exe')"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "No se pudo copiar node.exe como base del ejecutable"
+          }
+
+          npx --yes postject `
+            dist/MoonWolf-Agent.exe `
+            NODE_SEA_BLOB `
+            dist/sea-prep.blob `
+            --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "postject terminó con código $LASTEXITCODE"
+          }
+
+          if (-not (Test-Path -LiteralPath "dist/MoonWolf-Agent.exe")) {
+            throw "No se generó dist/MoonWolf-Agent.exe"
+          }
+
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          $exe = "dist/MoonWolf-Agent.exe"
+
+          if (-not (Test-Path -LiteralPath $exe)) {
+            throw "No se generó $exe"
+          }
+
+          $size = (Get-Item -LiteralPath $exe).Length
+
+          Write-Host "MoonWolf-Agent.exe: $size bytes"
+
+          if ($size -lt 1MB) {
+            throw "El ejecutable generado es sospechosamente pequeño."
+          }
+
+          Write-Host "Ejecutable generado correctamente."
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
         with:
           name: MoonWolf-Agent-Windows
           path: dist/MoonWolf-Agent.exe
-          compression-level: 0
+          if-no-files-found: error
 
-      - name: Determine version
+      - name: Determine next Agent version
         id: version
         shell: bash
         env:
@@ -138,24 +260,20 @@ jobs:
               --json tagName,isDraft,isPrerelease \
               --jq '
                 [.[] |
-                  select(
-                    .isDraft == false and
-                    .isPrerelease == false and
-                    (.tagName | startswith("agent-v"))
-                  ) |
+                  select(.isDraft == false and .isPrerelease == false) |
                   .tagName |
-                  capture("^agent-v(?<major>[0-9]+)\\.(?<minor>[0-9]+)$") |
-                  {
-                    major: (.major | tonumber),
-                    minor: (.minor | tonumber)
-                  }
+                  select(startswith("agent-v")) |
+                  split("-v")[1] |
+                  split(".") |
+                  select(length == 2) |
+                  map(tonumber)
                 ] |
-                sort_by(.major, .minor) |
+                sort |
                 last |
                 if . == null then
                   ""
                 else
-                  "agent-v\(.major).\(.minor)"
+                  "agent-v" + (.[0] | tostring) + "." + (.[1] | tostring)
                 end
               '
           )
@@ -169,24 +287,29 @@ jobs:
             next="agent-v${major}.$((minor + 1))"
           fi
 
+          echo "Última versión: ${latest:-ninguna}"
+          echo "Nueva versión: $next"
+
           echo "tag=$next" >> "$GITHUB_OUTPUT"
 
-      - name: Create tag
+      - name: Create Agent tag
         env:
           TAG_NAME: ${{ steps.version.outputs.tag }}
+        shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git tag "$TAG_NAME" "$GITHUB_SHA"
           git push origin "$TAG_NAME"
 
-      - name: Create Release
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ steps.version.outputs.tag }}
+        shell: bash
         run: |
-          gh release create "$TAG_NAME" `
-            dist/MoonWolf-Agent.exe `
-            --title "MoonWolf Agent v${TAG_NAME#agent-v}" `
+          gh release create "$TAG_NAME" \
+            dist/MoonWolf-Agent.exe \
+            --title "MoonWolf Agent v${TAG_NAME#agent-v}" \
             --generate-notes
-```
