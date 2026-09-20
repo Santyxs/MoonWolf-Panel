@@ -13,7 +13,7 @@ on:
       - 'package-lock.json'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-windows:
@@ -22,6 +22,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -89,9 +91,8 @@ jobs:
           Set-Content -LiteralPath $file -Value $content -Encoding utf8
 
           Write-Host "Parche aplicado correctamente."
-          Select-String -Path $file -Pattern "process.dlopen" -Context 4,6
 
-      - name: Prepare build directory
+      - name: Prepare Agent build directory
         shell: pwsh
         run: |
           if (Test-Path -LiteralPath "dist") {
@@ -103,50 +104,27 @@ jobs:
       - name: Create WebViewJS native shim
         shell: pwsh
         run: |
-          $shim = "agent/webview-native-shim.js"
-          Set-Content -Path $shim -Value "module.exports = {};" -Encoding utf8
-
-          if (-not (Test-Path -LiteralPath $shim)) {
-            throw "No se creó el shim $shim"
-          }
-
-          Write-Host "Shim creado: $shim"
+          @'
+          module.exports = {};
+          '@ | Set-Content `
+            -Path "agent/webview-native-shim.js" `
+            -Encoding utf8
 
       - name: Bundle Agent
         shell: pwsh
         run: |
-          $buildScript = @'
-          import * as esbuild from "esbuild";
-          import path from "node:path";
-          import { fileURLToPath } from "node:url";
-
-          const __dirname = path.dirname(fileURLToPath(import.meta.url));
-          const root = path.resolve(__dirname, ".");
-
-          await esbuild.build({
-            entryPoints: [path.join(root, "agent/index.js")],
-            bundle: true,
-            platform: "node",
-            target: "node18",
-            format: "cjs",
-            outfile: path.join(root, "dist/agent.cjs"),
-            logLevel: "info",
-            external: ["@webviewjs/webview-*"],
-          });
-
-          console.log("dist/agent.cjs generado");
-          '@
-
-          Set-Content -Path "build-agent.tmp.mjs" -Value $buildScript -Encoding utf8
-
-          node build-agent.tmp.mjs
+          npx esbuild agent/index.js `
+            --bundle `
+            --platform=node `
+            --target=node24 `
+            --format=cjs `
+            --alias:@webviewjs/webview-win32-x64-msvc=./webview-native-shim.js `
+            --outfile=dist/agent.cjs `
+            --log-level=info
 
           if ($LASTEXITCODE -ne 0) {
-            Remove-Item "build-agent.tmp.mjs" -Force -ErrorAction SilentlyContinue
             throw "esbuild terminó con código $LASTEXITCODE"
           }
-
-          Remove-Item "build-agent.tmp.mjs" -Force
 
       - name: Verify bundle
         shell: pwsh
@@ -174,9 +152,9 @@ jobs:
           $main = (Resolve-Path `
             "dist/agent.cjs").Path
 
-          $blobOutput = Join-Path `
+          $output = Join-Path `
             (Resolve-Path "dist").Path `
-            "sea-prep.blob"
+            "MoonWolf-Agent.exe"
 
           $indexHtml = (Resolve-Path `
             "agent/ui/index.html").Path
@@ -190,7 +168,7 @@ jobs:
           $config = @{
             main = $main
             mainFormat = "commonjs"
-            output = $blobOutput
+            output = $output
 
             disableExperimentalSEAWarning = $true
 
@@ -211,16 +189,13 @@ jobs:
               -Path "dist/sea-config.json" `
               -Encoding utf8
 
-          Write-Host "SEA configuration:"
-          Get-Content "dist/sea-config.json"
-
       - name: Build MoonWolf Agent executable
         shell: pwsh
         run: |
           node --experimental-sea-config dist/sea-config.json
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Node SEA (generación del blob) terminó con código $LASTEXITCODE"
+            throw "Node SEA terminó con código $LASTEXITCODE"
           }
 
           if (-not (Test-Path -LiteralPath "dist/sea-prep.blob")) {
@@ -233,7 +208,10 @@ jobs:
             throw "No se pudo copiar node.exe como base del ejecutable"
           }
 
-          npx --yes postject dist/MoonWolf-Agent.exe NODE_SEA_BLOB dist/sea-prep.blob `
+          npx --yes postject `
+            dist/MoonWolf-Agent.exe `
+            NODE_SEA_BLOB `
+            dist/sea-prep.blob `
             --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
 
           if ($LASTEXITCODE -ne 0) {
@@ -263,11 +241,75 @@ jobs:
 
           Write-Host "Ejecutable generado correctamente."
 
-      - name: Upload Agent executable
+      - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
-          name: MoonWolf-Agent
-          path: |
-            dist/MoonWolf-Agent.exe
-            dist/agent.cjs
+          name: MoonWolf-Agent-Windows
+          path: dist/MoonWolf-Agent.exe
           if-no-files-found: error
+
+      - name: Determine next Agent version
+        id: version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(
+            gh release list \
+              --limit 100 \
+              --json tagName,isDraft,isPrerelease \
+              --jq '
+                [.[] |
+                  select(.isDraft == false and .isPrerelease == false) |
+                  .tagName |
+                  select(startswith("agent-v")) |
+                  split("-v")[1] |
+                  split(".") |
+                  select(length == 2) |
+                  map(tonumber)
+                ] |
+                sort |
+                last |
+                if . == null then
+                  ""
+                else
+                  "agent-v" + (.[0] | tostring) + "." + (.[1] | tostring)
+                end
+              '
+          )
+
+          if [ -z "$latest" ]; then
+            next="agent-v1.0"
+          else
+            version="${latest#agent-v}"
+            major="${version%%.*}"
+            minor="${version#*.}"
+            next="agent-v${major}.$((minor + 1))"
+          fi
+
+          echo "Última versión: ${latest:-ninguna}"
+          echo "Nueva versión: $next"
+
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Create Agent tag
+        env:
+          TAG_NAME: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag "$TAG_NAME" "$GITHUB_SHA"
+          git push origin "$TAG_NAME"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          gh release create "$TAG_NAME" \
+            dist/MoonWolf-Agent.exe \
+            --title "MoonWolf Agent v${TAG_NAME#agent-v}" \
+            --generate-notes
