@@ -152,6 +152,15 @@
         Configuración
       </button>
 
+      <button
+        id="open-logs"
+        class="button secondary"
+        type="button"
+      >
+        <span>☷</span>
+        Logs
+      </button>
+
     </section>
 
     <footer>
@@ -159,6 +168,67 @@
     </footer>
 
   </main>
+
+  <section
+    id="logs-modal"
+    class="modal hidden"
+  >
+    <div class="modal-backdrop"></div>
+
+    <div class="logs-window">
+
+      <div class="logs-header">
+        <div>
+          <strong>Logs del Agent</strong>
+          <span id="logs-count">
+            0 entradas
+          </span>
+        </div>
+
+        <button
+          id="close-logs"
+          class="modal-close"
+          type="button"
+        >
+          ×
+        </button>
+      </div>
+
+      <div
+        id="logs-list"
+        class="logs-list"
+      ></div>
+
+      <div class="logs-actions">
+
+        <button
+          id="copy-logs"
+          class="small-button"
+          type="button"
+        >
+          Copiar
+        </button>
+
+        <button
+          id="save-logs"
+          class="small-button"
+          type="button"
+        >
+          Guardar
+        </button>
+
+        <button
+          id="clear-logs"
+          class="small-button danger"
+          type="button"
+        >
+          Limpiar
+        </button>
+
+      </div>
+
+    </div>
+  </section>
 
   <script src="app.js"></script>
 </body>
