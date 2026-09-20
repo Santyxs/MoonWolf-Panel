@@ -2,12 +2,70 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const { execFile } = require('node:child_process');
-const { Application } = require('@webviewjs/webview');
-
-const UI_DIR = path.join(__dirname, 'ui');
 
 const PANEL_URL = 'https://moonwolf-panel.onrender.com';
+
+const NATIVE_ASSET = 'native/webview.win32-x64-msvc.node';
+
+const UI_ASSETS = {
+  '/': 'ui/index.html',
+  '/index.html': 'ui/index.html',
+  '/style.css': 'ui/style.css',
+  '/app.js': 'ui/app.js',
+};
+
+let getAsset = null;
+let isStandalone = false;
+
+try {
+  const sea = require('node:sea');
+
+  if (typeof sea.getAsset === 'function') {
+    getAsset = sea.getAsset;
+    isStandalone = true;
+  }
+} catch {
+}
+
+function prepareNativeAddon() {
+  if (!isStandalone || !getAsset) {
+    return;
+  }
+
+  const runtimeDir = path.join(
+    os.tmpdir(),
+    'MoonWolf-Agent',
+    'webviewjs-0.4.5'
+  );
+
+  fs.mkdirSync(runtimeDir, {
+    recursive: true,
+  });
+
+  const nativePath = path.join(
+    runtimeDir,
+    'webview.win32-x64-msvc.node'
+  );
+
+  const nativeBuffer =
+    getAsset(NATIVE_ASSET);
+
+  fs.writeFileSync(
+    nativePath,
+    nativeBuffer
+  );
+
+  process.env.NAPI_RS_NATIVE_LIBRARY_PATH =
+    nativePath;
+}
+
+prepareNativeAddon();
+
+const {
+  Application,
+} = require('@webviewjs/webview');
 
 let app = null;
 let window = null;
@@ -17,12 +75,14 @@ let stateProvider = () => ({
   version: '1.0.0',
   token: '',
   serverDir: '',
+  configPath: '',
   cloudConnected: false,
   localServerReady: false,
 });
 
 function mimeType(filePath) {
-  const extension = path.extname(filePath).toLowerCase();
+  const extension =
+    path.extname(filePath).toLowerCase();
 
   switch (extension) {
     case '.html':
@@ -55,6 +115,20 @@ function mimeType(filePath) {
   }
 }
 
+function readUiAsset(assetName) {
+  if (isStandalone && getAsset) {
+    return getAsset(assetName);
+  }
+
+  const filePath = path.join(
+    __dirname,
+    'ui',
+    path.basename(assetName)
+  );
+
+  return fs.readFileSync(filePath);
+}
+
 function openUrl(url) {
   execFile(
     'cmd.exe',
@@ -67,6 +141,10 @@ function openUrl(url) {
 }
 
 function openFolder(folder) {
+  if (!folder) {
+    return;
+  }
+
   execFile(
     'explorer.exe',
     [folder],
@@ -78,7 +156,13 @@ function openFolder(folder) {
 }
 
 function openConfigFolder(configPath) {
-  openFolder(path.dirname(configPath));
+  if (!configPath) {
+    return;
+  }
+
+  openFolder(
+    path.dirname(configPath)
+  );
 }
 
 function createWindow() {
@@ -97,91 +181,110 @@ function createWindow() {
     focused: true,
   });
 
-  window.registerProtocol('moonwolf', async request => {
-    try {
-      const url = new URL(request.url);
+  window.registerProtocol(
+    'moonwolf',
+    async request => {
+      try {
+        const url =
+          new URL(request.url);
 
-      let relativePath = decodeURIComponent(
-        url.pathname
-      );
+        let pathname =
+          decodeURIComponent(
+            url.pathname
+          );
 
-      if (
-        !relativePath ||
-        relativePath === '/'
-      ) {
-        relativePath = '/index.html';
+        if (!pathname) {
+          pathname = '/';
+        }
+
+        const assetName =
+          UI_ASSETS[pathname];
+
+        if (!assetName) {
+          return new Response(
+            'Not found',
+            {
+              status: 404,
+              headers: {
+                'Content-Type':
+                  'text/plain; charset=utf-8',
+              },
+            }
+          );
+        }
+
+        const body =
+          readUiAsset(assetName);
+
+        return new Response(
+          body,
+          {
+            status: 200,
+            headers: {
+              'Content-Type':
+                mimeType(assetName),
+              'Cache-Control':
+                'no-store',
+            },
+          }
+        );
+      } catch (error) {
+        return new Response(
+          `MoonWolf UI error: ${error.message}`,
+          {
+            status: 500,
+            headers: {
+              'Content-Type':
+                'text/plain; charset=utf-8',
+            },
+          }
+        );
       }
-
-      const filePath = path.resolve(
-        UI_DIR,
-        `.${relativePath}`
-      );
-
-      const uiRoot = path.resolve(UI_DIR);
-
-      if (
-        filePath !== uiRoot &&
-        !filePath.startsWith(`${uiRoot}${path.sep}`)
-      ) {
-        return {
-          statusCode: 403,
-          body: Buffer.from('Forbidden'),
-          mimeType: 'text/plain',
-        };
-      }
-
-      const data = await fs.promises.readFile(filePath);
-
-      return {
-        statusCode: 200,
-        body: data,
-        mimeType: mimeType(filePath),
-      };
-    } catch {
-      return {
-        statusCode: 404,
-        body: Buffer.from('Not found'),
-        mimeType: 'text/plain',
-      };
     }
-  });
+  );
 
-  webview = window.createWebview({
-    url: 'moonwolf://localhost/index.html',
-    enableDevtools: false,
-  });
+  webview =
+    window.createWebview({
+      url:
+        'moonwolf://localhost/index.html',
+      enableDevtools: false,
+    });
 
   webview.expose('native', {
-    getState: () => stateProvider(),
+    getState: () =>
+      stateProvider(),
 
     openPanel: () => {
       openUrl(PANEL_URL);
+
       return true;
     },
 
     openServerFolder: () => {
-      const state = stateProvider();
+      const state =
+        stateProvider();
 
-      if (state.serverDir) {
-        openFolder(state.serverDir);
-      }
+      openFolder(
+        state.serverDir
+      );
 
       return true;
     },
 
     openConfig: () => {
-      const configPath =
-        stateProvider().configPath;
+      const state =
+        stateProvider();
 
-      if (configPath) {
-        openConfigFolder(configPath);
-      }
+      openConfigFolder(
+        state.configPath
+      );
 
       return true;
     },
 
     close: () => {
       app?.exit();
+
       return true;
     },
   });
@@ -204,9 +307,10 @@ function notifyStateChanged() {
     return;
   }
 
-  const state = JSON.stringify(
-    stateProvider()
-  );
+  const state =
+    JSON.stringify(
+      stateProvider()
+    );
 
   const script = `
     window.dispatchEvent(
@@ -220,7 +324,9 @@ function notifyStateChanged() {
   `;
 
   try {
-    webview.evaluateScript(script);
+    webview.evaluateScript(
+      script
+    );
   } catch {}
 }
 
@@ -229,12 +335,14 @@ function startGui(getState) {
 
   createWindow();
 
-  setTimeout(() => {
-    notifyStateChanged();
-  }, 300);
+  setTimeout(
+    notifyStateChanged,
+    300
+  );
 
   return {
-    update: notifyStateChanged,
+    update:
+      notifyStateChanged,
 
     close: () => {
       app?.exit();
