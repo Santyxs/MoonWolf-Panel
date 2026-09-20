@@ -7,7 +7,8 @@ const crypto = require('node:crypto');
 const { io } = require('socket.io-client');
 const { startGui } = require('./gui');
 
-const PANEL_URL = 'https://moonwolf-panel.onrender.com';
+const PANEL_URL =
+  'https://moonwolf-panel.onrender.com';
 
 const CLOUD_PATH = '/socket.io';
 
@@ -37,9 +38,11 @@ const CONFIG_PATH =
     'agent.json'
   );
 
-const TOKEN_RE = /^MW-[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/;
+const TOKEN_RE =
+  /^MW-[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/;
 
-const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const ALPHABET =
+  'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 const LOCAL_PORT = 3000;
 
@@ -624,7 +627,11 @@ async function main() {
 
 main().catch(
   error => {
-    console.error('❌ MoonWolf Agent:', error.message);
+    console.error(
+      '❌ MoonWolf Agent:',
+      error.message
+    );
+
     process.exitCode = 1;
   }
 );
