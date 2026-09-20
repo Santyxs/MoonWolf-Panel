@@ -1,3 +1,4 @@
+```yaml
 name: Build Agent
 
 on:
@@ -28,7 +29,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: '26.9.0'
 
       - name: Show Node version
         run: node --version
@@ -72,23 +73,25 @@ jobs:
             throw "No se encontró la línea esperada en js-bindings.js."
           }
 
-          $new = @(
-            'const nativeModule = {'
-            '  exports: {}'
-            '};'
-            ''
-            'process.dlopen('
-            '  nativeModule,'
-            '  process.env.NAPI_RS_NATIVE_LIBRARY_PATH,'
-            '  2'
-            ');'
-            ''
-            'return nativeModule.exports;'
-          ) -join "`n"
+          $new = @"
+const nativeModule = {
+        exports: {}
+      };
 
-          $content = $content.Replace($old, $new)
+      process.dlopen(
+        nativeModule,
+        process.env.NAPI_RS_NATIVE_LIBRARY_PATH
+      );
 
-          Set-Content -LiteralPath $file -Value $content -Encoding utf8
+      return nativeModule.exports;
+"@
+
+          $content = $content.Replace($old, $new.Trim())
+
+          Set-Content `
+            -LiteralPath $file `
+            -Value $content `
+            -Encoding utf8
 
           Write-Host "Parche aplicado correctamente."
 
@@ -99,7 +102,10 @@ jobs:
             Remove-Item -LiteralPath "dist" -Recurse -Force
           }
 
-          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path "dist" | Out-Null
 
       - name: Create WebViewJS native shim
         shell: pwsh
@@ -189,38 +195,110 @@ jobs:
               -Path "dist/sea-config.json" `
               -Encoding utf8
 
+          Write-Host "SEA configuration:"
+          Get-Content "dist/sea-config.json"
+
       - name: Build MoonWolf Agent executable
         shell: pwsh
         run: |
-          node --experimental-sea-config dist/sea-config.json
+          node --build-sea dist/sea-config.json
 
           if ($LASTEXITCODE -ne 0) {
             throw "Node SEA terminó con código $LASTEXITCODE"
           }
 
-          if (-not (Test-Path -LiteralPath "dist/sea-prep.blob")) {
-            throw "No se generó dist/sea-prep.blob"
-          }
-
-          node -e "require('fs').copyFileSync(process.execPath, 'dist/MoonWolf-Agent.exe')"
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "No se pudo copiar node.exe como base del ejecutable"
-          }
-
-          npx --yes postject `
-            dist/MoonWolf-Agent.exe `
-            NODE_SEA_BLOB `
-            dist/sea-prep.blob `
-            --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "postject terminó con código $LASTEXITCODE"
-          }
-
           if (-not (Test-Path -LiteralPath "dist/MoonWolf-Agent.exe")) {
             throw "No se generó dist/MoonWolf-Agent.exe"
           }
+
+          Write-Host "MoonWolf-Agent.exe generado correctamente."
+
+      - name: Find editbin
+        id: find-editbin
+        shell: pwsh
+        run: |
+          $editbin = $null
+
+          $roots = @(
+            "${env:ProgramFiles(x86)}\Microsoft Visual Studio",
+            "${env:ProgramFiles}\Microsoft Visual Studio"
+          )
+
+          foreach ($root in $roots) {
+            if (-not (Test-Path -LiteralPath $root)) {
+              continue
+            }
+
+            Write-Host "Buscando editbin en:"
+            Write-Host $root
+
+            $editbin = Get-ChildItem `
+              -Path $root `
+              -Filter "editbin.exe" `
+              -File `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+
+            if ($editbin) {
+              break
+            }
+          }
+
+          if (-not $editbin) {
+            $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+
+            if (Test-Path -LiteralPath $vswhere) {
+              Write-Host "Usando vswhere para localizar Visual Studio."
+
+              $installationPath = & $vswhere `
+                -latest `
+                -products * `
+                -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+                -property installationPath
+
+              if ($installationPath) {
+                $editbin = Get-ChildItem `
+                  -Path $installationPath `
+                  -Filter "editbin.exe" `
+                  -File `
+                  -Recurse `
+                  -ErrorAction SilentlyContinue |
+                  Select-Object -First 1
+              }
+            }
+          }
+
+          if (-not $editbin) {
+            throw "No se encontró editbin.exe en el runner de GitHub Actions."
+          }
+
+          Write-Host "editbin encontrado:"
+          Write-Host $editbin.FullName
+
+          "EDITBIN_PATH=$($editbin.FullName)" >> $env:GITHUB_ENV
+
+      - name: Hide console window
+        shell: pwsh
+        run: |
+          if (-not $env:EDITBIN_PATH) {
+            throw "EDITBIN_PATH no está definido."
+          }
+
+          $exe = (Resolve-Path "dist/MoonWolf-Agent.exe").Path
+
+          Write-Host "Configurando MoonWolf-Agent como aplicación Windows:"
+          Write-Host $exe
+
+          & $env:EDITBIN_PATH `
+            /SUBSYSTEM:WINDOWS `
+            $exe
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "editbin terminó con código $LASTEXITCODE"
+          }
+
+          Write-Host "Consola oculta correctamente."
 
       - name: Verify executable
         shell: pwsh
@@ -242,7 +320,7 @@ jobs:
           Write-Host "Ejecutable generado correctamente."
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: MoonWolf-Agent-Windows
           path: dist/MoonWolf-Agent.exe
@@ -313,3 +391,4 @@ jobs:
             dist/MoonWolf-Agent.exe \
             --title "MoonWolf Agent v${TAG_NAME#agent-v}" \
             --generate-notes
+```
