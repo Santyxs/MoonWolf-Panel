@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1"
+  >
+
+  <title>MoonWolf Agent</title>
+
+  <link
+    rel="stylesheet"
+    href="style.css"
+  >
+</head>
+
+<body>
+  <main class="app">
+
+    <section class="hero">
+
+      <div class="moon-logo">
+        <div class="moon"></div>
+      </div>
+
+      <div class="brand">
+        <h1>MoonWolf</h1>
+        <p>Agent</p>
+      </div>
+
+    </section>
+
+    <section class="status-card">
+
+      <div
+        id="status-dot"
+        class="status-dot connecting"
+      ></div>
+
+      <div class="status-content">
+        <strong id="status-title">
+          Conectando...
+        </strong>
+
+        <span id="status-description">
+          Conectando con MoonWolf Cloud
+        </span>
+      </div>
+
+    </section>
+
+    <section class="info-card">
+
+      <div class="info-row">
+        <div>
+          <span class="label">
+            Código del Agent
+          </span>
+
+          <span
+            id="agent-token"
+            class="value code"
+          >
+            —
+          </span>
+        </div>
+
+        <button
+          id="copy-token"
+          class="small-button"
+          type="button"
+        >
+          Copiar
+        </button>
+      </div>
+
+      <div class="separator"></div>
+
+      <div class="info-row">
+        <div class="wide">
+          <span class="label">
+            Servidor
+          </span>
+
+          <span
+            id="server-dir"
+            class="value path"
+          >
+            —
+          </span>
+        </div>
+      </div>
+
+      <div class="separator"></div>
+
+      <div class="info-row">
+        <div>
+          <span class="label">
+            Versión
+          </span>
+
+          <span
+            id="version"
+            class="value"
+          >
+            —
+          </span>
+        </div>
+
+        <div class="local-status">
+          <span
+            id="local-dot"
+            class="mini-dot"
+          ></span>
+
+          <span id="local-status">
+            Servidor local
+          </span>
+        </div>
+      </div>
+
+    </section>
+
+    <section class="actions">
+
+      <button
+        id="open-panel"
+        class="button primary"
+        type="button"
+      >
+        <span>↗</span>
+        Abrir Panel
+      </button>
+
+      <button
+        id="open-server"
+        class="button secondary"
+        type="button"
+      >
+        <span>📁</span>
+        Abrir servidor
+      </button>
+
+      <button
+        id="settings"
+        class="button secondary"
+        type="button"
+      >
+        <span>⚙</span>
+        Configuración
+      </button>
+
+    </section>
+
+    <footer>
+      <span>MoonWolf Agent</span>
+    </footer>
+
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
