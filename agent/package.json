@@ -8,9 +8,7 @@
     "start": "node index.js"
   },
   "dependencies": {
+    "@webviewjs/webview": "^0.4.5",
     "socket.io-client": "^4.8.3"
-  },
-  "devDependencies": {
-    "esbuild": "^0.25.0"
   }
 }
