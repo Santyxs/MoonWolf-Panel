@@ -232,26 +232,6 @@ jobs:
 
           "EDITBIN_PATH=$($editbin.FullName)" >> $env:GITHUB_ENV
 
-      - name: Hide console window
-        shell: pwsh
-        run: |
-          if (-not $env:EDITBIN_PATH) {
-            throw "EDITBIN_PATH no está definido."
-          }
-
-          $exe = (Resolve-Path "dist/MoonWolf-Agent.exe").Path
-
-          Write-Host "Configurando MoonWolf-Agent como aplicación Windows:"
-          Write-Host $exe
-
-          & $env:EDITBIN_PATH `
-            /SUBSYSTEM:WINDOWS `
-            $exe
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "editbin terminó con código $LASTEXITCODE"
-          }
-
       - name: Verify executable
         shell: pwsh
         run: |
