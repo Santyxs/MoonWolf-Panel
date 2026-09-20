@@ -21,10 +21,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
 
@@ -115,11 +115,48 @@ jobs:
       - name: Bundle Agent
         shell: pwsh
         run: |
-          node scripts/build-agent.mjs
+          $buildScript = @'
+          import * as esbuild from "esbuild";
+          import path from "node:path";
+          import { fileURLToPath } from "node:url";
+
+          const __dirname = path.dirname(fileURLToPath(import.meta.url));
+          const root = path.resolve(__dirname, ".");
+
+          await esbuild.build({
+            entryPoints: [path.join(root, "agent/index.js")],
+            bundle: true,
+            platform: "node",
+            target: "node18",
+            format: "cjs",
+            outfile: path.join(root, "dist/agent.cjs"),
+            logLevel: "info",
+            plugins: [
+              {
+                name: "webviewjs-native-shim",
+                setup(build) {
+                  build.onResolve(
+                    { filter: /^@webviewjs\/webview-(?!win32-x64-msvc)/ },
+                    () => ({ path: path.join(root, "agent/webview-native-shim.js") })
+                  );
+                },
+              },
+            ],
+          });
+
+          console.log("dist/agent.cjs generado");
+          '@
+
+          Set-Content -Path "build-agent.tmp.mjs" -Value $buildScript -Encoding utf8
+
+          node build-agent.tmp.mjs
 
           if ($LASTEXITCODE -ne 0) {
+            Remove-Item "build-agent.tmp.mjs" -Force -ErrorAction SilentlyContinue
             throw "esbuild terminó con código $LASTEXITCODE"
           }
+
+          Remove-Item "build-agent.tmp.mjs" -Force
 
       - name: Verify bundle
         shell: pwsh
