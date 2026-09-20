@@ -65,34 +65,51 @@ jobs:
 
           $content = Get-Content -LiteralPath $file -Raw
 
-          $old = "    try {`r`n      return require(process.env.NAPI_RS_NATIVE_LIBRARY_PATH)`r`n    } catch (err) {`r`n      loadErrors.push(err)`r`n    }"
+          $old = "return require(process.env.NAPI_RS_NATIVE_LIBRARY_PATH);"
 
           if (-not $content.Contains($old)) {
-            $old = "    try {`n      return require(process.env.NAPI_RS_NATIVE_LIBRARY_PATH)`n    } catch (err) {`n      loadErrors.push(err)`n    }"
+            Write-Host "No se encontró la línea esperada:"
+            Write-Host $old
+            throw "No se pudo aplicar el parche de WebViewJS."
           }
 
-          if (-not $content.Contains($old)) {
-            Write-Host "Contenido actual de js-bindings.js:"
-            Get-Content -LiteralPath $file
-            throw "No se encontró el bloque esperado de carga nativa."
-          }
+          $new = @"
+const nativeModule = {
+        exports: {}
+      };
 
-          $new = "    try {`n      const nativeModule = {`n        exports: {}`n      }`n`n      process.dlopen(`n        nativeModule,`n        process.env.NAPI_RS_NATIVE_LIBRARY_PATH`n      )`n`n      return nativeModule.exports`n    } catch (err) {`n      loadErrors.push(err)`n    }"
+      process.dlopen(
+        nativeModule,
+        process.env.NAPI_RS_NATIVE_LIBRARY_PATH
+      );
 
-          $content = $content.Replace($old, $new)
+      return nativeModule.exports;
+"@
+
+          $content = $content.Replace($old, $new.Trim())
 
           Set-Content `
             -LiteralPath $file `
             -Value $content `
             -Encoding utf8
 
-          Write-Host "WebViewJS preparado para cargar el addon mediante process.dlopen()."
+          Write-Host "Parche aplicado correctamente."
+
+          Write-Host ""
+          Write-Host "Comprobando loader parcheado:"
+          Select-String `
+            -Path $file `
+            -Pattern "process.dlopen" `
+            -Context 4,6
 
       - name: Prepare Agent build directory
         shell: pwsh
         run: |
           if (Test-Path -LiteralPath "dist") {
-            Remove-Item -LiteralPath "dist" -Recurse -Force
+            Remove-Item `
+              -LiteralPath "dist" `
+              -Recurse `
+              -Force
           }
 
           New-Item `
