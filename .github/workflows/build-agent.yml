@@ -370,9 +370,10 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ steps.version.outputs.tag }}
         shell: bash
         run: |
-          gh release create "${{ steps.version.outputs.tag }}" \
+          gh release create "$TAG_NAME" \
             dist/MoonWolf-Agent.exe \
-            --title "MoonWolf Agent v${{ steps.version.outputs.tag }}" \
+            --title "MoonWolf Agent v${TAG_NAME#agent-v}" \
             --generate-notes
