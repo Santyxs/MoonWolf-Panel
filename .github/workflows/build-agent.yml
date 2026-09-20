@@ -198,14 +198,13 @@ jobs:
             throw "La generación del blob SEA terminó con código $LASTEXITCODE"
           }
 
-          $blob = "dist/sea-prep.blob"
-          $exe = "dist/MoonWolf-Agent.exe"
+          $blob = (Resolve-Path "dist/sea-prep.blob").Path
+          $exe = Join-Path (Resolve-Path "dist").Path "MoonWolf-Agent.exe"
+          $nodePath = (Get-Command node).Source
 
           if (-not (Test-Path -LiteralPath $blob)) {
             throw "No se generó $blob"
           }
-
-          $nodePath = (Get-Command node).Source
 
           Copy-Item `
             -LiteralPath $nodePath `
@@ -216,11 +215,31 @@ jobs:
             throw "No se pudo crear $exe"
           }
 
+          Write-Host "Node executable: $nodePath"
+          Write-Host "SEA blob: $blob"
+          Write-Host "Target executable: $exe"
+
+          $binaryBytes = [System.IO.File]::ReadAllBytes($exe)
+          $binaryText = [System.Text.Encoding]::ASCII.GetString($binaryBytes)
+
+          $sentinelMatch = [regex]::Match(
+            $binaryText,
+            'NODE_SEA_FUSE_[A-Za-z0-9]+'
+          )
+
+          if (-not $sentinelMatch.Success) {
+            throw "No se encontró ningún SEA sentinel fuse dentro de node.exe"
+          }
+
+          $sentinelFuse = $sentinelMatch.Value
+
+          Write-Host "SEA sentinel detectado: $sentinelFuse"
+
           npx --yes postject `
             $exe `
             NODE_SEA_BLOB `
             $blob `
-            --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072bdb0dfd5b4b `
+            --sentinel-fuse $sentinelFuse `
             --overwrite
 
           if ($LASTEXITCODE -ne 0) {
