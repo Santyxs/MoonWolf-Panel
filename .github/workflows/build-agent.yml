@@ -252,6 +252,40 @@ jobs:
 
           Write-Host "MoonWolf-Agent.exe generado correctamente."
 
+      - name: Hide Windows console
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "dist/MoonWolf-Agent.exe").Path
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+
+          if (-not (Test-Path -LiteralPath $vswhere)) {
+            throw "No se encontró vswhere.exe"
+          }
+
+          $editbin = & $vswhere `
+            -latest `
+            -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -find "**/Hostx64/x64/editbin.exe" |
+            Select-Object -First 1
+
+          if ([string]::IsNullOrWhiteSpace($editbin) -or `
+              -not (Test-Path -LiteralPath $editbin)) {
+            throw "No se encontró editbin.exe"
+          }
+
+          Write-Host "Usando editbin: $editbin"
+          Write-Host "Cambiando el subsistema del ejecutable a Windows GUI..."
+
+          & $editbin /SUBSYSTEM:WINDOWS $exe
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "editbin terminó con código $LASTEXITCODE"
+          }
+
+          Write-Host "Terminal de Windows ocultada correctamente."
+
       - name: Verify executable
         shell: pwsh
         run: |
@@ -336,10 +370,9 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ steps.version.outputs.tag }}
         shell: bash
         run: |
-          gh release create "$TAG_NAME" \
+          gh release create "${{ steps.version.outputs.tag }}" \
             dist/MoonWolf-Agent.exe \
-            --title "MoonWolf Agent v${TAG_NAME#agent-v}" \
+            --title "MoonWolf Agent v${{ steps.version.outputs.tag }}" \
             --generate-notes
