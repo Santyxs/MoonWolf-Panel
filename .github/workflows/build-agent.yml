@@ -57,14 +57,20 @@ jobs:
       - name: Prepare Agent build directory
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          if (Test-Path "dist") {
+            Remove-Item "dist" -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
 
       - name: Create WebViewJS native shim
         shell: pwsh
         run: |
           @'
           module.exports = {};
-          '@ | Set-Content -Path agent/webview-native-shim.js -Encoding utf8
+          '@ | Set-Content `
+            -Path "agent/webview-native-shim.js" `
+            -Encoding utf8
 
       - name: Bundle Agent with esbuild
         shell: pwsh
@@ -78,35 +84,84 @@ jobs:
             --outfile=dist/agent.cjs `
             --log-level=info
 
-      - name: Create WebViewJS resources manifest
-        shell: pwsh
-        run: |
-          $native = (Resolve-Path "agent/node_modules/@webviewjs/webview-win32-x64-msvc/webview.win32-x64-msvc.node").Path
-
-          $manifest = @{
-            "ui/index.html" = "agent/ui/index.html"
-            "ui/style.css" = "agent/ui/style.css"
-            "ui/app.js" = "agent/ui/app.js"
-            "native/webview.win32-x64-msvc.node" = $native
+          if ($LASTEXITCODE -ne 0) {
+            throw "esbuild terminó con código $LASTEXITCODE"
           }
 
-          $manifest |
-            ConvertTo-Json -Depth 5 |
-            Set-Content -Path dist/resources.json -Encoding utf8
+      - name: Verify Agent bundle
+        shell: pwsh
+        run: |
+          $bundle = "dist/agent.cjs"
 
-          Write-Host "Resources manifest:"
-          Get-Content dist/resources.json
+          if (-not (Test-Path $bundle)) {
+            throw "No se generó $bundle"
+          }
+
+          $size = (Get-Item $bundle).Length
+
+          Write-Host "agent.cjs: $size bytes"
+
+          if ($size -lt 100KB) {
+            throw "El bundle generado es sospechosamente pequeño."
+          }
+
+      - name: Create Node SEA configuration
+        shell: pwsh
+        run: |
+          $native = (Resolve-Path `
+            "agent/node_modules/@webviewjs/webview-win32-x64-msvc/webview.win32-x64-msvc.node").Path
+
+          $main = (Resolve-Path `
+            "dist/agent.cjs").Path
+
+          $output = Join-Path `
+            (Resolve-Path "dist").Path `
+            "MoonWolf-Agent.exe"
+
+          $indexHtml = (Resolve-Path `
+            "agent/ui/index.html").Path
+
+          $styleCss = (Resolve-Path `
+            "agent/ui/style.css").Path
+
+          $appJs = (Resolve-Path `
+            "agent/ui/app.js").Path
+
+          $config = @{
+            main = $main
+            mainFormat = "commonjs"
+            output = $output
+
+            disableExperimentalSEAWarning = $true
+
+            useSnapshot = $false
+            useCodeCache = $false
+
+            assets = @{
+              "ui/index.html" = $indexHtml
+              "ui/style.css" = $styleCss
+              "ui/app.js" = $appJs
+              "native/webview.win32-x64-msvc.node" = $native
+            }
+          }
+
+          $config |
+            ConvertTo-Json -Depth 10 |
+            Set-Content `
+              -Path "dist/sea-config.json" `
+              -Encoding utf8
+
+          Write-Host "SEA configuration:"
+          Get-Content "dist/sea-config.json"
 
       - name: Build MoonWolf Agent executable
         shell: pwsh
         run: |
-          npx webview `
-            --build `
-            --runtime node `
-            --input ./dist/agent.cjs `
-            --output ./dist `
-            --name MoonWolf-Agent `
-            --resources ./dist/resources.json
+          node --build-sea dist/sea-config.json
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Node SEA terminó con código $LASTEXITCODE"
+          }
 
       - name: Hide console window
         shell: pwsh
@@ -125,7 +180,9 @@ jobs:
           Write-Host "Usando editbin:"
           Write-Host $editbin.FullName
 
-          & $editbin.FullName /SUBSYSTEM:WINDOWS dist\MoonWolf-Agent.exe
+          & $editbin.FullName `
+            /SUBSYSTEM:WINDOWS `
+            "dist\MoonWolf-Agent.exe"
 
           if ($LASTEXITCODE -ne 0) {
             throw "editbin terminó con código $LASTEXITCODE"
@@ -134,7 +191,7 @@ jobs:
       - name: Verify executable
         shell: pwsh
         run: |
-          $exe = 'dist/MoonWolf-Agent.exe'
+          $exe = "dist/MoonWolf-Agent.exe"
 
           if (-not (Test-Path $exe)) {
             throw "No se generó $exe"
@@ -145,8 +202,10 @@ jobs:
           Write-Host "MoonWolf-Agent.exe: $size bytes"
 
           if ($size -lt 1MB) {
-            throw 'El ejecutable generado es sospechosamente pequeño.'
+            throw "El ejecutable generado es sospechosamente pequeño."
           }
+
+          Write-Host "Ejecutable generado correctamente."
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
@@ -200,6 +259,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git tag "$TAG_NAME" "$GITHUB_SHA"
           git push origin "$TAG_NAME"
 
