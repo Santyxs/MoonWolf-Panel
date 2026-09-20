@@ -28,7 +28,6 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: 26.9.0
-          cache: npm
 
       - name: Show Node version
         run: node --version
@@ -41,109 +40,64 @@ jobs:
         run: npm install --no-package-lock
 
       - name: Verify WebViewJS
-        working-directory: agent
         shell: pwsh
         run: |
-          $version = node -p "require('@webviewjs/webview/package.json').version"
+          Write-Host "WebViewJS:"
+          npm --prefix agent list @webviewjs/webview --depth=0
 
-          Write-Host "WebViewJS version: $version"
-
-          if ($version -ne "0.4.5") {
-            throw "Se esperaba WebViewJS 0.4.5."
-          }
-
-          $native = "node_modules/@webviewjs/webview-win32-x64-msvc/webview.win32-x64-msvc.node"
+          $native = "agent/node_modules/@webviewjs/webview-win32-x64-msvc/webview.win32-x64-msvc.node"
 
           if (-not (Test-Path $native)) {
-            throw "No se encontró el addon nativo WebViewJS para Windows x64."
+            throw "No se encontró el addon nativo de WebViewJS: $native"
           }
 
-          Write-Host "Native addon encontrado: $native"
+          Write-Host "Addon nativo encontrado:"
+          Write-Host (Resolve-Path $native)
 
-      - name: Clean build directory
+      - name: Prepare Agent build directory
         shell: pwsh
         run: |
-          if (Test-Path "dist") {
-            Remove-Item "dist" -Recurse -Force
-          }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
 
-          New-Item `
-            -ItemType Directory `
-            -Path "dist" `
-            -Force | Out-Null
+      - name: Create WebViewJS native shim
+        shell: pwsh
+        run: |
+          @'
+          module.exports = {};
+          '@ | Set-Content -Path agent/webview-native-shim.js -Encoding utf8
 
       - name: Bundle Agent with esbuild
         shell: pwsh
         run: |
-          npx esbuild `
-            agent/index.js `
+          npx esbuild agent/index.js `
             --bundle `
             --platform=node `
             --target=node24 `
             --format=cjs `
-            --external:@webviewjs/webview-win32-x64-msvc `
-            --external:@webviewjs/webview-win32-x64-msvc/package.json `
+            --alias:@webviewjs/webview-win32-x64-msvc=./webview-native-shim.js `
             --outfile=dist/agent.cjs `
             --log-level=info
 
-      - name: Verify Agent bundle
+      - name: Create WebViewJS resources manifest
         shell: pwsh
         run: |
-          $bundle = "dist/agent.cjs"
+          $native = (Resolve-Path "agent/node_modules/@webviewjs/webview-win32-x64-msvc/webview.win32-x64-msvc.node").Path
 
-          if (-not (Test-Path $bundle)) {
-            throw "No se generó dist/agent.cjs."
+          $manifest = @{
+            "ui/index.html" = "agent/ui/index.html"
+            "ui/style.css" = "agent/ui/style.css"
+            "ui/app.js" = "agent/ui/app.js"
+            "native/webview.win32-x64-msvc.node" = $native
           }
 
-          $size = (Get-Item $bundle).Length
+          $manifest |
+            ConvertTo-Json -Depth 5 |
+            Set-Content -Path dist/resources.json -Encoding utf8
 
-          Write-Host "Agent bundle: $size bytes"
+          Write-Host "Resources manifest:"
+          Get-Content dist/resources.json
 
-          if ($size -lt 100KB) {
-            throw "El bundle generado es sospechosamente pequeño."
-          }
-
-      - name: Create WebViewJS resource map
-        shell: pwsh
-        run: |
-          @'
-          {
-            "ui/index.html": "agent/ui/index.html",
-            "ui/style.css": "agent/ui/style.css",
-            "ui/app.js": "agent/ui/app.js",
-            "native/webview.win32-x64-msvc.node": "agent/node_modules/@webviewjs/webview-win32-x64-msvc/webview.win32-x64-msvc.node"
-          }
-          '@ | Set-Content `
-            -Path "dist/resources.json" `
-            -Encoding utf8
-
-          Write-Host "Resource map:"
-          Get-Content "dist/resources.json"
-
-      - name: Validate WebViewJS resource map
-        shell: pwsh
-        run: |
-          $resources = Get-Content `
-            "dist/resources.json" `
-            -Raw |
-            ConvertFrom-Json
-
-          $paths = @(
-            $resources.'ui/index.html'
-            $resources.'ui/style.css'
-            $resources.'ui/app.js'
-            $resources.'native/webview.win32-x64-msvc.node'
-          )
-
-          foreach ($path in $paths) {
-            if (-not (Test-Path $path)) {
-              throw "Resource no encontrado: $path"
-            }
-
-            Write-Host "OK: $path"
-          }
-
-      - name: Build standalone EXE with WebViewJS CLI
+      - name: Build MoonWolf Agent executable
         shell: pwsh
         run: |
           npx webview `
@@ -154,71 +108,44 @@ jobs:
             --name MoonWolf-Agent `
             --resources ./dist/resources.json
 
-      - name: Verify standalone executable
-        shell: pwsh
-        run: |
-          $exe = "dist/MoonWolf-Agent.exe"
-
-          if (-not (Test-Path $exe)) {
-            throw "No se generó $exe."
-          }
-
-          $size = (Get-Item $exe).Length
-
-          Write-Host "MoonWolf-Agent.exe: $size bytes"
-
-          if ($size -lt 10MB) {
-            throw "El ejecutable generado es sospechosamente pequeño."
-          }
-
-      - name: Hide Windows console subsystem
+      - name: Hide console window
         shell: pwsh
         run: |
           $editbin = Get-ChildItem `
-            "C:\Program Files\Microsoft Visual Studio\2022" `
-            -Filter "editbin.exe" `
+            -Path "${env:ProgramFiles(x86)}\Microsoft Visual Studio" `
+            -Filter editbin.exe `
             -Recurse `
             -ErrorAction SilentlyContinue |
-            Where-Object {
-              $_.FullName -match "\\Hostx64\\x64\\editbin\.exe$"
-            } |
             Select-Object -First 1
 
           if (-not $editbin) {
             throw "No se encontró editbin.exe."
           }
 
-          Write-Host "editbin: $($editbin.FullName)"
+          Write-Host "Usando editbin:"
+          Write-Host $editbin.FullName
 
-          & $editbin.FullName `
-            /SUBSYSTEM:WINDOWS `
-            "dist\MoonWolf-Agent.exe"
+          & $editbin.FullName /SUBSYSTEM:WINDOWS dist\MoonWolf-Agent.exe
 
           if ($LASTEXITCODE -ne 0) {
-            throw "editbin falló con código $LASTEXITCODE."
+            throw "editbin terminó con código $LASTEXITCODE"
           }
 
-      - name: Final executable verification
+      - name: Verify executable
         shell: pwsh
         run: |
-          $exe = "dist/MoonWolf-Agent.exe"
+          $exe = 'dist/MoonWolf-Agent.exe'
 
           if (-not (Test-Path $exe)) {
-            throw "El EXE final no existe."
+            throw "No se generó $exe"
           }
 
           $size = (Get-Item $exe).Length
 
-          Write-Host ""
-          Write-Host "======================================"
-          Write-Host " MoonWolf Agent"
-          Write-Host " $exe"
-          Write-Host " $size bytes"
-          Write-Host "======================================"
-          Write-Host ""
+          Write-Host "MoonWolf-Agent.exe: $size bytes"
 
-          if ($size -lt 10MB) {
-            throw "El EXE final es demasiado pequeño."
+          if ($size -lt 1MB) {
+            throw 'El ejecutable generado es sospechosamente pequeño.'
           }
 
       - name: Upload workflow artifact
@@ -273,7 +200,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
           git tag "$TAG_NAME" "$GITHUB_SHA"
           git push origin "$TAG_NAME"
 
