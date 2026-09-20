@@ -152,9 +152,9 @@ jobs:
           $main = (Resolve-Path `
             "dist/agent.cjs").Path
 
-          $output = Join-Path `
+          $blob = Join-Path `
             (Resolve-Path "dist").Path `
-            "MoonWolf-Agent.exe"
+            "sea-prep.blob"
 
           $indexHtml = (Resolve-Path `
             "agent/ui/index.html").Path
@@ -168,7 +168,7 @@ jobs:
           $config = @{
             main = $main
             mainFormat = "commonjs"
-            output = $output
+            output = $blob
 
             disableExperimentalSEAWarning = $true
 
@@ -192,16 +192,40 @@ jobs:
       - name: Build MoonWolf Agent executable
         shell: pwsh
         run: |
-          node --build-sea dist/sea-config.json
+          node --experimental-sea-config dist/sea-config.json
 
           if ($LASTEXITCODE -ne 0) {
-          throw "Node SEA terminó con código $LASTEXITCODE"
+            throw "La generación del blob SEA terminó con código $LASTEXITCODE"
           }
 
-          if (-not (Test-Path -LiteralPath "dist/MoonWolf-Agent.exe")) {
-          throw "No se generó dist/MoonWolf-Agent.exe"
+          $nodePath = (Get-Command node).Source
+          $exe = Join-Path (Resolve-Path "dist").Path "MoonWolf-Agent.exe"
+          $blob = Join-Path (Resolve-Path "dist").Path "sea-prep.blob"
+
+          if (-not (Test-Path -LiteralPath $blob)) {
+            throw "No se generó $blob"
           }
-          
+
+          Copy-Item `
+            -LiteralPath $nodePath `
+            -Destination $exe `
+            -Force
+
+          npx --yes postject@1.0.0-beta.6 `
+            $exe `
+            NODE_SEA_BLOB `
+            $blob `
+            --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072bdb0dfd5b4b `
+            --overwrite
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "postject terminó con código $LASTEXITCODE"
+          }
+
+          if (-not (Test-Path -LiteralPath $exe)) {
+            throw "No se generó $exe"
+          }
+
           Write-Host "MoonWolf-Agent.exe generado correctamente."
 
       - name: Verify executable
