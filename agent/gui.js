@@ -5,9 +5,11 @@ const path = require('node:path');
 const os = require('node:os');
 const { execFile } = require('node:child_process');
 
-const PANEL_URL = 'https://moonwolf-panel.onrender.com';
+const PANEL_URL =
+  'https://moonwolf-panel.onrender.com';
 
-const NATIVE_ASSET = 'native/webview.win32-x64-msvc.node';
+const NATIVE_ASSET =
+  'native/webview.win32-x64-msvc.node';
 
 const UI_ASSETS = {
   '/': 'ui/index.html',
@@ -26,8 +28,7 @@ try {
     getAsset = sea.getAsset;
     isStandalone = true;
   }
-} catch {
-}
+} catch {}
 
 function prepareNativeAddon() {
   if (!isStandalone || !getAsset) {
@@ -37,7 +38,7 @@ function prepareNativeAddon() {
   const runtimeDir = path.join(
     os.tmpdir(),
     'MoonWolf-Agent',
-    'webviewjs-0.4.5'
+    'webviewjs'
   );
 
   fs.mkdirSync(runtimeDir, {
@@ -49,13 +50,21 @@ function prepareNativeAddon() {
     'webview.win32-x64-msvc.node'
   );
 
-  const nativeBuffer =
-    getAsset(NATIVE_ASSET);
+  try {
+    if (!fs.existsSync(nativePath)) {
+      const nativeBuffer =
+        getAsset(NATIVE_ASSET);
 
-  fs.writeFileSync(
-    nativePath,
-    nativeBuffer
-  );
+      fs.writeFileSync(
+        nativePath,
+        nativeBuffer
+      );
+    }
+  } catch (error) {
+    throw new Error(
+      `No se pudo preparar WebViewJS: ${error.message}`
+    );
+  }
 
   process.env.NAPI_RS_NATIVE_LIBRARY_PATH =
     nativePath;
