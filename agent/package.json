@@ -5,9 +5,7 @@
   "description": "MoonWolf Agent para Windows",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "build:bundle": "node ../build-agent.mjs",
-    "build:exe": "npm run build:bundle && node --build-sea ../sea-config.json"
+    "start": "node index.js"
   },
   "dependencies": {
     "socket.io-client": "^4.8.3"
