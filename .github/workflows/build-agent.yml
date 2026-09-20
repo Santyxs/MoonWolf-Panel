@@ -131,20 +131,7 @@ jobs:
             format: "cjs",
             outfile: path.join(root, "dist/agent.cjs"),
             logLevel: "info",
-            plugins: [
-              {
-                name: "webviewjs-native-shim",
-                setup(build) {
-                  build.onResolve({ filter: /^@webviewjs\/webview-/ }, args => {
-                    if (args.path === "@webviewjs/webview-win32-x64-msvc") {
-                      return undefined;
-                    }
-
-                    return { path: path.join(root, "agent/webview-native-shim.js") };
-                  });
-                },
-              },
-            ],
+            external: ["@webviewjs/webview-*"],
           });
 
           console.log("dist/agent.cjs generado");
