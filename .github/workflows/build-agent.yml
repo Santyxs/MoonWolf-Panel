@@ -192,35 +192,17 @@ jobs:
       - name: Build MoonWolf Agent executable
         shell: pwsh
         run: |
-          node --experimental-sea-config dist/sea-config.json
+          node --build-sea dist/sea-config.json
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Node SEA terminó con código $LASTEXITCODE"
-          }
-
-          if (-not (Test-Path -LiteralPath "dist/sea-prep.blob")) {
-            throw "No se generó dist/sea-prep.blob"
-          }
-
-          node -e "require('fs').copyFileSync(process.execPath, 'dist/MoonWolf-Agent.exe')"
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "No se pudo copiar node.exe como base del ejecutable"
-          }
-
-          npx --yes postject `
-            dist/MoonWolf-Agent.exe `
-            NODE_SEA_BLOB `
-            dist/sea-prep.blob `
-            --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "postject terminó con código $LASTEXITCODE"
+          throw "Node SEA terminó con código $LASTEXITCODE"
           }
 
           if (-not (Test-Path -LiteralPath "dist/MoonWolf-Agent.exe")) {
-            throw "No se generó dist/MoonWolf-Agent.exe"
+          throw "No se generó dist/MoonWolf-Agent.exe"
           }
+          
+          Write-Host "MoonWolf-Agent.exe generado correctamente."
 
       - name: Verify executable
         shell: pwsh
