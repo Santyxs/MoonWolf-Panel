@@ -115,12 +115,25 @@ jobs:
       - name: Bundle Agent
         shell: pwsh
         run: |
+          $shim = (Resolve-Path -LiteralPath "agent/webview-native-shim.js").Path
+
+          if (-not (Test-Path -LiteralPath $shim)) {
+            throw "No existe el shim: $shim"
+          }
+
+          $shimUnix = $shim -replace '\\', '/'
+
+          $aliasArg = "--alias:@webviewjs/webview-win32-x64-msvc=$shimUnix"
+
+          Write-Host "Shim: $shimUnix"
+          Write-Host "Alias arg: $aliasArg"
+
           npx esbuild agent/index.js `
             --bundle `
             --platform=node `
             --target=node24 `
             --format=cjs `
-            --alias:@webviewjs/webview-win32-x64-msvc=./agent/webview-native-shim.js `
+            "$aliasArg" `
             --outfile=dist/agent.cjs `
             --log-level=info
 
