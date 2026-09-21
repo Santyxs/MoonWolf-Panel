@@ -14,61 +14,64 @@ const io = new Server(server, {
   transports: ['websocket'],
   maxHttpBufferSize: 60 * 1024 * 1024,
   cors: {
-    origin: 'https://moon-wolf-panel.vercel.app',
+    origin: process.env.ALLOWED_ORIGIN || '*',
     methods: ['GET', 'POST'],
   },
 });
 
 const rooms = new Map();
-const CODE_RE = /^MW-[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/;
 
-function getRoom(code) {
-  let room = rooms.get(code);
+function getRoom(token) {
+  let room = rooms.get(token);
+
   if (!room) {
     room = { agent: null, panels: new Set() };
-    rooms.set(code, room);
+    rooms.set(token, room);
   }
+
   return room;
 }
 
-function broadcast(room, event, payload) {
+function broadcastToPanels(room, event, payload) {
   for (const panel of room.panels) {
-    if (panel.connected) panel.emit(event, payload);
+    if (panel.connected) {
+      panel.emit(event, payload);
+    }
   }
-}
-
-function forwardAgentEvent(room, event) {
-  if (!event || typeof event.name !== 'string') return;
-  if (!['status', 'log', 'history', 'stats'].includes(event.name)) return;
-  broadcast(room, event.name, event.payload);
 }
 
 io.use((socket, next) => {
   const auth = socket.handshake.auth || {};
   const role = auth.role;
-  const code = String(auth.token || '');
+  const token = String(auth.token || '');
 
-  if (!CODE_RE.test(code)) return next(new Error('Código de conexión inválido.'));
-  if (role !== 'panel' && role !== 'agent') return next(new Error('Rol no válido.'));
+  if (!token) {
+    return next(new Error('Token requerido.'));
+  }
+
+  if (role !== 'panel' && role !== 'agent') {
+    return next(new Error('Rol no válido.'));
+  }
 
   socket.data.role = role;
-  socket.data.code = code;
+  socket.data.token = token;
   next();
 });
 
 io.on('connection', socket => {
-  const { role, code } = socket.data;
-  const room = getRoom(code);
+  const { role, token } = socket.data;
+  const room = getRoom(token);
 
-  socket.join(`mw:${code}`);
+  socket.join(`mw:${token}`);
 
   if (role === 'agent') {
     if (room.agent && room.agent !== socket) {
       room.agent.disconnect(true);
     }
+
     room.agent = socket;
     socket.emit('cloud_ready', { agentOnline: true });
-    broadcast(room, 'agent_status', { online: true });
+    broadcastToPanels(room, 'agent_status', { online: true });
   } else {
     room.panels.add(socket);
     socket.emit('cloud_ready', {
@@ -94,32 +97,41 @@ io.on('connection', socket => {
   socket.on('rpc_result', packet => {
     if (role !== 'agent') return;
 
-    const result = packet && packet.result && typeof packet.result === 'object' ? packet.result : packet;
+    const result = packet && typeof packet === 'object' && packet.result && typeof packet.result === 'object'
+      ? packet.result
+      : packet;
 
-    if (!result || typeof result.id !== 'string') return;
-    broadcast(room, 'rpc_result', result);
+    if (!result || typeof result.id !== 'string') {
+      return;
+    }
+
+    broadcastToPanels(room, 'rpc_result', result);
   });
 
   socket.on('event', event => {
     if (role !== 'agent') return;
-    forwardAgentEvent(room, event);
+    if (!event || typeof event.name !== 'string') return;
+    broadcastToPanels(room, event.name, event.payload);
   });
 
   socket.on('agent_event', event => {
     if (role !== 'agent') return;
-    forwardAgentEvent(room, event);
+    if (!event || typeof event.name !== 'string') return;
+    broadcastToPanels(room, event.name, event.payload);
   });
 
   socket.on('disconnect', () => {
     if (role === 'agent' && room.agent === socket) {
       room.agent = null;
-      broadcast(room, 'agent_status', { online: false });
+      broadcastToPanels(room, 'agent_status', { online: false });
     }
 
-    if (role === 'panel') room.panels.delete(socket);
+    if (role === 'panel') {
+      room.panels.delete(socket);
+    }
 
     if (!room.agent && room.panels.size === 0) {
-      rooms.delete(code);
+      rooms.delete(token);
     }
   });
 });
