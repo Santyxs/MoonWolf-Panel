@@ -6,21 +6,12 @@ const os = require('node:os');
 const { execFile } = require('node:child_process');
 
 const PANEL_URL = 'https://moonwolf-panel.onrender.com';
-
 const NATIVE_ASSET = 'native/webview.win32-x64-msvc.node';
-
 const CONFIG_DIR = path.join(
-  process.env.APPDATA ||
-    path.join(
-      os.homedir(),
-      'AppData',
-      'Roaming'
-    ),
+  process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
   'MoonWolf'
 );
-
 const WEBVIEW_DATA_DIR = path.join(CONFIG_DIR, 'WebView2Data');
-
 const UI_ASSETS = {
   '/': 'ui/index.html',
   '/index.html': 'ui/index.html',
@@ -33,7 +24,6 @@ let isStandalone = false;
 
 try {
   const sea = require('node:sea');
-
   if (typeof sea.getAsset === 'function') {
     getAsset = sea.getAsset;
     isStandalone = true;
@@ -41,54 +31,33 @@ try {
 } catch {}
 
 function prepareNativeAddon() {
-  if (!isStandalone || !getAsset) {
-    return;
-  }
+  if (!isStandalone || !getAsset) return;
 
-  const runtimeDir = path.join(
-    os.tmpdir(),
-    'MoonWolf-Agent',
-    'webviewjs'
-  );
+  const runtimeDir = path.join(os.tmpdir(), 'MoonWolf-Agent', 'webviewjs');
+  fs.mkdirSync(runtimeDir, { recursive: true });
 
-  fs.mkdirSync(runtimeDir, {
-    recursive: true,
-  });
-
-  const nativePath = path.join(
-    runtimeDir,
-    'webview.win32-x64-msvc.node'
-  );
+  const nativePath = path.join(runtimeDir, 'webview.win32-x64-msvc.node');
 
   try {
     if (!fs.existsSync(nativePath)) {
-      const nativeBuffer =
-        getAsset(NATIVE_ASSET);
-
-      fs.writeFileSync(
-        nativePath,
-        Buffer.from(nativeBuffer)
-      );
+      fs.writeFileSync(nativePath, Buffer.from(getAsset(NATIVE_ASSET)));
     }
   } catch (error) {
-    throw new Error(
-      `No se pudo preparar WebViewJS: ${error.message}`
-    );
+    throw new Error(`No se pudo preparar WebViewJS: ${error.message}`);
   }
 
-  process.env.NAPI_RS_NATIVE_LIBRARY_PATH =
-    nativePath;
+  process.env.NAPI_RS_NATIVE_LIBRARY_PATH = nativePath;
 }
 
 prepareNativeAddon();
 
-const {
-  Application,
-} = require('@webviewjs/webview');
+const { Application } = require('@webviewjs/webview');
 
 let app = null;
 let window = null;
 let webview = null;
+let notifyTimer = null;
+let lastStateJson = null;
 
 let stateProvider = () => ({
   version: '1.0.0',
@@ -103,88 +72,38 @@ let stateProvider = () => ({
 let actions = {};
 
 function mimeType(filePath) {
-  const extension =
-    path.extname(filePath).toLowerCase();
+  const extension = path.extname(filePath).toLowerCase();
 
-  switch (extension) {
-    case '.html':
-      return 'text/html; charset=utf-8';
-
-    case '.css':
-      return 'text/css; charset=utf-8';
-
-    case '.js':
-      return 'text/javascript; charset=utf-8';
-
-    case '.json':
-      return 'application/json; charset=utf-8';
-
-    case '.svg':
-      return 'image/svg+xml';
-
-    case '.png':
-      return 'image/png';
-
-    case '.jpg':
-    case '.jpeg':
-      return 'image/jpeg';
-
-    case '.ico':
-      return 'image/x-icon';
-
-    default:
-      return 'application/octet-stream';
-  }
+  return {
+    '.html': 'text/html; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.js': 'text/javascript; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.ico': 'image/x-icon',
+  }[extension] || 'application/octet-stream';
 }
 
 function readUiAsset(assetName) {
-  if (isStandalone && getAsset) {
-    return getAsset(assetName);
-  }
+  if (isStandalone && getAsset) return getAsset(assetName);
 
-  const filePath = path.join(
-    __dirname,
-    'ui',
-    path.basename(assetName)
-  );
-
-  return fs.readFileSync(filePath);
+  return fs.readFileSync(path.join(__dirname, 'ui', path.basename(assetName)));
 }
 
 function openUrl(url) {
-  execFile(
-    'cmd.exe',
-    ['/d', '/c', 'start', '', url],
-    {
-      windowsHide: true,
-    },
-    () => {}
-  );
+  execFile('cmd.exe', ['/d', '/c', 'start', '', url], { windowsHide: true }, () => {});
 }
 
 function openFolder(folder) {
-  if (!folder) {
-    return;
-  }
-
-  execFile(
-    'explorer.exe',
-    [folder],
-    {
-      windowsHide: true,
-    },
-    () => {}
-  );
+  if (!folder) return;
+  execFile('explorer.exe', [folder], { windowsHide: true }, () => {});
 }
 
 function openConfigFolder(configPath) {
-  if (!configPath) {
-    return;
-  }
-
-  openFolder(
-    path.dirname(configPath)
-  );
+  if (configPath) openFolder(path.dirname(configPath));
 }
 
 function createWindow() {
@@ -203,212 +122,107 @@ function createWindow() {
     focused: true,
   });
 
-  window.registerProtocol(
-    'moonwolf',
-    async request => {
-      try {
-        const url =
-          new URL(request.url);
+  window.registerProtocol('moonwolf', async request => {
+    try {
+      const url = new URL(request.url);
+      let pathname = decodeURIComponent(url.pathname || '/');
+      const assetName = UI_ASSETS[pathname];
 
-        let pathname =
-          decodeURIComponent(
-            url.pathname
-          );
-
-        if (!pathname) {
-          pathname = '/';
-        }
-
-        const assetName =
-          UI_ASSETS[pathname];
-
-        if (!assetName) {
-          return new Response(
-            'Not found',
-            {
-              status: 404,
-              headers: {
-                'Content-Type':
-                  'text/plain; charset=utf-8',
-              },
-            }
-          );
-        }
-
-        const body =
-          readUiAsset(assetName);
-
-        return new Response(
-          body,
-          {
-            status: 200,
-            headers: {
-              'Content-Type':
-                mimeType(assetName),
-              'Cache-Control':
-                'no-store',
-            },
-          }
-        );
-      } catch (error) {
-        return new Response(
-          `MoonWolf UI error: ${error.message}`,
-          {
-            status: 500,
-            headers: {
-              'Content-Type':
-                'text/plain; charset=utf-8',
-            },
-          }
-        );
+      if (!assetName) {
+        return new Response('Not found', {
+          status: 404,
+          headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        });
       }
-    }
-  );
 
-  fs.mkdirSync(WEBVIEW_DATA_DIR, {
-    recursive: true,
+      return new Response(readUiAsset(assetName), {
+        status: 200,
+        headers: {
+          'Content-Type': mimeType(assetName),
+          'Cache-Control': 'no-store',
+        },
+      });
+    } catch (error) {
+      return new Response(`MoonWolf UI error: ${error.message}`, {
+        status: 500,
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      });
+    }
   });
 
-  const webContext =
-    app.createWebContext({
-      dataDirectory:
-        WEBVIEW_DATA_DIR,
-    });
+  fs.mkdirSync(WEBVIEW_DATA_DIR, { recursive: true });
 
-  webview =
-    window.createWebview({
-      url:
-        'moonwolf://localhost/index.html',
-      enableDevtools: false,
-      webContext,
-    });
+  const webContext = app.createWebContext({ dataDirectory: WEBVIEW_DATA_DIR });
+  webview = window.createWebview({
+    url: 'moonwolf://localhost/index.html',
+    enableDevtools: false,
+    webContext,
+  });
 
   webview.expose('native', {
-    getState: () =>
-      stateProvider(),
-
+    getState: () => stateProvider(),
     openPanel: () => {
       openUrl(PANEL_URL);
-
       return true;
     },
-
     openServerFolder: () => {
-      const state =
-        stateProvider();
-
-      openFolder(
-        state.serverDir
-      );
-
+      openFolder(stateProvider().serverDir);
       return true;
     },
-
     openConfig: () => {
-      const state =
-        stateProvider();
-
-      openConfigFolder(
-        state.configPath
-      );
-
+      openConfigFolder(stateProvider().configPath);
       return true;
     },
-
-    clearLogs: () => {
-      if (
-        typeof actions.clearLogs ===
-        'function'
-      ) {
-        return actions.clearLogs();
-      }
-
-      return false;
-    },
-
-    saveLogs: () => {
-      if (
-        typeof actions.saveLogs ===
-        'function'
-      ) {
-        return actions.saveLogs();
-      }
-
-      return false;
-    },
-
+    clearLogs: () => typeof actions.clearLogs === 'function' && actions.clearLogs(),
+    saveLogs: () => typeof actions.saveLogs === 'function' && actions.saveLogs(),
     close: () => {
       app?.exit();
-
       return true;
     },
   });
 
-  app.on(
-    'application-close-requested',
-    () => {
-      app?.exit();
-    }
-  );
-
-  app.run({
-    interval: 16,
-    ref: true,
-  });
+  app.on('application-close-requested', () => app?.exit());
+  app.run({ interval: 16, ref: true });
 }
 
 function notifyStateChanged() {
-  if (!webview) {
+  notifyTimer = null;
+  if (!webview) return;
+
+  let stateJson;
+  try {
+    stateJson = JSON.stringify(stateProvider());
+  } catch {
     return;
   }
 
-  const state =
-    JSON.stringify(
-      stateProvider()
-    );
+  // Evita reevaluar el mismo estado cientos de veces durante ráfagas de logs.
+  if (stateJson === lastStateJson) return;
+  lastStateJson = stateJson;
 
-  const script = `
-    window.dispatchEvent(
-      new CustomEvent(
-        'moonwolf-state',
-        {
-          detail: ${state}
-        }
-      )
-    );
-  `;
+  const script = `window.dispatchEvent(new CustomEvent('moonwolf-state', { detail: ${stateJson} }));`;
 
   try {
-    webview.evaluateScript(
-      script
-    );
+    webview.evaluateScript(script);
   } catch {}
 }
 
-function startGui(
-  getState,
-  guiActions = {}
-) {
+function scheduleStateChanged() {
+  if (notifyTimer !== null) return;
+  notifyTimer = setTimeout(notifyStateChanged, 100);
+};
+
+function startGui(getState, guiActions = {}) {
   stateProvider = getState;
   actions = guiActions;
-
   createWindow();
 
-  setTimeout(
-    notifyStateChanged,
-    300
-  );
+  setTimeout(notifyStateChanged, 300);
 
   return {
-    update:
-      notifyStateChanged,
-
-    close: () => {
-      app?.exit();
-    },
+    update: scheduleStateChanged,
+    close: () => app?.exit(),
   };
 }
 
-module.exports = {
-  startGui,
-};
+module.exports = { startGui };
