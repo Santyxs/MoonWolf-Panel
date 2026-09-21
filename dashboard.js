@@ -98,8 +98,7 @@ function ensureSocketIo() {
     script.dataset.moonwolfSocketio = '1';
 
     script.onload = resolve;
-    script.onerror = () =>
-      reject(new Error('No se pudo cargar Socket.IO desde CDN.'));
+    script.onerror = () => reject(new Error('No se pudo cargar Socket.IO desde CDN.'));
 
     document.head.appendChild(script);
   });
@@ -2827,9 +2826,7 @@ function bindEvents() {
     CODE_RE.test(connectionCode)
   ) {
     connectCloud(false).catch(() =>
-      showLogin(
-        'No se pudo conectar. Comprueba que el Agent esté ejecutándose.'
-      )
+      showLogin('No se pudo conectar. Comprueba que el Agent esté ejecutándose.')
     );
   } else {
     showLogin('');
