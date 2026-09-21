@@ -9,6 +9,21 @@ const PANEL_URL = 'https://moonwolf-panel.onrender.com';
 
 const NATIVE_ASSET = 'native/webview.win32-x64-msvc.node';
 
+const CONFIG_DIR = path.join(
+  process.env.APPDATA ||
+    path.join(
+      os.homedir(),
+      'AppData',
+      'Roaming'
+    ),
+  'MoonWolf'
+);
+
+const WEBVIEW_DATA_DIR = path.join(
+  CONFIG_DIR,
+  'WebView2Data'
+);
+
 const UI_ASSETS = {
   '/': 'ui/index.html',
   '/index.html': 'ui/index.html',
@@ -64,8 +79,7 @@ function prepareNativeAddon() {
     );
   }
 
-  process.env.NAPI_RS_NATIVE_LIBRARY_PATH =
-    nativePath;
+  process.env.NAPI_RS_NATIVE_LIBRARY_PATH = nativePath;
 }
 
 prepareNativeAddon();
@@ -253,11 +267,22 @@ function createWindow() {
     }
   );
 
+  fs.mkdirSync(WEBVIEW_DATA_DIR, {
+    recursive: true,
+  });
+
+  const webContext =
+    app.createWebContext({
+      dataDirectory:
+        WEBVIEW_DATA_DIR,
+    });
+
   webview =
     window.createWebview({
       url:
         'moonwolf://localhost/index.html',
       enableDevtools: false,
+      webContext,
     });
 
   webview.expose('native', {
