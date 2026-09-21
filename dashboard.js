@@ -2,6 +2,7 @@
 
 const CLOUD_URL = location.origin;
 const CLOUD_PATH = '/socket.io';
+
 const CODE_RE = /^MW-[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/;
 const CODE_KEY = 'moonwolf_connection_code';
 
@@ -37,6 +38,8 @@ const STATUS_LEVELS = {
   stopping: 'warn',
 };
 
+/* STATE */
+
 let cloudSocket = null;
 let connectionCode = sessionStorage.getItem(CODE_KEY) || '';
 
@@ -50,6 +53,7 @@ let agentOnline = false;
 let editor = null;
 let currentFile = null;
 let currentDir = '';
+
 let currentPlugin = null;
 let pluginSource = 'all';
 
@@ -65,7 +69,7 @@ const activities = [];
 let lastAgentActivityState = null;
 let lastStatusActivity = null;
 
-/* ═══════════════════════ SOCKET.IO ═══════════════════════ */
+/* SOCKET.IO */
 
 function ensureSocketIo() {
   if (typeof window.io === 'function') {
@@ -78,44 +82,30 @@ function ensureSocketIo() {
     );
 
     if (existing) {
-      existing.addEventListener(
-        'load',
-        () => resolve(),
-        { once: true }
-      );
-
+      existing.addEventListener('load', resolve, { once: true });
       existing.addEventListener(
         'error',
-        () => reject(
-          new Error('No se pudo cargar Socket.IO.')
-        ),
+        () => reject(new Error('No se pudo cargar Socket.IO.')),
         { once: true }
       );
-
       return;
     }
 
     const script = document.createElement('script');
 
-    script.src =
-      'https://cdn.socket.io/4.8.3/socket.io.min.js';
-
+    script.src = 'https://cdn.socket.io/4.8.3/socket.io.min.js';
     script.async = true;
     script.dataset.moonwolfSocketio = '1';
 
-    script.onload = () => resolve();
-
-    script.onerror = () => reject(
-      new Error(
-        'No se pudo cargar Socket.IO desde CDN.'
-      )
-    );
+    script.onload = resolve;
+    script.onerror = () =>
+      reject(new Error('No se pudo cargar Socket.IO desde CDN.'));
 
     document.head.appendChild(script);
   });
 }
 
-/* ═══════════════════════ CONNECTION UI ═══════════════════════ */
+/* LOGIN */
 
 function ensureLoginGate() {
   if ($('loginGate')) return;
@@ -237,9 +227,7 @@ function ensureLoginGate() {
         placeholder="MW-XXXX-XXXX-XXXX-XXXX"
       >
 
-      <button id="btnLogin">
-        CONECTAR SERVIDOR
-      </button>
+      <button id="btnLogin">CONECTAR SERVIDOR</button>
 
       <div id="mwCloudError"></div>
 
@@ -251,105 +239,77 @@ function ensureLoginGate() {
 
   document.body.prepend(gate);
 
-  $('loginPassword').addEventListener(
-    'input',
-    event => {
-      let value = event.target.value
-        .toUpperCase()
-        .replace(/[^A-Z2-9]/g, '');
+  $('loginPassword').addEventListener('input', event => {
+    let value = event.target.value
+      .toUpperCase()
+      .replace(/[^A-Z2-9]/g, '');
 
-      if (
-        !value ||
-        (
-          value === 'MW' &&
-          String(event.inputType || '').startsWith('delete')
-        )
-      ) {
-        event.target.value = '';
-        return;
-      }
-
-      if (value === 'M') {
-        event.target.value = 'M';
-        return;
-      }
-
-      const raw =
-        value.startsWith('MW')
-          ? value.slice(2)
-          : value;
-
-      const groups =
-        raw.match(/.{1,4}/g) || [];
-
-      event.target.value =
-        'MW-' +
-        groups
-          .slice(0, 4)
-          .join('-');
+    if (
+      !value ||
+      (
+        value === 'MW' &&
+        String(event.inputType || '').startsWith('delete')
+      )
+    ) {
+      event.target.value = '';
+      return;
     }
-  );
 
-  $('btnLogin').addEventListener(
-    'click',
-    attemptLogin
-  );
-
-  $('loginPassword').addEventListener(
-    'keydown',
-    event => {
-      if (event.key === 'Enter') {
-        attemptLogin();
-      }
+    if (value === 'M') {
+      event.target.value = 'M';
+      return;
     }
-  );
+
+    const raw = value.startsWith('MW')
+      ? value.slice(2)
+      : value;
+
+    const groups = raw.match(/.{1,4}/g) || [];
+
+    event.target.value =
+      'MW-' + groups.slice(0, 4).join('-');
+  });
+
+  $('btnLogin').addEventListener('click', attemptLogin);
+
+  $('loginPassword').addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      attemptLogin();
+    }
+  });
 }
 
 function showApp() {
   ensureLoginGate();
 
   $('loginGate')?.classList.add('hidden');
-
-  document
-    .querySelector('.app')
-    ?.classList.remove('locked');
+  document.querySelector('.app')?.classList.remove('locked');
 }
 
 function showLogin(message = '') {
   ensureLoginGate();
 
-  $('loginGate')
-    ?.classList.remove('hidden');
-
-  document
-    .querySelector('.app')
-    ?.classList.add('locked');
+  $('loginGate')?.classList.remove('hidden');
+  document.querySelector('.app')?.classList.add('locked');
 
   if ($('mwCloudError')) {
     $('mwCloudError').textContent = message;
   }
 
   if ($('loginPassword')) {
-    $('loginPassword').value =
-      connectionCode;
+    $('loginPassword').value = connectionCode;
   }
 }
 
 function setCode(code) {
-  connectionCode =
-    String(code || '')
-      .trim()
-      .toUpperCase();
+  connectionCode = String(code || '')
+    .trim()
+    .toUpperCase();
 
   if (connectionCode) {
-    sessionStorage.setItem(
-      CODE_KEY,
-      connectionCode
-    );
+    sessionStorage.setItem(CODE_KEY, connectionCode);
   } else {
-    sessionStorage.removeItem(
-      CODE_KEY
-    );
+    sessionStorage.removeItem(CODE_KEY);
   }
 }
 
@@ -357,10 +317,9 @@ async function attemptLogin() {
   const input = $('loginPassword');
   const button = $('btnLogin');
 
-  const code =
-    String(input?.value || '')
-      .trim()
-      .toUpperCase();
+  const code = String(input?.value || '')
+    .trim()
+    .toUpperCase();
 
   if (!CODE_RE.test(code)) {
     if ($('mwCloudError')) {
@@ -374,8 +333,7 @@ async function attemptLogin() {
   button.disabled = true;
 
   if ($('mwCloudError')) {
-    $('mwCloudError').textContent =
-      'Conectando...';
+    $('mwCloudError').textContent = 'Conectando...';
   }
 
   setCode(code);
@@ -388,15 +346,14 @@ async function attemptLogin() {
     }
   } catch (error) {
     if ($('mwCloudError')) {
-      $('mwCloudError').textContent =
-        error.message;
+      $('mwCloudError').textContent = error.message;
     }
 
     button.disabled = false;
   }
 }
 
-/* ═══════════════════════ REQUEST MANAGEMENT ═══════════════════════ */
+/* CLOUD CONNECTION */
 
 function clearPending(errorMessage) {
   for (const [, resolve] of pending) {
@@ -414,23 +371,14 @@ function clearPending(errorMessage) {
   pending.clear();
 }
 
-/* ═══════════════════════ CLOUD CONNECTION ═══════════════════════ */
-
 async function connectCloud(manual = false) {
   clearTimeout(connectTimer);
 
-  if (
-    !connectionCode ||
-    !CODE_RE.test(connectionCode)
-  ) {
-    showLogin(
-      'Introduce un código de conexión.'
-    );
+  if (!connectionCode || !CODE_RE.test(connectionCode)) {
+    showLogin('Introduce un código de conexión.');
 
     return Promise.reject(
-      new Error(
-        'Código de conexión inválido.'
-      )
+      new Error('Código de conexión inválido.')
     );
   }
 
@@ -463,162 +411,194 @@ async function connectCloud(manual = false) {
       transports: ['websocket'],
       reconnection: false,
 
-      auth: cb => cb({
-        role: 'panel',
-        token: connectionCode,
-      }),
+      auth: callback => {
+        callback({
+          role: 'panel',
+          token: connectionCode,
+        });
+      },
     });
 
-    cloudSocket.once(
-      'connect',
-      () => {
-        reconnectDelay = 1000;
+    cloudSocket.once('connect', () => {
+      reconnectDelay = 1000;
 
-        showApp();
+      showApp();
 
-        addActivity(
-          'Conectado a MoonWolf Cloud',
-          'ok',
-          '☁️'
+      addActivity(
+        'Conectado a MoonWolf Cloud',
+        'ok',
+        '☁️'
+      );
+
+      finish(resolve);
+    });
+
+    cloudSocket.once('connect_error', error => {
+      const message =
+        error?.message ||
+        'No se pudo conectar con MoonWolf Cloud.';
+
+      addActivity(message, 'warn', '⚠️');
+
+      finish(reject, new Error(message));
+    });
+
+    cloudSocket.on('cloud_ready', data => {
+      setAgentOnline(Boolean(data?.agentOnline));
+    });
+
+    cloudSocket.on('agent_status', data => {
+      setAgentOnline(Boolean(data?.online));
+    });
+
+    cloudSocket.on('status', setStatus);
+    cloudSocket.on('log', appendLog);
+
+    cloudSocket.on('history', logs => {
+      const consoleEl = $('console');
+
+      if (!consoleEl) return;
+
+      consoleEl.innerHTML = '';
+
+      (
+        Array.isArray(logs)
+          ? logs
+          : []
+      ).forEach(appendLog);
+    });
+
+    cloudSocket.on('stats', updateStats);
+
+    cloudSocket.on('rpc_result', result => {
+      const resolveRequest = pending.get(result?.id);
+
+      if (!resolveRequest) return;
+
+      pending.delete(result.id);
+      resolveRequest(result);
+    });
+
+    cloudSocket.on('disconnect', reason => {
+      setAgentOnline(false);
+
+      currentStatus = 'offline';
+      updateStatusUi('offline');
+
+      clearPending(
+        'Conexión con MoonWolf Cloud perdida.'
+      );
+
+      addActivity(
+        `Cloud desconectado (${reason})`,
+        'warn',
+        '⚠️'
+      );
+
+      if (manual) {
+        showLogin(
+          'La conexión se cerró. Comprueba que el Agent esté ejecutándose.'
         );
-
-        finish(resolve);
       }
-    );
 
-    cloudSocket.once(
-      'connect_error',
-      error => {
-        const message =
-          error?.message ||
-          'No se pudo conectar con MoonWolf Cloud.';
+      clearTimeout(connectTimer);
 
-        addActivity(
-          message,
-          'warn',
-          '⚠️'
-        );
+      connectTimer = setTimeout(() => {
+        connectCloud(false).catch(() => {});
+      }, reconnectDelay);
 
-        finish(
-          reject,
-          new Error(message)
-        );
-      }
-    );
-
-    cloudSocket.on(
-      'cloud_ready',
-      data => {
-        setAgentOnline(
-          Boolean(data?.agentOnline)
-        );
-      }
-    );
-
-    cloudSocket.on(
-      'agent_status',
-      data => {
-        setAgentOnline(
-          Boolean(data?.online)
-        );
-      }
-    );
-
-    cloudSocket.on(
-      'status',
-      setStatus
-    );
-
-    cloudSocket.on(
-      'log',
-      appendLog
-    );
-
-    cloudSocket.on(
-      'history',
-      logs => {
-        const consoleEl =
-          $('console');
-
-        if (!consoleEl) return;
-
-        consoleEl.innerHTML = '';
-
-        (
-          Array.isArray(logs)
-            ? logs
-            : []
-        ).forEach(appendLog);
-      }
-    );
-
-    cloudSocket.on(
-      'stats',
-      updateStats
-    );
-
-    cloudSocket.on(
-      'rpc_result',
-      result => {
-        const resolveRequest =
-          pending.get(result?.id);
-
-        if (!resolveRequest) return;
-
-        pending.delete(result.id);
-
-        resolveRequest(result);
-      }
-    );
-
-    cloudSocket.on(
-      'disconnect',
-      reason => {
-        setAgentOnline(false);
-
-        currentStatus = 'offline';
-
-        updateStatusUi('offline');
-
-        clearPending(
-          'Conexión con MoonWolf Cloud perdida.'
-        );
-
-        addActivity(
-          `Cloud desconectado (${reason})`,
-          'warn',
-          '⚠️'
-        );
-
-        if (manual) {
-          showLogin(
-            'La conexión se cerró. Comprueba que el Agent esté ejecutándose.'
-          );
-        }
-
-        clearTimeout(connectTimer);
-
-        connectTimer = setTimeout(
-          () => {
-            connectCloud(false)
-              .catch(() => {});
-          },
-          reconnectDelay
-        );
-
-        reconnectDelay =
-          Math.min(
-            reconnectDelay * 2,
-            30000
-          );
-      }
-    );
+      reconnectDelay = Math.min(
+        reconnectDelay * 2,
+        30000
+      );
+    });
 
     cloudSocket.connect();
   });
 }
 
-/* ═══════════════════════ AGENT STATUS ═══════════════════════ */
+/* RPC / API */
+
+function rpcHttp(pathname, init = {}) {
+  if (!cloudSocket?.connected) {
+    return Promise.reject(
+      new Error('MoonWolf Cloud no está conectado.')
+    );
+  }
+
+  const id =
+    `${Date.now()}-${++requestSequence}`;
+
+  const request = {
+    id,
+    method: String(init.method || 'GET').toUpperCase(),
+    path: pathname,
+    body: init.body ?? undefined,
+  };
+
+  return new Promise(resolve => {
+    pending.set(id, resolve);
+    cloudSocket.emit('rpc', request);
+  });
+}
+
+function decodeResultBody(result) {
+  if (result?.bodyBase64 === undefined) {
+    return null;
+  }
+
+  const binary = atob(result.bodyBase64);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  return bytes;
+}
+
+async function api(pathname, init = {}) {
+  const result = await rpcHttp(pathname, init);
+
+  const status = result?.status || 500;
+  const contentType =
+    result?.contentType || 'application/json';
+
+  if (result?.bodyBase64 !== undefined) {
+    const bytes = decodeResultBody(result);
+    const text = new TextDecoder().decode(bytes);
+
+    if (
+      contentType.includes('application/json') ||
+      contentType.includes('text/')
+    ) {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return {
+          ok: status >= 200 && status < 300,
+          status,
+          content: text,
+        };
+      }
+    }
+  }
+
+  return result?.data || {
+    ok: Boolean(result?.ok),
+    status,
+    error: 'Respuesta vacía.',
+  };
+}
+
+function postJSON(pathname, body) {
+  return api(pathname, {
+    method: 'POST',
+    body,
+  });
+}
+
+/* AGENT STATUS */
 
 function setAgentOnline(online) {
   const nextState = Boolean(online);
@@ -629,7 +609,6 @@ function setAgentOnline(online) {
   }
 
   agentOnline = nextState;
-
   updateAgentUi(nextState);
 
   if (nextState) {
@@ -680,9 +659,7 @@ function updateAgentUi(online) {
       element.dataset.agentStatus !== undefined
     ) {
       element.dataset.agentStatus =
-        online
-          ? 'online'
-          : 'offline';
+        online ? 'online' : 'offline';
     }
   }
 
@@ -701,163 +678,7 @@ function updateAgentUi(online) {
   }
 }
 
-/* ═══════════════════════ RPC / HTTP ═══════════════════════ */
-
-function parseBody(init) {
-  if (
-    init?.body === undefined ||
-    init.body === null ||
-    init.body === ''
-  ) {
-    return undefined;
-  }
-
-  if (
-    typeof init.body !== 'string'
-  ) {
-    return init.body;
-  }
-
-  try {
-    return JSON.parse(init.body);
-  } catch {
-    return init.body;
-  }
-}
-
-function rpcHttp(pathname, init = {}) {
-  if (!cloudSocket?.connected) {
-    return Promise.reject(
-      new Error(
-        'MoonWolf Cloud no está conectado.'
-      )
-    );
-  }
-
-  const id =
-    `${Date.now()}-${++requestSequence}`;
-
-  const method =
-    String(
-      init.method || 'GET'
-    ).toUpperCase();
-
-  const request = {
-    id,
-    method,
-    path: pathname,
-    body: parseBody(init),
-  };
-
-  return new Promise(resolve => {
-    pending.set(id, resolve);
-
-    cloudSocket.emit(
-      'rpc',
-      request
-    );
-  });
-}
-
-function decodeResultBody(result) {
-  if (
-    result?.bodyBase64 === undefined
-  ) {
-    return null;
-  }
-
-  const binary =
-    atob(result.bodyBase64);
-
-  const bytes =
-    new Uint8Array(
-      binary.length
-    );
-
-  for (
-    let i = 0;
-    i < binary.length;
-    i++
-  ) {
-    bytes[i] =
-      binary.charCodeAt(i);
-  }
-
-  return bytes;
-}
-
-async function api(pathname, init = {}) {
-  const result =
-    await rpcHttp(
-      pathname,
-      init
-    );
-
-  const status =
-    result?.status || 500;
-
-  const contentType =
-    result?.contentType ||
-    'application/json';
-
-  if (
-    result?.bodyBase64 !== undefined
-  ) {
-    const bytes =
-      decodeResultBody(result);
-
-    const text =
-      new TextDecoder().decode(bytes);
-
-    if (
-      contentType.includes(
-        'application/json'
-      ) ||
-      contentType.includes(
-        'text/'
-      )
-    ) {
-      try {
-        return JSON.parse(text);
-      } catch {
-        return {
-          ok:
-            status >= 200 &&
-            status < 300,
-          status,
-          content: text,
-        };
-      }
-    }
-  }
-
-  return (
-    result?.data || {
-      ok: Boolean(result?.ok),
-      status,
-      error: 'Respuesta vacía.',
-    }
-  );
-}
-
-async function postJSON(
-  pathname,
-  body
-) {
-  return api(
-    pathname,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type':
-          'application/json',
-      },
-      body: JSON.stringify(body),
-    }
-  );
-}
-
-/* ═══════════════════════ TERMINAL / STATUS ═══════════════════════ */
+/* SERVER / TERMINAL */
 
 function updateStatusUi(status) {
   status =
@@ -867,16 +688,14 @@ function updateStatusUi(status) {
 
   currentStatus = status;
 
-  const statusEl =
-    $('sbStatus');
+  const statusEl = $('sbStatus');
 
   if (statusEl) {
     statusEl.className =
-      'sb-status ' + status;
+      `sb-status ${status}`;
   }
 
-  const statusText =
-    $('sbStatusText');
+  const statusText = $('sbStatusText');
 
   if (statusText) {
     statusText.textContent =
@@ -884,8 +703,7 @@ function updateStatusUi(status) {
       String(status).toUpperCase();
   }
 
-  const startButton =
-    $('btnStart');
+  const startButton = $('btnStart');
 
   if (startButton) {
     startButton.disabled =
@@ -893,8 +711,7 @@ function updateStatusUi(status) {
       !agentOnline;
   }
 
-  const stopButton =
-    $('btnStop');
+  const stopButton = $('btnStop');
 
   if (stopButton) {
     stopButton.disabled =
@@ -902,8 +719,7 @@ function updateStatusUi(status) {
       !agentOnline;
   }
 
-  const restartButton =
-    $('btnRestart');
+  const restartButton = $('btnRestart');
 
   if (restartButton) {
     restartButton.disabled =
@@ -911,8 +727,7 @@ function updateStatusUi(status) {
       !agentOnline;
   }
 
-  const stats =
-    $('statsGrid');
+  const stats = $('statsGrid');
 
   if (stats) {
     stats.classList.toggle(
@@ -935,48 +750,28 @@ function setStatus(status) {
       ? status
       : 'offline';
 
-  if (
-    lastStatusActivity === normalized
-  ) {
+  if (lastStatusActivity === normalized) {
     return;
   }
 
-  lastStatusActivity =
-    normalized;
+  lastStatusActivity = normalized;
 
   addActivity(
-    STATUS_LABELS[normalized] ||
-      normalized,
-    STATUS_LEVELS[normalized] ||
-      'info',
-    STATUS_ICONS[normalized] ||
-      '📌'
+    STATUS_LABELS[normalized] || normalized,
+    STATUS_LEVELS[normalized] || 'info',
+    STATUS_ICONS[normalized] || '📌'
   );
 }
 
-function updateStats(stats) {
-  stats =
-    stats || {};
-
-  const players =
-    Number(stats.players);
-
-  const maxPlayers =
-    Number(stats.maxPlayers);
-
-  const tps =
-    Number(stats.tps);
-
-  const processMemory =
-    Number(stats.processMemory);
-
-  const cpuUsage =
-    Number(stats.cpuUsage);
+function updateStats(stats = {}) {
+  const players = Number(stats.players);
+  const maxPlayers = Number(stats.maxPlayers);
+  const tps = Number(stats.tps);
+  const processMemory = Number(stats.processMemory);
+  const cpuUsage = Number(stats.cpuUsage);
 
   const safePlayers =
-    Number.isFinite(players)
-      ? players
-      : 0;
+    Number.isFinite(players) ? players : 0;
 
   const safeMaxPlayers =
     Number.isFinite(maxPlayers)
@@ -984,9 +779,7 @@ function updateStats(stats) {
       : 0;
 
   const safeTps =
-    Number.isFinite(tps)
-      ? tps
-      : 20;
+    Number.isFinite(tps) ? tps : 20;
 
   const safeProcessMemory =
     Number.isFinite(processMemory)
@@ -1000,13 +793,10 @@ function updateStats(stats) {
 
   if ($('statPlayers')) {
     $('statPlayers').innerHTML =
-      `${safePlayers}` +
-      `<span class="stat-unit">/` +
-      `${safeMaxPlayers}</span>`;
+      `${safePlayers}<span class="stat-unit">/${safeMaxPlayers}</span>`;
   }
 
-  const tpsEl =
-    $('statTps');
+  const tpsEl = $('statTps');
 
   if (tpsEl) {
     tpsEl.className =
@@ -1019,20 +809,17 @@ function updateStats(stats) {
       }`;
 
     tpsEl.innerHTML =
-      `${safeTps}` +
-      `<span class="stat-unit"> tps</span>`;
+      `${safeTps}<span class="stat-unit"> tps</span>`;
   }
 
   if ($('statUptime')) {
     $('statUptime').textContent =
-      stats.uptime ||
-      '0h 0m';
+      stats.uptime || '0h 0m';
   }
 
   if ($('statMemProc')) {
     $('statMemProc').innerHTML =
-      `${safeProcessMemory}` +
-      `<span class="stat-unit"> MB</span>`;
+      `${safeProcessMemory}<span class="stat-unit"> MB</span>`;
   }
 
   const sys =
@@ -1041,66 +828,43 @@ function updateStats(stats) {
       total: 0,
     };
 
-  const used =
-    Number(sys.used);
-
-  const total =
-    Number(sys.total);
+  const used = Number(sys.used);
+  const total = Number(sys.total);
 
   const safeUsed =
-    Number.isFinite(used)
-      ? used
-      : 0;
+    Number.isFinite(used) ? used : 0;
 
   const safeTotal =
-    Number.isFinite(total)
-      ? total
-      : 0;
+    Number.isFinite(total) ? total : 0;
 
   if ($('statMemSys')) {
     $('statMemSys').innerHTML =
-      `${safeUsed}/${safeTotal}` +
-      `<span class="stat-unit"> GB</span>`;
+      `${safeUsed}/${safeTotal}<span class="stat-unit"> GB</span>`;
   }
 
   if ($('statCpu')) {
     $('statCpu').innerHTML =
-      `${safeCpu}` +
-      `<span class="stat-unit"> %</span>`;
+      `${safeCpu}<span class="stat-unit"> %</span>`;
   }
 }
 
 function appendLog(entry) {
-  const consoleEl =
-    $('console');
+  const consoleEl = $('console');
 
   if (!consoleEl) return;
 
-  const div =
-    document.createElement('div');
+  const div = document.createElement('div');
 
   div.className =
-    `log-line ${
-      entry?.type || 'info'
-    }`;
+    `log-line ${entry?.type || 'info'}`;
 
   div.innerHTML =
-    `<span class="log-time">` +
-    `${escHtml(
-      entry?.time || '--:--:--'
-    )}` +
-    `</span>` +
-    `<span class="log-text">` +
-    `${escHtml(
-      entry?.line || ''
-    )}` +
-    `</span>`;
+    `<span class="log-time">${escHtml(entry?.time || '--:--:--')}</span>` +
+    `<span class="log-text">${escHtml(entry?.line || '')}</span>`;
 
   consoleEl.appendChild(div);
 
-  if (
-    $('setAutoScroll')?.checked !== false
-  ) {
+  if ($('setAutoScroll')?.checked !== false) {
     consoleEl.scrollTop =
       consoleEl.scrollHeight;
   }
@@ -1116,17 +880,13 @@ async function startServer() {
   }
 
   const data =
-    await api(
-      '/api/start',
-      {
-        method: 'POST',
-      }
-    );
+    await api('/api/start', {
+      method: 'POST',
+    });
 
   if (!data.ok) {
     toast(
-      data.error ||
-        'Error al arrancar',
+      data.error || 'Error al arrancar',
       'err'
     );
   }
@@ -1142,17 +902,13 @@ async function stopServer() {
   }
 
   const data =
-    await api(
-      '/api/stop',
-      {
-        method: 'POST',
-      }
-    );
+    await api('/api/stop', {
+      method: 'POST',
+    });
 
   if (!data.ok) {
     toast(
-      data.error ||
-        'Error al detener',
+      data.error || 'Error al detener',
       'err'
     );
   }
@@ -1175,28 +931,21 @@ async function restartServer() {
   }
 
   const data =
-    await api(
-      '/api/restart',
-      {
-        method: 'POST',
-      }
-    );
+    await api('/api/restart', {
+      method: 'POST',
+    });
 
   if (!data.ok) {
     toast(
-      data.error ||
-        'Error al reiniciar',
+      data.error || 'Error al reiniciar',
       'err'
     );
   }
 }
 
 async function sendCmd() {
-  const input =
-    $('cmdInput');
-
-  const cmd =
-    input?.value.trim();
+  const input = $('cmdInput');
+  const cmd = input?.value.trim();
 
   if (!cmd) return;
 
@@ -1211,55 +960,53 @@ async function sendCmd() {
   input.value = '';
 
   const data =
-    await postJSON(
-      '/api/command',
-      { cmd }
-    );
+    await postJSON('/api/command', {
+      cmd,
+    });
 
   if (!data.ok) {
     toast(
-      data.error ||
-        'Error al enviar comando',
+      data.error || 'Error al enviar comando',
       'err'
     );
   }
 }
 
-/* ═══════════════════════ FILE MANAGER ═══════════════════════ */
+/* FILE MANAGER */
 
 function fileIcon(type) {
-  return ({
+  return {
     dir: '📁',
     jar: '☕',
     log: '📋',
     file: '📄',
-  })[type] || '📄';
+  }[type] || '📄';
 }
 
 function populateFiles(dir = '') {
   currentDir = dir;
 
-  const list =
-    $('fileList');
+  const list = $('fileList');
 
   if (!list) return;
 
-  list.innerHTML =
-    '<div class="empty-state">' +
-    '<div class="empty-icon" style="display:inline-block;animation:spin 1s linear infinite">⟳</div>' +
-    '<div class="empty-msg">Cargando...</div>' +
-    '</div>';
+  list.innerHTML = `
+    <div class="empty-state">
+      <div
+        class="empty-icon"
+        style="display:inline-block;animation:spin 1s linear infinite"
+      >⟳</div>
+      <div class="empty-msg">Cargando...</div>
+    </div>
+  `;
 
   renderBreadcrumb(dir);
 
-  api(
-    `/api/files?dir=${encodeURIComponent(dir)}`
-  )
+  api(`/api/files?dir=${encodeURIComponent(dir)}`)
     .then(data => {
       if (!data.ok) {
         throw new Error(
-          data.error ||
-          'No se pudo leer la carpeta.'
+          data.error || 'No se pudo leer la carpeta.'
         );
       }
 
@@ -1270,90 +1017,67 @@ function populateFiles(dir = '') {
 
       items.sort(
         (a, b) =>
-          (
-            a.type === 'dir'
-              ? -1
-              : 1
-          ) -
-          (
-            b.type === 'dir'
-              ? -1
-              : 1
-          ) ||
+          (a.type === 'dir' ? -1 : 1) -
+          (b.type === 'dir' ? -1 : 1) ||
           a.name.localeCompare(
             b.name,
             undefined,
-            {
-              sensitivity: 'base',
-            }
+            { sensitivity: 'base' }
           )
       );
 
       if (!items.length) {
-        list.innerHTML =
-          '<div class="empty-state">' +
-          '<div class="empty-icon">📂</div>' +
-          '<div class="empty-msg">Carpeta vacía</div>' +
-          '</div>';
+        list.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-icon">📂</div>
+            <div class="empty-msg">Carpeta vacía</div>
+          </div>
+        `;
 
         return;
       }
 
-      list.innerHTML =
-        items.map(item => `
+      list.innerHTML = items
+        .map(item => `
           <div
             class="file-row"
             data-name="${escHtml(item.name)}"
             data-type="${escHtml(item.type)}"
           >
-            <span
-              class="file-name"
-              style="flex:1"
-            >
+            <span class="file-name" style="flex:1">
               ${fileIcon(item.type)}
               <span>${escHtml(item.name)}</span>
             </span>
 
-            <span
-              style="width:90px;text-align:right;color:var(--muted2)"
-            >
+            <span style="width:90px;text-align:right;color:var(--muted2)">
               ${escHtml(item.size)}
             </span>
 
-            <span
-              style="width:140px;text-align:right;color:var(--muted2)"
-            >
+            <span style="width:140px;text-align:right;color:var(--muted2)">
               ${escHtml(item.date)}
             </span>
           </div>
-        `).join('');
+        `)
+        .join('');
 
       list
         .querySelectorAll('.file-row')
         .forEach(row => {
-          row.addEventListener(
-            'dblclick',
-            () => {
-              const name =
-                row.dataset.name;
+          row.addEventListener('dblclick', () => {
+            const name = row.dataset.name;
+            const type = row.dataset.type;
 
-              const type =
-                row.dataset.type;
+            const rel =
+              currentDir
+                ? `${currentDir}/${name}`
+                : name;
 
-              const rel =
-                currentDir
-                  ? `${currentDir}/${name}`
-                  : name;
-
-              if (type === 'dir') {
-                populateFiles(rel);
-              } else if (
-                type !== 'jar'
-              ) {
-                openFile(rel);
-              }
+            if (type === 'dir') {
+              populateFiles(rel);
+            } else if (type !== 'jar') {
+              openFile(rel);
             }
-          );
+          });
 
           row.addEventListener(
             'contextmenu',
@@ -1367,68 +1091,60 @@ function populateFiles(dir = '') {
         });
     })
     .catch(error => {
-      list.innerHTML =
-        `<div class="empty-state">` +
-        `<div class="empty-icon" style="color:var(--red)">⚠</div>` +
-        `<div class="empty-msg">` +
-        `${escHtml(error.message)}` +
-        `</div>` +
-        `</div>`;
+      list.innerHTML = `
+        <div class="empty-state">
+          <div
+            class="empty-icon"
+            style="color:var(--red)"
+          >⚠</div>
+          <div class="empty-msg">
+            ${escHtml(error.message)}
+          </div>
+        </div>
+      `;
     });
 }
 
 function renderBreadcrumb(dir) {
-  const trail =
-    $('crumbTrail');
+  const trail = $('crumbTrail');
 
   if (!trail) return;
 
   const parts =
     dir
-      ? dir
-          .split('/')
-          .filter(Boolean)
+      ? dir.split('/').filter(Boolean)
       : [];
 
   let acc = '';
 
-  trail.innerHTML =
-    parts
-      .map((part, index) => {
-        acc +=
-          (index ? '/' : '') +
-          part;
+  trail.innerHTML = parts
+    .map((part, index) => {
+      acc +=
+        (index ? '/' : '') + part;
 
-        return `
-          /
-          <span
-            class="crumb"
-            data-path="${escHtml(acc)}"
-          >
-            ${escHtml(part)}
-          </span>
-        `;
-      })
-      .join('');
+      return `
+        /
+        <span
+          class="crumb"
+          data-path="${escHtml(acc)}"
+        >
+          ${escHtml(part)}
+        </span>
+      `;
+    })
+    .join('');
 
   trail
     .querySelectorAll('.crumb')
-    .forEach(c =>
-      c.addEventListener(
+    .forEach(crumb => {
+      crumb.addEventListener(
         'click',
-        () =>
-          populateFiles(
-            c.dataset.path
-          )
-      )
-    );
+        () => populateFiles(crumb.dataset.path)
+      );
+    });
 }
 
-function openFileContext(
-  event,
-  name,
-  type
-) {
+function openFileContext(event, name, type) {
   event.preventDefault();
 
   document
@@ -1443,8 +1159,7 @@ function openFileContext(
   const menu =
     document.createElement('div');
 
-  menu.className =
-    'ctx-menu';
+  menu.className = 'ctx-menu';
 
   menu.style.left =
     `${event.clientX}px`;
@@ -1459,24 +1174,15 @@ function openFileContext(
         : ''
     }
 
-    <div
-      class="ctx-item"
-      data-action="rename"
-    >
+    <div class="ctx-item" data-action="rename">
       ✏️ Renombrar
     </div>
 
-    <div
-      class="ctx-item"
-      data-action="copy"
-    >
+    <div class="ctx-item" data-action="copy">
       📋 Copiar
     </div>
 
-    <div
-      class="ctx-item"
-      data-action="move"
-    >
+    <div class="ctx-item" data-action="move">
       📦 Mover
     </div>
 
@@ -1486,19 +1192,13 @@ function openFileContext(
         : ''
     }
 
-    <div
-      class="ctx-item"
-      data-action="compress"
-    >
+    <div class="ctx-item" data-action="compress">
       🗜️ Comprimir (.zip)
     </div>
 
     <div class="ctx-sep"></div>
 
-    <div
-      class="ctx-item danger"
-      data-action="delete"
-    >
+    <div class="ctx-item danger" data-action="delete">
       🗑️ Eliminar
     </div>
   `;
@@ -1509,8 +1209,7 @@ function openFileContext(
     'click',
     async click => {
       const action =
-        click
-          .target
+        click.target
           .closest('.ctx-item')
           ?.dataset.action;
 
@@ -1537,7 +1236,7 @@ function openFileContext(
             return;
           }
 
-          const d =
+          const data =
             await postJSON(
               '/api/files/rename',
               {
@@ -1546,8 +1245,8 @@ function openFileContext(
               }
             );
 
-          if (!d.ok) {
-            throw new Error(d.error);
+          if (!data.ok) {
+            throw new Error(data.error);
           }
         }
 
@@ -1562,20 +1261,12 @@ function openFileContext(
 
           const target =
             dest
-              ? `${
-                  dest
-                    .replace(
-                      /\\/g,
-                      '/'
-                    )
-                    .replace(
-                      /\/$/,
-                      ''
-                    )
-                }/${name}`
+              ? `${dest
+                  .replace(/\\/g, '/')
+                  .replace(/\/$/, '')}/${name}`
               : name;
 
-          const d =
+          const data =
             await postJSON(
               '/api/files/copy',
               {
@@ -1584,8 +1275,8 @@ function openFileContext(
               }
             );
 
-          if (!d.ok) {
-            throw new Error(d.error);
+          if (!data.ok) {
+            throw new Error(data.error);
           }
         }
 
@@ -1600,20 +1291,12 @@ function openFileContext(
 
           const target =
             dest
-              ? `${
-                  dest
-                    .replace(
-                      /\\/g,
-                      '/'
-                    )
-                    .replace(
-                      /\/$/,
-                      ''
-                    )
-                }/${name}`
+              ? `${dest
+                  .replace(/\\/g, '/')
+                  .replace(/\/$/, '')}/${name}`
               : name;
 
-          const d =
+          const data =
             await postJSON(
               '/api/files/move',
               {
@@ -1622,20 +1305,17 @@ function openFileContext(
               }
             );
 
-          if (!d.ok) {
-            throw new Error(d.error);
+          if (!data.ok) {
+            throw new Error(data.error);
           }
         }
 
         if (action === 'download') {
-          return downloadFile(
-            rel,
-            name
-          );
+          return downloadFile(rel, name);
         }
 
         if (action === 'compress') {
-          const d =
+          const data =
             await postJSON(
               '/api/files/compress',
               {
@@ -1644,32 +1324,27 @@ function openFileContext(
               }
             );
 
-          if (!d.ok) {
-            throw new Error(d.error);
+          if (!data.ok) {
+            throw new Error(data.error);
           }
         }
 
         if (action === 'delete') {
-          if (
-            !confirm(
-              `¿Eliminar "${name}"?`
-            )
-          ) {
+          if (!confirm(`¿Eliminar "${name}"?`)) {
             return;
           }
 
-          const d =
+          const data =
             await postJSON(
               '/api/files/delete',
               {
                 path: rel,
-                isDir:
-                  type === 'dir',
+                isDir: type === 'dir',
               }
             );
 
-          if (!d.ok) {
-            throw new Error(d.error);
+          if (!data.ok) {
+            throw new Error(data.error);
           }
         }
 
@@ -1678,9 +1353,7 @@ function openFileContext(
           'ok'
         );
 
-        populateFiles(
-          currentDir
-        );
+        populateFiles(currentDir);
       } catch (error) {
         toast(
           `❌ ${error.message}`,
@@ -1690,21 +1363,16 @@ function openFileContext(
     }
   );
 
-  setTimeout(
-    () =>
-      document.addEventListener(
-        'click',
-        () => menu.remove(),
-        { once: true }
-      ),
-    0
-  );
+  setTimeout(() => {
+    document.addEventListener(
+      'click',
+      () => menu.remove(),
+      { once: true }
+    );
+  }, 0);
 }
 
-async function downloadFile(
-  rel,
-  filename
-) {
+async function downloadFile(rel, filename) {
   const result =
     await rpcHttp(
       `/api/files/download?path=${encodeURIComponent(rel)}`
@@ -1736,30 +1404,28 @@ async function downloadFile(
   const url =
     URL.createObjectURL(blob);
 
-  const a =
+  const anchor =
     document.createElement('a');
 
-  a.href = url;
-  a.download = filename;
-
-  a.click();
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
 
   setTimeout(
-    () =>
-      URL.revokeObjectURL(url),
+    () => URL.revokeObjectURL(url),
     1000
   );
 }
 
 async function openFile(rel) {
   try {
-    const d =
+    const data =
       await api(
         `/api/files/content?path=${encodeURIComponent(rel)}`
       );
 
-    if (!d.ok) {
-      throw new Error(d.error);
+    if (!data.ok) {
+      throw new Error(data.error);
     }
 
     currentFile = rel;
@@ -1776,12 +1442,10 @@ async function openFile(rel) {
 
     if ($('editorFileName')) {
       $('editorFileName').innerHTML =
-        `📄 ${
-          escHtml(
-            d.filename ||
-            rel.split('/').pop()
-          )
-        }`;
+        `📄 ${escHtml(
+          data.filename ||
+          rel.split('/').pop()
+        )}`;
     }
 
     if ($('edSaveMsg')) {
@@ -1800,20 +1464,19 @@ async function openFile(rel) {
         rel.split('.').pop() || ''
       ).toLowerCase();
 
-    const mode =
-      ({
-        yml: 'yaml',
-        yaml: 'yaml',
-        json: 'javascript',
-        js: 'javascript',
-        xml: 'xml',
-        properties: 'properties',
-        conf: 'properties',
-        cfg: 'properties',
-        sh: 'shell',
-        bat: 'shell',
-        cmd: 'shell',
-      })[ext] || 'text/plain';
+    const mode = {
+      yml: 'yaml',
+      yaml: 'yaml',
+      json: 'javascript',
+      js: 'javascript',
+      xml: 'xml',
+      properties: 'properties',
+      conf: 'properties',
+      cfg: 'properties',
+      sh: 'shell',
+      bat: 'shell',
+      cmd: 'shell',
+    }[ext] || 'text/plain';
 
     if (window.CodeMirror) {
       editor =
@@ -1829,7 +1492,7 @@ async function openFile(rel) {
         );
 
       editor.setValue(
-        d.content || ''
+        data.content || ''
       );
 
       editor.on(
@@ -1840,7 +1503,7 @@ async function openFile(rel) {
       updateEditorStatus();
     } else {
       $('mwEditorArea').value =
-        d.content || '';
+        data.content || '';
     }
   } catch (error) {
     toast(
@@ -1880,7 +1543,7 @@ async function saveCurrentFile() {
       ? editor.getValue()
       : $('mwEditorArea')?.value || '';
 
-  const d =
+  const data =
     await postJSON(
       '/api/files/content',
       {
@@ -1889,9 +1552,9 @@ async function saveCurrentFile() {
       }
     );
 
-  if (!d.ok) {
+  if (!data.ok) {
     toast(
-      `❌ ${d.error}`,
+      `❌ ${data.error}`,
       'err'
     );
 
@@ -1909,143 +1572,159 @@ async function saveCurrentFile() {
   );
 }
 
-/* ═══════════════════════ PLUGINS ═══════════════════════ */
+/* PLUGINS */
 
 async function pluginSearch() {
-  const q =
+  const query =
     $('plgSearchInput')
       ?.value.trim();
 
-  if (!q) return;
+  if (!query) return;
 
-  $('plgResults').innerHTML =
-    '<div class="empty-state">' +
-    '<div style="font-size:32px;animation:spin 1s linear infinite">⟳</div>' +
-    '<div class="empty-msg">Buscando...</div>' +
-    '</div>';
+  $('plgResults').innerHTML = `
+    <div class="empty-state">
+      <div
+        style="font-size:32px;animation:spin 1s linear infinite"
+      >⟳</div>
+      <div class="empty-msg">
+        Buscando...
+      </div>
+    </div>
+  `;
 
   try {
-    const d =
+    const data =
       await api(
-        `/api/plugins/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(pluginSource)}`
+        `/api/plugins/search?q=${encodeURIComponent(query)}&source=${encodeURIComponent(pluginSource)}`
       );
 
-    if (!d.ok) {
-      throw new Error(d.error);
+    if (!data.ok) {
+      throw new Error(data.error);
     }
 
     renderPluginResults(
-      d.results || [],
-      d.errors || []
+      data.results || [],
+      data.errors || []
     );
   } catch (error) {
-    $('plgResults').innerHTML =
-      `<div class="empty-state">` +
-      `<div class="empty-msg">` +
-      `${escHtml(error.message)}` +
-      `</div>` +
-      `</div>`;
+    $('plgResults').innerHTML = `
+      <div class="empty-state">
+        <div class="empty-msg">
+          ${escHtml(error.message)}
+        </div>
+      </div>
+    `;
   }
 }
 
-function renderPluginResults(
-  results,
-  errors
-) {
-  const fmt = n =>
-    n >= 1e6
-      ? `${(n / 1e6).toFixed(1)}M`
-      : n >= 1000
-        ? `${Math.round(n / 1000)}k`
-        : String(n || 0);
+function renderPluginResults(results, errors) {
+  const formatDownloads = value => {
+    const n = Number(value) || 0;
+
+    if (n >= 1e6) {
+      return `${(n / 1e6).toFixed(1)}M`;
+    }
+
+    if (n >= 1000) {
+      return `${Math.round(n / 1000)}k`;
+    }
+
+    return String(n);
+  };
 
   const warning =
     errors.length
-      ? `<div class="plg-warn-bar">⚠ ${
-          errors.map(escHtml).join(' · ')
-        }</div>`
+      ? `
+        <div class="plg-warn-bar">
+          ⚠ ${errors.map(escHtml).join(' · ')}
+        </div>
+      `
       : '';
 
   $('plgResults').innerHTML =
     warning +
     results
-      .map(
-        (plugin, index) => {
-          const tag =
-            plugin.source === 'modrinth'
-              ? 'MODRINTH'
-              : 'SPIGOT';
+      .map((plugin, index) => {
+        const tag =
+          plugin.source === 'modrinth'
+            ? 'MODRINTH'
+            : 'SPIGOT';
 
-          const external =
-            plugin.external
-              ? '<span class="plg-src-badge">🔗 EXTERNO</span>'
-              : '';
+        const external =
+          plugin.external
+            ? '<span class="plg-src-badge">🔗 EXTERNO</span>'
+            : '';
 
-          const premium =
-            plugin.premium
-              ? '<span class="plg-src-badge">💰 PREMIUM</span>'
-              : '';
+        const premium =
+          plugin.premium
+            ? '<span class="plg-src-badge">💰 PREMIUM</span>'
+            : '';
 
-          return `
-            <div
-              class="plg-card"
-              data-index="${index}"
-            >
-              <div class="plg-card-top">
-                ${
-                  plugin.icon
-                    ? `
-                      <img
-                        class="plg-card-icon"
-                        src="${escHtml(plugin.icon)}"
-                        width="42"
-                        height="42"
-                        loading="lazy"
-                      >
-                    `
-                    : `
-                      <div class="plg-card-icon-placeholder">
-                        🧩
-                      </div>
-                    `
-                }
+        return `
+          <div
+            class="plg-card"
+            data-index="${index}"
+          >
+            <div class="plg-card-top">
+              ${
+                plugin.icon
+                  ? `
+                    <img
+                      class="plg-card-icon"
+                      src="${escHtml(plugin.icon)}"
+                      width="42"
+                      height="42"
+                      loading="lazy"
+                    >
+                  `
+                  : `
+                    <div class="plg-card-icon-placeholder">
+                      🧩
+                    </div>
+                  `
+              }
 
-                <div class="plg-card-info">
-                  <div class="plg-card-name">
-                    ${escHtml(plugin.name)}
-                  </div>
+              <div class="plg-card-info">
+                <div class="plg-card-name">
+                  ${escHtml(plugin.name)}
+                </div>
 
-                  <div class="plg-card-tags">
-                    <span class="plg-src-badge">
-                      ${tag}
-                    </span>
+                <div class="plg-card-tags">
+                  <span class="plg-src-badge">
+                    ${tag}
+                  </span>
 
-                    ${premium}
-                    ${external}
+                  ${premium}
+                  ${external}
 
-                    <span class="plg-src-badge dl">
-                      ⬇ ${fmt(plugin.downloads)}
-                    </span>
-                  </div>
+                  <span class="plg-src-badge dl">
+                    ⬇ ${formatDownloads(plugin.downloads)}
+                  </span>
                 </div>
               </div>
-
-              <div class="plg-card-desc">
-                ${escHtml(plugin.description || '')}
-              </div>
-
-              <div class="plg-card-footer">
-                <span></span>
-                <button class="plg-versions-btn">
-                  Ver versiones →
-                </button>
-              </div>
             </div>
-          `;
-        }
-      )
+
+            <div class="plg-card-desc">
+              ${escHtml(plugin.description || '')}
+            </div>
+
+            <div class="plg-card-footer">
+              <span></span>
+              <button class="plg-versions-btn">
+                Ver versiones →
+              </button>
+            </div>
+          </div>
+        `;
+      })
       .join('') ||
-    '<div class="empty-state"><div class="empty-msg">Sin resultados</div></div>';
+    `
+      <div class="empty-state">
+        <div class="empty-msg">
+          Sin resultados
+        </div>
+      </div>
+    `;
 
   $('plgResults')
     .querySelectorAll('.plg-card')
@@ -2055,23 +1734,17 @@ function renderPluginResults(
         () =>
           openPluginVersions(
             results[
-              Number(
-                card.dataset.index
-              )
+              Number(card.dataset.index)
             ]
           )
       );
     });
 }
 
-async function openPluginVersions(
-  plugin
-) {
+async function openPluginVersions(plugin) {
   currentPlugin = plugin;
 
-  $('plgVersionModal').style.display =
-    '';
-
+  $('plgVersionModal').style.display = '';
   $('plgModalIcon').src =
     plugin.icon || '';
 
@@ -2079,79 +1752,78 @@ async function openPluginVersions(
     plugin.name;
 
   $('plgModalMeta').textContent =
-    `${plugin.source.toUpperCase()} · ${
-      plugin.downloads || 0
-    } descargas`;
+    `${plugin.source.toUpperCase()} · ${plugin.downloads || 0} descargas`;
 
-  $('plgModalBody').innerHTML =
-    '<div class="empty-state">' +
-    '<div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>' +
-    '<div class="empty-msg">Cargando versiones...</div>' +
-    '</div>';
+  $('plgModalBody').innerHTML = `
+    <div class="empty-state">
+      <div
+        style="animation:spin 1s linear infinite;font-size:28px"
+      >⟳</div>
+      <div class="empty-msg">
+        Cargando versiones...
+      </div>
+    </div>
+  `;
 
   try {
-    const d =
+    const data =
       await api(
         `/api/plugins/versions?id=${encodeURIComponent(plugin.id)}&source=${encodeURIComponent(plugin.source)}`
       );
 
-    if (!d.ok) {
-      throw new Error(d.error);
+    if (!data.ok) {
+      throw new Error(data.error);
     }
 
     $('plgModalBody').innerHTML =
-      (d.versions || [])
-        .map(
-          (version, index) => `
-            <div class="plg-version-row">
-              <div>
-                <strong>
-                  ${escHtml(
-                    version.versionNumber ||
-                    version.name ||
-                    'Versión'
-                  )}
-                </strong>
+      (data.versions || [])
+        .map((version, index) => `
+          <div class="plg-version-row">
+            <div>
+              <strong>
+                ${escHtml(
+                  version.versionNumber ||
+                  version.name ||
+                  'Versión'
+                )}
+              </strong>
 
-                <div
-                  style="font-size:11px;color:var(--muted2)"
-                >
-                  ${
-                    version.published
-                      ? new Date(
-                          version.published
-                        ).toLocaleString(
-                          'es-ES'
-                        )
-                      : ''
-                  }
-                </div>
+              <div
+                style="font-size:11px;color:var(--muted2)"
+              >
+                ${
+                  version.published
+                    ? new Date(
+                        version.published
+                      ).toLocaleString('es-ES')
+                    : ''
+                }
               </div>
-
-              ${
-                version.isExternal
-                  ? `
-                    <a
-                      class="plg-install-btn"
-                      href="${escHtml(version.externalUrl)}"
-                      target="_blank"
-                      rel="noopener"
-                    >
-                      ABRIR
-                    </a>
-                  `
-                  : `
-                    <button
-                      class="plg-install-btn"
-                      data-version="${index}"
-                    >
-                      INSTALAR
-                    </button>
-                  `
-              }
             </div>
-          `
-        )
+
+            ${
+              version.isExternal
+                ? `
+                  <a
+                    class="plg-install-btn"
+                    href="${escHtml(version.externalUrl)}"
+                    target="_blank"
+                    rel="noopener"
+                  >
+                    ABRIR
+                  </a>
+                `
+                : `
+                  <button
+                    class="plg-install-btn"
+                    data-version="${index}"
+                  >
+                    INSTALAR
+                  </button>
+                `
+            }
+          </div>
+        `)
         .join('') ||
       '<div class="empty-state">No hay versiones.</div>';
 
@@ -2162,7 +1834,7 @@ async function openPluginVersions(
           'click',
           () =>
             installPlugin(
-              d.versions[
+              data.versions[
                 Number(
                   button.dataset.version
                 )
@@ -2171,23 +1843,20 @@ async function openPluginVersions(
         );
       });
   } catch (error) {
-    $('plgModalBody').innerHTML =
-      `<div class="empty-state">` +
-      `<div class="empty-msg">` +
-      `${escHtml(error.message)}` +
-      `</div>` +
-      `</div>`;
+    $('plgModalBody').innerHTML = `
+      <div class="empty-state">
+        <div class="empty-msg">
+          ${escHtml(error.message)}
+        </div>
+      </div>
+    `;
   }
 }
 
-async function installPlugin(
-  version
-) {
+async function installPlugin(version) {
   const file =
     (version.files || [])
-      .find(
-        f => f.primary
-      ) ||
+      .find(item => item.primary) ||
     version.files?.[0];
 
   if (!file?.url) {
@@ -2201,23 +1870,19 @@ async function installPlugin(
 
   const filename =
     file.filename ||
-    `${
-      String(
-        currentPlugin?.name ||
-        'plugin'
-      ).replace(
-        /[^a-zA-Z0-9._-]/g,
-        '_'
-      )
-    }.jar`;
+    `${String(
+      currentPlugin?.name || 'plugin'
+    ).replace(
+      /[^a-zA-Z0-9._-]/g,
+      '_'
+    )}.jar`;
 
-  $('plgModalBody')
-    .insertAdjacentHTML(
-      'afterbegin',
-      '<div class="plg-warn-bar">⬇️ Instalando...</div>'
-    );
+  $('plgModalBody').insertAdjacentHTML(
+    'afterbegin',
+    '<div class="plg-warn-bar">⬇️ Instalando...</div>'
+  );
 
-  const d =
+  const data =
     await postJSON(
       '/api/plugins/install',
       {
@@ -2226,9 +1891,9 @@ async function installPlugin(
       }
     );
 
-  if (!d.ok) {
+  if (!data.ok) {
     toast(
-      `❌ ${d.error}`,
+      `❌ ${data.error}`,
       'err'
     );
 
@@ -2244,89 +1909,96 @@ async function installPlugin(
 }
 
 async function loadInstalledPlugins() {
-  const el =
+  const element =
     $('plgInstalledList');
 
-  if (!el) return;
+  if (!element) return;
 
-  el.innerHTML =
-    '<div class="empty-state">' +
-    '<div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>' +
-    '<div class="empty-msg">Cargando...</div>' +
-    '</div>';
+  element.innerHTML = `
+    <div class="empty-state">
+      <div
+        style="animation:spin 1s linear infinite;font-size:28px"
+      >⟳</div>
+      <div class="empty-msg">
+        Cargando...
+      </div>
+    </div>
+  `;
 
-  const d =
+  const data =
     await api(
       '/api/plugins/installed'
     );
 
-  if (!d.ok) {
-    el.innerHTML =
-      `<div class="empty-state">` +
-      `${escHtml(d.error)}` +
-      `</div>`;
+  if (!data.ok) {
+    element.innerHTML = `
+      <div class="empty-state">
+        ${escHtml(data.error)}
+      </div>
+    `;
 
     return;
   }
 
-  el.innerHTML =
-    (d.plugins || [])
-      .map(
-        plugin => `
-          <div class="installed-plugin-row">
-            <div>
-              <strong>
-                ☕ ${escHtml(plugin.filename)}
-              </strong>
+  element.innerHTML =
+    (data.plugins || [])
+      .map(plugin => `
+        <div class="installed-plugin-row">
+          <div>
+            <strong>
+              ☕ ${escHtml(plugin.filename)}
+            </strong>
 
-              <div
-                style="font-size:11px;color:var(--muted2)"
-              >
-                ${escHtml(plugin.size)}
-                ·
-                ${escHtml(plugin.modified)}
-              </div>
-            </div>
-
-            <button
-              class="small-btn danger"
-              data-delete-plugin="${escHtml(plugin.filename)}"
+            <div
+              style="font-size:11px;color:var(--muted2)"
             >
-              Eliminar
-            </button>
+              ${escHtml(plugin.size)}
+              ·
+              ${escHtml(plugin.modified)}
+            </div>
           </div>
-        `
-      )
-      .join('') ||
-    '<div class="empty-state">No hay plugins .jar instalados.</div>';
 
-  el
-    .querySelectorAll(
-      '[data-delete-plugin]'
-    )
+          <button
+            class="small-btn danger"
+            data-delete-plugin="${escHtml(plugin.filename)}"
+          >
+            Eliminar
+          </button>
+        </div>
+      `)
+      .join('') ||
+    `
+      <div class="empty-state">
+        No hay plugins .jar instalados.
+      </div>
+    `;
+
+  element
+    .querySelectorAll('[data-delete-plugin]')
     .forEach(button => {
       button.addEventListener(
         'click',
         async () => {
-          if (
-            !confirm(
-              `¿Eliminar ${button.dataset.deletePlugin}?`
-            )
-          ) {
+          const filename =
+            button.dataset.deletePlugin;
+
+          if (!confirm(
+            `¿Eliminar ${filename}?`
+          )) {
             return;
           }
 
-          const d2 =
+          const data =
             await api(
-              `/api/plugins/installed/${encodeURIComponent(button.dataset.deletePlugin)}`,
+              `/api/plugins/installed/${encodeURIComponent(filename)}`,
               {
                 method: 'DELETE',
               }
             );
 
-          if (!d2.ok) {
+          if (!data.ok) {
             toast(
-              `❌ ${d2.error}`,
+              `❌ ${data.error}`,
               'err'
             );
           } else {
@@ -2337,27 +2009,27 @@ async function loadInstalledPlugins() {
     });
 }
 
-/* ═══════════════════════ MINECRAFT VERSIONS ═══════════════════════ */
+/* MINECRAFT VERSIONS */
 
 async function loadSoftware() {
-  const d =
+  const data =
     await api(
       '/api/versions/software'
     );
 
-  if (!d.ok) {
-    throw new Error(d.error);
+  if (!data.ok) {
+    throw new Error(data.error);
   }
 
   const list =
-    d.software || [];
+    data.software || [];
 
-  const el =
+  const element =
     $('versionList');
 
-  if (!el) return;
+  if (!element) return;
 
-  el.innerHTML = `
+  element.innerHTML = `
     <div
       style="padding:8px 0 18px;color:var(--muted2)"
     >
@@ -2368,20 +2040,14 @@ async function loadSoftware() {
     <div
       style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px"
     >
-      ${
-        list
-          .map(
-            sw => `
-              <button
-                class="small-btn"
-                data-software="${escHtml(sw.id)}"
-              >
-                ${escHtml(sw.label)}
-              </button>
-            `
-          )
-          .join('')
-      }
+      ${list.map(sw => `
+        <button
+          class="small-btn"
+          data-software="${escHtml(sw.id)}"
+        >
+          ${escHtml(sw.label)}
+        </button>
+      `).join('')}
     </div>
 
     <div
@@ -2390,11 +2056,9 @@ async function loadSoftware() {
     ></div>
   `;
 
-  el
-    .querySelectorAll(
-      '[data-software]'
-    )
-    .forEach(button =>
+  element
+    .querySelectorAll('[data-software]')
+    .forEach(button => {
       button.addEventListener(
         'click',
         () =>
@@ -2406,8 +2070,8 @@ async function loadSoftware() {
                 button.dataset.software
             )
           )
-      )
-    );
+      );
+    });
 
   const current =
     await api(
@@ -2426,11 +2090,7 @@ async function loadSoftware() {
             📦 server.jar:
             ${
               current.exists
-                ? `
-                  ✅ ${escHtml(current.size)}
-                  ·
-                  ${escHtml(current.modified)}
-                `
+                ? `✅ ${escHtml(current.size)} · ${escHtml(current.modified)}`
                 : '❌ no encontrado'
             }
           </div>
@@ -2439,10 +2099,7 @@ async function loadSoftware() {
   }
 }
 
-async function selectSoftware(
-  id,
-  meta
-) {
+async function selectSoftware(id, meta) {
   versionState = {
     software: id,
     version: null,
@@ -2452,38 +2109,38 @@ async function selectSoftware(
   const details =
     $('mwVersionDetails');
 
-  details.innerHTML =
-    `
-      <div
-        class="panel"
-        style="padding:12px"
-      >
-        <strong>
-          ${escHtml(meta?.label || id)}
-        </strong>
+  details.innerHTML = `
+    <div
+      class="panel"
+      style="padding:12px"
+    >
+      <strong>
+        ${escHtml(meta?.label || id)}
+      </strong>
 
-        <div style="margin-top:12px">
-          Cargando versiones...
-        </div>
+      <div style="margin-top:12px">
+        Cargando versiones...
       </div>
-    `;
+    </div>
+  `;
 
-  const d =
+  const data =
     await api(
       `/api/versions/list?software=${encodeURIComponent(id)}`
     );
 
-  if (!d.ok) {
-    details.innerHTML =
-      `<div class="empty-state">` +
-      `${escHtml(d.error)}` +
-      `</div>`;
+  if (!data.ok) {
+    details.innerHTML = `
+      <div class="empty-state">
+        ${escHtml(data.error)}
+      </div>
+    `;
 
     return;
   }
 
   const versions =
-    d.versions || [];
+    data.versions || [];
 
   details.innerHTML = `
     <div
@@ -2511,54 +2168,50 @@ async function selectSoftware(
     </div>
   `;
 
-  const render =
+  const renderVersions =
     list => {
       $('mwVersionPills').innerHTML =
         list
-          .map(
-            version => `
-              <button
-                class="small-btn"
-                data-version="${escHtml(version)}"
-              >
-                ${escHtml(version)}
-              </button>
-            `
-          )
+          .map(version => `
+            <button
+              class="small-btn"
+              data-version="${escHtml(version)}"
+            >
+              ${escHtml(version)}
+            </button>
+          `)
           .join('');
 
       $('mwVersionPills')
-        .querySelectorAll(
-          '[data-version]'
-        )
-        .forEach(button =>
+        .querySelectorAll('[data-version]')
+        .forEach(button => {
           button.addEventListener(
             'click',
             () =>
               selectVersion(
                 button.dataset.version
               )
-          )
-        );
+          );
+        });
     };
 
-  render(versions);
+  renderVersions(versions);
 
   $('mwVersionSearch')
     .addEventListener(
       'input',
-      e => {
-        const q =
-          e.target.value
+      event => {
+        const query =
+          event.target.value
             .toLowerCase();
 
-        render(
-          q
+        renderVersions(
+          query
             ? versions.filter(
-                v =>
-                  v
+                version =>
+                  version
                     .toLowerCase()
-                    .includes(q)
+                    .includes(query)
               )
             : versions
         );
@@ -2566,80 +2219,77 @@ async function selectSoftware(
     );
 }
 
-async function selectVersion(
-  version
-) {
+async function selectVersion(version) {
   versionState.version =
     version;
 
   $('mwBuilds').innerHTML =
     '<div style="padding:8px">Cargando builds...</div>';
 
-  const d =
+  const data =
     await api(
       `/api/versions/builds?software=${encodeURIComponent(versionState.software)}&version=${encodeURIComponent(version)}`
     );
 
-  if (!d.ok) {
-    $('mwBuilds').innerHTML =
-      `<div class="empty-state">` +
-      `${escHtml(d.error)}` +
-      `</div>`;
+  if (!data.ok) {
+    $('mwBuilds').innerHTML = `
+      <div class="empty-state">
+        ${escHtml(data.error)}
+      </div>
+    `;
 
     return;
   }
 
   versionState.builds =
-    d.builds || [];
+    data.builds || [];
 
   $('mwBuilds').innerHTML =
     versionState.builds
-      .map(
-        (build, index) => `
-          <div class="installed-plugin-row">
-            <div>
-              <strong>
-                ${
-                  versionState.software === 'fabric'
-                    ? `Loader ${escHtml(build.loaderVersion)}`
-                    : `Build #${escHtml(build.build)}`
-                }
-              </strong>
+      .map((build, index) => `
+        <div class="installed-plugin-row">
+          <div>
+            <strong>
+              ${
+                versionState.software === 'fabric'
+                  ? `Loader ${escHtml(build.loaderVersion)}`
+                  : `Build #${escHtml(build.build)}`
+              }
+            </strong>
 
-              <div
-                style="font-size:11px;color:var(--muted2)"
-              >
-                ${escHtml(build.channel || '')}
-                ${
-                  build.time
-                    ? ' · ' +
-                      new Date(
-                        build.time
-                      ).toLocaleString(
-                        'es-ES'
-                      )
-                    : ''
-                }
-              </div>
-            </div>
-
-            <button
-              class="small-btn"
-              data-build="${index}"
+            <div
+              style="font-size:11px;color:var(--muted2)"
             >
-              INSTALAR
-            </button>
+              ${escHtml(build.channel || '')}
+              ${
+                build.time
+                  ? ' · ' +
+                    new Date(
+                      build.time
+                    ).toLocaleString('es-ES')
+                  : ''
+              }
+            </div>
           </div>
-        `
-      )
+
+          <button
+            class="small-btn"
+            data-build="${index}"
+          >
+            INSTALAR
+          </button>
+        </div>
+      `)
       .join('') ||
-    '<div class="empty-state">No hay builds disponibles.</div>';
+    `
+      <div class="empty-state">
+        No hay builds disponibles.
+      </div>
+    `;
 
   $('mwBuilds')
-    .querySelectorAll(
-      '[data-build]'
-    )
-    .forEach(button =>
+    .querySelectorAll('[data-build]')
+    .forEach(button => {
       button.addEventListener(
         'click',
         () =>
@@ -2650,51 +2300,41 @@ async function selectVersion(
               )
             ]
           )
-      )
-    );
+      );
+    });
 }
 
-async function installServerBuild(
-  build
-) {
-  if (
-    !confirm(
-      `Actualizar server.jar a ${versionState.software} ${versionState.version}?`
-    )
-  ) {
+async function installServerBuild(build) {
+  if (!confirm(
+    `Actualizar server.jar a ${versionState.software} ${versionState.version}?`
+  )) {
     return;
   }
 
-  const d =
+  const data =
     await postJSON(
       '/api/versions/install',
       {
         software:
           versionState.software,
-
         version:
           versionState.version,
-
-        build:
-          build.build,
-
-        url:
-          build.url,
-
+        build: build.build,
+        url: build.url,
         loaderVersion:
           build.loaderVersion,
       }
     );
 
-  if (!d.ok) {
+  if (!data.ok) {
     toast(
-      `❌ ${d.error}`,
+      `❌ ${data.error}`,
       'err'
     );
   } else {
     toast(
       `✅ ${
-        d.note ||
+        data.note ||
         'server.jar actualizado'
       }`,
       'ok'
@@ -2702,23 +2342,19 @@ async function installServerBuild(
   }
 }
 
-/* ═══════════════════════ NAVIGATION / INFO VIEWS ═══════════════════════ */
+/* NAVIGATION */
 
 function switchView(id) {
   document
     .querySelectorAll('.view')
     .forEach(view =>
-      view.classList.remove(
-        'active'
-      )
+      view.classList.remove('active')
     );
 
   document
     .querySelectorAll('.sb-item')
     .forEach(item =>
-      item.classList.remove(
-        'active'
-      )
+      item.classList.remove('active')
     );
 
   $(`view-${id}`)
@@ -2730,82 +2366,114 @@ function switchView(id) {
     )
     ?.classList.add('active');
 
-  if (id === 'files') {
-    populateFiles(
-      currentDir
-    );
+  switch (id) {
+    case 'files':
+      populateFiles(currentDir);
+      break;
+
+    case 'versions':
+      loadSoftware()
+        .catch(error =>
+          toast(
+            error.message,
+            'err'
+          )
+        );
+      break;
+
+    case 'plugins':
+      loadInstalledPlugins();
+      break;
+
+    case 'activitylog':
+      renderActivity();
+      break;
+
+    case 'settings':
+      renderSettings();
+      break;
+  }
+}
+
+/* ACTIVITY */
+
+function addActivity(
+  message,
+  level = 'info',
+  icon = '📌'
+) {
+  activities.push({
+    message,
+    level,
+    icon,
+    time:
+      new Date().toLocaleTimeString(
+        'es-ES'
+      ),
+  });
+
+  if (activities.length > 200) {
+    activities.shift();
   }
 
-  if (id === 'versions') {
-    loadSoftware()
-      .catch(error =>
-        toast(
-          error.message,
-          'err'
-        )
-      );
-  }
-
-  if (id === 'plugins') {
-    loadInstalledPlugins();
-  }
-
-  if (id === 'activitylog') {
+  if (
+    $('view-activitylog')
+      ?.classList.contains('active')
+  ) {
     renderActivity();
-  }
-
-  if (id === 'settings') {
-    renderSettings();
   }
 }
 
 function renderActivity() {
-  const el =
+  const element =
     $('activityList');
 
-  if (!el) return;
+  if (!element) return;
 
-  el.innerHTML =
+  element.innerHTML =
     activities.length
       ? activities
           .slice()
           .reverse()
-          .map(
-            item => `
-              <div class="activity-row">
-                <span>
-                  ${escHtml(item.icon)}
-                </span>
+          .map(item => `
+            <div class="activity-row">
+              <span>
+                ${escHtml(item.icon)}
+              </span>
 
-                <div>
-                  <strong>
-                    ${escHtml(item.message)}
-                  </strong>
+              <div>
+                <strong>
+                  ${escHtml(item.message)}
+                </strong>
 
-                  <div
-                    style="font-size:10px;color:var(--muted2)"
-                  >
-                    ${escHtml(item.time)}
-                  </div>
+                <div
+                  style="font-size:10px;color:var(--muted2)"
+                >
+                  ${escHtml(item.time)}
                 </div>
               </div>
-            `
-          )
+            </div>
+          `)
           .join('')
-      : '<div class="empty-state">No hay actividad todavía.</div>';
+      : `
+        <div class="empty-state">
+          No hay actividad todavía.
+        </div>
+      `;
 }
 
+/* SETTINGS */
+
 function renderSettings() {
-  const el =
+  const element =
     $('settingsList');
 
-  if (!el) return;
+  if (!element) return;
 
-  el.innerHTML = `
+  element.innerHTML = `
     <div class="settings-row">
       <div>
         <strong>MoonWolf Cloud</strong>
-
         <div
           style="font-size:11px;color:var(--muted2)"
         >
@@ -2824,10 +2492,7 @@ function renderSettings() {
 
     <div class="settings-row">
       <div>
-        <strong>
-          Código de conexión
-        </strong>
-
+        <strong>Código de conexión</strong>
         <div
           style="font-size:11px;color:var(--muted2)"
         >
@@ -2836,18 +2501,13 @@ function renderSettings() {
       </div>
 
       <code>
-        ${escHtml(
-          connectionCode || '—'
-        )}
+        ${escHtml(connectionCode || '—')}
       </code>
     </div>
 
     <div class="settings-row">
       <div>
-        <strong>
-          Conexión
-        </strong>
-
+        <strong>Conexión</strong>
         <div
           style="font-size:11px;color:var(--muted2)"
         >
@@ -2864,9 +2524,7 @@ function renderSettings() {
       </span>
     </div>
 
-    <div
-      style="padding-top:12px"
-    >
+    <div style="padding-top:12px">
       <button
         class="small-btn"
         id="btnDisconnectCloud"
@@ -2884,101 +2542,58 @@ function renderSettings() {
 
         setAgentOnline(false);
 
-        currentStatus =
-          'offline';
-
-        updateStatusUi(
-          'offline'
-        );
+        currentStatus = 'offline';
+        updateStatusUi('offline');
 
         setCode('');
 
-        showLogin(
-          'Desconectado.'
-        );
+        showLogin('Desconectado.');
       }
     );
 }
 
-/* ═══════════════════════ GENERAL UI ═══════════════════════ */
-
-function addActivity(
-  message,
-  level = 'info',
-  icon = '📌'
-) {
-  activities.push({
-    message,
-    level,
-    icon,
-    time:
-      new Date()
-        .toLocaleTimeString(
-          'es-ES'
-        ),
-  });
-
-  if (
-    activities.length > 200
-  ) {
-    activities.shift();
-  }
-
-  if (
-    $('view-activitylog')
-      ?.classList.contains(
-        'active'
-      )
-  ) {
-    renderActivity();
-  }
-}
+/* TOAST */
 
 function toast(
   message,
   type = 'info'
 ) {
-  const el =
+  const element =
     $('toast');
 
-  if (!el) return;
+  if (!element) return;
 
-  el.textContent =
+  element.textContent =
     message;
 
-  el.className =
+  element.className =
     `toast show ${type}`;
 
-  clearTimeout(
-    toast.timer
-  );
+  clearTimeout(toast.timer);
 
   toast.timer =
-    setTimeout(
-      () => {
-        el.className =
-          'toast';
-      },
-      3000
-    );
+    setTimeout(() => {
+      element.className =
+        'toast';
+    }, 3000);
 }
 
-/* ═══════════════════════ EVENTS ═══════════════════════ */
+/* EVENTS */
 
 function bindEvents() {
   ensureLoginGate();
 
   document
     .querySelectorAll('.sb-item')
-    .forEach(item =>
+    .forEach(item => {
       item.addEventListener(
         'click',
         () =>
           switchView(
             item.dataset.view
           )
-      )
-    );
+      );
+    });
 
   $('btnStart')
     ?.addEventListener(
@@ -3008,9 +2623,7 @@ function bindEvents() {
     ?.addEventListener(
       'keydown',
       event => {
-        if (
-          event.key === 'Enter'
-        ) {
+        if (event.key === 'Enter') {
           sendCmd();
         }
       }
@@ -3018,28 +2631,29 @@ function bindEvents() {
 
   document
     .querySelectorAll('.quick-btn')
-    .forEach(button =>
+    .forEach(button => {
       button.addEventListener(
         'click',
         () => {
-          if (!$('cmdInput')) return;
+          const input =
+            $('cmdInput');
 
-          $('cmdInput').value =
-            button.dataset.cmd ||
-            '';
+          if (!input) return;
+
+          input.value =
+            button.dataset.cmd || '';
 
           sendCmd();
         }
-      )
-    );
+      );
+    });
 
   $('btnClearConsole')
     ?.addEventListener(
       'click',
       () => {
         if ($('console')) {
-          $('console').innerHTML =
-            '';
+          $('console').innerHTML = '';
         }
       }
     );
@@ -3047,8 +2661,7 @@ function bindEvents() {
   $('crumbHome')
     ?.addEventListener(
       'click',
-      () =>
-        populateFiles('')
+      () => populateFiles('')
     );
 
   $('btnEditorBack')
@@ -3065,9 +2678,7 @@ function bindEvents() {
             '';
         }
 
-        if (
-          editor?.toTextArea
-        ) {
+        if (editor?.toTextArea) {
           editor.toTextArea();
         }
 
@@ -3086,26 +2697,20 @@ function bindEvents() {
     'keydown',
     event => {
       if (
-        (
-          event.ctrlKey ||
-          event.metaKey
-        ) &&
-        event.key.toLowerCase() ===
-          's' &&
+        (event.ctrlKey ||
+          event.metaKey) &&
+        event.key.toLowerCase() === 's' &&
         currentFile
       ) {
         event.preventDefault();
-
         saveCurrentFile();
       }
     }
   );
 
   document
-    .querySelectorAll(
-      '.plg-source'
-    )
-    .forEach(button =>
+    .querySelectorAll('.plg-source')
+    .forEach(button => {
       button.addEventListener(
         'click',
         () => {
@@ -3123,14 +2728,12 @@ function bindEvents() {
               )
             );
         }
-      )
-    );
+      );
+    });
 
   document
-    .querySelectorAll(
-      '.plg-tab-btn'
-    )
-    .forEach(button =>
+    .querySelectorAll('.plg-tab-btn')
+    .forEach(button => {
       button.addEventListener(
         'click',
         () => {
@@ -3162,14 +2765,12 @@ function bindEvents() {
                 : 'none';
           }
 
-          if (
-            tab === 'installed'
-          ) {
+          if (tab === 'installed') {
             loadInstalledPlugins();
           }
         }
-      )
-    );
+      );
+    });
 
   $('btnPluginSearch')
     ?.addEventListener(
@@ -3181,9 +2782,7 @@ function bindEvents() {
     ?.addEventListener(
       'keydown',
       event => {
-        if (
-          event.key === 'Enter'
-        ) {
+        if (event.key === 'Enter') {
           pluginSearch();
         }
       }
@@ -3220,41 +2819,26 @@ function bindEvents() {
       }
     );
 
-  if ($('loginPassword')) {
-    $('loginPassword').value =
-      connectionCode;
-  }
-
-  updateAgentUi(
-    agentOnline
-  );
-
-  updateStatusUi(
-    currentStatus
-  );
+  updateAgentUi(agentOnline);
+  updateStatusUi(currentStatus);
 
   if (
     connectionCode &&
     CODE_RE.test(connectionCode)
   ) {
-    connectCloud(false)
-      .catch(
-        () =>
-          showLogin(
-            'No se pudo conectar. Comprueba que el Agent esté ejecutándose.'
-          )
-      );
+    connectCloud(false).catch(() =>
+      showLogin(
+        'No se pudo conectar. Comprueba que el Agent esté ejecutándose.'
+      )
+    );
   } else {
     showLogin('');
   }
 }
 
-/* ═══════════════════════ START ═══════════════════════ */
+/* START */
 
-if (
-  document.readyState ===
-  'loading'
-) {
+if (document.readyState === 'loading') {
   document.addEventListener(
     'DOMContentLoaded',
     bindEvents,
