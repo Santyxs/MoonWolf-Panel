@@ -10,7 +10,6 @@
     "archiver": "^7.0.1",
     "express": "^4.22.1",
     "node-fetch": "^3.3.2",
-    "pg": "^8.23.0",
     "socket.io": "^4.8.3"
   },
   "devDependencies": {
