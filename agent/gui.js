@@ -19,10 +19,7 @@ const CONFIG_DIR = path.join(
   'MoonWolf'
 );
 
-const WEBVIEW_DATA_DIR = path.join(
-  CONFIG_DIR,
-  'WebView2Data'
-);
+const WEBVIEW_DATA_DIR = path.join(CONFIG_DIR, 'WebView2Data');
 
 const UI_ASSETS = {
   '/': 'ui/index.html',
@@ -79,7 +76,8 @@ function prepareNativeAddon() {
     );
   }
 
-  process.env.NAPI_RS_NATIVE_LIBRARY_PATH = nativePath;
+  process.env.NAPI_RS_NATIVE_LIBRARY_PATH =
+    nativePath;
 }
 
 prepareNativeAddon();
