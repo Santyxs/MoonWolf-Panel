@@ -622,3 +622,53 @@ footer {
 
   background: #11151d;
 }
+
+/* Formulario dentro de modales (p. ej. carpeta del servidor) */
+
+.form-body {
+  padding: 18px 20px;
+
+  display: flex;
+  flex-direction: column;
+
+  gap: 10px;
+}
+
+.text-input {
+  width: 100%;
+  box-sizing: border-box;
+
+  padding: 10px 12px;
+
+  background: var(--background);
+
+  border: 1px solid var(--border);
+  border-radius: 9px;
+
+  color: var(--text);
+
+  font:
+    13px
+    "Cascadia Code",
+    "Consolas",
+    monospace;
+}
+
+.text-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.field-error {
+  min-height: 16px;
+
+  font-size: 11px;
+  color: var(--red);
+}
+
+.field-hint {
+  font-size: 11px;
+  line-height: 1.5;
+
+  color: var(--muted);
+}
