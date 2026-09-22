@@ -173,6 +173,10 @@ function createWindow() {
       openConfigFolder(stateProvider().configPath);
       return true;
     },
+    setServerDir: dir =>
+      typeof actions.setServerDir === 'function'
+        ? actions.setServerDir(dir)
+        : { ok: false, error: 'No disponible.' },
     clearLogs: () => typeof actions.clearLogs === 'function' && actions.clearLogs(),
     saveLogs: () => typeof actions.saveLogs === 'function' && actions.saveLogs(),
     close: () => {
