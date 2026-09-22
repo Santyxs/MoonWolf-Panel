@@ -25,7 +25,10 @@
         <button id="copy-pairing" class="small-button" type="button">Copiar</button>
       </div>
       <div class="separator"></div>
-      <div class="info-row"><div class="wide"><span class="label">Servidor</span><span id="server-dir" class="value path">—</span></div></div>
+      <div class="info-row">
+        <div class="wide"><span class="label">Servidor</span><span id="server-dir" class="value path">—</span></div>
+        <button id="edit-server-dir" class="small-button" type="button">Cambiar</button>
+      </div>
       <div class="separator"></div>
       <div class="info-row">
         <div><span class="label">Versión</span><span id="version" class="value">—</span></div>
@@ -49,6 +52,27 @@
         <button id="copy-logs" class="small-button" type="button">Copiar</button>
         <button id="save-logs" class="small-button" type="button">Guardar</button>
         <button id="clear-logs" class="small-button danger" type="button">Limpiar</button>
+      </div>
+    </div>
+  </section>
+  <section id="serverdir-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="logs-window" style="height:auto;max-height:none">
+      <div class="logs-header">
+        <div>
+          <strong>Carpeta del servidor</strong>
+          <span>Ruta donde MoonWolf Agent gestiona los archivos del servidor</span>
+        </div>
+        <button id="close-serverdir" class="modal-close" type="button">×</button>
+      </div>
+      <div class="form-body">
+        <input id="serverdir-input" class="text-input" type="text" spellcheck="false" autocomplete="off" placeholder="C:\Users\HP\MoonWolf">
+        <div id="serverdir-error" class="field-error"></div>
+        <div class="field-hint">Se creará la carpeta si no existe. Debes reiniciar MoonWolf Agent para aplicar el cambio.</div>
+      </div>
+      <div class="logs-actions">
+        <button id="cancel-serverdir" class="small-button" type="button">Cancelar</button>
+        <button id="save-serverdir" class="button primary" type="button" style="min-height:auto;padding:9px 18px">Guardar</button>
       </div>
     </div>
   </section>
