@@ -20,6 +20,13 @@ const logsCount = document.getElementById('logs-count');
 const copyLogs = document.getElementById('copy-logs');
 const saveLogs = document.getElementById('save-logs');
 const clearLogs = document.getElementById('clear-logs');
+const editServerDir = document.getElementById('edit-server-dir');
+const serverDirModal = document.getElementById('serverdir-modal');
+const closeServerDir = document.getElementById('close-serverdir');
+const cancelServerDir = document.getElementById('cancel-serverdir');
+const saveServerDirBtn = document.getElementById('save-serverdir');
+const serverDirInput = document.getElementById('serverdir-input');
+const serverDirError = document.getElementById('serverdir-error');
 let currentLogs = [];
 
 function setCloudStatus(connected) {
@@ -84,7 +91,58 @@ copyLogs.addEventListener('click', async () => {
 });
 saveLogs.addEventListener('click', async () => { try { if (await window.native.saveLogs()) { saveLogs.textContent = 'Guardado'; setTimeout(() => saveLogs.textContent = 'Guardar', 1200); } } catch {} });
 clearLogs.addEventListener('click', async () => { try { await window.native.clearLogs(); await refresh(); renderLogs(currentLogs, true); } catch {} });
+
+function openServerDirModal() {
+  serverDirError.textContent = '';
+  serverDirInput.value = serverDir.textContent && serverDir.textContent !== '—' ? serverDir.textContent : '';
+  serverDirModal.classList.remove('hidden');
+  serverDirInput.focus();
+}
+
+function closeServerDirModal() {
+  serverDirModal.classList.add('hidden');
+}
+
+editServerDir.addEventListener('click', openServerDirModal);
+closeServerDir.addEventListener('click', closeServerDirModal);
+cancelServerDir.addEventListener('click', closeServerDirModal);
+serverDirModal.querySelector('.modal-backdrop').addEventListener('click', closeServerDirModal);
+
+saveServerDirBtn.addEventListener('click', async () => {
+  serverDirError.textContent = '';
+  const value = serverDirInput.value.trim();
+
+  if (!value) {
+    serverDirError.textContent = 'Introduce una ruta.';
+    return;
+  }
+
+  saveServerDirBtn.disabled = true;
+  saveServerDirBtn.textContent = 'Guardando...';
+
+  try {
+    const result = await window.native.setServerDir(value);
+
+    if (!result || !result.ok) {
+      serverDirError.textContent = (result && result.error) || 'No se pudo guardar la ruta.';
+      return;
+    }
+
+    await refresh();
+    closeServerDirModal();
+  } catch (error) {
+    serverDirError.textContent = (error && error.message) || 'Error inesperado.';
+  } finally {
+    saveServerDirBtn.disabled = false;
+    saveServerDirBtn.textContent = 'Guardar';
+  }
+});
+
 window.addEventListener('moonwolf-state', event => applyState(event.detail));
-window.addEventListener('keydown', event => { if (event.key === 'Escape' && !logsModal.classList.contains('hidden')) logsModal.classList.add('hidden'); });
+window.addEventListener('keydown', event => {
+  if (event.key !== 'Escape') return;
+  if (!logsModal.classList.contains('hidden')) logsModal.classList.add('hidden');
+  if (!serverDirModal.classList.contains('hidden')) closeServerDirModal();
+});
 refresh();
 setInterval(refresh, 2000);
