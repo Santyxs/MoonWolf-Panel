@@ -35,9 +35,12 @@ const ENV_PATH = path.join(__dirname, '.env');
 })();
 
 /* ══════════════════════════════════════════════
-   AUTENTICACIÓN SIMPLE (sin cuentas ni PostgreSQL)
+   AUTENTICACIÓN / SESIONES
    ══════════════════════════════════════════════ */
 const LOCAL_AGENT_TOKEN = process.env.MOONWOLF_LOCAL_AUTH_TOKEN || '';
+const SESSION_SECRET = process.env.MOONWOLF_SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+const PANEL_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const PAIRING_TTL_MS = 5 * 60 * 1000;
 
 function timingSafeEqualStr(a, b) {
   const bufA = Buffer.from(String(a ?? ''));
@@ -46,6 +49,92 @@ function timingSafeEqualStr(a, b) {
   if (bufA.length !== bufB.length) return false;
 
   return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function signValue(value) {
+  return crypto
+    .createHmac('sha256', SESSION_SECRET)
+    .update(value)
+    .digest('base64url');
+}
+
+function createPanelSession(agentId) {
+  const payload = Buffer.from(JSON.stringify({
+    agentId,
+    iat: Date.now(),
+    exp: Date.now() + PANEL_SESSION_TTL_MS,
+    nonce: crypto.randomBytes(16).toString('hex'),
+  })).toString('base64url');
+
+  return `${payload}.${signValue(payload)}`;
+}
+
+function verifyPanelSession(token) {
+  const [payload, signature] = String(token || '').split('.');
+
+  if (!payload || !signature || !timingSafeEqualStr(signature, signValue(payload))) {
+    return null;
+  }
+
+  try {
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+
+    if (!data?.agentId || !Number.isFinite(data.exp) || data.exp <= Date.now()) {
+      return null;
+    }
+
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+const pairingCodes = new Map();
+
+function makePairingCode() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let raw = '';
+
+  for (const byte of crypto.randomBytes(7)) {
+    raw += alphabet[byte % alphabet.length];
+  }
+
+  return `MW-P${raw.slice(0, 3)}-${raw.slice(3, 7)}`;
+}
+
+function createPairingCode(agentId) {
+  for (const [code, pairing] of pairingCodes) {
+    if (pairing.agentId === agentId) {
+      pairingCodes.delete(code);
+    }
+  }
+
+  let code;
+
+  do {
+    code = makePairingCode();
+  } while (pairingCodes.has(code));
+
+  const expiresAt = Date.now() + PAIRING_TTL_MS;
+
+  pairingCodes.set(code, { agentId, expiresAt });
+
+  return { code, expiresAt };
+}
+
+function consumePairingCode(code) {
+  const normalized = String(code || '').trim().toUpperCase();
+  const pairing = pairingCodes.get(normalized);
+
+  if (!pairing) return null;
+
+  pairingCodes.delete(normalized);
+
+  if (pairing.expiresAt <= Date.now()) {
+    return null;
+  }
+
+  return pairing;
 }
 
 const RUNTIME_DIR =
@@ -98,12 +187,6 @@ function apiRateLimited(ip) {
 setInterval(() => {
   const now = Date.now();
 
-  for (const [ip, rec] of loginAttempts) {
-    if (now > rec.resetAt) {
-      loginAttempts.delete(ip);
-    }
-  }
-
   for (const [ip, rec] of apiHits) {
     if (now > rec.resetAt) {
       apiHits.delete(ip);
@@ -142,20 +225,52 @@ const io = new Server(server, {
 io.use((socket, next) => {
   const auth = socket.handshake.auth || {};
   const role = auth.role;
-  const token = String(auth.token || '');
 
-  if (role !== 'agent' && role !== 'panel') {
-    return next(new Error('Rol no válido.'));
+  if (role === 'local-agent') {
+    const token = String(auth.token || '');
+
+    if (!LOCAL_AGENT_TOKEN || !timingSafeEqualStr(token, LOCAL_AGENT_TOKEN)) {
+      return next(new Error('unauthorized'));
+    }
+
+    socket.data.role = 'local-agent';
+    return next();
   }
 
-  const expected = LOCAL_AGENT_TOKEN || process.env.MOONWOLF_LOCAL_AUTH_TOKEN || '';
+  if (role === 'agent') {
+    const agentId = String(auth.agentId || '');
+    const token = String(auth.token || '');
 
-  if (!expected || !timingSafeEqualStr(token, expected)) {
-    return next(new Error('unauthorized'));
+    if (!agentId || !token) {
+      return next(new Error('unauthorized'));
+    }
+
+    // El Agent Token solo sirve para autenticar al Agent con Cloud.
+    // Nunca se acepta como credencial de panel.
+    if (agentId.length < 16 || token.length < 32) {
+      return next(new Error('unauthorized'));
+    }
+
+    socket.data.role = 'agent';
+    socket.data.agentId = agentId;
+    socket.data.agentToken = token;
+    return next();
   }
 
-  socket.data.role = role;
-  next();
+  if (role === 'panel') {
+    const session = verifyPanelSession(auth.session);
+
+    if (!session) {
+      return next(new Error('unauthorized'));
+    }
+
+    socket.data.role = 'panel';
+    socket.data.agentId = session.agentId;
+    socket.data.sessionExp = session.exp;
+    return next();
+  }
+
+  return next(new Error('Rol no válido.'));
 });
 
 const PUBLIC_ASSETS = ['index.html', 'dashboard.js', 'styles.css'];
@@ -171,6 +286,43 @@ for (const asset of PUBLIC_ASSETS) {
 }
 
 app.use(express.json({ limit: '50mb' }));
+
+app.post('/api/pair', (req, res) => {
+  if (apiRateLimited(req.ip)) {
+    return res.status(429).json({ ok: false, error: 'Demasiadas peticiones, espera un momento.' });
+  }
+
+  const pairing = consumePairingCode(req.body?.code);
+
+  if (!pairing) {
+    return res.status(401).json({
+      ok: false,
+      error: 'Código de emparejamiento inválido o caducado.',
+    });
+  }
+
+  const agentSocket = agentSockets.get(pairing.agentId);
+
+  if (!agentSocket?.connected) {
+    return res.status(409).json({
+      ok: false,
+      error: 'El MoonWolf Agent ya no está conectado.',
+    });
+  }
+
+  const session = createPanelSession(pairing.agentId);
+
+  agentSocket.emit('pairing_consumed');
+
+  return res.json({
+    ok: true,
+    session,
+    agent: {
+      id: pairing.agentId,
+      online: true,
+    },
+  });
+});
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'moonwolf-local' });
@@ -274,34 +426,58 @@ function semverCmp(a, b) {
 /* ══════════════════════════════════════════════
     CLOUD / AGENT
     ══════════════════════════════════════════════ */
-let agentSocket = null;
+const agentSockets = new Map();
 const panelSockets = new Set();
 
+function emitToAgentPanels(agentId, event, payload) {
+  for (const panel of panelSockets) {
+    if (panel.data.agentId === agentId) {
+      panel.emit(event, payload);
+    }
+  }
+}
+
+function agentIsOnline(agentId) {
+  return Boolean(agentSockets.get(agentId)?.connected);
+}
+
 io.on('connection', socket => {
-  console.log('Cliente conectado:', socket.id, socket.data.role);
+  console.log('Cliente conectado:', socket.id, socket.data.role, socket.data.agentId || '');
+
+  if (socket.data.role === 'local-agent') {
+    console.log('🖥️ Agent local conectado:', socket.id);
+    return;
+  }
 
   if (socket.data.role === 'agent') {
-    agentSocket = socket;
-    console.log('🌙 MoonWolf Agent conectado:', socket.id);
+    const agentId = socket.data.agentId;
+    const previous = agentSockets.get(agentId);
 
-    for (const panel of panelSockets) {
-      panel.emit('cloud_ready', { agentOnline: true });
-      panel.emit('agent_status', { online: true });
+    if (previous && previous !== socket) {
+      previous.disconnect(true);
     }
+
+    agentSockets.set(agentId, socket);
+    console.log('🌙 MoonWolf Agent conectado:', agentId, socket.id);
+
+    socket.on('pairing_create', () => {
+      const pairing = createPairingCode(agentId);
+      socket.emit('pairing_ready', pairing);
+    });
 
     socket.on('event', event => {
       if (!event?.name) return;
-
-      for (const panel of panelSockets) {
-        panel.emit(event.name, event.payload);
-      }
+      emitToAgentPanels(agentId, event.name, event.payload);
     });
 
     socket.on('rpc_result', result => {
       if (!result?.id) return;
 
       for (const panel of panelSockets) {
-        if (panel.data.pendingRpc?.has(result.id)) {
+        if (
+          panel.data.agentId === agentId &&
+          panel.data.pendingRpc?.has(result.id)
+        ) {
           panel.data.pendingRpc.delete(result.id);
           panel.emit('rpc_result', result);
           break;
@@ -309,17 +485,20 @@ io.on('connection', socket => {
       }
     });
 
+    const notifyAgentState = online => {
+      emitToAgentPanels(agentId, 'cloud_ready', { agentOnline: online });
+      emitToAgentPanels(agentId, 'agent_status', { online });
+    };
+
+    notifyAgentState(true);
+
     socket.on('disconnect', () => {
-      if (agentSocket === socket) {
-        agentSocket = null;
+      if (agentSockets.get(agentId) === socket) {
+        agentSockets.delete(agentId);
+        notifyAgentState(false);
       }
 
-      console.log('🌙 MoonWolf Agent desconectado:', socket.id);
-
-      for (const panel of panelSockets) {
-        panel.emit('cloud_ready', { agentOnline: false });
-        panel.emit('agent_status', { online: false });
-      }
+      console.log('🌙 MoonWolf Agent desconectado:', agentId, socket.id);
     });
 
     return;
@@ -329,19 +508,30 @@ io.on('connection', socket => {
     socket.data.pendingRpc = new Set();
     panelSockets.add(socket);
 
-    console.log('🖥️ Panel conectado:', socket.id);
+    const agentId = socket.data.agentId;
+    const online = agentIsOnline(agentId);
+    const sessionTimer = setTimeout(() => {
+      socket.disconnect(true);
+    }, Math.max(1000, socket.data.sessionExp - Date.now()));
 
-    socket.emit('cloud_ready', { agentOnline: Boolean(agentSocket?.connected) });
-    socket.emit('agent_status', { online: Boolean(agentSocket?.connected) });
+    console.log('🖥️ Panel conectado:', socket.id, '->', agentId);
+
+    socket.emit('cloud_ready', { agentOnline: online });
+    socket.emit('agent_status', { online });
 
     socket.on('rpc', request => {
+      const agentSocket = agentSockets.get(agentId);
+
       if (!agentSocket?.connected) {
         return socket.emit('rpc_result', {
           id: request?.id || null,
           ok: false,
           status: 503,
           contentType: 'application/json',
-          data: { ok: false, error: 'MoonWolf Agent no está conectado.' },
+          bodyBase64: Buffer.from(JSON.stringify({
+            ok: false,
+            error: 'MoonWolf Agent no está conectado.',
+          })).toString('base64'),
         });
       }
 
@@ -353,6 +543,7 @@ io.on('connection', socket => {
     });
 
     socket.on('disconnect', () => {
+      clearTimeout(sessionTimer);
       panelSockets.delete(socket);
       socket.data.pendingRpc?.clear();
       console.log('🖥️ Panel desconectado:', socket.id);

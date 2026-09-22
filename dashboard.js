@@ -3,8 +3,9 @@
 const CLOUD_URL = location.origin;
 const CLOUD_PATH = '/socket.io';
 
-const CODE_RE = /^MW-[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/;
-const CODE_KEY = 'moonwolf_connection_code';
+const PAIRING_CODE_RE = /^MW-P[A-Z2-9]{3}-[A-Z2-9]{4}$/;
+const SESSION_KEY = 'moonwolf_panel_session';
+const AGENT_KEY = 'moonwolf_agent_id';
 
 const $ = id => document.getElementById(id);
 
@@ -41,7 +42,9 @@ const STATUS_LEVELS = {
 /* STATE */
 
 let cloudSocket = null;
-let connectionCode = sessionStorage.getItem(CODE_KEY) || '';
+let panelSession = sessionStorage.getItem(SESSION_KEY) || '';
+let agentId = sessionStorage.getItem(AGENT_KEY) || '';
+let pairingCode = '';
 
 let requestSequence = 0;
 let connectTimer = null;
@@ -213,17 +216,17 @@ function ensureLoginGate() {
       <h1>🌙 MOONWOLF CLOUD</h1>
 
       <p>
-        Introduce el código de conexión que muestra
-        MoonWolf Agent en el servidor Minecraft.
+        Introduce el código de emparejamiento que muestra
+        MoonWolf Agent.
       </p>
 
       <input
         id="loginPassword"
         type="text"
-        maxlength="22"
+        maxlength="12"
         spellcheck="false"
         autocomplete="off"
-        placeholder="MW-XXXX-XXXX-XXXX-XXXX"
+        placeholder="MW-PXXX-XXXX"
       >
 
       <button id="btnLogin">CONECTAR SERVIDOR</button>
@@ -231,7 +234,7 @@ function ensureLoginGate() {
       <div id="mwCloudError"></div>
 
       <div class="mw-cloud-help">
-        El código se guarda solo en esta sesión del navegador.
+        El código se usa una sola vez para crear la sesión del panel.
       </div>
     </div>
   `;
@@ -243,30 +246,29 @@ function ensureLoginGate() {
       .toUpperCase()
       .replace(/[^A-Z2-9]/g, '');
 
-    if (
-      !value ||
-      (
-        value === 'MW' &&
-        String(event.inputType || '').startsWith('delete')
-      )
-    ) {
-      event.target.value = '';
-      return;
-    }
-
     if (value === 'M') {
       event.target.value = 'M';
       return;
     }
 
-    const raw = value.startsWith('MW')
-      ? value.slice(2)
-      : value;
+    if (value === 'MW') {
+      event.target.value = 'MW-';
+      return;
+    }
 
-    const groups = raw.match(/.{1,4}/g) || [];
+    if (value.startsWith('MW')) {
+      value = value.slice(2);
+    }
+
+    if (value.startsWith('P')) {
+      value = value.slice(1);
+    }
+
+    const first = value.slice(0, 3);
+    const second = value.slice(3, 7);
 
     event.target.value =
-      'MW-' + groups.slice(0, 4).join('-');
+      `MW-P${first}${second ? `-${second}` : ''}`;
   });
 
   $('btnLogin').addEventListener('click', attemptLogin);
@@ -296,20 +298,30 @@ function showLogin(message = '') {
   }
 
   if ($('loginPassword')) {
-    $('loginPassword').value = connectionCode;
+    $('loginPassword').value = pairingCode;
   }
 }
 
-function setCode(code) {
-  connectionCode = String(code || '')
-    .trim()
-    .toUpperCase();
+function setSession(session, id) {
+  panelSession = String(session || '');
+  agentId = String(id || '');
 
-  if (connectionCode) {
-    sessionStorage.setItem(CODE_KEY, connectionCode);
+  if (panelSession) {
+    sessionStorage.setItem(SESSION_KEY, panelSession);
   } else {
-    sessionStorage.removeItem(CODE_KEY);
+    sessionStorage.removeItem(SESSION_KEY);
   }
+
+  if (agentId) {
+    sessionStorage.setItem(AGENT_KEY, agentId);
+  } else {
+    sessionStorage.removeItem(AGENT_KEY);
+  }
+}
+
+function clearSession() {
+  setSession('', '');
+  pairingCode = '';
 }
 
 async function attemptLogin() {
@@ -320,10 +332,10 @@ async function attemptLogin() {
     .trim()
     .toUpperCase();
 
-  if (!CODE_RE.test(code)) {
+  if (!PAIRING_CODE_RE.test(code)) {
     if ($('mwCloudError')) {
       $('mwCloudError').textContent =
-        'Formato inválido. Usa MW-XXXX-XXXX-XXXX-XXXX.';
+        'Código inválido. Usa MW-PXXX-XXXX.';
     }
 
     return;
@@ -332,18 +344,35 @@ async function attemptLogin() {
   button.disabled = true;
 
   if ($('mwCloudError')) {
-    $('mwCloudError').textContent = 'Conectando...';
+    $('mwCloudError').textContent = 'Emparejando...';
   }
 
-  setCode(code);
+  pairingCode = code;
 
   try {
+    const response = await fetch('/api/pair', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || !data.ok || !data.session || !data.agent?.id) {
+      throw new Error(data.error || 'No se pudo emparejar el panel.');
+    }
+
+    setSession(data.session, data.agent.id);
+    pairingCode = '';
+
     await connectCloud(true);
 
     if ($('mwCloudError')) {
       $('mwCloudError').textContent = '';
     }
   } catch (error) {
+    pairingCode = '';
+
     if ($('mwCloudError')) {
       $('mwCloudError').textContent = error.message;
     }
@@ -373,8 +402,8 @@ function clearPending(errorMessage) {
 async function connectCloud(manual = false) {
   clearTimeout(connectTimer);
 
-  if (!connectionCode || !CODE_RE.test(connectionCode)) {
-    showLogin('Introduce un código de conexión.');
+  if (!panelSession || !agentId) {
+    showLogin('Empareja este panel con un MoonWolf Agent.');
 
     return Promise.reject(
       new Error('Código de conexión inválido.')
@@ -413,7 +442,7 @@ async function connectCloud(manual = false) {
       auth: callback => {
         callback({
           role: 'panel',
-          token: connectionCode,
+          session: panelSession,
         });
       },
     });
@@ -438,6 +467,11 @@ async function connectCloud(manual = false) {
         'No se pudo conectar con MoonWolf Cloud.';
 
       addActivity(message, 'warn', '⚠️');
+
+      if (/unauthorized/i.test(message)) {
+        clearSession();
+        showLogin('La sesión del panel ha caducado. Introduce un nuevo código.');
+      }
 
       finish(reject, new Error(message));
     });
@@ -2491,16 +2525,16 @@ function renderSettings() {
 
     <div class="settings-row">
       <div>
-        <strong>Código de conexión</strong>
+        <strong>Agent conectado</strong>
         <div
           style="font-size:11px;color:var(--muted2)"
         >
-          Identificador de este servidor
+          Identificador de la instalación
         </div>
       </div>
 
       <code>
-        ${escHtml(connectionCode || '—')}
+        ${escHtml(agentId || '—')}
       </code>
     </div>
 
@@ -2544,7 +2578,7 @@ function renderSettings() {
         currentStatus = 'offline';
         updateStatusUi('offline');
 
-        setCode('');
+        clearSession();
 
         showLogin('Desconectado.');
       }
@@ -2821,12 +2855,9 @@ function bindEvents() {
   updateAgentUi(agentOnline);
   updateStatusUi(currentStatus);
 
-  if (
-    connectionCode &&
-    CODE_RE.test(connectionCode)
-  ) {
+  if (panelSession && agentId) {
     connectCloud(false).catch(() =>
-      showLogin('No se pudo conectar. Comprueba que el Agent esté ejecutándose.')
+      showLogin('La sesión no es válida. Introduce un nuevo código de emparejamiento.')
     );
   } else {
     showLogin('');
