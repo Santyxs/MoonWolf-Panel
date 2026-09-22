@@ -158,6 +158,39 @@ async function main() {
       fs.writeFileSync(logPath, content + (content ? '\n' : ''), 'utf8');
       return logPath;
     },
+
+    setServerDir: newDir => {
+      const trimmed = String(newDir || '').trim();
+
+      if (!trimmed) {
+        return { ok: false, error: 'La ruta no puede estar vacía.' };
+      }
+
+      const resolved = path.resolve(trimmed);
+
+      if (resolved === path.resolve(config.serverDir || '')) {
+        return { ok: true, changed: false, serverDir: resolved };
+      }
+
+      try {
+        fs.mkdirSync(resolved, { recursive: true });
+      } catch (error) {
+        return { ok: false, error: `No se pudo crear la carpeta: ${error.message}` };
+      }
+
+      config.serverDir = resolved;
+
+      try {
+        fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8');
+      } catch (error) {
+        return { ok: false, error: `No se pudo guardar la configuración: ${error.message}` };
+      }
+
+      addLog(`Carpeta del servidor actualizada a: ${resolved}. Reinicia MoonWolf Agent para aplicar el cambio.`, 'warn');
+      gui.update();
+
+      return { ok: true, changed: true, serverDir: resolved, restartRequired: true };
+    },
   });
 
   addLog(`MoonWolf Agent v${VERSION} iniciado.`);
