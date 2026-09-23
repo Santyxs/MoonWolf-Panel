@@ -701,6 +701,28 @@ function updateAgentUi(online) {
   }
 }
 
+function appendLog(entry) {
+  const consoleEl = $('console');
+
+  if (!consoleEl) return;
+
+  const div = document.createElement('div');
+
+  div.className =
+    `log-line ${entry?.type || 'info'}`;
+
+  div.innerHTML =
+    `<span class="log-time">${escHtml(entry?.time || '--:--:--')}</span>` +
+    `<span class="log-text">${escHtml(entry?.line || '')}</span>`;
+
+  consoleEl.appendChild(div);
+
+  if ($('setAutoScroll')?.checked !== false) {
+    consoleEl.scrollTop =
+      consoleEl.scrollHeight;
+  }
+}
+
 function setStatus(status) {
   updateStatusUi(status);
 
