@@ -636,13 +636,10 @@ function postJSON(pathname, body) {
 function setAgentOnline(online) {
   const nextState = Boolean(online);
 
-  if (agentOnline === nextState) {
-    updateAgentUi(nextState);
-    return;
-  }
-
   agentOnline = nextState;
+
   updateAgentUi(nextState);
+  updateStatusUi(currentStatus);
 
   if (nextState) {
     if (lastAgentActivityState !== true) {
@@ -667,97 +664,49 @@ function setAgentOnline(online) {
   }
 }
 
-function updateAgentUi(online) {
-  const elements = [
-    $('agentStatus'),
-    $('sbAgentStatus'),
-    $('agentConnectionStatus'),
-  ];
-
-  for (const element of elements) {
-    if (!element) continue;
-
-    element.classList.toggle(
-      'online',
-      Boolean(online)
-    );
-
-    element.classList.toggle(
-      'offline',
-      !online
-    );
-
-    if (
-      element.dataset &&
-      element.dataset.agentStatus !== undefined
-    ) {
-      element.dataset.agentStatus =
-        online ? 'online' : 'offline';
-    }
-  }
-
-  const textElements = [
-    $('agentStatusText'),
-    $('sbAgentStatusText'),
-  ];
-
-  for (const element of textElements) {
-    if (!element) continue;
-
-    element.textContent =
-      online
-        ? 'AGENT ONLINE'
-        : 'AGENT OFFLINE';
-  }
-}
-
-/* SERVER / TERMINAL */
-
 function updateStatusUi(status) {
-  status =
+  const safeStatus =
     STATUS_LABELS[status]
       ? status
       : 'offline';
 
-  currentStatus = status;
+  currentStatus = safeStatus;
 
   const statusEl = $('sbStatus');
 
   if (statusEl) {
     statusEl.className =
-      `sb-status ${status}`;
+      `sb-status ${safeStatus}`;
   }
 
   const statusText = $('sbStatusText');
 
   if (statusText) {
     statusText.textContent =
-      STATUS_LABELS[status] ||
-      String(status).toUpperCase();
+      STATUS_LABELS[safeStatus] ||
+      String(safeStatus).toUpperCase();
   }
 
   const startButton = $('btnStart');
+  const stopButton = $('btnStop');
+  const restartButton = $('btnRestart');
 
   if (startButton) {
     startButton.disabled =
-      status !== 'offline' ||
-      !agentOnline;
+      !agentOnline ||
+      safeStatus !== 'offline';
   }
-
-  const stopButton = $('btnStop');
 
   if (stopButton) {
     stopButton.disabled =
-      status !== 'online' ||
-      !agentOnline;
+      !agentOnline ||
+      safeStatus !== 'online';
   }
-
-  const restartButton = $('btnRestart');
 
   if (restartButton) {
     restartButton.disabled =
-      status !== 'online' ||
-      !agentOnline;
+      !agentOnline ||
+      safeStatus !== 'online';
   }
 
   const stats = $('statsGrid');
@@ -765,189 +714,72 @@ function updateStatusUi(status) {
   if (stats) {
     stats.classList.toggle(
       'hidden',
-      status === 'offline'
+      safeStatus === 'offline'
     );
 
     stats.classList.toggle(
       'visible',
-      status !== 'offline'
+      safeStatus !== 'offline'
     );
   }
 }
 
-function setStatus(status) {
-  updateStatusUi(status);
+async function runServerAction(action, label) {
+  if (!agentOnline) {
+    toast(
+      'MoonWolf Agent no está conectado.',
+      'err'
+    );
 
-  const normalized =
-    STATUS_LABELS[status]
-      ? status
-      : 'offline';
-
-  if (lastStatusActivity === normalized) {
     return;
   }
 
-  lastStatusActivity = normalized;
+  try {
+    const data = await api(
+      `/api/${action}`,
+      {
+        method: 'POST',
+      }
+    );
 
-  addActivity(
-    STATUS_LABELS[normalized] || normalized,
-    STATUS_LEVELS[normalized] || 'info',
-    STATUS_ICONS[normalized] || '📌'
+    if (!data?.ok) {
+      throw new Error(
+        data?.error ||
+        `Error al ${label.toLowerCase()}.`
+      );
+    }
+
+    toast(`✅ ${label} enviado`, 'ok');
+  } catch (error) {
+    console.error(
+      `[MoonWolf] Error en /api/${action}:`,
+      error
+    );
+
+    toast(
+      `❌ ${error.message}`,
+      'err'
+    );
+  } finally {
+    updateStatusUi(currentStatus);
+  }
+}
+
+function startServer() {
+  return runServerAction(
+    'start',
+    'Arranque'
   );
 }
 
-function updateStats(stats = {}) {
-  const players = Number(stats.players);
-  const maxPlayers = Number(stats.maxPlayers);
-  const tps = Number(stats.tps);
-  const processMemory = Number(stats.processMemory);
-  const cpuUsage = Number(stats.cpuUsage);
-
-  const safePlayers =
-    Number.isFinite(players) ? players : 0;
-
-  const safeMaxPlayers =
-    Number.isFinite(maxPlayers)
-      ? maxPlayers
-      : 0;
-
-  const safeTps =
-    Number.isFinite(tps) ? tps : 20;
-
-  const safeProcessMemory =
-    Number.isFinite(processMemory)
-      ? processMemory
-      : 0;
-
-  const safeCpu =
-    Number.isFinite(cpuUsage)
-      ? cpuUsage
-      : 0;
-
-  if ($('statPlayers')) {
-    $('statPlayers').innerHTML =
-      `${safePlayers}<span class="stat-unit">/${safeMaxPlayers}</span>`;
-  }
-
-  const tpsEl = $('statTps');
-
-  if (tpsEl) {
-    tpsEl.className =
-      `stat-value ${
-        safeTps < 15
-          ? 'tps-bad'
-          : safeTps < 18
-            ? 'tps-warn'
-            : 'tps-good'
-      }`;
-
-    tpsEl.innerHTML =
-      `${safeTps}<span class="stat-unit"> tps</span>`;
-  }
-
-  if ($('statUptime')) {
-    $('statUptime').textContent =
-      stats.uptime || '0h 0m';
-  }
-
-  if ($('statMemProc')) {
-    $('statMemProc').innerHTML =
-      `${safeProcessMemory}<span class="stat-unit"> MB</span>`;
-  }
-
-  const sys =
-    stats.sysMemory || {
-      used: 0,
-      total: 0,
-    };
-
-  const used = Number(sys.used);
-  const total = Number(sys.total);
-
-  const safeUsed =
-    Number.isFinite(used) ? used : 0;
-
-  const safeTotal =
-    Number.isFinite(total) ? total : 0;
-
-  if ($('statMemSys')) {
-    $('statMemSys').innerHTML =
-      `${safeUsed}/${safeTotal}<span class="stat-unit"> GB</span>`;
-  }
-
-  if ($('statCpu')) {
-    $('statCpu').innerHTML =
-      `${safeCpu}<span class="stat-unit"> %</span>`;
-  }
+function stopServer() {
+  return runServerAction(
+    'stop',
+    'Detención'
+  );
 }
 
-function appendLog(entry) {
-  const consoleEl = $('console');
-
-  if (!consoleEl) return;
-
-  const div = document.createElement('div');
-
-  div.className =
-    `log-line ${entry?.type || 'info'}`;
-
-  div.innerHTML =
-    `<span class="log-time">${escHtml(entry?.time || '--:--:--')}</span>` +
-    `<span class="log-text">${escHtml(entry?.line || '')}</span>`;
-
-  consoleEl.appendChild(div);
-
-  if ($('setAutoScroll')?.checked !== false) {
-    consoleEl.scrollTop =
-      consoleEl.scrollHeight;
-  }
-}
-
-async function startServer() {
-  if (!agentOnline) {
-    toast(
-      'MoonWolf Agent no está conectado.',
-      'err'
-    );
-    return;
-  }
-
-  const data =
-    await api('/api/start', {
-      method: 'POST',
-    });
-
-  if (!data.ok) {
-    toast(
-      data.error || 'Error al arrancar',
-      'err'
-    );
-  }
-}
-
-async function stopServer() {
-  if (!agentOnline) {
-    toast(
-      'MoonWolf Agent no está conectado.',
-      'err'
-    );
-    return;
-  }
-
-  const data =
-    await api('/api/stop', {
-      method: 'POST',
-    });
-
-  if (!data.ok) {
-    toast(
-      data.error || 'Error al detener',
-      'err'
-    );
-  }
-}
-
-async function restartServer() {
+function restartServer() {
   if (
     currentStatus === 'restarting' ||
     currentStatus === 'stopping'
@@ -955,25 +787,10 @@ async function restartServer() {
     return;
   }
 
-  if (!agentOnline) {
-    toast(
-      'MoonWolf Agent no está conectado.',
-      'err'
-    );
-    return;
-  }
-
-  const data =
-    await api('/api/restart', {
-      method: 'POST',
-    });
-
-  if (!data.ok) {
-    toast(
-      data.error || 'Error al reiniciar',
-      'err'
-    );
-  }
+  return runServerAction(
+    'restart',
+    'Reinicio'
+  );
 }
 
 async function sendCmd() {
