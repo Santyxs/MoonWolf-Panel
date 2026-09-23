@@ -701,28 +701,6 @@ function updateAgentUi(online) {
   }
 }
 
-function appendLog(entry) {
-  const consoleEl = $('console');
-
-  if (!consoleEl) return;
-
-  const div = document.createElement('div');
-
-  div.className =
-    `log-line ${entry?.type || 'info'}`;
-
-  div.innerHTML =
-    `<span class="log-time">${escHtml(entry?.time || '--:--:--')}</span>` +
-    `<span class="log-text">${escHtml(entry?.line || '')}</span>`;
-
-  consoleEl.appendChild(div);
-
-  if ($('setAutoScroll')?.checked !== false) {
-    consoleEl.scrollTop =
-      consoleEl.scrollHeight;
-  }
-}
-
 function setStatus(status) {
   updateStatusUi(status);
 
@@ -801,6 +779,92 @@ function updateStatusUi(status) {
       'visible',
       safeStatus !== 'offline'
     );
+  }
+}
+
+
+function updateStats(stats = {}) {
+  const players = Number(stats.players);
+  const maxPlayers = Number(stats.maxPlayers);
+  const tps = Number(stats.tps);
+  const processMemory = Number(stats.processMemory);
+  const cpuUsage = Number(stats.cpuUsage);
+
+  const safePlayers =
+    Number.isFinite(players) ? players : 0;
+
+  const safeMaxPlayers =
+    Number.isFinite(maxPlayers)
+      ? maxPlayers
+      : 0;
+
+  const safeTps =
+    Number.isFinite(tps) ? tps : 20;
+
+  const safeProcessMemory =
+    Number.isFinite(processMemory)
+      ? processMemory
+      : 0;
+
+  const safeCpu =
+    Number.isFinite(cpuUsage)
+      ? cpuUsage
+      : 0;
+
+  if ($('statPlayers')) {
+    $('statPlayers').innerHTML =
+      `${safePlayers}<span class="stat-unit">/${safeMaxPlayers}</span>`;
+  }
+
+  const tpsEl = $('statTps');
+
+  if (tpsEl) {
+    tpsEl.className =
+      `stat-value ${
+        safeTps < 15
+          ? 'tps-bad'
+          : safeTps < 18
+            ? 'tps-warn'
+            : 'tps-good'
+      }`;
+
+    tpsEl.innerHTML =
+      `${safeTps}<span class="stat-unit"> tps</span>`;
+  }
+
+  if ($('statUptime')) {
+    $('statUptime').textContent =
+      stats.uptime || '0h 0m';
+  }
+
+  if ($('statMemProc')) {
+    $('statMemProc').innerHTML =
+      `${safeProcessMemory}<span class="stat-unit"> MB</span>`;
+  }
+
+  const sys =
+    stats.sysMemory || {
+      used: 0,
+      total: 0,
+    };
+
+  const used = Number(sys.used);
+  const total = Number(sys.total);
+
+  const safeUsed =
+    Number.isFinite(used) ? used : 0;
+
+  const safeTotal =
+    Number.isFinite(total) ? total : 0;
+
+  if ($('statMemSys')) {
+    $('statMemSys').innerHTML =
+      `${safeUsed}/${safeTotal}<span class="stat-unit"> GB</span>`;
+  }
+
+  if ($('statCpu')) {
+    $('statCpu').innerHTML =
+      `${safeCpu}<span class="stat-unit"> %</span>`;
   }
 }
 
