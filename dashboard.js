@@ -664,6 +664,64 @@ function setAgentOnline(online) {
   }
 }
 
+function updateAgentUi(online) {
+  const elements = [
+    $('agentStatus'),
+    $('sbAgentStatus'),
+    $('agentConnectionStatus'),
+  ];
+
+  for (const element of elements) {
+    if (!element) continue;
+
+    element.classList.toggle('online', Boolean(online));
+    element.classList.toggle('offline', !online);
+
+    if (
+      element.dataset &&
+      element.dataset.agentStatus !== undefined
+    ) {
+      element.dataset.agentStatus =
+        online ? 'online' : 'offline';
+    }
+  }
+
+  const textElements = [
+    $('agentStatusText'),
+    $('sbAgentStatusText'),
+  ];
+
+  for (const element of textElements) {
+    if (!element) continue;
+
+    element.textContent =
+      online
+        ? 'AGENT ONLINE'
+        : 'AGENT OFFLINE';
+  }
+}
+
+function setStatus(status) {
+  updateStatusUi(status);
+
+  const normalized =
+    STATUS_LABELS[status]
+      ? status
+      : 'offline';
+
+  if (lastStatusActivity === normalized) {
+    return;
+  }
+
+  lastStatusActivity = normalized;
+
+  addActivity(
+    STATUS_LABELS[normalized] || normalized,
+    STATUS_LEVELS[normalized] || 'info',
+    STATUS_ICONS[normalized] || '📌'
+  );
+}
+
 function updateStatusUi(status) {
   const safeStatus =
     STATUS_LABELS[status]
@@ -749,7 +807,10 @@ async function runServerAction(action, label) {
       );
     }
 
-    toast(`✅ ${label} enviado`, 'ok');
+    toast(
+      `✅ ${label} enviado`,
+      'ok'
+    );
   } catch (error) {
     console.error(
       `[MoonWolf] Error en /api/${action}:`,
