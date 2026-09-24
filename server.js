@@ -859,7 +859,6 @@ function launchServer() {
     '-Djava.awt.headless=true',
     ...(cfg.extraArgs ? cfg.extraArgs.split(/\s+/).filter(Boolean) : []),
     '-jar', cfg.jar,
-    'nogui', 
     ...(cfg.programArgs ? cfg.programArgs.split(/\s+/).filter(Boolean) : []),
   ];
 
