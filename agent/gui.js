@@ -19,6 +19,9 @@ const UI_ASSETS = {
   '/app.js': 'ui/app.js',
 };
 
+// Icono de la bandeja (PNG 32x32, luna sobre fondo morado).
+const TRAY_ICON_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABNElEQVR42s2XsQ6CMBRF+yf8mAmTq7OrswMxcXBz0w/wC4yzYdLJwbg5MZiIGkjtJWiwgZZC+yrJiaDUe9v32r4yVrmmg3sgiASxgFsmLv87YHWX+CEUJA6EZaAR1olzYsLqsCceDCRFOMq4cE9EzFHCtU5MZtpoOU75Zv7k2/WLz4b9TbQ2ANHrOefpjRfg2cYoaA2gl6d99hUGh11mLQxMJ3455j/iYDFKaQzIPbfde6UBxFgWB0g+EgPVhKuymjzcG8BUqxMnM9A0/GQhgEiTAZIkVBkgmYaqEJAsRKokJFuKm6ah7YQ0XohkYBTvyjsjntvslsZLsc4M2nw+nW1GOtCmba3QaTtWgXdNCpXOBUlTLjiriOpKMoB7fNdnFngvSr2X5X4PJt6PZn9xOPV5PH8DKeu0vPehIOQAAAAASUVORK5CYII=', 'base64');
+
 let getAsset = null;
 let isStandalone = false;
 
@@ -56,6 +59,7 @@ const { Application } = require('@webviewjs/webview');
 let app = null;
 let window = null;
 let webview = null;
+let tray = null;
 let notifyTimer = null;
 let lastStateJson = null;
 
@@ -104,6 +108,76 @@ function openFolder(folder) {
 
 function openConfigFolder(configPath) {
   if (configPath) openFolder(path.dirname(configPath));
+}
+
+/* ── Bandeja del sistema ── */
+
+// Solo oculta la ventana si hay icono en la bandeja; si no, el usuario
+// se quedaría sin forma de recuperarla.
+function hideToTray() {
+  if (!tray || !window) return false;
+
+  try {
+    window.hide();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function showFromTray() {
+  if (!window) return false;
+
+  try {
+    window.show();
+    window.setMinimized(false);
+    window.focus();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function quitApp() {
+  try {
+    tray?.dispose();
+  } catch {}
+
+  app?.exit();
+}
+
+function createTray() {
+  if (!app || tray) return;
+
+  try {
+    tray = app.createTrayIcon({
+      id: 'moonwolf-agent',
+      icon: { data: TRAY_ICON_PNG },
+      tooltip: 'MoonWolf Agent',
+      menu: {
+        items: [
+          { id: 'tray-open', label: 'Abrir MoonWolf Agent' },
+          { id: 'tray-quit', label: 'Salir' },
+        ],
+      },
+      menuOnLeftClick: false,
+      menuOnRightClick: true,
+    });
+
+    tray.on('click', event => {
+      const button = String(event?.button || '').toLowerCase();
+      const buttonState = String(event?.buttonState || '').toLowerCase();
+
+      if (button && !button.includes('left')) return;
+      if (buttonState.includes('down')) return;
+
+      showFromTray();
+    });
+
+    tray.on('double-click', showFromTray);
+  } catch {
+    tray = null;
+  }
 }
 
 function createWindow() {
@@ -179,14 +253,39 @@ function createWindow() {
         : { ok: false, error: 'No disponible.' },
     clearLogs: () => typeof actions.clearLogs === 'function' && actions.clearLogs(),
     saveLogs: () => typeof actions.saveLogs === 'function' && actions.saveLogs(),
+    hideToTray: () => hideToTray(),
     close: () => {
-      app?.exit();
+      quitApp();
       return true;
     },
   });
 
-  app.on('application-close-requested', () => app?.exit());
+  // Al minimizar la ventana (botón de la barra de título) se manda a la bandeja.
+  window.on('resize', () => {
+    try {
+      if (window.isMinimized()) hideToTray();
+    } catch {}
+  });
+
+  app.on('application-close-requested', () => quitApp());
+
+  app.on('custom-menu-click', event => {
+    const id = event?.customMenuEvent?.id;
+
+    if (id === 'tray-open') showFromTray();
+    if (id === 'tray-quit') quitApp();
+  });
+
+  const ready =
+    typeof app.whenReady === 'function'
+      ? app.whenReady({ autoRun: false })
+      : null;
+
   app.run({ interval: 16, ref: true });
+
+  if (ready) {
+    ready.then(createTray).catch(() => {});
+  }
 }
 
 function notifyStateChanged() {
@@ -225,7 +324,7 @@ function startGui(getState, guiActions = {}) {
 
   return {
     update: scheduleStateChanged,
-    close: () => app?.exit(),
+    close: () => quitApp(),
   };
 }
 
