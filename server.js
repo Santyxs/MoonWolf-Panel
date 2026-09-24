@@ -848,9 +848,9 @@ function launchServer() {
   }
 
   let javaBin = String(cfg.javaPath || '').trim() || 'java';
-   
-  if (process.platform === 'win32' && /(^|[\\/])java(\.exe)?$/i.test(javaBin)) {
-      javaBin = javaBin.replace(/java(\.exe)?$/i, 'javaw');
+
+  if (process.platform === 'win32' && /^java(\.exe)?$/i.test(javaBin)) {
+      javaBin = 'javaw';
   }
 
   const args = [
@@ -864,8 +864,10 @@ function launchServer() {
   ];
 
   stopRequested = false;
-
-  mcProcess = spawn(javaBin, args, {
+   
+   broadcastLog(`▶ Lanzando: ${javaBin}`, 'system');
+  
+   mcProcess = spawn(javaBin, args, {
     cwd: BASE_DIR,
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
