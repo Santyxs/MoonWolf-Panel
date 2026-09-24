@@ -1405,7 +1405,18 @@ async function pluginSearch() {
       throw new Error(data.error);
     }
 
-    renderPluginResults(data.results || [], data.errors || []);
+    // Filtro de precio también en el cliente: Modrinth y Hangar son siempre
+    // gratuitos, así que PREMIUM solo deja plugins de pago de SpigotMC.
+    const results = (data.results || []).filter(plugin => {
+      const isPremium = plugin.source === 'spigot' && Boolean(plugin.premium);
+
+      if (pluginPrice === 'premium') return isPremium;
+      if (pluginPrice === 'free') return !isPremium;
+
+      return true;
+    });
+
+    renderPluginResults(results, data.errors || []);
   } catch (error) {
     $('plgResults').innerHTML = emptyBlock(error.message);
   }
