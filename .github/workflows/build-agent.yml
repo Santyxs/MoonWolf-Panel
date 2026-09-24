@@ -8,6 +8,7 @@ on:
       - main
     paths:
       - 'agent/**'
+      - 'server.js'
       - '.github/workflows/build-agent.yml'
       - 'package.json'
       - 'package-lock.json'
@@ -100,6 +101,53 @@ jobs:
           }
 
           New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+
+      - name: Determine next Agent version
+        id: version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(
+            gh release list \
+              --limit 100 \
+              --json tagName,isDraft,isPrerelease \
+              --jq '
+                [.[] |
+                  select(.isDraft == false and .isPrerelease == false) |
+                  .tagName |
+                  select(startswith("agent-v")) |
+                  split("-v")[1] |
+                  split(".") |
+                  select(length == 2) |
+                  map(tonumber)
+                ] |
+                sort |
+                last |
+                if . == null then
+                  ""
+                else
+                  "agent-v" + (.[0] | tostring) + "." + (.[1] | tostring)
+                end
+              '
+          )
+
+          if [ -z "$latest" ]; then
+            next="agent-v1.0"
+          else
+            version="${latest#agent-v}"
+            major="${version%%.*}"
+            minor="${version#*.}"
+            next="agent-v${major}.$((minor + 1))"
+          fi
+
+          echo "Última versión: ${latest:-ninguna}"
+          echo "Nueva versión: $next"
+
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+
+          # Versión que se embebe en el Agent
+          echo "module.exports = '${next#agent-v}';" > agent/version.js
 
       - name: Create WebViewJS native shim
         shell: pwsh
@@ -311,50 +359,6 @@ jobs:
           name: MoonWolf-Agent-Windows
           path: dist/MoonWolf-Agent.exe
           if-no-files-found: error
-
-      - name: Determine next Agent version
-        id: version
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          latest=$(
-            gh release list \
-              --limit 100 \
-              --json tagName,isDraft,isPrerelease \
-              --jq '
-                [.[] |
-                  select(.isDraft == false and .isPrerelease == false) |
-                  .tagName |
-                  select(startswith("agent-v")) |
-                  split("-v")[1] |
-                  split(".") |
-                  select(length == 2) |
-                  map(tonumber)
-                ] |
-                sort |
-                last |
-                if . == null then
-                  ""
-                else
-                  "agent-v" + (.[0] | tostring) + "." + (.[1] | tostring)
-                end
-              '
-          )
-
-          if [ -z "$latest" ]; then
-            next="agent-v1.0"
-          else
-            version="${latest#agent-v}"
-            major="${version%%.*}"
-            minor="${version#*.}"
-            next="agent-v${major}.$((minor + 1))"
-          fi
-
-          echo "Última versión: ${latest:-ninguna}"
-          echo "Nueva versión: $next"
-
-          echo "tag=$next" >> "$GITHUB_OUTPUT"
 
       - name: Create Agent tag
         env:
