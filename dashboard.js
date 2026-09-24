@@ -15,8 +15,6 @@ const escHtml = value => String(value ?? '')
   .replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;');
 
-const AIKAR_FLAGS = '-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch -XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 -XX:G1HeapRegionSize=8M -XX:G1ReservePercent=20 -XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1RSetUpdatingPauseTimePercent=5 -XX:SurvivorRatio=32 -XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1';
-
 const STATUS_LABELS = {
   online: 'ONLINE',
   offline: 'OFFLINE',
@@ -638,13 +636,10 @@ function postJSON(pathname, body) {
 function setAgentOnline(online) {
   const nextState = Boolean(online);
 
-  if (agentOnline === nextState) {
-    updateAgentUi(nextState);
-    return;
-  }
-
   agentOnline = nextState;
+
   updateAgentUi(nextState);
+  updateStatusUi(currentStatus);
 
   if (nextState) {
     if (lastAgentActivityState !== true) {
@@ -679,15 +674,8 @@ function updateAgentUi(online) {
   for (const element of elements) {
     if (!element) continue;
 
-    element.classList.toggle(
-      'online',
-      Boolean(online)
-    );
-
-    element.classList.toggle(
-      'offline',
-      !online
-    );
+    element.classList.toggle('online', Boolean(online));
+    element.classList.toggle('offline', !online);
 
     if (
       element.dataset &&
@@ -713,89 +701,25 @@ function updateAgentUi(online) {
   }
 }
 
-/* SERVER / TERMINAL */
-
 function appendLog(entry) {
   const consoleEl = $('console');
- 
+
   if (!consoleEl) return;
- 
+
   const div = document.createElement('div');
- 
+
   div.className =
     `log-line ${entry?.type || 'info'}`;
- 
+
   div.innerHTML =
     `<span class="log-time">${escHtml(entry?.time || '--:--:--')}</span>` +
     `<span class="log-text">${escHtml(entry?.line || '')}</span>`;
- 
+
   consoleEl.appendChild(div);
- 
+
   if ($('setAutoScroll')?.checked !== false) {
     consoleEl.scrollTop =
       consoleEl.scrollHeight;
-  }
-}
-
-function updateStatusUi(status) {
-  status =
-    STATUS_LABELS[status]
-      ? status
-      : 'offline';
-
-  currentStatus = status;
-
-  const statusEl = $('sbStatus');
-
-  if (statusEl) {
-    statusEl.className =
-      `sb-status ${status}`;
-  }
-
-  const statusText = $('sbStatusText');
-
-  if (statusText) {
-    statusText.textContent =
-      STATUS_LABELS[status] ||
-      String(status).toUpperCase();
-  }
-
-  const startButton = $('btnStart');
-
-  if (startButton) {
-    startButton.disabled =
-      status !== 'offline' ||
-      !agentOnline;
-  }
-
-  const stopButton = $('btnStop');
-
-  if (stopButton) {
-    stopButton.disabled =
-      status !== 'online' ||
-      !agentOnline;
-  }
-
-  const restartButton = $('btnRestart');
-
-  if (restartButton) {
-    restartButton.disabled =
-      status !== 'online' ||
-      !agentOnline;
-  }
-
-  const stats = $('statsGrid');
-
-  if (stats) {
-    stats.classList.toggle(
-      'hidden',
-      status === 'offline'
-    );
-
-    stats.classList.toggle(
-      'visible',
-      status !== 'offline'
-    );
   }
 }
 
@@ -819,6 +743,67 @@ function setStatus(status) {
     STATUS_ICONS[normalized] || '📌'
   );
 }
+
+function updateStatusUi(status) {
+  const safeStatus =
+    STATUS_LABELS[status]
+      ? status
+      : 'offline';
+
+  currentStatus = safeStatus;
+
+  const statusEl = $('sbStatus');
+
+  if (statusEl) {
+    statusEl.className =
+      `sb-status ${safeStatus}`;
+  }
+
+  const statusText = $('sbStatusText');
+
+  if (statusText) {
+    statusText.textContent =
+      STATUS_LABELS[safeStatus] ||
+      String(safeStatus).toUpperCase();
+  }
+
+  const startButton = $('btnStart');
+  const stopButton = $('btnStop');
+  const restartButton = $('btnRestart');
+
+  if (startButton) {
+    startButton.disabled =
+      !agentOnline ||
+      safeStatus !== 'offline';
+  }
+
+  if (stopButton) {
+    stopButton.disabled =
+      !agentOnline ||
+      safeStatus !== 'online';
+  }
+
+  if (restartButton) {
+    restartButton.disabled =
+      !agentOnline ||
+      safeStatus !== 'online';
+  }
+
+  const stats = $('statsGrid');
+
+  if (stats) {
+    stats.classList.toggle(
+      'hidden',
+      safeStatus === 'offline'
+    );
+
+    stats.classList.toggle(
+      'visible',
+      safeStatus !== 'offline'
+    );
+  }
+}
+
 
 function updateStats(stats = {}) {
   const players = Number(stats.players);
@@ -905,51 +890,65 @@ function updateStats(stats = {}) {
   }
 }
 
-async function startServer() {
+async function runServerAction(action, label) {
   if (!agentOnline) {
     toast(
       'MoonWolf Agent no está conectado.',
       'err'
     );
+
     return;
   }
 
-  const data =
-    await api('/api/start', {
-      method: 'POST',
-    });
+  try {
+    const data = await api(
+      `/api/${action}`,
+      {
+        method: 'POST',
+      }
+    );
 
-  if (!data.ok) {
+    if (!data?.ok) {
+      throw new Error(
+        data?.error ||
+        `Error al ${label.toLowerCase()}.`
+      );
+    }
+
     toast(
-      data.error || 'Error al arrancar',
+      `✅ ${label} enviado`,
+      'ok'
+    );
+  } catch (error) {
+    console.error(
+      `[MoonWolf] Error en /api/${action}:`,
+      error
+    );
+
+    toast(
+      `❌ ${error.message}`,
       'err'
     );
+  } finally {
+    updateStatusUi(currentStatus);
   }
 }
 
-async function stopServer() {
-  if (!agentOnline) {
-    toast(
-      'MoonWolf Agent no está conectado.',
-      'err'
-    );
-    return;
-  }
-
-  const data =
-    await api('/api/stop', {
-      method: 'POST',
-    });
-
-  if (!data.ok) {
-    toast(
-      data.error || 'Error al detener',
-      'err'
-    );
-  }
+function startServer() {
+  return runServerAction(
+    'start',
+    'Arranque'
+  );
 }
 
-async function restartServer() {
+function stopServer() {
+  return runServerAction(
+    'stop',
+    'Detención'
+  );
+}
+
+function restartServer() {
   if (
     currentStatus === 'restarting' ||
     currentStatus === 'stopping'
@@ -957,25 +956,10 @@ async function restartServer() {
     return;
   }
 
-  if (!agentOnline) {
-    toast(
-      'MoonWolf Agent no está conectado.',
-      'err'
-    );
-    return;
-  }
-
-  const data =
-    await api('/api/restart', {
-      method: 'POST',
-    });
-
-  if (!data.ok) {
-    toast(
-      data.error || 'Error al reiniciar',
-      'err'
-    );
-  }
+  return runServerAction(
+    'restart',
+    'Reinicio'
+  );
 }
 
 async function sendCmd() {
@@ -2377,203 +2361,6 @@ async function installServerBuild(build) {
   }
 }
 
-/* STARTUP */
-
-async function loadStartup() {
-  const element = $('startupList');
-
-  if (!element) return;
-
-  element.innerHTML = `
-    <div class="empty-state">
-      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
-      <div class="empty-msg">Cargando configuración...</div>
-    </div>
-  `;
-
-  const data = await api('/api/startup');
-
-  if (!data.ok) {
-    element.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-msg">${escHtml(data.error)}</div>
-      </div>
-    `;
-
-    return;
-  }
-
-  const cfg = data.config || {};
-  const jars = Array.isArray(data.jars) ? data.jars : [];
-  const hasCurrentJar = jars.includes(cfg.jar);
-  const port = data.serverPort;
-
-  element.innerHTML = `
-    <div class="startup-form">
-
-      <div class="form-group">
-        <label class="form-label">Archivo .jar del servidor</label>
-        ${
-          jars.length
-            ? `
-              <select id="stJar" class="form-select">
-                ${jars.map(jar => `
-                  <option value="${escHtml(jar)}" ${jar === cfg.jar ? 'selected' : ''}>${escHtml(jar)}</option>
-                `).join('')}
-              </select>
-              <div class="form-hint">
-                Se lanzará este archivo al pulsar ARRANCAR.
-                ${!hasCurrentJar ? ` El configurado actualmente ("${escHtml(cfg.jar)}") no está en la carpeta — elige uno de la lista y guarda.` : ''}
-              </div>
-            `
-            : `
-              <div class="form-hint" style="color:var(--red)">
-                No se encontró ningún .jar en la carpeta del servidor. Sube uno desde Archivos o instala uno desde Versiones.
-              </div>
-            `
-        }
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">Ejecutable de Java</label>
-        <input id="stJavaPath" class="form-input" type="text" placeholder="java" value="${escHtml(cfg.javaPath || 'java')}">
-        <div class="form-hint">Déjalo en "java" salvo que necesites otra versión, p. ej. "C:\\Program Files\\Java\\jdk-21\\bin\\java.exe".</div>
-      </div>
-
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label">Memoria mínima (MB)</label>
-          <input id="stMinMem" class="form-input" type="number" min="256" step="256" value="${escHtml(cfg.minMemoryMb ?? 1024)}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Memoria máxima (MB)</label>
-          <input id="stMaxMem" class="form-input" type="number" min="256" step="256" value="${escHtml(cfg.maxMemoryMb ?? 2048)}">
-        </div>
-      </div>
-
-      <div class="form-group">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
-          <label class="form-label" style="margin-bottom:0">Argumentos JVM extra (antes de "-jar")</label>
-          <button type="button" class="small-btn" id="btnAikarFlags" style="font-size:10px;padding:4px 9px;flex-shrink:0">⚡ Usar Aikar's Flags</button>
-        </div>
-        <input id="stArgs" class="form-input" type="text" placeholder="-XX:+UseG1GC" value="${escHtml(cfg.extraArgs || '')}">
-        <div class="form-hint">Flags de la JVM (recolector de basura, memoria avanzada...). Se insertan justo antes de "-jar".</div>
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">Argumentos del programa (después del jar)</label>
-        <input id="stProgramArgs" class="form-input" type="text" placeholder="--world mundo_personalizado" value="${escHtml(cfg.programArgs || '')}">
-        <div class="form-hint">Se añaden al final, después de "nogui" si está activo.</div>
-      </div>
-
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label">Puerto del servidor</label>
-          <input id="stPort" class="form-input" type="number" min="1" max="65535" placeholder="25565" value="${port ?? ''}">
-          <div class="form-hint">Se guarda como server-port en server.properties.</div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Comando de parada</label>
-          <input id="stStopCmd" class="form-input" type="text" placeholder="stop" value="${escHtml(cfg.stopCommand || 'stop')}">
-        </div>
-      </div>
-
-      <div class="setting-row">
-        <div>
-          <div class="setting-name">Ejecutar sin interfaz (nogui)</div>
-          <div class="setting-desc">Recomendado. Evita abrir la ventana de consola nativa de Minecraft.</div>
-        </div>
-        <label class="toggle">
-          <input type="checkbox" id="stNogui" ${cfg.nogui !== false ? 'checked' : ''}>
-          <span class="toggle-slider"></span>
-        </label>
-      </div>
-
-      <div class="setting-row">
-        <div>
-          <div class="setting-name">Reinicio automático si se cae</div>
-          <div class="setting-desc">Relanza el servidor si el proceso termina de forma inesperada (no cuenta pulsar DETENER).</div>
-        </div>
-        <label class="toggle">
-          <input type="checkbox" id="stAutoRestart" ${cfg.autoRestartOnCrash ? 'checked' : ''}>
-          <span class="toggle-slider"></span>
-        </label>
-      </div>
-
-      <div class="setting-row" style="border-bottom:none">
-        <div>
-          <div class="setting-name">Arranque automático</div>
-          <div class="setting-desc">Inicia el servidor en cuanto MoonWolf Panel/Agent se ponga en marcha.</div>
-        </div>
-        <label class="toggle">
-          <input type="checkbox" id="stAutoStart" ${cfg.autoStartOnBoot ? 'checked' : ''}>
-          <span class="toggle-slider"></span>
-        </label>
-      </div>
-
-      <button class="save-btn" id="btnSaveStartup" ${jars.length ? '' : 'disabled'}>💾 GUARDAR</button>
-    </div>
-  `;
-
-  $('btnSaveStartup')?.addEventListener('click', saveStartup);
-
-  $('btnAikarFlags')?.addEventListener('click', () => {
-    const input = $('stArgs');
-
-    if (!input) return;
-
-    input.value = AIKAR_FLAGS;
-    toast('⚡ Flags de Aikar aplicados — recuerda GUARDAR', 'ok');
-  });
-}
-
-async function saveStartup() {
-  const jarSelect = $('stJar');
-
-  if (!jarSelect || !jarSelect.value) {
-    toast('❌ No hay ningún .jar seleccionable', 'err');
-    return;
-  }
-
-  const portValue = $('stPort')?.value.trim();
-
-  const body = {
-    jar: jarSelect.value,
-    javaPath: $('stJavaPath')?.value.trim() || 'java',
-    minMemoryMb: Number($('stMinMem')?.value) || 1024,
-    maxMemoryMb: Number($('stMaxMem')?.value) || 2048,
-    extraArgs: $('stArgs')?.value.trim() || '',
-    nogui: Boolean($('stNogui')?.checked),
-    programArgs: $('stProgramArgs')?.value.trim() || '',
-    stopCommand: $('stStopCmd')?.value.trim() || 'stop',
-    autoRestartOnCrash: Boolean($('stAutoRestart')?.checked),
-    autoStartOnBoot: Boolean($('stAutoStart')?.checked),
-    serverPort: portValue ? Number(portValue) : undefined,
-  };
-
-  const button = $('btnSaveStartup');
-
-  if (button) {
-    button.disabled = true;
-    button.textContent = 'GUARDANDO...';
-  }
-
-  const data = await postJSON('/api/startup', body);
-
-  if (button) {
-    button.disabled = false;
-    button.textContent = '💾 GUARDAR';
-  }
-
-  if (!data.ok) {
-    toast(`❌ ${data.error}`, 'err');
-    return;
-  }
-
-  toast('✅ Configuración de arranque guardada', 'ok');
-  loadStartup();
-}
-
 /* NAVIGATION */
 
 function switchView(id) {
@@ -2615,10 +2402,6 @@ function switchView(id) {
 
     case 'plugins':
       loadInstalledPlugins();
-      break;
-
-    case 'startup':
-      loadStartup();
       break;
 
     case 'activitylog':
