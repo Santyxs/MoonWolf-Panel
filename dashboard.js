@@ -73,6 +73,8 @@ let currentDir = '';
 let currentPlugin = null;
 let pluginSource = 'all';
 let pluginPrice = 'all';
+let pluginSearchSeq = 0;
+let pluginSearchTimer = null;
 
 let versionState = {
   software: null,
@@ -1394,12 +1396,18 @@ async function pluginSearch() {
 
   if (!query) return;
 
+  clearTimeout(pluginSearchTimer);
+  const searchId = ++pluginSearchSeq;
+
   $('plgResults').innerHTML = spinnerBlock('Buscando...', 32);
 
   try {
     const data = await api(
       `/api/plugins/search?q=${encodeURIComponent(query)}&source=${encodeURIComponent(pluginSource)}&price=${encodeURIComponent(pluginPrice)}`
     );
+
+    // Si mientras tanto se lanzó otra búsqueda, se descarta esta respuesta.
+    if (searchId !== pluginSearchSeq) return;
 
     if (!data.ok) {
       throw new Error(data.error);
@@ -1408,7 +1416,9 @@ async function pluginSearch() {
     // Filtro de precio también en el cliente: Modrinth y Hangar son siempre
     // gratuitos, así que PREMIUM solo deja plugins de pago de SpigotMC.
     const results = (data.results || []).filter(plugin => {
-      const isPremium = plugin.source === 'spigot' && Boolean(plugin.premium);
+      const isPremium =
+        plugin.source === 'spigot' &&
+        (Boolean(plugin.premium) || Number(plugin.price) > 0);
 
       if (pluginPrice === 'premium') return isPremium;
       if (pluginPrice === 'free') return !isPremium;
@@ -1418,6 +1428,7 @@ async function pluginSearch() {
 
     renderPluginResults(results, data.errors || []);
   } catch (error) {
+    if (searchId !== pluginSearchSeq) return;
     $('plgResults').innerHTML = emptyBlock(error.message);
   }
 }
@@ -2507,6 +2518,15 @@ function bindEvents() {
   });
 
   $('btnPluginSearch')?.addEventListener('click', pluginSearch);
+
+  // Búsqueda mientras se escribe (con retardo para no saturar las APIs).
+  $('plgSearchInput')?.addEventListener('input', () => {
+    clearTimeout(pluginSearchTimer);
+
+    if ($('plgSearchInput').value.trim().length < 2) return;
+
+    pluginSearchTimer = setTimeout(pluginSearch, 450);
+  });
 
   $('plgSearchInput')?.addEventListener('keydown', event => {
     if (event.key === 'Enter') {
