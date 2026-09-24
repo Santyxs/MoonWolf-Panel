@@ -43,12 +43,10 @@ function render() {
 }
 
 function renderSettings() {
-  if (!$('settings-server-dir')) return;
+  if (!$('settings-config-dir')) return;
 
   const configDir = String(state.configPath || '').replace(/[\\/][^\\/]*$/, '');
 
-  $('settings-server-dir').textContent = formatPath(state.serverDir);
-  $('settings-server-dir').title = formatPath(state.serverDir);
   $('settings-config-dir').textContent = formatPath(configDir);
   $('settings-config-dir').title = formatPath(configDir);
   $('settings-agent-id').textContent = state.agentId || '—';
@@ -169,11 +167,10 @@ function bindEvents() {
   });
   $('close-settings')?.addEventListener('click', () => closeModal('settings-modal'));
   $('settings-modal')?.querySelector('.modal-backdrop')?.addEventListener('click', () => closeModal('settings-modal'));
-  $('settings-open-server')?.addEventListener('click', () => nativeApi().openServerFolder?.());
   $('settings-open-config')?.addEventListener('click', () => nativeApi().openConfig?.());
-  $('settings-change-server')?.addEventListener('click', () => {
+  $('settings-hide-tray')?.addEventListener('click', () => {
     closeModal('settings-modal');
-    openServerDirModal();
+    nativeApi().hideToTray?.();
   });
   $('settings-copy-id')?.addEventListener('click', async event => {
     const button = event.currentTarget;
