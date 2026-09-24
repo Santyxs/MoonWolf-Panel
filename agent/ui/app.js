@@ -25,7 +25,7 @@ function render() {
   $('pairing-code').textContent = state.pairingCode || '—';
   $('server-dir').textContent = formatPath(state.serverDir);
   $('server-dir').title = formatPath(state.serverDir);
-  $('version').textContent = state.version || '—';
+  $('version').textContent = state.version && /^\d/.test(state.version) ? `v${state.version}` : (state.version || '—');
 
   $('status-dot').className = `status-dot ${cloudConnected ? 'connected' : 'connecting'}`;
   $('status-title').textContent = cloudConnected ? 'Conectado' : 'Desconectado';
@@ -81,6 +81,37 @@ function closeModal(id) {
   $(id)?.classList.add('hidden');
 }
 
+async function copyText(text) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+
+  try {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand('copy');
+    area.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+function flashButton(button, label) {
+  const original = button.dataset.label || button.textContent;
+  button.dataset.label = original;
+  button.textContent = label;
+  clearTimeout(button._flashTimer);
+  button._flashTimer = setTimeout(() => { button.textContent = original; }, 1200);
+}
+
 function bindEvents() {
   $('open-panel')?.addEventListener('click', () => nativeApi().openPanel?.());
   $('open-server')?.addEventListener('click', () => nativeApi().openServerFolder?.());
@@ -89,10 +120,10 @@ function bindEvents() {
   $('logs-modal')?.querySelector('.modal-backdrop')?.addEventListener('click', () => closeModal('logs-modal'));
 
   $('copy-pairing')?.addEventListener('click', async event => {
+    const button = event.currentTarget;
     if (!state.pairingCode) return;
-    await navigator.clipboard?.writeText(state.pairingCode);
-    event.currentTarget.textContent = 'Copiado';
-    setTimeout(() => { event.currentTarget.textContent = 'Copiar'; }, 1200);
+    const ok = await copyText(state.pairingCode);
+    flashButton(button, ok ? 'Copiado' : 'Error');
   });
 
   $('clear-logs')?.addEventListener('click', () => {
@@ -101,12 +132,12 @@ function bindEvents() {
   });
 
   $('copy-logs')?.addEventListener('click', async event => {
+    const button = event.currentTarget;
     const text = (state.logs || [])
       .map(entry => `[${entry.time || ''}] [${entry.level || 'info'}] ${entry.message || ''}`)
       .join('\n');
-    await navigator.clipboard?.writeText(text);
-    event.currentTarget.textContent = 'Copiado';
-    setTimeout(() => { event.currentTarget.textContent = 'Copiar'; }, 1200);
+    const ok = await copyText(text);
+    flashButton(button, ok ? 'Copiado' : 'Error');
   });
 
   $('save-logs')?.addEventListener('click', () => nativeApi().saveLogs?.());
