@@ -749,6 +749,68 @@ async function downloadFile(url, dest) {
   await fs.writeFile(dest, buffer);
 }
 
+function decodeSpigotChangelog(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return {
+      value: value || null,
+      isHtml: false,
+    };
+  }
+
+  const raw = value.trim();
+
+  // Si ya es HTML, no lo tocamos.
+  if (/^\s*</.test(raw)) {
+    return {
+      value: raw,
+      isHtml: true,
+    };
+  }
+
+  const compact = raw.replace(/\s+/g, '');
+
+  if (
+    compact.length < 16 ||
+    compact.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]+={0,2}$/.test(compact)
+  ) {
+    return {
+      value: raw,
+      isHtml: false,
+    };
+  }
+
+  try {
+    const decoded = Buffer.from(compact, 'base64').toString('utf8').trim();
+
+    if (!decoded || !/^\s*</.test(decoded)) {
+      return {
+        value: raw,
+        isHtml: false,
+      };
+    }
+
+    if (
+      !/^\s*<(?:div|p|span|b|strong|i|em|u|s|br|ul|ol|li|h[1-6]|table|blockquote|center)\b/i.test(decoded)
+    ) {
+      return {
+        value: raw,
+        isHtml: false,
+      };
+    }
+
+    return {
+      value: decoded,
+      isHtml: true,
+    };
+  } catch {
+    return {
+      value: raw,
+      isHtml: false,
+    };
+  }
+}
+
 function semverCmp(a, b) {
   const pa = String(a).split('.').map(n => parseInt(n, 10));
   const pb = String(b).split('.').map(n => parseInt(n, 10));
@@ -1639,25 +1701,40 @@ app.get('/api/plugins/versions', async (req, res) => {
       } catch {}
 
       const findChangelog = releaseDateSec => {
-        if (!releaseDateSec || !updates.length) return null;
+        if (!releaseDateSec || !updates.length) {
+          return {
+            value: null,
+            isHtml: false,
+          };
+        }
 
         let best = null;
         let bestDiff = Infinity;
 
         for (const u of updates) {
           if (!u.date) continue;
+
           const diff = Math.abs(u.date - releaseDateSec);
+
           if (diff < bestDiff) {
             bestDiff = diff;
             best = u;
           }
         }
 
-        return best && bestDiff <= 7 * 86400 ? best.description : null;
+        if (!best || bestDiff > 7 * 86400 || !best.description) {
+          return {
+            value: null,
+            isHtml: false,
+          };
+        }
+
+        return decodeSpigotChangelog(best.description);
       };
 
       const versions = (Array.isArray(rawVersions) ? rawVersions : []).map(v => {
         const versionLabel = v.name || `#${v.id}`;
+        const changelog = findChangelog(v.releaseDate);
 
         return {
           versionId: v.id,
@@ -1666,11 +1743,12 @@ app.get('/api/plugins/versions', async (req, res) => {
           downloads: v.downloads,
           isExternal: !canDownload,
           externalUrl: !canDownload ? resourcePage : undefined,
-          changelog: findChangelog(v.releaseDate),
-          changelogIsHtml: true,
+          changelog: changelog.value,
+          changelogIsHtml: changelog.isHtml,
           files: canDownload ? [{ primary: true, url: `https://api.spiget.org/v2/resources/${encodeURIComponent(id)}/versions/${v.id}/download`, filename: `${safeName}-${String(versionLabel).replace(/[^a-zA-Z0-9._-]/g, '_')}.jar` }] : [],
         };
       });
+
 
       if (!versions.length) {
         versions.push({ versionId: 'external', versionNumber: 'Ver en SpigotMC', isExternal: true, externalUrl: resourcePage });
