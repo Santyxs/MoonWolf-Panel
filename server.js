@@ -852,6 +852,7 @@ function launchServer() {
   const args = [
     `-Xms${cfg.minMemoryMb}M`,
     `-Xmx${cfg.maxMemoryMb}M`,
+    '-Djava.awt.headless=true',
     ...(cfg.extraArgs ? cfg.extraArgs.split(/\s+/).filter(Boolean) : []),
     '-jar', cfg.jar,
     'nogui', 
