@@ -55,7 +55,6 @@ function loadConfig() {
     config.autoStart = false;
   }
 
-  // Los nombres antiguos ya no se utilizan como credenciales.
   delete config.token;
 
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8');
