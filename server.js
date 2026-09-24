@@ -847,7 +847,11 @@ function launchServer() {
     return false;
   }
 
-  const javaBin = String(cfg.javaPath || '').trim() || 'java';
+  let javaBin = String(cfg.javaPath || '').trim() || 'java';
+   
+  if (process.platform === 'win32' && /(^|[\\/])java(\.exe)?$/i.test(javaBin)) {
+      javaBin = javaBin.replace(/java(\.exe)?$/i, 'javaw');
+  }
 
   const args = [
     `-Xms${cfg.minMemoryMb}M`,
