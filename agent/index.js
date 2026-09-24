@@ -9,8 +9,7 @@ const { startGui } = require('./gui');
 
 const PANEL_URL = 'https://moonwolf-panel.onrender.com';
 const CLOUD_PATH = '/socket.io';
-let VERSION = 'dev';
-try { VERSION = require('./version.js'); } catch {}
+const VERSION = typeof __AGENT_VERSION__ !== 'undefined' ? __AGENT_VERSION__ : 'dev';
 
 const LOCAL_PORT = 3000;
 const AGENT_TOKEN_RE = /^[A-Za-z0-9_-]{43,}$/;
