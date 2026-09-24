@@ -58,11 +58,139 @@ function signValue(value) {
     .digest('base64url');
 }
 
-function createPanelSession(agentId) {
+const SHARE_TOKEN_STORE_PATH =
+  process.env.MOONWOLF_SHARE_STORE ||
+  path.join(__dirname, '.moonwolf-share-tokens.json');
+
+const PERMISSION_RANK = {
+  read: 1,
+  control: 2,
+  admin: 3,
+};
+
+function permissionAllows(actual, required) {
+  return (PERMISSION_RANK[String(actual || '')] || 0) >= (PERMISSION_RANK[String(required || '')] || 99);
+}
+
+function requiredPermission(method, pathname) {
+  const verb = String(method || 'GET').toUpperCase();
+  const route = String(pathname || '').split('?')[0];
+
+  if (verb === 'GET' || verb === 'HEAD') return 'read';
+
+  // Todas las operaciones que modifican el servidor requieren como mínimo
+  // permiso de control. La gestión de accesos compartidos es exclusiva del propietario.
+  return 'control';
+}
+
+function loadShareTokens() {
+  try {
+    const data = JSON.parse(fsSync.readFileSync(SHARE_TOKEN_STORE_PATH, 'utf8'));
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveShareTokens(tokens) {
+  const dir = path.dirname(SHARE_TOKEN_STORE_PATH);
+
+  if (!fsSync.existsSync(dir)) {
+    fsSync.mkdirSync(dir, { recursive: true });
+  }
+
+  const tmp = `${SHARE_TOKEN_STORE_PATH}.tmp`;
+  fsSync.writeFileSync(tmp, JSON.stringify(tokens, null, 2), 'utf8');
+  fsSync.renameSync(tmp, SHARE_TOKEN_STORE_PATH);
+}
+
+function hashShareToken(token) {
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+}
+
+function makeShareToken() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let raw = '';
+
+  while (raw.length < 16) {
+    for (const byte of crypto.randomBytes(16)) {
+      raw += alphabet[byte % alphabet.length];
+      if (raw.length >= 16) break;
+    }
+  }
+
+  return `MW-SHARE-${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}`;
+}
+
+function createShareToken(agentId, permission, expiresAt, label) {
+  const token = makeShareToken();
+  const record = {
+    id: crypto.randomUUID(),
+    agentId: String(agentId),
+    tokenHash: hashShareToken(token),
+    label: String(label || '').trim().slice(0, 60) || 'Acceso compartido',
+    permission,
+    createdAt: Date.now(),
+    expiresAt: expiresAt || null,
+    revokedAt: null,
+  };
+
+  const tokens = loadShareTokens();
+  tokens.push(record);
+  saveShareTokens(tokens);
+
+  return { record, token };
+}
+
+function findShareToken(token) {
+  const hash = hashShareToken(token);
+  const record = loadShareTokens().find(item => {
+    const stored = String(item?.tokenHash || '');
+    return stored.length === hash.length && timingSafeEqualStr(stored, hash);
+  });
+
+  if (!record || record.revokedAt) return null;
+  if (record.expiresAt && Number(record.expiresAt) <= Date.now()) return null;
+
+  return record;
+}
+
+function publicShareToken(record) {
+  return {
+    id: record.id,
+    agentId: record.agentId,
+    label: record.label,
+    permission: record.permission,
+    createdAt: record.createdAt,
+    expiresAt: record.expiresAt || null,
+    revokedAt: record.revokedAt || null,
+  };
+}
+
+function getSessionFromRequest(req) {
+  const auth = String(req.headers.authorization || '');
+
+  if (!auth.startsWith('Bearer ')) return null;
+
+  return verifyPanelSession(auth.slice(7).trim());
+}
+
+function createPanelSession(agentId, options = {}) {
+  const permission = options.permission || 'admin';
+  const kind = options.kind || 'owner';
+  const shareTokenId = options.shareTokenId || null;
+  const requestedExp = Number(options.expiresAt) || 0;
+  const sessionExp = requestedExp > 0
+    ? Math.min(Date.now() + PANEL_SESSION_TTL_MS, requestedExp)
+    : Date.now() + PANEL_SESSION_TTL_MS;
+
   const payload = Buffer.from(JSON.stringify({
     agentId,
+    permission,
+    kind,
+    shareTokenId,
     iat: Date.now(),
-    exp: Date.now() + PANEL_SESSION_TTL_MS,
+    exp: sessionExp,
     nonce: crypto.randomBytes(16).toString('hex'),
   })).toString('base64url');
 
@@ -82,6 +210,10 @@ function verifyPanelSession(token) {
     if (!data?.agentId || !Number.isFinite(data.exp) || data.exp <= Date.now()) {
       return null;
     }
+
+    data.permission = data.permission || 'admin';
+    data.kind = data.kind || 'owner';
+    data.shareTokenId = data.shareTokenId || null;
 
     return data;
   } catch {
@@ -267,6 +399,9 @@ io.use((socket, next) => {
     socket.data.role = 'panel';
     socket.data.agentId = session.agentId;
     socket.data.sessionExp = session.exp;
+    socket.data.permission = session.permission || 'admin';
+    socket.data.kind = session.kind || 'owner';
+    socket.data.shareTokenId = session.shareTokenId || null;
     return next();
   }
 
@@ -292,13 +427,37 @@ app.post('/api/pair', (req, res) => {
     return res.status(429).json({ ok: false, error: 'Demasiadas peticiones, espera un momento.' });
   }
 
-  const pairing = consumePairingCode(req.body?.code);
+  const code = String(req.body?.code || '').trim().toUpperCase();
+  let pairing = null;
+  let share = null;
+  let sessionOptions = { permission: 'admin', kind: 'owner' };
 
-  if (!pairing) {
-    return res.status(401).json({
-      ok: false,
-      error: 'Código de emparejamiento inválido o caducado.',
-    });
+  if (/^MW-SHARE-[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/.test(code)) {
+    share = findShareToken(code);
+
+    if (!share) {
+      return res.status(401).json({
+        ok: false,
+        error: 'Token compartido inválido, revocado o caducado.',
+      });
+    }
+
+    pairing = { agentId: share.agentId };
+    sessionOptions = {
+      permission: share.permission,
+      kind: 'share',
+      shareTokenId: share.id,
+      expiresAt: share.expiresAt,
+    };
+  } else {
+    pairing = consumePairingCode(code);
+
+    if (!pairing) {
+      return res.status(401).json({
+        ok: false,
+        error: 'Código de emparejamiento inválido o caducado.',
+      });
+    }
   }
 
   const agentSocket = agentSockets.get(pairing.agentId);
@@ -310,18 +469,122 @@ app.post('/api/pair', (req, res) => {
     });
   }
 
-  const session = createPanelSession(pairing.agentId);
+  const session = createPanelSession(pairing.agentId, sessionOptions);
 
-  agentSocket.emit('pairing_consumed');
+  if (!share) {
+    agentSocket.emit('pairing_consumed');
+  }
 
   return res.json({
     ok: true,
     session,
+    permission: sessionOptions.permission,
+    kind: sessionOptions.kind,
     agent: {
       id: pairing.agentId,
       online: true,
     },
   });
+});
+
+app.get('/api/share-tokens', (req, res) => {
+  if (apiRateLimited(req.ip)) {
+    return res.status(429).json({ ok: false, error: 'Demasiadas peticiones, espera un momento.' });
+  }
+
+  const session = getSessionFromRequest(req);
+
+  if (!session || session.kind !== 'owner' || session.permission !== 'admin') {
+    return res.status(403).json({ ok: false, error: 'Solo el propietario puede gestionar accesos compartidos.' });
+  }
+
+  const tokens = loadShareTokens()
+    .filter(item => item.agentId === session.agentId && !item.revokedAt)
+    .filter(item => !item.expiresAt || Number(item.expiresAt) > Date.now())
+    .map(publicShareToken);
+
+  return res.json({ ok: true, tokens });
+});
+
+app.post('/api/share-tokens', (req, res) => {
+  if (apiRateLimited(req.ip)) {
+    return res.status(429).json({ ok: false, error: 'Demasiadas peticiones, espera un momento.' });
+  }
+
+  const session = getSessionFromRequest(req);
+
+  if (!session || session.kind !== 'owner' || session.permission !== 'admin') {
+    return res.status(403).json({ ok: false, error: 'Solo el propietario puede crear accesos compartidos.' });
+  }
+
+  const permission = String(req.body?.permission || '').toLowerCase();
+
+  if (!['read', 'control'].includes(permission)) {
+    return res.status(400).json({ ok: false, error: 'Permiso no válido.' });
+  }
+
+  const expires = String(req.body?.expires || 'never').toLowerCase();
+  const expiryMap = {
+    '1h': 60 * 60 * 1000,
+    '1d': 24 * 60 * 60 * 1000,
+    '7d': 7 * 24 * 60 * 60 * 1000,
+    '30d': 30 * 24 * 60 * 60 * 1000,
+  };
+
+  if (expires !== 'never' && !expiryMap[expires]) {
+    return res.status(400).json({ ok: false, error: 'Caducidad no válida.' });
+  }
+
+  const expiresAt = expires === 'never' ? null : Date.now() + expiryMap[expires];
+
+  try {
+    const created = createShareToken(
+      session.agentId,
+      permission,
+      expiresAt,
+      req.body?.label
+    );
+
+    return res.json({
+      ok: true,
+      token: created.token,
+      access: publicShareToken(created.record),
+    });
+  } catch (error) {
+    console.error('[share-tokens] create:', error.message);
+    return res.status(500).json({ ok: false, error: 'No se pudo guardar el acceso compartido.' });
+  }
+});
+
+app.delete('/api/share-tokens/:id', (req, res) => {
+  if (apiRateLimited(req.ip)) {
+    return res.status(429).json({ ok: false, error: 'Demasiadas peticiones, espera un momento.' });
+  }
+
+  const session = getSessionFromRequest(req);
+
+  if (!session || session.kind !== 'owner' || session.permission !== 'admin') {
+    return res.status(403).json({ ok: false, error: 'Solo el propietario puede revocar accesos compartidos.' });
+  }
+
+  const tokens = loadShareTokens();
+  const record = tokens.find(item => item.id === req.params.id && item.agentId === session.agentId);
+
+  if (!record || record.revokedAt) {
+    return res.status(404).json({ ok: false, error: 'Acceso compartido no encontrado.' });
+  }
+
+  record.revokedAt = Date.now();
+  saveShareTokens(tokens);
+
+  for (const panel of panelSockets) {
+    if (panel.data.shareTokenId === record.id) {
+      panel.emit('share_revoked');
+      panel.disconnect(true);
+    }
+  }
+
+  return res.json({ ok: true });
 });
 
 app.get('/api/health', (_req, res) => {
@@ -597,8 +860,35 @@ io.on('connection', socket => {
 
     socket.emit('cloud_ready', { agentOnline: online });
     socket.emit('agent_status', { online });
+    socket.emit('session_info', {
+      permission: socket.data.permission || 'admin',
+      kind: socket.data.kind || 'owner',
+      expiresAt: socket.data.sessionExp,
+    });
 
     socket.on('rpc', request => {
+      if (socket.data.kind === 'share') {
+        const share = loadShareTokens().find(item => item.id === socket.data.shareTokenId && item.agentId === agentId);
+
+        if (!share || share.revokedAt || (share.expiresAt && Number(share.expiresAt) <= Date.now())) {
+          socket.emit('share_revoked');
+          return socket.disconnect(true);
+        }
+
+        if (!permissionAllows(socket.data.permission, requiredPermission(request?.method, request?.path))) {
+          return socket.emit('rpc_result', {
+            id: request?.id || null,
+            ok: false,
+            status: 403,
+            contentType: 'application/json',
+            bodyBase64: Buffer.from(JSON.stringify({
+              ok: false,
+              error: 'No tienes permisos para realizar esta acción.',
+            })).toString('base64'),
+          });
+        }
+      }
+
       const agentSocket = agentSockets.get(agentId);
 
       if (!agentSocket?.connected) {

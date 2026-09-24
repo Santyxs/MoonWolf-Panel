@@ -4,8 +4,11 @@ const CLOUD_URL = location.origin;
 const CLOUD_PATH = '/socket.io';
 
 const PAIRING_CODE_RE = /^MW-P[A-Z2-9]{3}-[A-Z2-9]{4}$/;
+const SHARE_TOKEN_RE = /^MW-SHARE-[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/;
 const SESSION_KEY = 'moonwolf_panel_session';
 const AGENT_KEY = 'moonwolf_agent_id';
+const PERMISSION_KEY = 'moonwolf_panel_permission';
+const SESSION_KIND_KEY = 'moonwolf_panel_kind';
 
 const $ = id => document.getElementById(id);
 
@@ -46,6 +49,8 @@ const STATUS_LEVELS = {
 let cloudSocket = null;
 let panelSession = sessionStorage.getItem(SESSION_KEY) || '';
 let agentId = sessionStorage.getItem(AGENT_KEY) || '';
+let panelPermission = sessionStorage.getItem(PERMISSION_KEY) || 'admin';
+let panelKind = sessionStorage.getItem(SESSION_KIND_KEY) || 'owner';
 let pairingCode = '';
 
 let requestSequence = 0;
@@ -218,17 +223,17 @@ function ensureLoginGate() {
       <h1>🌙 MOONWOLF CLOUD</h1>
 
       <p>
-        Introduce el código de emparejamiento que muestra
-        MoonWolf Agent.
+        Introduce el código de emparejamiento que muestra MoonWolf Agent
+        o un token de acceso compartido.
       </p>
 
       <input
         id="loginPassword"
         type="text"
-        maxlength="12"
+        maxlength="28"
         spellcheck="false"
         autocomplete="off"
-        placeholder="MW-PXXX-XXXX"
+        placeholder="MW-PXXX-XXXX / MW-SHARE-XXXX-XXXX-XXXX-XXXX"
       >
 
       <button id="btnLogin">CONECTAR SERVIDOR</button>
@@ -236,7 +241,8 @@ function ensureLoginGate() {
       <div id="mwCloudError"></div>
 
       <div class="mw-cloud-help">
-        El código se usa una sola vez para crear la sesión del panel.
+        El código de emparejamiento se usa una sola vez. Los tokens compartidos
+        pueden reutilizarse hasta que caduquen o sean revocados.
       </div>
     </div>
   `;
@@ -244,9 +250,19 @@ function ensureLoginGate() {
   document.body.prepend(gate);
 
   $('loginPassword').addEventListener('input', event => {
-    let value = event.target.value
-      .toUpperCase()
-      .replace(/[^A-Z2-9]/g, '');
+    let raw = event.target.value.toUpperCase();
+
+    if (raw.startsWith('MW-SHARE')) {
+      const value = raw
+        .replace(/^MW-SHARE-?/, '')
+        .replace(/[^A-Z2-9]/g, '')
+        .slice(0, 16);
+      const groups = value.match(/.{1,4}/g) || [];
+      event.target.value = `MW-SHARE-${groups.join('-')}`.replace(/-$/, '');
+      return;
+    }
+
+    let value = raw.replace(/[^A-Z2-9]/g, '');
 
     if (value === 'M') {
       event.target.value = 'M';
@@ -258,19 +274,13 @@ function ensureLoginGate() {
       return;
     }
 
-    if (value.startsWith('MW')) {
-      value = value.slice(2);
-    }
-
-    if (value.startsWith('P')) {
-      value = value.slice(1);
-    }
+    if (value.startsWith('MW')) value = value.slice(2);
+    if (value.startsWith('P')) value = value.slice(1);
 
     const first = value.slice(0, 3);
     const second = value.slice(3, 7);
 
-    event.target.value =
-      `MW-P${first}${second ? `-${second}` : ''}`;
+    event.target.value = `MW-P${first}${second ? `-${second}` : ''}`;
   });
 
   $('btnLogin').addEventListener('click', attemptLogin);
@@ -304,14 +314,20 @@ function showLogin(message = '') {
   }
 }
 
-function setSession(session, id) {
+function setSession(session, id, permission = 'admin', kind = 'owner') {
   panelSession = String(session || '');
   agentId = String(id || '');
+  panelPermission = String(permission || 'admin');
+  panelKind = String(kind || 'owner');
 
   if (panelSession) {
     sessionStorage.setItem(SESSION_KEY, panelSession);
+    sessionStorage.setItem(PERMISSION_KEY, panelPermission);
+    sessionStorage.setItem(SESSION_KIND_KEY, panelKind);
   } else {
     sessionStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem(PERMISSION_KEY);
+    sessionStorage.removeItem(SESSION_KIND_KEY);
   }
 
   if (agentId) {
@@ -322,8 +338,13 @@ function setSession(session, id) {
 }
 
 function clearSession() {
-  setSession('', '');
+  setSession('', '', 'admin', 'owner');
   pairingCode = '';
+}
+
+const PERMISSION_RANK = { read: 1, control: 2, admin: 3 };
+function hasPermission(required) {
+  return (PERMISSION_RANK[panelPermission] || 0) >= (PERMISSION_RANK[required] || 99);
 }
 
 async function attemptLogin() {
@@ -334,10 +355,10 @@ async function attemptLogin() {
     .trim()
     .toUpperCase();
 
-  if (!PAIRING_CODE_RE.test(code)) {
+  if (!PAIRING_CODE_RE.test(code) && !SHARE_TOKEN_RE.test(code)) {
     if ($('mwCloudError')) {
       $('mwCloudError').textContent =
-        'Código inválido. Usa MW-PXXX-XXXX.';
+        'Código inválido. Usa MW-PXXX-XXXX o un token MW-SHARE-...';
     }
 
     return;
@@ -364,7 +385,12 @@ async function attemptLogin() {
       throw new Error(data.error || 'No se pudo emparejar el panel.');
     }
 
-    setSession(data.session, data.agent.id);
+    setSession(
+      data.session,
+      data.agent.id,
+      data.permission || 'admin',
+      data.kind || 'owner'
+    );
     pairingCode = '';
 
     await connectCloud(true);
@@ -486,6 +512,19 @@ async function connectCloud(manual = false) {
       setAgentOnline(Boolean(data?.online));
     });
 
+    cloudSocket.on('session_info', data => {
+      panelPermission = String(data?.permission || panelPermission || 'admin');
+      panelKind = String(data?.kind || panelKind || 'owner');
+      sessionStorage.setItem(PERMISSION_KEY, panelPermission);
+      sessionStorage.setItem(SESSION_KIND_KEY, panelKind);
+      renderSettings();
+    });
+
+    cloudSocket.on('share_revoked', () => {
+      clearSession();
+      showLogin('Este acceso compartido ha sido revocado.');
+    });
+
     cloudSocket.on('status', setStatus);
     cloudSocket.on('log', appendLog);
 
@@ -553,6 +592,27 @@ async function connectCloud(manual = false) {
 }
 
 /* RPC / API */
+
+async function cloudApi(pathname, init = {}) {
+  const headers = new Headers(init.headers || {});
+  headers.set('Authorization', `Bearer ${panelSession}`);
+  if (init.body !== undefined && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
+  const response = await fetch(pathname, { ...init, headers });
+  let data = null;
+
+  try {
+    data = await response.json();
+  } catch {}
+
+  if (!response.ok || !data?.ok) {
+    throw new Error(data?.error || `Error HTTP ${response.status}`);
+  }
+
+  return data;
+}
 
 function rpcHttp(pathname, init = {}) {
   if (!cloudSocket?.connected) {
@@ -2671,6 +2731,104 @@ function renderActivity() {
 
 /* SETTINGS */
 
+async function loadShareTokens() {
+  if (panelKind !== 'owner' || panelPermission !== 'admin') return;
+
+  const list = $('shareTokenList');
+  if (!list) return;
+
+  try {
+    const data = await cloudApi('/api/share-tokens');
+    const tokens = Array.isArray(data.tokens) ? data.tokens : [];
+
+    list.innerHTML = tokens.length
+      ? tokens.map(token => {
+          const expiry = token.expiresAt
+            ? new Date(token.expiresAt).toLocaleString('es-ES')
+            : 'Nunca';
+          return `
+            <div class="settings-row" style="align-items:flex-start">
+              <div style="min-width:0;flex:1">
+                <strong>${escHtml(token.label)}</strong>
+                <div style="font-size:11px;color:var(--muted2);margin-top:3px">
+                  ${token.permission === 'control' ? '🎮 Control' : '👁️ Solo lectura'} · Caduca: ${escHtml(expiry)}
+                </div>
+              </div>
+              <button class="small-btn" data-revoke-share="${escHtml(token.id)}">Revocar</button>
+            </div>
+          `;
+        }).join('')
+      : '<div class="empty-state">No hay accesos compartidos activos.</div>';
+
+    list.querySelectorAll('[data-revoke-share]').forEach(button => {
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+          await cloudApi(`/api/share-tokens/${encodeURIComponent(button.dataset.revokeShare)}`, { method: 'DELETE' });
+          toast('Acceso revocado.', 'ok');
+          await loadShareTokens();
+        } catch (error) {
+          toast(error.message, 'err');
+          button.disabled = false;
+        }
+      });
+    });
+  } catch (error) {
+    list.innerHTML = `<div class="empty-state">${escHtml(error.message)}</div>`;
+  }
+}
+
+function bindShareSettings() {
+  if (panelKind !== 'owner' || panelPermission !== 'admin') return;
+
+  $('btnCreateShare')?.addEventListener('click', async () => {
+    const button = $('btnCreateShare');
+    button.disabled = true;
+
+    try {
+      const data = await cloudApi('/api/share-tokens', {
+        method: 'POST',
+        body: JSON.stringify({
+          label: $('shareLabel')?.value || '',
+          permission: $('sharePermission')?.value || 'read',
+          expires: $('shareExpiry')?.value || 'never',
+        }),
+      });
+
+      const token = data.token;
+      let copied = false;
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(token);
+          copied = true;
+        }
+      } catch {}
+
+      $('shareCreatedToken').textContent = token;
+      $('shareCreatedBox').style.display = '';
+      $('shareLabel').value = '';
+      toast(copied ? 'Token creado y copiado al portapapeles.' : 'Token creado. Cópialo antes de cerrar esta pantalla.', 'ok');
+      await loadShareTokens();
+    } catch (error) {
+      toast(error.message, 'err');
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  $('btnCopyShareToken')?.addEventListener('click', async event => {
+    const token = $('shareCreatedToken')?.textContent || '';
+    try {
+      await navigator.clipboard.writeText(token);
+      flashButton(event.currentTarget, 'Copiado');
+    } catch {
+      toast('No se pudo copiar el token.', 'err');
+    }
+  });
+
+  loadShareTokens();
+}
+
 function renderSettings() {
   const element =
     $('settingsList');
@@ -2731,6 +2889,38 @@ function renderSettings() {
       </span>
     </div>
 
+    ${panelKind === 'owner' && panelPermission === 'admin' ? `
+      <div style="margin-top:18px;padding-top:18px;border-top:1px solid var(--border)">
+        <div style="font-weight:700;margin-bottom:4px">🔐 Accesos compartidos</div>
+        <div style="font-size:11px;color:var(--muted2);margin-bottom:12px">Crea accesos para otras personas sin compartir tu código de propietario.</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+          <input id="shareLabel" class="plg-search-input" placeholder="Nombre (ej. Paco)" maxlength="60" style="width:auto">
+          <select id="sharePermission" class="plg-search-input" style="width:auto">
+            <option value="read">👁️ Solo lectura</option>
+            <option value="control">🎮 Control</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:10px">
+          <select id="shareExpiry" class="plg-search-input" style="flex:1">
+            <option value="never">Sin caducidad</option>
+            <option value="1h">1 hora</option>
+            <option value="1d">1 día</option>
+            <option value="7d">7 días</option>
+            <option value="30d">30 días</option>
+          </select>
+          <button class="small-btn" id="btnCreateShare">Crear token</button>
+        </div>
+        <div id="shareCreatedBox" style="display:none;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:10px">
+          <div style="font-size:10px;color:var(--muted2);margin-bottom:5px">TOKEN CREADO — se muestra una sola vez aquí</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <code id="shareCreatedToken" style="font-size:11px;word-break:break-all;flex:1"></code>
+            <button class="small-btn" id="btnCopyShareToken">Copiar</button>
+          </div>
+        </div>
+        <div id="shareTokenList"></div>
+      </div>
+    ` : ''}
+
     <div style="padding-top:12px">
       <button
         class="small-btn"
@@ -2757,6 +2947,8 @@ function renderSettings() {
         showLogin('Desconectado.');
       }
     );
+
+  bindShareSettings();
 }
 
 /* TOAST */
