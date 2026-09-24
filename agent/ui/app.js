@@ -38,7 +38,20 @@ function render() {
     ? 'Servidor local listo'
     : 'Servidor local iniciando';
 
+  renderSettings();
   renderLogs();
+}
+
+function renderSettings() {
+  if (!$('settings-server-dir')) return;
+
+  const configDir = String(state.configPath || '').replace(/[\\/][^\\/]*$/, '');
+
+  $('settings-server-dir').textContent = formatPath(state.serverDir);
+  $('settings-server-dir').title = formatPath(state.serverDir);
+  $('settings-config-dir').textContent = formatPath(configDir);
+  $('settings-config-dir').title = formatPath(configDir);
+  $('settings-agent-id').textContent = state.agentId || '—';
 }
 
 function renderLogs() {
@@ -112,6 +125,12 @@ function flashButton(button, label) {
   button._flashTimer = setTimeout(() => { button.textContent = original; }, 1200);
 }
 
+function openServerDirModal() {
+  $('serverdir-input').value = state.serverDir || '';
+  $('serverdir-error').textContent = '';
+  openModal('serverdir-modal');
+}
+
 function bindEvents() {
   $('open-panel')?.addEventListener('click', () => nativeApi().openPanel?.());
   $('open-server')?.addEventListener('click', () => nativeApi().openServerFolder?.());
@@ -142,10 +161,25 @@ function bindEvents() {
 
   $('save-logs')?.addEventListener('click', () => nativeApi().saveLogs?.());
 
-  $('edit-server-dir')?.addEventListener('click', () => {
-    $('serverdir-input').value = state.serverDir || '';
-    $('serverdir-error').textContent = '';
-    openModal('serverdir-modal');
+  $('edit-server-dir')?.addEventListener('click', openServerDirModal);
+
+  $('settings')?.addEventListener('click', () => {
+    renderSettings();
+    openModal('settings-modal');
+  });
+  $('close-settings')?.addEventListener('click', () => closeModal('settings-modal'));
+  $('settings-modal')?.querySelector('.modal-backdrop')?.addEventListener('click', () => closeModal('settings-modal'));
+  $('settings-open-server')?.addEventListener('click', () => nativeApi().openServerFolder?.());
+  $('settings-open-config')?.addEventListener('click', () => nativeApi().openConfig?.());
+  $('settings-change-server')?.addEventListener('click', () => {
+    closeModal('settings-modal');
+    openServerDirModal();
+  });
+  $('settings-copy-id')?.addEventListener('click', async event => {
+    const button = event.currentTarget;
+    if (!state.agentId) return;
+    const ok = await copyText(state.agentId);
+    flashButton(button, ok ? 'Copiado' : 'Error');
   });
 
   $('close-serverdir')?.addEventListener('click', () => closeModal('serverdir-modal'));
