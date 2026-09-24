@@ -75,6 +75,39 @@
       </div>
     </div>
   </section>
+  <section id="settings-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="logs-window" style="height:auto;max-height:none">
+      <div class="logs-header">
+        <div>
+          <strong>Configuración</strong>
+          <span>Carpetas y datos del Agent</span>
+        </div>
+        <button id="close-settings" class="modal-close" type="button">×</button>
+      </div>
+      <div class="form-body">
+        <div class="info-card">
+          <div class="info-row">
+            <div class="wide"><span class="label">Carpeta del servidor</span><span id="settings-server-dir" class="value path">—</span></div>
+            <div style="display:flex;gap:8px">
+              <button id="settings-open-server" class="small-button" type="button">Abrir</button>
+              <button id="settings-change-server" class="small-button" type="button">Cambiar</button>
+            </div>
+          </div>
+          <div class="separator"></div>
+          <div class="info-row">
+            <div class="wide"><span class="label">Carpeta de configuración</span><span id="settings-config-dir" class="value path">—</span></div>
+            <button id="settings-open-config" class="small-button" type="button">Abrir</button>
+          </div>
+          <div class="separator"></div>
+          <div class="info-row">
+            <div class="wide"><span class="label">Agent ID</span><span id="settings-agent-id" class="value path">—</span></div>
+            <button id="settings-copy-id" class="small-button" type="button">Copiar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
   <script src="app.js"></script>
 </body>
 </html>
