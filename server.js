@@ -862,7 +862,6 @@ function launchServer() {
 
   mcProcess = spawn(javaBin, args, {
     cwd: BASE_DIR,
-    shell: true,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
