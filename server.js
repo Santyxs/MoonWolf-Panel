@@ -854,7 +854,7 @@ function launchServer() {
     `-Xmx${cfg.maxMemoryMb}M`,
     ...(cfg.extraArgs ? cfg.extraArgs.split(/\s+/).filter(Boolean) : []),
     '-jar', cfg.jar,
-    '-nogui', 
+    'nogui', 
     ...(cfg.programArgs ? cfg.programArgs.split(/\s+/).filter(Boolean) : []),
   ];
 
