@@ -364,7 +364,6 @@ const DEFAULT_STARTUP_CONFIG = {
   minMemoryMb: 1024,
   maxMemoryMb: 2048,
   extraArgs: '',
-  nogui: true,
   programArgs: '',
   stopCommand: 'stop',
   autoRestartOnCrash: false,
@@ -732,7 +731,6 @@ app.post('/api/startup', (req, res) => {
     minMemoryMb,
     maxMemoryMb,
     extraArgs,
-    nogui,
     programArgs,
     stopCommand,
     autoRestartOnCrash,
@@ -773,7 +771,6 @@ app.post('/api/startup', (req, res) => {
       minMemoryMb: Math.round(min),
       maxMemoryMb: Math.round(max),
       extraArgs: String(extraArgs || '').trim(),
-      nogui: nogui !== false,
       programArgs: String(programArgs || '').trim(),
       stopCommand: String(stopCommand || '').trim() || 'stop',
       autoRestartOnCrash: Boolean(autoRestartOnCrash),
@@ -857,7 +854,6 @@ function launchServer() {
     `-Xmx${cfg.maxMemoryMb}M`,
     ...(cfg.extraArgs ? cfg.extraArgs.split(/\s+/).filter(Boolean) : []),
     '-jar', cfg.jar,
-    ...(cfg.nogui !== false ? ['nogui'] : []),
     ...(cfg.programArgs ? cfg.programArgs.split(/\s+/).filter(Boolean) : []),
   ];
 
