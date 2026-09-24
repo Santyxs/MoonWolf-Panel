@@ -2449,12 +2449,6 @@ async function loadStartup() {
         <div class="form-hint">Flags de la JVM (recolector de basura, memoria avanzada...). Se insertan justo antes de "-jar".</div>
       </div>
 
-      <div class="form-group">
-        <label class="form-label">Argumentos del programa (después del jar)</label>
-        <input id="stProgramArgs" class="form-input" type="text" placeholder="--world mundo_personalizado" value="${escHtml(cfg.programArgs || '')}">
-        <div class="form-hint">Se añaden al final, después de "nogui" si está activo.</div>
-      </div>
-
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Puerto del servidor</label>
@@ -2465,17 +2459,6 @@ async function loadStartup() {
           <label class="form-label">Comando de parada</label>
           <input id="stStopCmd" class="form-input" type="text" placeholder="stop" value="${escHtml(cfg.stopCommand || 'stop')}">
         </div>
-      </div>
-
-      <div class="setting-row">
-        <div>
-          <div class="setting-name">Ejecutar sin interfaz (nogui)</div>
-          <div class="setting-desc">Recomendado. Evita abrir la ventana de consola nativa de Minecraft.</div>
-        </div>
-        <label class="toggle">
-          <input type="checkbox" id="stNogui" ${cfg.nogui !== false ? 'checked' : ''}>
-          <span class="toggle-slider"></span>
-        </label>
       </div>
 
       <div class="setting-row">
@@ -2532,7 +2515,6 @@ async function saveStartup() {
     minMemoryMb: Number($('stMinMem')?.value) || 1024,
     maxMemoryMb: Number($('stMaxMem')?.value) || 2048,
     extraArgs: $('stArgs')?.value.trim() || '',
-    nogui: Boolean($('stNogui')?.checked),
     programArgs: $('stProgramArgs')?.value.trim() || '',
     stopCommand: $('stStopCmd')?.value.trim() || 'stop',
     autoRestartOnCrash: Boolean($('stAutoRestart')?.checked),
