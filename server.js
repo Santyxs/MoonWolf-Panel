@@ -353,6 +353,86 @@ const PLUGINS_DIR = path.join(BASE_DIR, 'plugins');
 const PORT = Number(process.env.MOONWOLF_PORT || process.env.PORT || 3000);
 const PAPER_UA = 'MoonWolfPanel/2.0 (contact@moonwolf.local)';
 
+/* ── Configuración de Startup (jar, java, memoria, args, comportamiento) ── */
+const STARTUP_DIR = path.join(BASE_DIR, '.moonwolf');
+const STARTUP_CONFIG_PATH = path.join(STARTUP_DIR, 'startup.json');
+const SERVER_PROPERTIES_PATH = path.join(BASE_DIR, 'server.properties');
+
+const DEFAULT_STARTUP_CONFIG = {
+  jar: 'server.jar',
+  javaPath: 'java',
+  minMemoryMb: 1024,
+  maxMemoryMb: 2048,
+  extraArgs: '',
+  nogui: true,
+  programArgs: '',
+  stopCommand: 'stop',
+  autoRestartOnCrash: false,
+  autoStartOnBoot: false,
+};
+
+function loadStartupConfig() {
+  try {
+    const raw = JSON.parse(fsSync.readFileSync(STARTUP_CONFIG_PATH, 'utf8'));
+    return { ...DEFAULT_STARTUP_CONFIG, ...raw };
+  } catch {
+    return { ...DEFAULT_STARTUP_CONFIG };
+  }
+}
+
+function saveStartupConfig(partial) {
+  const next = { ...loadStartupConfig(), ...partial };
+
+  if (!fsSync.existsSync(STARTUP_DIR)) {
+    fsSync.mkdirSync(STARTUP_DIR, { recursive: true });
+  }
+
+  fsSync.writeFileSync(STARTUP_CONFIG_PATH, JSON.stringify(next, null, 2), 'utf8');
+  return next;
+}
+
+function safeJarName(name) {
+  const value = String(name || '').trim();
+
+  if (
+    !value ||
+    value.includes('/') ||
+    value.includes('\\') ||
+    value.includes('..') ||
+    !value.toLowerCase().endsWith('.jar')
+  ) {
+    return null;
+  }
+
+  return value;
+}
+
+function readServerPort() {
+  try {
+    const content = fsSync.readFileSync(SERVER_PROPERTIES_PATH, 'utf8');
+    const match = content.match(/^\s*server-port\s*=\s*(\d+)/m);
+    return match ? Number(match[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeServerPort(port) {
+  let content = '';
+
+  try {
+    content = fsSync.readFileSync(SERVER_PROPERTIES_PATH, 'utf8');
+  } catch {}
+
+  if (/^\s*server-port\s*=.*$/m.test(content)) {
+    content = content.replace(/^\s*server-port\s*=.*$/m, `server-port=${port}`);
+  } else {
+    content = (content.length && !content.endsWith('\n') ? content + '\n' : content) + `server-port=${port}\n`;
+  }
+
+  fsSync.writeFileSync(SERVER_PROPERTIES_PATH, content, 'utf8');
+}
+
 function safePath(rel) {
   const base = path.resolve(BASE_DIR);
   const full = path.resolve(path.join(BASE_DIR, rel));
@@ -569,16 +649,20 @@ app.get('/api/files', async (req, res) => {
 
   try {
     const entries = await fs.readdir(fullPath, { withFileTypes: true });
-    const items = await Promise.all(entries.map(async entry => {
-      const stats = await fs.stat(path.join(fullPath, entry.name));
+    const items = await Promise.all(
+      entries
+        .filter(entry => !entry.name.startsWith('.'))
+        .map(async entry => {
+          const stats = await fs.stat(path.join(fullPath, entry.name));
 
-      return {
-        name: entry.name,
-        type: entry.isDirectory() ? 'dir' : entry.name.endsWith('.jar') ? 'jar' : entry.name.endsWith('.log') ? 'log' : 'file',
-        size: stats.isDirectory() ? '-' : (stats.size / 1024 / 1024).toFixed(2) + ' MB',
-        date: stats.mtime.toLocaleString('es-ES'),
-      };
-    }));
+          return {
+            name: entry.name,
+            type: entry.isDirectory() ? 'dir' : entry.name.endsWith('.jar') ? 'jar' : entry.name.endsWith('.log') ? 'log' : 'file',
+            size: stats.isDirectory() ? '-' : (stats.size / 1024 / 1024).toFixed(2) + ' MB',
+            date: stats.mtime.toLocaleString('es-ES'),
+          };
+        })
+    );
 
     ok(res, { items });
   } catch {
@@ -621,6 +705,92 @@ app.post('/api/files/content', async (req, res) => {
 });
 
 /* ══════════════════════════════════════════════
+    STARTUP (jar, java, memoria, argumentos, comportamiento)
+    ══════════════════════════════════════════════ */
+app.get('/api/startup', async (_req, res) => {
+  try {
+    const entries = await fs.readdir(BASE_DIR, { withFileTypes: true });
+    const jars = entries
+      .filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.jar'))
+      .map(entry => entry.name)
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+    ok(res, {
+      config: loadStartupConfig(),
+      jars,
+      serverPort: readServerPort(),
+    });
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
+
+app.post('/api/startup', (req, res) => {
+  const {
+    jar,
+    javaPath,
+    minMemoryMb,
+    maxMemoryMb,
+    extraArgs,
+    nogui,
+    programArgs,
+    stopCommand,
+    autoRestartOnCrash,
+    autoStartOnBoot,
+    serverPort,
+  } = req.body || {};
+
+  const safeJar = safeJarName(jar);
+  if (!safeJar) {
+    return fail(res, 'Nombre de archivo .jar no válido');
+  }
+
+  if (!fsSync.existsSync(path.join(BASE_DIR, safeJar))) {
+    return fail(res, `No se encontró "${safeJar}" en la carpeta del servidor`);
+  }
+
+  const min = Number(minMemoryMb);
+  const max = Number(maxMemoryMb);
+
+  if (!Number.isFinite(min) || min < 256 || !Number.isFinite(max) || max < min) {
+    return fail(res, 'Valores de memoria no válidos');
+  }
+
+  let portNum = null;
+
+  if (serverPort !== undefined && serverPort !== null && String(serverPort).trim() !== '') {
+    portNum = Number(serverPort);
+
+    if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+      return fail(res, 'Puerto del servidor no válido (1-65535)');
+    }
+  }
+
+  try {
+    const config = saveStartupConfig({
+      jar: safeJar,
+      javaPath: String(javaPath || '').trim() || 'java',
+      minMemoryMb: Math.round(min),
+      maxMemoryMb: Math.round(max),
+      extraArgs: String(extraArgs || '').trim(),
+      nogui: nogui !== false,
+      programArgs: String(programArgs || '').trim(),
+      stopCommand: String(stopCommand || '').trim() || 'stop',
+      autoRestartOnCrash: Boolean(autoRestartOnCrash),
+      autoStartOnBoot: Boolean(autoStartOnBoot),
+    });
+
+    if (portNum !== null) {
+      writeServerPort(portNum);
+    }
+
+    ok(res, { config, serverPort: readServerPort() });
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
+
+/* ══════════════════════════════════════════════
     MINECRAFT PROCESS
     ══════════════════════════════════════════════ */
 const { spawn } = require('child_process');
@@ -629,6 +799,9 @@ let mcProcess = null;
 let startTime = null;
 let statsTimer = null;
 let restarting = false;
+let stopRequested = false;
+let crashCount = 0;
+let lastCrashTime = 0;
 
 function broadcastStatus(s) { io.emit('status', s); }
 function broadcastLog(line, type = 'info') {
@@ -668,15 +841,29 @@ function startStatsTimer() {
 }
 
 function launchServer() {
-  const jarPath = path.join(BASE_DIR, 'server.jar');
+  const cfg = loadStartupConfig();
+  const jarPath = path.join(BASE_DIR, cfg.jar);
 
   if (!fsSync.existsSync(jarPath)) {
-    broadcastLog('❌ No se encontró server.jar en: ' + BASE_DIR, 'error');
+    broadcastLog(`❌ No se encontró "${cfg.jar}" en: ${BASE_DIR}. Configúralo en Startup.`, 'error');
     broadcastStatus('offline');
     return false;
   }
 
-  mcProcess = spawn('java', ['-Xms1G', '-Xmx2G', '-jar', 'server.jar', 'nogui'], {
+  const javaBin = String(cfg.javaPath || '').trim() || 'java';
+
+  const args = [
+    `-Xms${cfg.minMemoryMb}M`,
+    `-Xmx${cfg.maxMemoryMb}M`,
+    ...(cfg.extraArgs ? cfg.extraArgs.split(/\s+/).filter(Boolean) : []),
+    '-jar', cfg.jar,
+    ...(cfg.nogui !== false ? ['nogui'] : []),
+    ...(cfg.programArgs ? cfg.programArgs.split(/\s+/).filter(Boolean) : []),
+  ];
+
+  stopRequested = false;
+
+  mcProcess = spawn(javaBin, args, {
     cwd: BASE_DIR,
     shell: true,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -701,7 +888,7 @@ function launchServer() {
   });
 
   mcProcess.on('error', err => {
-    broadcastLog('❌ Error al lanzar java: ' + err.message, 'error');
+    broadcastLog(`❌ Error al lanzar "${javaBin}": ` + err.message, 'error');
     broadcastStatus('offline');
     mcProcess = null;
   });
@@ -723,9 +910,35 @@ function launchServer() {
         broadcastStatus('starting');
         launchServer();
       }, 2000);
-    } else {
-      broadcastStatus('offline');
+      return;
     }
+
+    const liveCfg = loadStartupConfig();
+
+    if (!stopRequested && liveCfg.autoRestartOnCrash) {
+      const now = Date.now();
+
+      if (now - lastCrashTime < 60_000) {
+        crashCount++;
+      } else {
+        crashCount = 1;
+      }
+
+      lastCrashTime = now;
+
+      if (crashCount > 3) {
+        broadcastLog('❌ El servidor se ha caído varias veces en poco tiempo. Reinicio automático desactivado temporalmente.', 'error');
+        broadcastStatus('offline');
+      } else {
+        broadcastLog('⚠️ El servidor se cerró inesperadamente. Reiniciando automáticamente en 5s...', 'warn');
+        broadcastStatus('starting');
+        setTimeout(launchServer, 5000);
+      }
+
+      return;
+    }
+
+    broadcastStatus('offline');
   });
 
   return true;
@@ -740,7 +953,7 @@ app.post('/api/start', (_req, res) => {
   broadcastLog('🌙 Arrancando servidor...', 'system');
 
   if (!launchServer()) {
-    return fail(res, 'No se encontró server.jar');
+    return fail(res, 'No se encontró el .jar configurado en Startup');
   }
 
   ok(res);
@@ -751,9 +964,10 @@ app.post('/api/stop', (_req, res) => {
     return fail(res, 'El servidor no está corriendo');
   }
 
+  stopRequested = true;
   broadcastStatus('stopping');
-  broadcastLog('⏹ Enviando stop...', 'system');
-  mcProcess.stdin.write('stop\n');
+  broadcastLog('⏹ Enviando comando de parada...', 'system');
+  mcProcess.stdin.write(`${loadStartupConfig().stopCommand || 'stop'}\n`);
   ok(res);
 });
 
@@ -762,10 +976,11 @@ app.post('/api/restart', (_req, res) => {
     return fail(res, 'El servidor no está corriendo');
   }
 
+  stopRequested = true;
   restarting = true;
   broadcastStatus('restarting');
   broadcastLog('↺ Reiniciando servidor...', 'system');
-  mcProcess.stdin.write('stop\n');
+  mcProcess.stdin.write(`${loadStartupConfig().stopCommand || 'stop'}\n`);
   ok(res);
 });
 
@@ -1211,7 +1426,7 @@ app.post('/api/versions/install', async (req, res) => {
         type: 'fabric-installer',
         installCmd: `java -jar "fabric-installer-${inst.version}.jar" server -mcversion ${version} -loader ${loaderVersion} -downloadMinecraft`,
         jarName: 'fabric-server-launch.jar',
-        note: 'Ejecuta este comando en tu carpeta de servidor. Luego configura Startup para usar fabric-server-launch.jar.',
+        note: 'Ejecuta este comando en tu carpeta de servidor. Luego selecciona fabric-server-launch.jar en Startup.',
       });
     }
 
@@ -1228,6 +1443,9 @@ app.post('/api/versions/install', async (req, res) => {
 
     await downloadFile(url, currentJar);
     const stats = await fs.stat(currentJar);
+
+    // El jar recién descargado pasa a ser automáticamente el activo en Startup.
+    saveStartupConfig({ jar: 'server.jar' });
 
     ok(res, {
       type: 'direct',
@@ -1429,11 +1647,13 @@ app.post('/api/files/delete', async (req, res) => {
     DEBUG
     ══════════════════════════════════════════════ */
 app.get('/api/debug/start', async (_req, res) => {
-  const jarPath = path.join(BASE_DIR, 'server.jar');
+  const cfg = loadStartupConfig();
+  const jarPath = path.join(BASE_DIR, cfg.jar);
   const exists = fsSync.existsSync(jarPath);
+  const javaBin = String(cfg.javaPath || '').trim() || 'java';
 
   const javaCheck = await new Promise(resolve => {
-    const j = spawn('java', ['-version'], { shell: true, stdio: 'pipe' });
+    const j = spawn(javaBin, ['-version'], { shell: true, stdio: 'pipe' });
     let out = '';
 
     j.stderr.on('data', d => { out += d; });
@@ -1442,14 +1662,24 @@ app.get('/api/debug/start', async (_req, res) => {
     j.on('error', e => resolve({ code: -1, out: e.message }));
   });
 
-  res.json({ BASE_DIR, jarExists: exists, jarPath, java: javaCheck });
+  res.json({ BASE_DIR, jar: cfg.jar, javaPath: javaBin, jarExists: exists, jarPath, java: javaCheck });
 });
 
 /* ══════════════════════════════════════════════
     INICIO
     ══════════════════════════════════════════════ */
 async function start() {
-  server.listen(PORT, () => console.log(`MoonWolf Panel → http://localhost:${PORT}`));
+  server.listen(PORT, () => {
+    console.log(`MoonWolf Panel → http://localhost:${PORT}`);
+
+    const cfg = loadStartupConfig();
+
+    if (cfg.autoStartOnBoot) {
+      broadcastLog('🌙 Arranque automático activado. Iniciando servidor...', 'system');
+      broadcastStatus('starting');
+      launchServer();
+    }
+  });
 }
 
 start().catch(error => {
