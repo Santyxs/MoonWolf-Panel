@@ -905,24 +905,6 @@ function updateStats(stats = {}) {
   }
 }
 
-function appendLog(entry) {
-  const consoleEl = $('console');
-
-  if (!consoleEl) return;
-
-  const div = document.createElement('div');
-
-  div.className =
-    `log-line ${entry?.type || 'info'}`;
-
-  div.innerHTML =
-    `<span class="log-time">${escHtml(entry?.time || '--:--:--')}</span>` +
-    `<span class="log-text">${escHtml(entry?.line || '')}</span>`;
-
-  consoleEl.appendChild(div);
-  consoleEl.scrollTop = consoleEl.scrollHeight;
-}
-
 async function startServer() {
   if (!agentOnline) {
     toast(
