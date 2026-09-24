@@ -863,6 +863,7 @@ function launchServer() {
 
   mcProcess = spawn(javaBin, args, {
     cwd: BASE_DIR,
+    windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
@@ -1650,7 +1651,7 @@ app.get('/api/debug/start', async (_req, res) => {
   const javaBin = String(cfg.javaPath || '').trim() || 'java';
 
   const javaCheck = await new Promise(resolve => {
-    const j = spawn(javaBin, ['-version'], { shell: true, stdio: 'pipe' });
+    const j = spawn(javaBin, ['-version'], { windowsHide: true, stdio: 'pipe' });
     let out = '';
 
     j.stderr.on('data', d => { out += d; });
