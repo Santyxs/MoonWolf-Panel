@@ -1294,9 +1294,189 @@ app.post('/api/command', (req, res) => {
 /* ══════════════════════════════════════════════
     PLUGINS
     ══════════════════════════════════════════════ */
+
+/* ── Índice local de SpigotMC (búsqueda parcial + tolerancia a caídas de Spiget) ── */
+const SPIGOT_INDEX_PATH = path.join(STARTUP_DIR, 'spigot-index.json');
+const SPIGOT_INDEX_TTL_MS = 24 * 60 * 60 * 1000;
+const SPIGOT_INDEX_PAGE_SIZE = 500;
+const SPIGOT_INDEX_PAGES = 10; // 10 x 500 = los 5000 plugins más descargados
+
+let spigotIndex = { builtAt: 0, items: [] };
+let spigotIndexPromise = null;
+let spigotIndexDiskLoaded = false;
+
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function apiFetchTimeout(url, ms = 12000) {
+  const { default: fetch } = await import('node-fetch');
+  const res = await fetch(url, {
+    headers: { 'User-Agent': PAPER_UA },
+    signal: AbortSignal.timeout(ms),
+  });
+
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} -> ${url}`);
+  }
+
+  return res.json();
+}
+
+function toSpigotResult(p) {
+  return {
+    id: String(p.id),
+    name: p.name,
+    description: p.tag || 'Plugin desde SpigotMC.',
+    icon: `https://api.spiget.org/v2/resources/${p.id}/icon`,
+    downloads: p.downloads || 0,
+    source: 'spigot',
+    external: !!p.external,
+    premium: !!p.premium || Number(p.price) > 0,
+    price: p.price || 0,
+    gameVersions: [],
+    categories: [],
+  };
+}
+
+function loadSpigotIndexFromDisk() {
+  spigotIndexDiskLoaded = true;
+
+  try {
+    const data = JSON.parse(fsSync.readFileSync(SPIGOT_INDEX_PATH, 'utf8'));
+    if (Array.isArray(data.items)) {
+      spigotIndex = { builtAt: Number(data.builtAt) || 0, items: data.items };
+    }
+  } catch {}
+}
+
+async function buildSpigotIndex() {
+  const items = [];
+
+  // Si no hay índice previo, se va publicando página a página
+  if (!spigotIndex.items.length) {
+    spigotIndex.items = items;
+  }
+
+  for (let page = 1; page <= SPIGOT_INDEX_PAGES; page++) {
+    let list;
+
+    try {
+      list = await apiFetchTimeout(
+        `https://api.spiget.org/v2/resources?size=${SPIGOT_INDEX_PAGE_SIZE}&page=${page}&sort=-downloads&fields=id,name,tag,downloads,premium,price,external`,
+        20000
+      );
+    } catch (e) {
+      console.warn('[spigot-index] página', page, 'falló:', e.message);
+      break;
+    }
+
+    if (!Array.isArray(list) || !list.length) break;
+
+    for (const p of list) {
+      if (!p?.id || !p?.name) continue;
+
+      items.push({
+        id: String(p.id),
+        name: p.name,
+        tag: p.tag || '',
+        downloads: p.downloads || 0,
+        premium: !!p.premium || Number(p.price) > 0,
+        price: p.price || 0,
+        external: !!p.external,
+      });
+    }
+  }
+
+  if (items.length >= SPIGOT_INDEX_PAGE_SIZE) {
+    spigotIndex = { builtAt: Date.now(), items };
+
+    try {
+      if (!fsSync.existsSync(STARTUP_DIR)) {
+        fsSync.mkdirSync(STARTUP_DIR, { recursive: true });
+      }
+      fsSync.writeFileSync(SPIGOT_INDEX_PATH, JSON.stringify(spigotIndex), 'utf8');
+    } catch {}
+
+    console.log(`[spigot-index] ${items.length} plugins indexados`);
+  }
+}
+
+function ensureSpigotIndex() {
+  if (!spigotIndexDiskLoaded) loadSpigotIndexFromDisk();
+
+  const fresh =
+    spigotIndex.items.length &&
+    Date.now() - spigotIndex.builtAt < SPIGOT_INDEX_TTL_MS;
+
+  if (fresh) return null;
+
+  if (!spigotIndexPromise) {
+    spigotIndexPromise = buildSpigotIndex()
+      .catch(e => console.warn('[spigot-index]', e.message))
+      .finally(() => { spigotIndexPromise = null; });
+  }
+
+  return spigotIndexPromise;
+}
+
+function searchSpigotIndex(query) {
+  const terms = query
+    .toLowerCase()
+    .split(/\s+/)
+    .map(t => t.replace(/[^a-z0-9]/g, ''))
+    .filter(Boolean);
+
+  if (!terms.length) return [];
+
+  return spigotIndex.items.filter(item => {
+    const compact = String(item.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const tag = String(item.tag || '').toLowerCase();
+
+    return terms.every(t => compact.includes(t) || tag.includes(t));
+  });
+}
+
+// Arranca la construcción del índice al iniciar, para que la primera búsqueda ya lo tenga
+setTimeout(() => ensureSpigotIndex(), 3000).unref();
+
+/* Puntuación de relevancia: nombre exacto > empieza por > palabra > contiene > descripción */
+function scorePlugin(plugin, query) {
+  const rawName = String(plugin.name || '');
+  const name = rawName.toLowerCase();
+  const compact = name.replace(/[^a-z0-9]/g, '');
+  // PlayerVaultsX -> "player vaults x"
+  const words = rawName
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  const desc = String(plugin.description || '').toLowerCase();
+
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const joined = terms.join('');
+  let score = 0;
+
+  if (compact === joined) score += 1000;
+  else if (compact.startsWith(joined)) score += 700;
+  else if (compact.includes(joined)) score += 400;
+
+  for (const term of terms) {
+    if (words.some(w => w === term)) score += 250;
+    else if (words.some(w => w.startsWith(term))) score += 180;
+    else if (name.includes(term)) score += 100;
+
+    if (desc.includes(term)) score += 40;
+  }
+
+  // Desempate por popularidad (logarítmico para que no aplaste la relevancia)
+  score += Math.log10((Number(plugin.downloads) || 0) + 1) * 15;
+
+  return score;
+}
+
 app.get('/api/plugins/search', async (req, res) => {
   const q = (req.query.q || '').trim();
   const source = req.query.source || 'all';
+  const price = ['free', 'premium'].includes(req.query.price) ? req.query.price : 'all';
 
   if (!q) {
     return fail(res, 'Query vacía');
@@ -1304,14 +1484,24 @@ app.get('/api/plugins/search', async (req, res) => {
 
   const results = [];
   const errors = [];
+  const wants = name => source === 'all' || source === name;
 
-  if (source === 'all' || source === 'modrinth') {
+  const searchModrinth = async () => {
     try {
       const { default: fetch } = await import('node-fetch');
-      const r = await fetch(`https://api.modrinth.com/v2/search?query=${encodeURIComponent(q)}&limit=10`);
+      // En Modrinth los plugins son proyectos con estas categorías (loaders)
+      const facets = JSON.stringify([[
+        'categories:paper', 'categories:spigot', 'categories:bukkit',
+        'categories:purpur', 'categories:folia',
+        'categories:velocity', 'categories:bungeecord', 'categories:waterfall',
+      ]]);
+      const r = await fetch(
+        `https://api.modrinth.com/v2/search?query=${encodeURIComponent(q)}&limit=20&facets=${encodeURIComponent(facets)}`,
+        { headers: { 'User-Agent': PAPER_UA } }
+      );
       const d = await r.json();
 
-      results.push(...d.hits.map(p => ({
+      results.push(...(d.hits || []).map(p => ({
         id: p.project_id,
         name: p.title,
         description: p.description,
@@ -1324,33 +1514,64 @@ app.get('/api/plugins/search', async (req, res) => {
     } catch {
       errors.push('Modrinth no disponible');
     }
-  }
+  };
 
-  if (source === 'all' || source === 'spigot') {
-    try {
-      const list = await apiFetch(`https://api.spiget.org/v2/search/resources/${encodeURIComponent(q)}?size=10&field=name`);
-      (Array.isArray(list) ? list : []).forEach(p => {
-        results.push({
-          id: String(p.id),
-          name: p.name,
-          description: p.tag || 'Plugin desde SpigotMC.',
-          icon: `https://api.spiget.org/v2/resources/${p.id}/icon`,
-          downloads: p.downloads || 0,
-          source: 'spigot',
-          external: !!p.external,
-          premium: !!p.premium,
-          gameVersions: [],
-          categories: [],
-        });
-      });
-    } catch {
+  const searchSpigot = async () => {
+    const building = ensureSpigotIndex();
+
+    // Primera vez sin índice: espera un poco a que se construya
+    if (!spigotIndex.items.length && building) {
+      await Promise.race([building, wait(20000)]);
+    }
+
+    const seen = new Set();
+
+    const add = p => {
+      if (!p || seen.has(String(p.id))) return;
+      seen.add(String(p.id));
+
+      const result = toSpigotResult(p);
+
+      if (price === 'premium' && !result.premium) return;
+      if (price === 'free' && result.premium) return;
+
+      results.push(result);
+    };
+
+    // 1) Búsqueda local: coincidencia parcial ("player" -> PlayerVaultsX)
+    searchSpigotIndex(q).forEach(add);
+
+    // 2) Búsqueda directa en Spiget (cubre plugins fuera del índice); con un reintento
+    const size = price === 'premium' ? 50 : 25;
+    const base = `https://api.spiget.org/v2/search/resources/${encodeURIComponent(q)}?size=${size}`;
+
+    const live = async url => {
+      for (let i = 0; i < 2; i++) {
+        try {
+          const data = await apiFetchTimeout(url, 8000);
+          return Array.isArray(data) ? data : [];
+        } catch {}
+      }
+      return null;
+    };
+
+    const [byName, byTag] = await Promise.all([
+      live(`${base}&field=name`),
+      live(`${base}&field=tag`),
+    ]);
+
+    [...(byName || []), ...(byTag || [])].forEach(add);
+
+    // Solo se avisa si no hubo ni índice ni respuesta de Spiget
+    if (byName === null && byTag === null && !spigotIndex.items.length) {
       errors.push('SpigotMC (Spiget) no disponible');
     }
-  }
+  };
 
-  if (source === 'all' || source === 'hangar') {
+  const searchHangar = async () => {
     try {
-      const d = await apiFetch(`https://hangar.papermc.io/api/v1/projects?limit=10&offset=0&q=${encodeURIComponent(q)}&sort=-stars`);
+      const d = await apiFetch(`https://hangar.papermc.io/api/v1/projects?limit=20&offset=0&q=${encodeURIComponent(q)}&sort=-downloads`);
+
       (d.result || []).forEach(p => {
         results.push({
           id: `${p.namespace.owner}/${p.namespace.slug}`,
@@ -1366,9 +1587,26 @@ app.get('/api/plugins/search', async (req, res) => {
     } catch {
       errors.push('Hangar no disponible');
     }
+  };
+
+  // Modrinth y Hangar son siempre gratis: con PREMIUM ni se consultan
+  const tasks = [];
+  if (wants('modrinth') && price !== 'premium') tasks.push(searchModrinth());
+  if (wants('spigot')) tasks.push(searchSpigot());
+  if (wants('hangar') && price !== 'premium') tasks.push(searchHangar());
+
+  if (price === 'premium' && source !== 'all' && source !== 'spigot') {
+    errors.push('Modrinth y Hangar solo tienen plugins gratuitos');
   }
 
-  ok(res, { results, errors });
+  await Promise.all(tasks);
+
+  results
+    .map(p => ({ p, score: scorePlugin(p, q) }))
+    .sort((a, b) => b.score - a.score)
+    .forEach((item, i) => { results[i] = item.p; });
+
+  ok(res, { results: results.slice(0, 40), errors });
 });
 
 app.get('/api/plugins/versions', async (req, res) => {
