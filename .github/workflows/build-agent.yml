@@ -146,9 +146,6 @@ jobs:
 
           echo "tag=$next" >> "$GITHUB_OUTPUT"
 
-          # Versión que se embebe en el Agent
-          echo "module.exports = '${next#agent-v}';" > agent/version.js
-
       - name: Create WebViewJS native shim
         shell: pwsh
         run: |
@@ -159,20 +156,19 @@ jobs:
             -Encoding utf8
 
       - name: Bundle Agent
-        shell: pwsh
+        shell: bash
+        env:
+          AGENT_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          npx esbuild agent/index.js `
-            --bundle `
-            --platform=node `
-            --target=node24 `
-            --format=cjs `
-            --alias:@webviewjs/webview-win32-x64-msvc=./webview-native-shim.js `
-            --outfile=dist/agent.cjs `
+          npx esbuild agent/index.js \
+            --bundle \
+            --platform=node \
+            --target=node24 \
+            --format=cjs \
+            --alias:@webviewjs/webview-win32-x64-msvc=./webview-native-shim.js \
+            --define:__AGENT_VERSION__="\"${AGENT_TAG#agent-v}\"" \
+            --outfile=dist/agent.cjs \
             --log-level=info
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "esbuild terminó con código $LASTEXITCODE"
-          }
 
       - name: Verify bundle
         shell: pwsh
