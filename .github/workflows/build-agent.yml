@@ -330,6 +330,34 @@ jobs:
 
           Write-Host "Terminal de Windows ocultada correctamente."
 
+      - name: Set executable icon
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "dist/MoonWolf-Agent.exe").Path
+          $icon = (Resolve-Path "agent/assets/MoonWolf-Agent.ico").Path
+
+          if (-not (Test-Path -LiteralPath $icon)) {
+            throw "No se encontró el icono de MoonWolf: $icon"
+          }
+
+          Write-Host "Instalando rcedit..."
+          npm install --no-save rcedit
+
+          $rcedit = (Resolve-Path "node_modules/rcedit/bin/rcedit-x64.exe").Path
+
+          if (-not (Test-Path -LiteralPath $rcedit)) {
+            throw "No se encontró rcedit-x64.exe"
+          }
+
+          Write-Host "Aplicando icono de MoonWolf al ejecutable..."
+          & $rcedit $exe --set-icon $icon
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "rcedit terminó con código $LASTEXITCODE"
+          }
+
+          Write-Host "Icono aplicado correctamente."
+
       - name: Verify executable
         shell: pwsh
         run: |
