@@ -749,68 +749,6 @@ async function downloadFile(url, dest) {
   await fs.writeFile(dest, buffer);
 }
 
-function decodeSpigotChangelog(value) {
-  if (typeof value !== 'string' || !value.trim()) {
-    return {
-      value: value || null,
-      isHtml: false,
-    };
-  }
-
-  const raw = value.trim();
-
-  // Si ya es HTML, no lo tocamos.
-  if (/^\s*</.test(raw)) {
-    return {
-      value: raw,
-      isHtml: true,
-    };
-  }
-
-  const compact = raw.replace(/\s+/g, '');
-
-  if (
-    compact.length < 16 ||
-    compact.length % 4 !== 0 ||
-    !/^[A-Za-z0-9+/]+={0,2}$/.test(compact)
-  ) {
-    return {
-      value: raw,
-      isHtml: false,
-    };
-  }
-
-  try {
-    const decoded = Buffer.from(compact, 'base64').toString('utf8').trim();
-
-    if (!decoded || !/^\s*</.test(decoded)) {
-      return {
-        value: raw,
-        isHtml: false,
-      };
-    }
-
-    if (
-      !/^\s*<(?:div|p|span|b|strong|i|em|u|s|br|ul|ol|li|h[1-6]|table|blockquote|center)\b/i.test(decoded)
-    ) {
-      return {
-        value: raw,
-        isHtml: false,
-      };
-    }
-
-    return {
-      value: decoded,
-      isHtml: true,
-    };
-  } catch {
-    return {
-      value: raw,
-      isHtml: false,
-    };
-  }
-}
-
 function semverCmp(a, b) {
   const pa = String(a).split('.').map(n => parseInt(n, 10));
   const pb = String(b).split('.').map(n => parseInt(n, 10));
@@ -1693,48 +1631,90 @@ app.get('/api/plugins/versions', async (req, res) => {
       const resourcePage = `https://www.spigotmc.org/resources/${encodeURIComponent(id)}/`;
       const rawVersions = await apiFetch(`https://api.spiget.org/v2/resources/${encodeURIComponent(id)}/versions?size=20&sort=-releaseDate`);
       const safeName = (resource.name || 'plugin').replace(/[^a-zA-Z0-9._-]/g, '_');
+      // Spiget puede devolver los changelogs de Spigot codificados en Base64.
+      // Además, no todas las versiones aparecen dentro de los primeros 20 updates,
+      // así que no debemos limitar la asociación de versiones a ese pequeño bloque.
       let updates = [];
 
+      const decodeSpigotChangelog = value => {
+        if (value === null || value === undefined) {
+          return { value: null, isHtml: false };
+        }
+
+        let text = String(value).trim();
+        if (!text) return { value: null, isHtml: false };
+
+        const looksLikeHtml = s => /<\/?[a-z][^>]*>/i.test(s);
+        const looksLikeBase64 = s => {
+          const compact = s.replace(/\s+/g, '');
+          return compact.length >= 16 &&
+            compact.length % 4 === 0 &&
+            /^[A-Za-z0-9+/=_-]+$/.test(compact);
+        };
+
+        const decode = s => {
+          const compact = s.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/');
+          const padded = compact + '='.repeat((4 - (compact.length % 4)) % 4);
+          try {
+            return Buffer.from(padded, 'base64').toString('utf8');
+          } catch {
+            return null;
+          }
+        };
+
+        // Decodifica hasta dos capas: algunos mirrors/APIs han entregado el
+        // contenido Base64 más de una vez. Solo acepta el resultado si parece
+        // texto real; así no convierte accidentalmente un changelog normal.
+        for (let i = 0; i < 2; i++) {
+          if (!looksLikeBase64(text) || looksLikeHtml(text) || /^\[[^\]]+\]/.test(text)) break;
+          const decoded = decode(text);
+          if (!decoded || !decoded.trim()) break;
+          text = decoded.trim();
+        }
+
+        return {
+          value: text,
+          isHtml: looksLikeHtml(text),
+        };
+      };
+
       try {
-        updates = await apiFetch(`https://api.spiget.org/v2/resources/${encodeURIComponent(id)}/updates?size=20&sort=-date`);
+        // 100 updates cubre de sobra el historial reciente de la mayoría de
+        // plugins y evita que 2.8.x/2.9.x desaparezcan por quedar fuera de los 20.
+        updates = await apiFetch(`https://api.spiget.org/v2/resources/${encodeURIComponent(id)}/updates?size=100&sort=-date`);
         if (!Array.isArray(updates)) updates = [];
       } catch {}
 
+      const usedUpdates = new Set();
+
       const findChangelog = releaseDateSec => {
-        if (!releaseDateSec || !updates.length) {
-          return {
-            value: null,
-            isHtml: false,
-          };
-        }
+        if (!releaseDateSec || !updates.length) return { value: null, isHtml: false };
 
         let best = null;
         let bestDiff = Infinity;
 
         for (const u of updates) {
-          if (!u.date) continue;
-
-          const diff = Math.abs(u.date - releaseDateSec);
-
+          if (!u?.date || !u?.description || usedUpdates.has(u)) continue;
+          const diff = Math.abs(Number(u.date) - Number(releaseDateSec));
           if (diff < bestDiff) {
             bestDiff = diff;
             best = u;
           }
         }
 
-        if (!best || bestDiff > 7 * 86400 || !best.description) {
-          return {
-            value: null,
-            isHtml: false,
-          };
+        // Spigot puede publicar una versión y su update con varios días de
+        // diferencia. 30 días evita falsos negativos sin mezclar historiales
+        // antiguos cuando existe un update mucho más cercano.
+        if (!best || bestDiff > 30 * 86400) {
+          return { value: null, isHtml: false };
         }
 
+        usedUpdates.add(best);
         return decodeSpigotChangelog(best.description);
       };
 
       const versions = (Array.isArray(rawVersions) ? rawVersions : []).map(v => {
         const versionLabel = v.name || `#${v.id}`;
-        const changelog = findChangelog(v.releaseDate);
 
         return {
           versionId: v.id,
@@ -1743,12 +1723,16 @@ app.get('/api/plugins/versions', async (req, res) => {
           downloads: v.downloads,
           isExternal: !canDownload,
           externalUrl: !canDownload ? resourcePage : undefined,
-          changelog: changelog.value,
-          changelogIsHtml: changelog.isHtml,
+          ...(() => {
+            const changelogInfo = findChangelog(v.releaseDate);
+            return {
+              changelog: changelogInfo.value,
+              changelogIsHtml: changelogInfo.isHtml,
+            };
+          })(),
           files: canDownload ? [{ primary: true, url: `https://api.spiget.org/v2/resources/${encodeURIComponent(id)}/versions/${v.id}/download`, filename: `${safeName}-${String(versionLabel).replace(/[^a-zA-Z0-9._-]/g, '_')}.jar` }] : [],
         };
       });
-
 
       if (!versions.length) {
         versions.push({ versionId: 'external', versionNumber: 'Ver en SpigotMC', isExternal: true, externalUrl: resourcePage });
