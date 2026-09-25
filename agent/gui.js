@@ -19,7 +19,6 @@ const UI_ASSETS = {
   '/app.js': 'ui/app.js',
 };
 
-// Icono de la bandeja (PNG 32x32, luna sobre fondo morado).
 const TRAY_ICON_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABNElEQVR42s2XsQ6CMBRF+yf8mAmTq7OrswMxcXBz0w/wC4yzYdLJwbg5MZiIGkjtJWiwgZZC+yrJiaDUe9v32r4yVrmmg3sgiASxgFsmLv87YHWX+CEUJA6EZaAR1olzYsLqsCceDCRFOMq4cE9EzFHCtU5MZtpoOU75Zv7k2/WLz4b9TbQ2ANHrOefpjRfg2cYoaA2gl6d99hUGh11mLQxMJ3455j/iYDFKaQzIPbfde6UBxFgWB0g+EgPVhKuymjzcG8BUqxMnM9A0/GQhgEiTAZIkVBkgmYaqEJAsRKokJFuKm6ah7YQ0XohkYBTvyjsjntvslsZLsc4M2nw+nW1GOtCmba3QaTtWgXdNCpXOBUlTLjiriOpKMoB7fNdnFngvSr2X5X4PJt6PZn9xOPV5PH8DKeu0vPehIOQAAAAASUVORK5CYII=', 'base64');
 
 let getAsset = null;
@@ -76,44 +75,51 @@ let stateProvider = () => ({
 let actions = {};
 
 function mimeType(filePath) {
-  const extension = path.extname(filePath).toLowerCase();
+  const ext = path.extname(filePath).toLowerCase();
 
-  return {
-    '.html': 'text/html; charset=utf-8',
-    '.css': 'text/css; charset=utf-8',
-    '.js': 'text/javascript; charset=utf-8',
-    '.json': 'application/json; charset=utf-8',
-    '.svg': 'image/svg+xml',
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.ico': 'image/x-icon',
-  }[extension] || 'application/octet-stream';
+  if (ext === '.html') return 'text/html; charset=utf-8';
+  if (ext === '.css') return 'text/css; charset=utf-8';
+  if (ext === '.js') return 'text/javascript; charset=utf-8';
+  if (ext === '.json') return 'application/json; charset=utf-8';
+
+  return 'application/octet-stream';
 }
 
 function readUiAsset(assetName) {
-  if (isStandalone && getAsset) return getAsset(assetName);
+  if (isStandalone && getAsset) {
+    try {
+      return Buffer.from(getAsset(assetName)).toString('utf8');
+    } catch {}
+  }
 
-  return fs.readFileSync(path.join(__dirname, 'ui', path.basename(assetName)));
+  const filePath = path.join(__dirname, assetName);
+  return fs.readFileSync(filePath, 'utf8');
 }
 
 function openUrl(url) {
-  execFile('cmd.exe', ['/d', '/c', 'start', '', url], { windowsHide: true }, () => {});
+  try {
+    execFile('explorer.exe', [url], { windowsHide: true });
+  } catch {}
 }
 
 function openFolder(folder) {
   if (!folder) return;
-  execFile('explorer.exe', [folder], { windowsHide: true }, () => {});
+
+  try {
+    execFile('explorer.exe', [folder], { windowsHide: true });
+  } catch {}
 }
 
 function openConfigFolder(configPath) {
-  if (configPath) openFolder(path.dirname(configPath));
+  const folder = path.dirname(configPath || CONFIG_DIR);
+
+  try {
+    execFile('explorer.exe', [folder], { windowsHide: true });
+  } catch {}
 }
 
 /* ── Bandeja del sistema ── */
 
-// Solo oculta la ventana si hay icono en la bandeja; si no, el usuario
-// se quedaría sin forma de recuperarla.
 function hideToTray() {
   if (!tray || !window) return false;
 
@@ -140,10 +146,24 @@ function showFromTray() {
 
 function quitApp() {
   try {
+    actions.onQuit?.();
+  } catch {}
+
+  try {
     tray?.dispose();
   } catch {}
 
-  app?.exit();
+  try {
+    app?.exit();
+  } catch {}
+
+  // WebViewJS puede cerrar la ventana pero dejar vivo el runtime de Node.
+  // Aseguramos que el proceso termine completamente.
+  setImmediate(() => {
+    try {
+      process.exit(0);
+    } catch {}
+  });
 }
 
 function createTray() {
@@ -260,7 +280,6 @@ function createWindow() {
     },
   });
 
-  // Al minimizar la ventana (botón de la barra de título) se manda a la bandeja.
   window.on('resize', () => {
     try {
       if (window.isMinimized()) hideToTray();
@@ -299,7 +318,6 @@ function notifyStateChanged() {
     return;
   }
 
-  // Evita reevaluar el mismo estado cientos de veces durante ráfagas de logs.
   if (stateJson === lastStateJson) return;
   lastStateJson = stateJson;
 
@@ -313,7 +331,7 @@ function notifyStateChanged() {
 function scheduleStateChanged() {
   if (notifyTimer !== null) return;
   notifyTimer = setTimeout(notifyStateChanged, 100);
-};
+}
 
 function startGui(getState, guiActions = {}) {
   stateProvider = getState;
