@@ -1,5 +1,3 @@
-'use strict';
-
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -141,6 +139,10 @@ async function main() {
   });
 
   gui = startGui(getState, {
+    onQuit: () => {
+      shutdown();
+    },
+
     clearLogs: () => {
       logs.length = 0;
       addLog('Registro de logs limpiado.');
@@ -153,9 +155,9 @@ async function main() {
       const logPath = path.join(CONFIG_DIR, 'agent.log');
       const content = logs
         .map(entry => `[${new Date(entry.time).toLocaleString('es-ES')}] [${entry.level.toUpperCase()}] ${entry.message}`)
-        .join('\n\n');
+        .join('\\n\\n');
 
-      fs.writeFileSync(logPath, content + (content ? '\n' : ''), 'utf8');
+      fs.writeFileSync(logPath, content + (content ? '\\n' : ''), 'utf8');
       return logPath;
     },
 
