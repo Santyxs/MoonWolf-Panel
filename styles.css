@@ -84,7 +84,7 @@ body::after {
   overflow-y: auto;
   overflow-x: hidden;
 }
-.sidebar::-webkit-scrollbar       { width: 3px; }
+.sidebar::-webkit-scrollbar       { width: 20px; }
 .sidebar::-webkit-scrollbar-thumb { background: var(--border2); }
 
 .sb-logo {
