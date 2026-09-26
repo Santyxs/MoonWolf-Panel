@@ -1078,6 +1078,206 @@ app.post('/api/startup', (req, res) => {
 });
 
 /* ══════════════════════════════════════════════
+    BASES DE DATOS (MySQL / MariaDB)
+    ══════════════════════════════════════════════ */
+const mysql = require('mysql2/promise');
+
+const MYSQL_HOST = process.env.MOONWOLF_MYSQL_HOST || 'localhost';
+const MYSQL_PORT = Number(process.env.MOONWOLF_MYSQL_PORT || 3306);
+const MYSQL_ROOT_USER = process.env.MOONWOLF_MYSQL_USER || 'root';
+const MYSQL_ROOT_PASSWORD = process.env.MOONWOLF_MYSQL_PASSWORD || '';
+
+const DATABASES_STORE_PATH = path.join(STARTUP_DIR, 'databases.json');
+const MYSQL_SYSTEM_DBS = new Set(['information_schema', 'mysql', 'performance_schema', 'sys']);
+const DB_NAME_RE = /^[A-Za-z0-9_]{1,48}$/;
+
+let mysqlPool = null;
+
+function getMysqlPool() {
+  if (mysqlPool) return mysqlPool;
+
+  mysqlPool = mysql.createPool({
+    host: MYSQL_HOST,
+    port: MYSQL_PORT,
+    user: MYSQL_ROOT_USER,
+    password: MYSQL_ROOT_PASSWORD,
+    waitForConnections: true,
+    connectionLimit: 5,
+  });
+
+  return mysqlPool;
+}
+
+function loadDatabasesStore() {
+  try {
+    const raw = JSON.parse(fsSync.readFileSync(DATABASES_STORE_PATH, 'utf8'));
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveDatabasesStore(list) {
+  if (!fsSync.existsSync(STARTUP_DIR)) {
+    fsSync.mkdirSync(STARTUP_DIR, { recursive: true });
+  }
+
+  const tmp = `${DATABASES_STORE_PATH}.tmp`;
+  fsSync.writeFileSync(tmp, JSON.stringify(list, null, 2), 'utf8');
+  fsSync.renameSync(tmp, DATABASES_STORE_PATH);
+}
+
+function generateDbPassword() {
+  return crypto.randomBytes(18).toString('base64').replace(/[+/=]/g, '').slice(0, 20);
+}
+
+app.get('/api/databases/status', async (_req, res) => {
+  try {
+    const pool = getMysqlPool();
+    await pool.query('SELECT 1');
+    ok(res, { connected: true, host: MYSQL_HOST, port: MYSQL_PORT });
+  } catch (e) {
+    ok(res, { connected: false, error: e.message, host: MYSQL_HOST, port: MYSQL_PORT });
+  }
+});
+
+app.get('/api/databases', async (_req, res) => {
+  try {
+    const pool = getMysqlPool();
+    const [rows] = await pool.query(
+      `SELECT
+         s.SCHEMA_NAME AS name,
+         COALESCE(SUM(t.DATA_LENGTH + t.INDEX_LENGTH), 0) AS sizeBytes,
+         COUNT(t.TABLE_NAME) AS tableCount
+       FROM information_schema.SCHEMATA s
+       LEFT JOIN information_schema.TABLES t ON t.TABLE_SCHEMA = s.SCHEMA_NAME
+       GROUP BY s.SCHEMA_NAME
+       ORDER BY s.SCHEMA_NAME`
+    );
+
+    const store = loadDatabasesStore();
+    const databases = rows
+      .filter(row => !MYSQL_SYSTEM_DBS.has(row.name))
+      .map(row => {
+        const meta = store.find(item => item.database === row.name);
+
+        return {
+          name: row.name,
+          sizeMb: (Number(row.sizeBytes) / 1024 / 1024).toFixed(2),
+          tables: Number(row.tableCount),
+          user: meta?.user || null,
+          createdAt: meta?.createdAt || null,
+        };
+      });
+
+    ok(res, { databases });
+  } catch (e) {
+    fail(res, `No se pudo conectar a MySQL: ${e.message}`);
+  }
+});
+
+app.post('/api/databases', async (req, res) => {
+  const name = String(req.body?.name || '').trim();
+  const createUser = req.body?.createUser !== false;
+
+  if (!DB_NAME_RE.test(name)) {
+    return fail(res, 'Nombre no válido. Usa solo letras, números y guion bajo (máx. 48 caracteres).');
+  }
+
+  if (MYSQL_SYSTEM_DBS.has(name.toLowerCase())) {
+    return fail(res, 'Ese nombre está reservado para MySQL.');
+  }
+
+  try {
+    const pool = getMysqlPool();
+    const [existing] = await pool.query('SHOW DATABASES LIKE ?', [name]);
+
+    if (existing.length) {
+      return fail(res, 'Ya existe una base de datos con ese nombre.');
+    }
+
+    await pool.query(`CREATE DATABASE \`${name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
+
+    let credentials = null;
+
+    if (createUser) {
+      const username = name.slice(0, 32);
+      const password = generateDbPassword();
+
+      await pool.query('CREATE USER IF NOT EXISTS ?@\'%\' IDENTIFIED BY ?', [username, password]);
+      await pool.query(`GRANT ALL PRIVILEGES ON \`${name}\`.* TO ?@'%'`, [username]);
+      await pool.query('FLUSH PRIVILEGES');
+
+      credentials = { user: username, password, host: MYSQL_HOST, port: MYSQL_PORT, database: name };
+
+      const store = loadDatabasesStore();
+      store.push({ database: name, user: username, createdAt: Date.now() });
+      saveDatabasesStore(store);
+    }
+
+    ok(res, { name, credentials });
+  } catch (e) {
+    fail(res, `No se pudo crear la base de datos: ${e.message}`);
+  }
+});
+
+app.post('/api/databases/:name/reset-password', async (req, res) => {
+  const name = String(req.params.name || '').trim();
+
+  if (!DB_NAME_RE.test(name)) {
+    return fail(res, 'Nombre no válido.');
+  }
+
+  const store = loadDatabasesStore();
+  const record = store.find(item => item.database === name);
+
+  if (!record?.user) {
+    return fail(res, 'Esta base de datos no tiene un usuario asociado creado por el panel.');
+  }
+
+  try {
+    const pool = getMysqlPool();
+    const password = generateDbPassword();
+
+    await pool.query('ALTER USER ?@\'%\' IDENTIFIED BY ?', [record.user, password]);
+    await pool.query('FLUSH PRIVILEGES');
+
+    ok(res, { credentials: { user: record.user, password, host: MYSQL_HOST, port: MYSQL_PORT, database: name } });
+  } catch (e) {
+    fail(res, `No se pudo restablecer la contraseña: ${e.message}`);
+  }
+});
+
+app.delete('/api/databases/:name', async (req, res) => {
+  const name = String(req.params.name || '').trim();
+
+  if (!DB_NAME_RE.test(name) || MYSQL_SYSTEM_DBS.has(name.toLowerCase())) {
+    return fail(res, 'Nombre no válido.');
+  }
+
+  try {
+    const pool = getMysqlPool();
+    await pool.query(`DROP DATABASE \`${name}\``);
+
+    const store = loadDatabasesStore();
+    const record = store.find(item => item.database === name);
+
+    if (record?.user) {
+      try {
+        await pool.query('DROP USER IF EXISTS ?@\'%\'', [record.user]);
+        await pool.query('FLUSH PRIVILEGES');
+      } catch {}
+    }
+
+    saveDatabasesStore(store.filter(item => item.database !== name));
+
+    ok(res);
+  } catch (e) {
+    fail(res, `No se pudo eliminar la base de datos: ${e.message}`);
+  }
+});
+
+/* ══════════════════════════════════════════════
     MINECRAFT PROCESS
     ══════════════════════════════════════════════ */
 const { spawn } = require('child_process');
