@@ -445,7 +445,7 @@ jobs:
               public const ushort RT_ICON = 3;
               public const ushort RT_GROUP_ICON = 14;
           }
-'@
+          '@
 
           $handle = [MoonWolfResources]::BeginUpdateResource($exe, $false)
           if ($handle -eq [IntPtr]::Zero) {
