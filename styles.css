@@ -346,7 +346,7 @@ body::after {
   line-height: 1.7;
   scroll-behavior: smooth;
 }
-.console::-webkit-scrollbar       { width: 3px; }
+.console::-webkit-scrollbar       { width: 20px; }
 .console::-webkit-scrollbar-thumb { background: var(--border2); }
 
 .log-line         { display: flex; gap: 10px; padding: 1px 0; }
