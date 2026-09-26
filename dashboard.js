@@ -432,7 +432,7 @@ async function connectCloud(manual = false) {
   clearTimeout(connectTimer);
 
   if (!panelSession || !agentId) {
-    showLogin('Empareja este panel con un MoonWolf Agent.');
+    showLogin('Empareja este panel con MoonWolf Agent.');
 
     return Promise.reject(
       new Error('Código de conexión inválido.')
@@ -1264,7 +1264,7 @@ function openFileContext(event, name, type) {
   menu.innerHTML = `
     ${
       type !== 'dir'
-        ? '<div class="ctx-item" data-action="open">✏️ Abrir</div>'
+        ? '<div class="ctx-item" data-action="open">”📂 Abrir</div>'
         : ''
     }
 
@@ -1277,7 +1277,7 @@ function openFileContext(event, name, type) {
     </div>
 
     <div class="ctx-item" data-action="move">
-      📦 Mover
+      🔀 Mover
     </div>
 
     ${
@@ -1972,7 +1972,7 @@ async function installPlugin(version) {
 
   $('plgModalBody').insertAdjacentHTML(
     'afterbegin',
-    '<div class="plg-warn-bar">⬇️ Instalando...</div>'
+    '<div class="plg-warn-bar">📥 Instalando...</div>'
   );
 
   const data =
@@ -2592,7 +2592,7 @@ async function loadDatabases() {
     button.addEventListener('click', async () => {
       const name = button.dataset.resetDb;
 
-      if (!confirm(`¿Restablecer la contraseña del usuario de "${name}"?`)) {
+      if (!confirm(`Restablecer la contraseña del usuario de "${name}"?`)) {
         return;
       }
 
