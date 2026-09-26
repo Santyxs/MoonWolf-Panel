@@ -207,7 +207,6 @@ body::after {
 .page-title { font-family: 'Orbitron', sans-serif; font-size: 17px; font-weight: 900; letter-spacing: 3px; color: #fff; }
 .page-sub   { font-size: 12px; color: var(--muted2); letter-spacing: 1px; margin-top: var(--sp-xs); }
 
-/* ── VIEWS ── */
 .view { display: none; }
 .view.active { display: block; }
 
@@ -651,7 +650,6 @@ body::after {
   transition: all 0.4s;
 }
 
-/* ── Steps ── */
 .ver-step {
   margin-bottom: 24px;
 }
@@ -705,7 +703,7 @@ body::after {
 .ver-ext-link { font-size: 10px; color: var(--accent); text-decoration: none; margin-top: 4px; }
 .ver-ext-link:hover { text-decoration: underline; }
 
-/* ── Version search + pill grid ── */
+/* ── Version search ── */
 .ver-version-bar { display: flex; flex-direction: column; gap: 12px; }
 
 .ver-search-input {
@@ -820,7 +818,7 @@ body::after {
 }
 .ver-install-btn:hover { background: rgba(0,200,255,0.15); box-shadow: 0 0 14px rgba(0,200,255,0.12); }
 
-/* ── Modal de instalación ── */
+/* ── Instalation Modal ── */
 .ver-confirm-box {
   display: flex;
   align-items: center;
@@ -1022,7 +1020,6 @@ body::after {
 .toast.ok   { border-color: var(--green); color: var(--green); }
 .toast.err  { border-color: var(--red);   color: var(--red); }
 
-/* ── ANIMATIONS ── */
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ══════════════════════════════════════════════
