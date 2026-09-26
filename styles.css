@@ -1055,3 +1055,40 @@ body::after {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
 }
+
+
+/* ── USERS ── */
+.user-stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--sp-md);margin-bottom:14px}
+.user-stat-card{display:flex;align-items:center;gap:14px;padding:18px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg)}
+.user-stat-icon{width:42px;height:42px;display:grid;place-items:center;border-radius:10px;background:var(--surface2);font-size:20px}
+.user-stat-label{display:block;color:var(--muted2);font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:3px}
+.user-stat-card strong{display:block;font-size:22px;color:var(--text)}
+.user-panel-subtitle{margin-top:4px;color:var(--muted2);font-size:11px}
+.user-create-form{display:grid;grid-template-columns:1.5fr 1fr 1fr auto;gap:8px;padding:16px}
+.user-create-form .form-input{min-width:0}
+.user-create-btn{white-space:nowrap}
+.user-token-panel{padding:16px;border-color:var(--accent)}
+.user-token-title{font-weight:700;color:var(--accent);font-size:12px;letter-spacing:1px}
+.user-token-sub{color:var(--muted2);font-size:11px;margin:5px 0 10px}
+.user-token-row{display:flex;align-items:center;gap:8px}
+.user-token-row code{flex:1;min-width:0;padding:10px;border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface2);color:var(--text);font-size:12px;word-break:break-all}
+.user-row{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid var(--border)}
+.user-row:last-child{border-bottom:0}
+.user-avatar,.user-profile-icon{width:40px;height:40px;flex:0 0 40px;display:grid;place-items:center;border-radius:50%;background:var(--surface2);border:1px solid var(--border)}
+.user-row-main{min-width:0;flex:1}
+.user-row-main strong{display:block;color:var(--text);font-size:13px}
+.user-row-meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:5px;color:var(--muted2);font-size:10px}
+.user-permission-pill{padding:3px 7px;border-radius:999px;border:1px solid var(--border)}
+.user-permission-pill.control{color:var(--accent);border-color:rgba(0,200,255,.35)}
+.user-permission-pill.read{color:var(--muted2)}
+.user-revoke-btn:hover{border-color:var(--red);color:var(--red)}
+.user-access-grid{display:grid;grid-template-columns:minmax(280px,520px)}
+.user-access-card{overflow:hidden}
+.user-access-body{display:flex;align-items:center;gap:12px;padding:18px}
+.user-profile-title{font-weight:700;color:var(--text)}
+.user-profile-sub{color:var(--muted2);font-size:11px;margin-top:3px}
+.user-permission-row{display:flex;justify-content:space-between;padding:12px 18px;border-top:1px solid var(--border);color:var(--muted2);font-size:11px}
+.user-permission-row strong{color:var(--text)}
+.user-info-note{margin:0 18px 18px;padding:10px;border-radius:var(--r-md);background:var(--surface2);color:var(--muted2);font-size:10px;line-height:1.5}
+@media (max-width:850px){.user-create-form{grid-template-columns:1fr 1fr}.user-create-btn{width:100%}}
+@media (max-width:620px){.user-stats-grid{grid-template-columns:1fr}.user-create-form{grid-template-columns:1fr}.user-row{align-items:flex-start;flex-wrap:wrap}.user-revoke-btn{margin-left:52px}}

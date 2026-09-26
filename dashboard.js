@@ -2837,6 +2837,10 @@ function switchView(id) {
       loadDatabases();
       break;
 
+    case 'users':
+      renderUsers();
+      break;
+
     case 'startup':
       loadStartup();
       break;
@@ -2930,24 +2934,35 @@ async function loadShareTokens() {
     const data = await cloudApi('/api/share-tokens');
     const tokens = Array.isArray(data.tokens) ? data.tokens : [];
 
+    const control = tokens.filter(token => token.permission === 'control').length;
+    const read = tokens.filter(token => token.permission !== 'control').length;
+
+    if ($('userStatTotal')) $('userStatTotal').textContent = tokens.length;
+    if ($('userStatControl')) $('userStatControl').textContent = control;
+    if ($('userStatRead')) $('userStatRead').textContent = read;
+
     list.innerHTML = tokens.length
       ? tokens.map(token => {
           const expiry = token.expiresAt
             ? new Date(token.expiresAt).toLocaleString('es-ES')
             : 'Nunca';
           return `
-            <div class="settings-row" style="align-items:flex-start">
-              <div style="min-width:0;flex:1">
-                <strong>${escHtml(token.label)}</strong>
-                <div style="font-size:11px;color:var(--muted2);margin-top:3px">
-                  ${token.permission === 'control' ? '🎮 Control' : '👁️ Solo lectura'} · Caduca: ${escHtml(expiry)}
+            <div class="user-row">
+              <div class="user-avatar">👤</div>
+              <div class="user-row-main">
+                <strong>${escHtml(token.label || 'Usuario')}</strong>
+                <div class="user-row-meta">
+                  <span class="user-permission-pill ${token.permission === 'control' ? 'control' : 'read'}">
+                    ${token.permission === 'control' ? '🎮 Control' : '👁️ Solo lectura'}
+                  </span>
+                  <span>Caduca: ${escHtml(expiry)}</span>
                 </div>
               </div>
-              <button class="small-btn" data-revoke-share="${escHtml(token.id)}">Revocar</button>
+              <button class="small-btn user-revoke-btn" data-revoke-share="${escHtml(token.id)}">Revocar</button>
             </div>
           `;
         }).join('')
-      : '<div class="empty-state">No hay accesos compartidos activos.</div>';
+      : '<div class="empty-state"><div class="empty-icon">👥</div><div class="empty-msg">No hay usuarios con acceso.</div></div>';
 
     list.querySelectorAll('[data-revoke-share]').forEach(button => {
       button.addEventListener('click', async () => {
@@ -2965,6 +2980,104 @@ async function loadShareTokens() {
   } catch (error) {
     list.innerHTML = `<div class="empty-state">${escHtml(error.message)}</div>`;
   }
+}
+
+function renderUsers() {
+  const element = $('userList');
+  if (!element) return;
+
+  const isOwner = panelKind === 'owner' && panelPermission === 'admin';
+
+  if (!isOwner) {
+    element.innerHTML = `
+      <div class="user-access-grid">
+        <div class="panel user-access-card">
+          <div class="panel-header">
+            <div class="panel-title"><span>👤</span> TU ACCESO</div>
+          </div>
+          <div class="user-access-body">
+            <div class="user-profile-icon">👤</div>
+            <div>
+              <div class="user-profile-title">Acceso compartido</div>
+              <div class="user-profile-sub">Este panel te ha sido compartido por el propietario.</div>
+            </div>
+          </div>
+          <div class="user-permission-row">
+            <span>Permiso</span>
+            <strong>${panelPermission === 'control' ? '🎮 Control' : '👁️ Solo lectura'}</strong>
+          </div>
+          <div class="user-info-note">
+            Tu acceso está limitado a los permisos asignados por el propietario. No puedes crear ni revocar accesos.
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  element.innerHTML = `
+    <div class="user-stats-grid">
+      <div class="user-stat-card">
+        <span class="user-stat-icon">👥</span>
+        <div><span class="user-stat-label">Accesos activos</span><strong id="userStatTotal">—</strong></div>
+      </div>
+      <div class="user-stat-card">
+        <span class="user-stat-icon">🎮</span>
+        <div><span class="user-stat-label">Con control</span><strong id="userStatControl">—</strong></div>
+      </div>
+      <div class="user-stat-card">
+        <span class="user-stat-icon">👁️</span>
+        <div><span class="user-stat-label">Solo lectura</span><strong id="userStatRead">—</strong></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title"><span>➕</span> NUEVO USUARIO</div>
+          <div class="user-panel-subtitle">Crea un acceso independiente sin compartir tu código de propietario.</div>
+        </div>
+      </div>
+      <div class="user-create-form">
+        <input id="shareLabel" class="form-input" placeholder="Nombre (ej. Paco)" maxlength="60">
+        <select id="sharePermission" class="form-input">
+          <option value="read">👁️ Solo lectura</option>
+          <option value="control">🎮 Control</option>
+        </select>
+        <select id="shareExpiry" class="form-input">
+          <option value="never">Sin caducidad</option>
+          <option value="1h">1 hora</option>
+          <option value="1d">1 día</option>
+          <option value="7d">7 días</option>
+          <option value="30d">30 días</option>
+        </select>
+        <button class="small-btn user-create-btn" id="btnCreateShare">Crear acceso</button>
+      </div>
+    </div>
+
+    <div id="shareCreatedBox" class="panel user-token-panel" style="display:none">
+      <div class="user-token-title">🔐 ACCESO CREADO</div>
+      <div class="user-token-sub">Este token se muestra una sola vez. Entrégaselo a la persona que va a usar el panel.</div>
+      <div class="user-token-row">
+        <code id="shareCreatedToken"></code>
+        <button class="small-btn" id="btnCopyShareToken">Copiar</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title"><span>👥</span> USUARIOS CON ACCESO</div>
+          <div class="user-panel-subtitle">Puedes revocar cualquier acceso inmediatamente.</div>
+        </div>
+        <button class="small-btn" id="btnRefreshUsers">↺ Actualizar</button>
+      </div>
+      <div id="shareTokenList"></div>
+    </div>
+  `;
+
+  bindShareSettings();
+  $('btnRefreshUsers')?.addEventListener('click', loadShareTokens);
 }
 
 function bindShareSettings() {
@@ -3078,37 +3191,6 @@ function renderSettings() {
       </span>
     </div>
 
-    ${panelKind === 'owner' && panelPermission === 'admin' ? `
-      <div style="margin-top:18px;padding-top:18px;border-top:1px solid var(--border)">
-        <div style="font-weight:700;margin-bottom:4px">🔐 Accesos compartidos</div>
-        <div style="font-size:11px;color:var(--muted2);margin-bottom:12px">Crea accesos para otras personas sin compartir tu código de propietario.</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
-          <input id="shareLabel" class="plg-search-input" placeholder="Nombre (ej. Paco)" maxlength="60" style="width:auto">
-          <select id="sharePermission" class="plg-search-input" style="width:auto">
-            <option value="read">👁️ Solo lectura</option>
-            <option value="control">🎮 Control</option>
-          </select>
-        </div>
-        <div style="display:flex;gap:8px;margin-bottom:10px">
-          <select id="shareExpiry" class="plg-search-input" style="flex:1">
-            <option value="never">Sin caducidad</option>
-            <option value="1h">1 hora</option>
-            <option value="1d">1 día</option>
-            <option value="7d">7 días</option>
-            <option value="30d">30 días</option>
-          </select>
-          <button class="small-btn" id="btnCreateShare">Crear token</button>
-        </div>
-        <div id="shareCreatedBox" style="display:none;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:10px">
-          <div style="font-size:10px;color:var(--muted2);margin-bottom:5px">TOKEN CREADO — se muestra una sola vez aquí</div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <code id="shareCreatedToken" style="font-size:11px;word-break:break-all;flex:1"></code>
-            <button class="small-btn" id="btnCopyShareToken">Copiar</button>
-          </div>
-        </div>
-        <div id="shareTokenList"></div>
-      </div>
-    ` : ''}
 
     <div style="padding-top:12px">
       <button
@@ -3137,7 +3219,6 @@ function renderSettings() {
       }
     );
 
-  bindShareSettings();
 }
 
 /* TOAST */
