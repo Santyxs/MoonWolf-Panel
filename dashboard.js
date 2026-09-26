@@ -1242,7 +1242,7 @@ function openFileContext(event, name, type) {
   event.preventDefault();
 
   document
-    .querySelector('.file-ctx-menu')
+    .querySelector('.ctx-menu')
     ?.remove();
 
   const rel =
@@ -1253,7 +1253,7 @@ function openFileContext(event, name, type) {
   const menu =
     document.createElement('div');
 
-  menu.className = 'file-ctx-menu';
+  menu.className = 'ctx-menu';
 
   menu.style.left =
     `${event.clientX}px`;
@@ -2435,6 +2435,182 @@ async function installServerBuild(build) {
   }
 }
 
+/* DATABASES (MySQL / MariaDB) */
+
+function showDbCredentials(creds) {
+  const text =
+    `Host: ${creds.host}:${creds.port}\n` +
+    `Base de datos: ${creds.database}\n` +
+    `Usuario: ${creds.user}\n` +
+    `Contraseña: ${creds.password}`;
+
+  try {
+    navigator.clipboard?.writeText(text);
+  } catch {}
+
+  alert(
+    `Credenciales de la base de datos (copiadas al portapapeles):\n\n${text}\n\n⚠️ Esta contraseña no se volverá a mostrar.`
+  );
+}
+
+async function createDatabase() {
+  const name = prompt(
+    'Nombre de la nueva base de datos (letras, números y guion bajo, máx. 48 caracteres):'
+  );
+
+  if (!name) return;
+
+  const data = await postJSON('/api/databases', {
+    name: name.trim(),
+    createUser: true,
+  });
+
+  if (!data.ok) {
+    toast(`❌ ${data.error}`, 'err');
+    return;
+  }
+
+  toast('✅ Base de datos creada', 'ok');
+
+  if (data.credentials) {
+    showDbCredentials(data.credentials);
+  }
+
+  loadDatabases();
+}
+
+async function loadDatabases() {
+  const container = $('dbList');
+
+  if (!container) return;
+
+  container.innerHTML = `
+    <div class="empty-state">
+      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
+      <div class="empty-msg">Conectando con MySQL...</div>
+    </div>
+  `;
+
+  let status = { connected: false };
+
+  try {
+    status = await api('/api/databases/status');
+  } catch (error) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-msg">${escHtml(error.message)}</div>
+      </div>
+    `;
+    return;
+  }
+
+  if (!status.connected) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon" style="color:var(--red)">⚠</div>
+        <div class="empty-msg">
+          No se pudo conectar con MySQL (${escHtml(status.host || '')}:${escHtml(String(status.port || ''))}).<br>
+          <span style="font-size:11px;color:var(--muted)">
+            ${escHtml(status.error || 'Configura MOONWOLF_MYSQL_HOST / MOONWOLF_MYSQL_USER / MOONWOLF_MYSQL_PASSWORD en el .env del servidor.')}
+          </span>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  const data = await api('/api/databases');
+
+  if (!data.ok) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-msg">${escHtml(data.error)}</div>
+      </div>
+    `;
+    return;
+  }
+
+  const databases = data.databases || [];
+
+  container.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 4px 14px">
+      <span style="font-size:11px;color:var(--muted2)">
+        🟢 Conectado a MySQL — ${escHtml(status.host)}:${escHtml(String(status.port))}
+      </span>
+      <button class="small-btn" id="btnNewDatabase">➕ Nueva base de datos</button>
+    </div>
+
+    ${
+      databases.length
+        ? databases.map(db => `
+          <div class="backup-row">
+            <span class="bk-icon">🗄️</span>
+            <span class="bk-name">
+              ${escHtml(db.name)}
+              <small>${escHtml(db.tables)} tablas · ${escHtml(db.user || 'sin usuario dedicado')}</small>
+            </span>
+            <span class="bk-size">${escHtml(db.sizeMb)} MB</span>
+            <span class="bk-actions">
+              ${
+                db.user
+                  ? `<button class="icon-btn edit" data-reset-db="${escHtml(db.name)}" title="Restablecer contraseña">🔑</button>`
+                  : ''
+              }
+              <button class="icon-btn" data-delete-db="${escHtml(db.name)}" title="Eliminar">🗑️</button>
+            </span>
+          </div>
+        `).join('')
+        : '<div class="empty-state"><div class="empty-msg">No hay bases de datos todavía.</div></div>'
+    }
+  `;
+
+  $('btnNewDatabase')?.addEventListener('click', createDatabase);
+
+  container.querySelectorAll('[data-delete-db]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const name = button.dataset.deleteDb;
+
+      if (!confirm(`¿Eliminar la base de datos "${name}"? Esta acción no se puede deshacer.`)) {
+        return;
+      }
+
+      const data = await api(`/api/databases/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
+      });
+
+      if (!data.ok) {
+        toast(`❌ ${data.error}`, 'err');
+        return;
+      }
+
+      toast('✅ Base de datos eliminada', 'ok');
+      loadDatabases();
+    });
+  });
+
+  container.querySelectorAll('[data-reset-db]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const name = button.dataset.resetDb;
+
+      if (!confirm(`¿Restablecer la contraseña del usuario de "${name}"?`)) {
+        return;
+      }
+
+      const data = await postJSON(
+        `/api/databases/${encodeURIComponent(name)}/reset-password`,
+        {}
+      );
+
+      if (!data.ok) {
+        toast(`❌ ${data.error}`, 'err');
+        return;
+      }
+
+      showDbCredentials(data.credentials);
+    });
+  });
+}
+
 /* STARTUP */
 
 async function loadStartup() {
@@ -2655,6 +2831,10 @@ function switchView(id) {
 
     case 'plugins':
       loadInstalledPlugins();
+      break;
+
+    case 'databases':
+      loadDatabases();
       break;
 
     case 'startup':
