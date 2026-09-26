@@ -66,7 +66,6 @@ jobs:
           }
 
           $content = Get-Content -LiteralPath $file -Raw
-
           $old = "return require(process.env.NAPI_RS_NATIVE_LIBRARY_PATH);"
 
           if (-not $content.Contains($old)) {
@@ -88,9 +87,7 @@ jobs:
           ) -join "`n"
 
           $content = $content.Replace($old, $new)
-
           Set-Content -LiteralPath $file -Value $content -Encoding utf8
-
           Write-Host "Parche aplicado correctamente."
 
       - name: Prepare Agent build directory
@@ -99,7 +96,6 @@ jobs:
           if (Test-Path -LiteralPath "dist") {
             Remove-Item -LiteralPath "dist" -Recurse -Force
           }
-
           New-Item -ItemType Directory -Force -Path "dist" | Out-Null
 
       - name: Determine next Agent version
@@ -109,10 +105,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           latest=$(
-            gh release list \
-              --limit 100 \
-              --json tagName,isDraft,isPrerelease \
-              --jq '
+            gh release list               --limit 100               --json tagName,isDraft,isPrerelease               --jq '
                 [.[] |
                   select(.isDraft == false and .isPrerelease == false) |
                   .tagName |
@@ -143,7 +136,6 @@ jobs:
 
           echo "Última versión: ${latest:-ninguna}"
           echo "Nueva versión: $next"
-
           echo "tag=$next" >> "$GITHUB_OUTPUT"
 
       - name: Create WebViewJS native shim
@@ -160,29 +152,17 @@ jobs:
         env:
           AGENT_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          npx esbuild agent/index.js \
-            --bundle \
-            --platform=node \
-            --target=node24 \
-            --format=cjs \
-            --alias:@webviewjs/webview-win32-x64-msvc=./webview-native-shim.js \
-            --define:__AGENT_VERSION__="\"${AGENT_TAG#agent-v}\"" \
-            --outfile=dist/agent.cjs \
-            --log-level=info
+          npx esbuild agent/index.js             --bundle             --platform=node             --target=node24             --format=cjs             --alias:@webviewjs/webview-win32-x64-msvc=./webview-native-shim.js             --define:__AGENT_VERSION__="\"${AGENT_TAG#agent-v}\""             --outfile=dist/agent.cjs             --log-level=info
 
       - name: Verify bundle
         shell: pwsh
         run: |
           $bundle = "dist/agent.cjs"
-
           if (-not (Test-Path -LiteralPath $bundle)) {
             throw "No se generó $bundle"
           }
-
           $size = (Get-Item -LiteralPath $bundle).Length
-
           Write-Host "agent.cjs: $size bytes"
-
           if ($size -lt 100KB) {
             throw "El bundle generado es sospechosamente pequeño."
           }
@@ -192,33 +172,19 @@ jobs:
         run: |
           $native = (Resolve-Path `
             "agent/node_modules/@webviewjs/webview-win32-x64-msvc/webview.win32-x64-msvc.node").Path
-
-          $main = (Resolve-Path `
-            "dist/agent.cjs").Path
-
-          $blob = Join-Path `
-            (Resolve-Path "dist").Path `
-            "sea-prep.blob"
-
-          $indexHtml = (Resolve-Path `
-            "agent/ui/index.html").Path
-
-          $styleCss = (Resolve-Path `
-            "agent/ui/style.css").Path
-
-          $appJs = (Resolve-Path `
-            "agent/ui/app.js").Path
+          $main = (Resolve-Path "dist/agent.cjs").Path
+          $blob = Join-Path (Resolve-Path "dist").Path "sea-prep.blob"
+          $indexHtml = (Resolve-Path "agent/ui/index.html").Path
+          $styleCss = (Resolve-Path "agent/ui/style.css").Path
+          $appJs = (Resolve-Path "agent/ui/app.js").Path
 
           $config = @{
             main = $main
             mainFormat = "commonjs"
             output = $blob
-
             disableExperimentalSEAWarning = $true
-
             useSnapshot = $false
             useCodeCache = $false
-
             assets = @{
               "ui/index.html" = $indexHtml
               "ui/style.css" = $styleCss
@@ -227,37 +193,21 @@ jobs:
             }
           }
 
-          $config |
-            ConvertTo-Json -Depth 10 |
-            Set-Content `
-              -Path "dist/sea-config.json" `
-              -Encoding utf8
+          $config | ConvertTo-Json -Depth 10 | Set-Content -Path "dist/sea-config.json" -Encoding utf8
 
       - name: Build MoonWolf Agent executable
         shell: pwsh
         run: |
           node --experimental-sea-config dist/sea-config.json
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "La generación del blob SEA terminó con código $LASTEXITCODE"
-          }
+          if ($LASTEXITCODE -ne 0) { throw "La generación del blob SEA terminó con código $LASTEXITCODE" }
 
           $blob = (Resolve-Path "dist/sea-prep.blob").Path
           $exe = Join-Path (Resolve-Path "dist").Path "MoonWolf-Agent.exe"
           $nodePath = (Get-Command node).Source
 
-          if (-not (Test-Path -LiteralPath $blob)) {
-            throw "No se generó $blob"
-          }
-
-          Copy-Item `
-            -LiteralPath $nodePath `
-            -Destination $exe `
-            -Force
-
-          if (-not (Test-Path -LiteralPath $exe)) {
-            throw "No se pudo crear $exe"
-          }
+          if (-not (Test-Path -LiteralPath $blob)) { throw "No se generó $blob" }
+          Copy-Item -LiteralPath $nodePath -Destination $exe -Force
+          if (-not (Test-Path -LiteralPath $exe)) { throw "No se pudo crear $exe" }
 
           Write-Host "Node executable: $nodePath"
           Write-Host "SEA blob: $blob"
@@ -265,116 +215,162 @@ jobs:
 
           $binaryBytes = [System.IO.File]::ReadAllBytes($exe)
           $binaryText = [System.Text.Encoding]::ASCII.GetString($binaryBytes)
-
-          $sentinelMatch = [regex]::Match(
-            $binaryText,
-            'NODE_SEA_FUSE_[A-Za-z0-9]+'
-          )
-
-          if (-not $sentinelMatch.Success) {
-            throw "No se encontró ningún SEA sentinel fuse dentro de node.exe"
-          }
-
+          $sentinelMatch = [regex]::Match($binaryText, 'NODE_SEA_FUSE_[A-Za-z0-9]+')
+          if (-not $sentinelMatch.Success) { throw "No se encontró ningún SEA sentinel fuse dentro de node.exe" }
           $sentinelFuse = $sentinelMatch.Value
 
           Write-Host "SEA sentinel detectado: $sentinelFuse"
-
-          npx --yes postject `
-            $exe `
-            NODE_SEA_BLOB `
-            $blob `
-            --sentinel-fuse $sentinelFuse `
-            --overwrite
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "postject terminó con código $LASTEXITCODE"
-          }
-
-          if (-not (Test-Path -LiteralPath $exe)) {
-            throw "No se generó $exe"
-          }
-
+          npx --yes postject $exe NODE_SEA_BLOB $blob --sentinel-fuse $sentinelFuse --overwrite
+          if ($LASTEXITCODE -ne 0) { throw "postject terminó con código $LASTEXITCODE" }
+          if (-not (Test-Path -LiteralPath $exe)) { throw "No se generó $exe" }
           Write-Host "MoonWolf-Agent.exe generado correctamente."
 
       - name: Hide Windows console
         shell: pwsh
         run: |
           $exe = (Resolve-Path "dist/MoonWolf-Agent.exe").Path
-
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-
-          if (-not (Test-Path -LiteralPath $vswhere)) {
-            throw "No se encontró vswhere.exe"
-          }
+          if (-not (Test-Path -LiteralPath $vswhere)) { throw "No se encontró vswhere.exe" }
 
           $editbin = & $vswhere `
             -latest `
             -products * `
             -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-            -find "**/Hostx64/x64/editbin.exe" |
-            Select-Object -First 1
+            -find "**/Hostx64/x64/editbin.exe" | Select-Object -First 1
 
-          if ([string]::IsNullOrWhiteSpace($editbin) -or `
-              -not (Test-Path -LiteralPath $editbin)) {
+          if ([string]::IsNullOrWhiteSpace($editbin) -or -not (Test-Path -LiteralPath $editbin)) {
             throw "No se encontró editbin.exe"
           }
 
           Write-Host "Usando editbin: $editbin"
-          Write-Host "Cambiando el subsistema del ejecutable a Windows GUI..."
-
           & $editbin /SUBSYSTEM:WINDOWS $exe
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "editbin terminó con código $LASTEXITCODE"
-          }
-
+          if ($LASTEXITCODE -ne 0) { throw "editbin terminó con código $LASTEXITCODE" }
           Write-Host "Terminal de Windows ocultada correctamente."
 
-      - name: Set executable icon
+      - name: Set MoonWolf executable icon (native Win32, no rcedit)
         shell: pwsh
         run: |
           $exe = (Resolve-Path "dist/MoonWolf-Agent.exe").Path
-          $icon = (Resolve-Path "agent/assets/MoonWolf-Agent.ico").Path
+          $ico = Join-Path (Resolve-Path "dist").Path "MoonWolf-Agent.ico"
 
-          if (-not (Test-Path -LiteralPath $icon)) {
-            throw "No se encontró el icono de MoonWolf: $icon"
+          # Exactamente el mismo PNG embebido actualmente usado por la bandeja de MoonWolf.
+          $pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABNElEQVR42s2XsQ6CMBRF+yf8mAmTq7OrswMxcXBz0w/wC4yzYdLJwbg5MZiIGkjtJWiwgZZC+yrJiaDUe9v32r4yVrmmg3sgiASxgFsmLv87YHWX+CEUJA6EZaAR1olzYsLqsCceDCRFOMq4cE9EzFHCtU5MZtpoOU75Zv7k2/WLz4b9TbQ2ANHrOefpjRfg2cYoaA2gl6d99hUGh11mLQxMJ3455j/iYDFKaQzIPbfde6UBxFgWB0g+EgPVhKuymjzcG8BUqxMnM9A0/GQhgEiTAZIkVBkgmYaqEJAsRKokJFuKm6ah7YQ0XohkYBTvyjsjntvslsZLsc4M2nw+nW1GOtCmba3QaTtWgXdNCpXOBUlTLjiriOpKMoB7fNdnFngvSr2X5X4PJt6PZn9xOPV5PH8DKeu0vPehIOQAAAAASUVORK5CYII='
+          $png = [Convert]::FromBase64String($pngBase64)
+
+          # ICO de una sola imagen PNG (32x32). Windows acepta PNG-compressed icon images.
+          $icoBytes = New-Object byte[] (6 + 16 + $png.Length)
+          $icoBytes[0] = 0
+          $icoBytes[1] = 0
+          $icoBytes[2] = 1
+          $icoBytes[3] = 0
+          $icoBytes[4] = 1
+          $icoBytes[5] = 0
+          $icoBytes[6] = 32
+          $icoBytes[7] = 32
+          $icoBytes[8] = 0
+          $icoBytes[9] = 0
+          $icoBytes[10] = 1
+          $icoBytes[11] = 0
+          $icoBytes[12] = 32
+          $icoBytes[13] = 0
+          [BitConverter]::GetBytes([uint32]$png.Length).CopyTo($icoBytes, 14)
+          [BitConverter]::GetBytes([uint32]22).CopyTo($icoBytes, 18)
+          [Array]::Copy($png, 0, $icoBytes, 22, $png.Length)
+          [IO.File]::WriteAllBytes($ico, $icoBytes)
+
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class MoonWolfResources {
+              [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+              public static extern IntPtr BeginUpdateResource(string pFileName, bool bDeleteExistingResources);
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              public static extern bool UpdateResource(IntPtr hUpdate, IntPtr lpType, IntPtr lpName, ushort wLanguage, byte[] lpData, uint cbData);
+
+              [DllImport("kernel32.dll", SetLastError = true)]
+              public static extern bool EndUpdateResource(IntPtr hUpdate, bool fDiscard);
+
+              public static IntPtr MAKEINTRESOURCE(ushort value) {
+                  return new IntPtr(value);
+              }
+
+              public const ushort LANG_NEUTRAL = 0x0000;
+              public const ushort RT_ICON = 3;
+              public const ushort RT_GROUP_ICON = 14;
+          }
+          '@
+
+          # Leer la imagen PNG desde el ICO que acabamos de crear.
+          $icoData = [IO.File]::ReadAllBytes($ico)
+          $pngOffset = [BitConverter]::ToUInt32($icoData, 18)
+          $pngSize = [BitConverter]::ToUInt32($icoData, 14)
+          $pngData = New-Object byte[] $pngSize
+          [Array]::Copy($icoData, [int]$pngOffset, $pngData, 0, [int]$pngSize)
+
+          # RT_GROUP_ICON: ICONDIR + una entrada GRPICONDIRENTRY, con ID 1.
+          $group = New-Object byte[] 34
+          $group[0] = 0; $group[1] = 0
+          $group[2] = 1; $group[3] = 0
+          $group[4] = 1; $group[5] = 0
+          $group[6] = 32; $group[7] = 32
+          $group[8] = 0; $group[9] = 0
+          $group[10] = 1; $group[11] = 0
+          $group[12] = 32; $group[13] = 0
+          [BitConverter]::GetBytes([uint32]$pngData.Length).CopyTo($group, 14)
+          [BitConverter]::GetBytes([uint16]1).CopyTo($group, 18)
+          [BitConverter]::GetBytes([uint16]0).CopyTo($group, 20)
+          [BitConverter]::GetBytes([uint32]0).CopyTo($group, 22)
+          [BitConverter]::GetBytes([uint32]0).CopyTo($group, 26)
+          [BitConverter]::GetBytes([uint32]0).CopyTo($group, 30)
+
+          $handle = [MoonWolfResources]::BeginUpdateResource($exe, $false)
+          if ($handle -eq [IntPtr]::Zero) {
+              throw "BeginUpdateResource falló. Win32Error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
           }
 
-          Write-Host "Instalando rcedit..."
-          npm install --no-save rcedit
+          try {
+              $ok = [MoonWolfResources]::UpdateResource(
+                  $handle,
+                  [MoonWolfResources]::MAKEINTRESOURCE([MoonWolfResources]::RT_ICON),
+                  [MoonWolfResources]::MAKEINTRESOURCE(1),
+                  [MoonWolfResources]::LANG_NEUTRAL,
+                  $pngData,
+                  [uint32]$pngData.Length
+              )
+              if (-not $ok) { throw "UpdateResource(RT_ICON) falló. Win32Error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
 
-          $rcedit = (Resolve-Path "node_modules/rcedit/bin/rcedit-x64.exe").Path
+              $ok = [MoonWolfResources]::UpdateResource(
+                  $handle,
+                  [MoonWolfResources]::MAKEINTRESOURCE([MoonWolfResources]::RT_GROUP_ICON),
+                  [MoonWolfResources]::MAKEINTRESOURCE(1),
+                  [MoonWolfResources]::LANG_NEUTRAL,
+                  $group,
+                  [uint32]$group.Length
+              )
+              if (-not $ok) { throw "UpdateResource(RT_GROUP_ICON) falló. Win32Error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
 
-          if (-not (Test-Path -LiteralPath $rcedit)) {
-            throw "No se encontró rcedit-x64.exe"
+              if (-not [MoonWolfResources]::EndUpdateResource($handle, $false)) {
+                  throw "EndUpdateResource falló. Win32Error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+              }
+              $handle = [IntPtr]::Zero
+          }
+          finally {
+              if ($handle -ne [IntPtr]::Zero) {
+                  [MoonWolfResources]::EndUpdateResource($handle, $true) | Out-Null
+              }
           }
 
-          Write-Host "Aplicando icono de MoonWolf al ejecutable..."
-          & $rcedit $exe --set-icon $icon
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "rcedit terminó con código $LASTEXITCODE"
-          }
-
-          Write-Host "Icono aplicado correctamente."
+          Write-Host "Icono de MoonWolf incrustado correctamente en el ejecutable."
 
       - name: Verify executable
         shell: pwsh
         run: |
           $exe = "dist/MoonWolf-Agent.exe"
-
-          if (-not (Test-Path -LiteralPath $exe)) {
-            throw "No se generó $exe"
-          }
-
+          if (-not (Test-Path -LiteralPath $exe)) { throw "No se generó $exe" }
           $size = (Get-Item -LiteralPath $exe).Length
-
           Write-Host "MoonWolf-Agent.exe: $size bytes"
-
-          if ($size -lt 1MB) {
-            throw "El ejecutable generado es sospechosamente pequeño."
-          }
-
+          if ($size -lt 1MB) { throw "El ejecutable generado es sospechosamente pequeño." }
           Write-Host "Ejecutable generado correctamente."
 
       - name: Upload workflow artifact
@@ -391,7 +387,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
           git tag "$TAG_NAME" "$GITHUB_SHA"
           git push origin "$TAG_NAME"
 
@@ -401,7 +396,4 @@ jobs:
           TAG_NAME: ${{ steps.version.outputs.tag }}
         shell: bash
         run: |
-          gh release create "$TAG_NAME" \
-            dist/MoonWolf-Agent.exe \
-            --title "MoonWolf Agent v${TAG_NAME#agent-v}" \
-            --generate-notes
+          gh release create "$TAG_NAME"             dist/MoonWolf-Agent.exe             --title "MoonWolf Agent v${TAG_NAME#agent-v}"             --generate-notes
