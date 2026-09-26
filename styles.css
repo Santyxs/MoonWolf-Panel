@@ -437,54 +437,57 @@ body::after {
 /* ══════════════════════════════════════════════
    FILE CONTEXT MENU
    ══════════════════════════════════════════════ */
-.file-menu-btn {
-  background: none;
-  border: none;
-  color: var(--muted2);
-  font-size: 18px;
-  padding: 2px 8px;
-  border-radius: var(--r-sm);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity var(--t-fast), color var(--t-fast);
-  line-height: 1;
-  flex-shrink: 0;
-}
-.file-row:hover .file-menu-btn { opacity: 1; }
-.file-menu-btn:hover { color: var(--accent); }
-
 .file-ctx-menu {
-  position: absolute;
-  z-index: 500;
+  position: fixed;
+  z-index: 1000;
+  min-width: 210px;
+  max-width: min(280px, calc(100vw - 16px));
+  padding: 5px;
   background: var(--surface2);
   border: 1px solid var(--border2);
   border-radius: var(--r-lg);
-  padding: 5px;
-  min-width: 190px;
-  box-shadow: 0 12px 40px rgba(0,0,0,0.5), 0 0 0 1px rgba(0,200,255,0.06);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(0, 200, 255, 0.06);
   animation: modalIn 0.15s ease;
 }
 
-.ctx-item {
+.file-ctx-menu .ctx-item {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 9px 14px;
   border-radius: var(--r-md);
-  font-size: 13px;
   color: var(--text);
+  font-size: 13px;
   cursor: pointer;
-  transition: background var(--t-fast), color var(--t-fast);
   user-select: none;
+  transition: background var(--t-fast), color var(--t-fast);
 }
-.ctx-item:hover { background: var(--surface3); color: var(--accent); }
-.ctx-item.danger { color: var(--red); }
-.ctx-item.danger:hover { background: rgba(255,68,85,0.08); color: var(--red); }
 
-.ctx-sep {
+.file-ctx-menu .ctx-item:hover {
+  background: var(--surface3);
+  color: var(--accent);
+}
+
+.file-ctx-menu .ctx-item.danger {
+  color: var(--red);
+}
+
+.ctx-menu .ctx-item.danger:hover {
+  background: rgba(255, 68, 85, 0.08);
+  color: var(--red);
+}
+
+.file-ctx-menu .ctx-sep {
   height: 1px;
-  background: var(--border);
   margin: 4px 0;
+  background: var(--border);
+}
+
+@media (max-width: 600px) {
+  .file-ctx-menu {
+    min-width: 180px;
+  }
 }
 
 /* ══════════════════════════════════════════════
