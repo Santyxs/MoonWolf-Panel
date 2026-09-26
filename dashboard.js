@@ -1253,7 +1253,7 @@ function openFileContext(event, name, type) {
   const menu =
     document.createElement('div');
 
-  menu.className = 'ctx-menu';
+  menu.className = '.file-ctx-menu';
 
   menu.style.left =
     `${event.clientX}px`;
