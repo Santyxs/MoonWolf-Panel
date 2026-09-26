@@ -1242,7 +1242,7 @@ function openFileContext(event, name, type) {
   event.preventDefault();
 
   document
-    .querySelector('.ctx-menu')
+    .querySelector('.file-ctx-menu')
     ?.remove();
 
   const rel =
