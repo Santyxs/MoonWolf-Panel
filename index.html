@@ -155,10 +155,10 @@
         <div class="files-layout">
           <div class="files-topbar">
             <div class="breadcrumb">
-              <span class="crumb-active" id="crumbHome">🏠 MoonWolf</span>
+              <span class="crumb crumb-active" id="crumbHome">🏠 MoonWolf</span>
               <span id="crumbTrail"></span>
             </div>
-            <button class="small-btn" disabled style="opacity:.4;cursor:not-allowed">➕ Nuevo archivo</button>
+            <button class="small-btn" id="btnNewFile">➕ Nuevo archivo</button>
           </div>
 
           <div class="panel files-table-panel" id="filesTablePanel">
@@ -224,7 +224,7 @@
               <button class="plg-search-btn" id="btnPluginSearch">BUSCAR</button>
             </div>
           </div>
-          <div id="plgTabSearchNote" class="plg-price-note" style="display:none">
+          <div id="plgTabSearchNote" class="plg-price-note">
             El filtro de precio solo distingue plugins de SpigotMC (los únicos que pueden ser de pago) — Modrinth y Hangar son siempre gratis.
           </div>
           <div id="plgResults" class="plg-results">
