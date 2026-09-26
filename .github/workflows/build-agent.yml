@@ -251,30 +251,180 @@ jobs:
         shell: pwsh
         run: |
           $exe = (Resolve-Path "dist/MoonWolf-Agent.exe").Path
-          $ico = Join-Path (Resolve-Path "dist").Path "MoonWolf-Agent.ico"
-
           $pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABNElEQVR42s2XsQ6CMBRF+yf8mAmTq7OrswMxcXBz0w/wC4yzYdLJwbg5MZiIGkjtJWiwgZZC+yrJiaDUe9v32r4yVrmmg3sgiASxgFsmLv87YHWX+CEUJA6EZaAR1olzYsLqsCceDCRFOMq4cE9EzFHCtU5MZtpoOU75Zv7k2/WLz4b9TbQ2ANHrOefpjRfg2cYoaA2gl6d99hUGh11mLQxMJ3455j/iYDFKaQzIPbfde6UBxFgWB0g+EgPVhKuymjzcG8BUqxMnM9A0/GQhgEiTAZIkVBkgmYaqEJAsRKokJFuKm6ah7YQ0XohkYBTvyjsjntvslsZLsc4M2nw+nW1GOtCmba3QaTtWgXdNCpXOBUlTLjiriOpKMoB7fNdnFngvSr2X5X4PJt6PZn9xOPV5PH8DKeu0vPehIOQAAAAASUVORK5CYII='
-          $png = [Convert]::FromBase64String($pngBase64)
+          $srcPng = [Convert]::FromBase64String($pngBase64)
 
-          $icoBytes = New-Object byte[] (6 + 16 + $png.Length)
-          $icoBytes[0] = 0
-          $icoBytes[1] = 0
-          $icoBytes[2] = 1
-          $icoBytes[3] = 0
-          $icoBytes[4] = 1
-          $icoBytes[5] = 0
-          $icoBytes[6] = 32
-          $icoBytes[7] = 32
-          $icoBytes[8] = 0
-          $icoBytes[9] = 0
-          $icoBytes[10] = 1
-          $icoBytes[11] = 0
-          $icoBytes[12] = 32
-          $icoBytes[13] = 0
-          [BitConverter]::GetBytes([uint32]$png.Length).CopyTo($icoBytes, 14)
-          [BitConverter]::GetBytes([uint32]22).CopyTo($icoBytes, 18)
-          [Array]::Copy($png, 0, $icoBytes, 22, $png.Length)
-          [IO.File]::WriteAllBytes($ico, $icoBytes)
+          # ---- Decodificador PNG mínimo (32x32, RGBA, 8bpp, sin interlace) ----
+          function Decode-PngRgba {
+            param([byte[]]$Png)
+
+            $sig = [byte[]](0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a)
+            for ($i=0; $i -lt 8; $i++) {
+              if ($Png[$i] -ne $sig[$i]) { throw "PNG inválido." }
+            }
+
+            $offset = 8
+            $width = 0; $height = 0; $bitDepth = 0; $colorType = 0
+            $idat = New-Object System.Collections.Generic.List[byte[]]
+
+            while ($offset -lt $Png.Length) {
+              $len = [BitConverter]::ToUInt32(($Png[($offset+3)..$offset]),0)
+              $type = [System.Text.Encoding]::ASCII.GetString($Png, $offset+4, 4)
+              $dataStart = $offset+8
+              $data = $Png[$dataStart..($dataStart+$len-1)]
+
+              if ($type -eq 'IHDR') {
+                $width = [BitConverter]::ToUInt32(($data[3..0]),0)
+                $height = [BitConverter]::ToUInt32(($data[7..4]),0)
+                $bitDepth = $data[8]
+                $colorType = $data[9]
+              } elseif ($type -eq 'IDAT') {
+                $idat.Add($data)
+              } elseif ($type -eq 'IEND') {
+                break
+              }
+
+              $offset = $dataStart + $len + 4
+            }
+
+            if ($bitDepth -ne 8 -or $colorType -ne 6) { throw "Formato PNG no soportado." }
+
+            $compressed = [byte[]]($idat | ForEach-Object { $_ })
+            $ms = New-Object System.IO.MemoryStream(,$compressed)
+            $ms.ReadByte() | Out-Null; $ms.ReadByte() | Out-Null   # cabecera zlib (2 bytes)
+            $ds = New-Object System.IO.Compression.DeflateStream($ms, [System.IO.Compression.CompressionMode]::Decompress)
+            $rawMs = New-Object System.IO.MemoryStream
+            $ds.CopyTo($rawMs)
+            $raw = $rawMs.ToArray()
+
+            $bpp = 4
+            $stride = $width * $bpp
+            $rgba = New-Object byte[] ($width * $height * 4)
+            $prev = New-Object byte[] $stride
+            $cur = New-Object byte[] $stride
+            $rawOffset = 0
+            $outOffset = 0
+
+            function Paeth($a,$b,$c) {
+              $p = $a + $b - $c
+              $pa = [Math]::Abs($p - $a); $pb = [Math]::Abs($p - $b); $pc = [Math]::Abs($p - $c)
+              if ($pa -le $pb -and $pa -le $pc) { return $a }
+              if ($pb -le $pc) { return $b }
+              return $c
+            }
+
+            for ($y=0; $y -lt $height; $y++) {
+              $filter = $raw[$rawOffset]; $rawOffset++
+              for ($x=0; $x -lt $stride; $x++) {
+                $val = $raw[$rawOffset]; $rawOffset++
+                $left = if ($x -ge $bpp) { $cur[$x-$bpp] } else { 0 }
+                $up = $prev[$x]
+                $upLeft = if ($x -ge $bpp) { $prev[$x-$bpp] } else { 0 }
+                $rec = switch ($filter) {
+                  0 { $val }
+                  1 { $val + $left }
+                  2 { $val + $up }
+                  3 { $val + [Math]::Floor(($left+$up)/2) }
+                  4 { $val + (Paeth $left $up $upLeft) }
+                  default { throw "Filtro PNG no soportado." }
+                }
+                $cur[$x] = $rec -band 0xFF
+              }
+              [Array]::Copy($cur, 0, $rgba, $outOffset, $stride)
+              $outOffset += $stride
+              [Array]::Copy($cur, $prev, $stride)
+            }
+
+            return @{ Width = $width; Height = $height; Rgba = $rgba }
+          }
+
+          $decoded = Decode-PngRgba -Png $srcPng
+
+          function Resize-NearestRgba {
+            param($Decoded, [int]$NewSize)
+            $srcW = $Decoded.Width; $srcH = $Decoded.Height
+            $src = $Decoded.Rgba
+            $dst = New-Object byte[] ($NewSize * $NewSize * 4)
+            for ($y=0; $y -lt $NewSize; $y++) {
+              $sy = [Math]::Min($srcH-1, [int]([Math]::Floor($y * $srcH / $NewSize)))
+              for ($x=0; $x -lt $NewSize; $x++) {
+                $sx = [Math]::Min($srcW-1, [int]([Math]::Floor($x * $srcW / $NewSize)))
+                $sOff = ($sy*$srcW + $sx)*4
+                $dOff = ($y*$NewSize + $x)*4
+                [Array]::Copy($src, $sOff, $dst, $dOff, 4)
+              }
+            }
+            return $dst
+          }
+
+          function Build-IconImageData {
+            param([byte[]]$Rgba, [int]$Size)
+
+            $xorRowBytes = $Size * 4
+            $xor = New-Object byte[] ($xorRowBytes * $Size)
+            $maskRowBytes = [Math]::Ceiling($Size / 32.0) * 4
+            $mask = New-Object byte[] ($maskRowBytes * $Size)
+
+            # Bottom-up: la última fila de la imagen va primero en el DIB del icono
+            for ($y=0; $y -lt $Size; $y++) {
+              $srcRow = $Size - 1 - $y
+              for ($x=0; $x -lt $Size; $x++) {
+                $srcOff = ($srcRow*$Size + $x)*4
+                $r = $Rgba[$srcOff]; $g = $Rgba[$srcOff+1]; $b = $Rgba[$srcOff+2]; $a = $Rgba[$srcOff+3]
+                $dstOff = ($y*$Size + $x)*4
+                $xor[$dstOff]   = $b
+                $xor[$dstOff+1] = $g
+                $xor[$dstOff+2] = $r
+                $xor[$dstOff+3] = $a
+                if ($a -lt 8) {
+                  $byteIndex = $y*$maskRowBytes + [Math]::Floor($x/8)
+                  $bitIndex = 7 - ($x % 8)
+                  $mask[$byteIndex] = $mask[$byteIndex] -bor (1 -shl $bitIndex)
+                }
+              }
+            }
+
+            $header = New-Object byte[] 40
+            [BitConverter]::GetBytes([uint32]40).CopyTo($header, 0)
+            [BitConverter]::GetBytes([int32]$Size).CopyTo($header, 4)
+            [BitConverter]::GetBytes([int32]($Size*2)).CopyTo($header, 8)
+            [BitConverter]::GetBytes([uint16]1).CopyTo($header, 12)
+            [BitConverter]::GetBytes([uint16]32).CopyTo($header, 14)
+            [BitConverter]::GetBytes([uint32]0).CopyTo($header, 16)
+            [BitConverter]::GetBytes([uint32]($xor.Length + $mask.Length)).CopyTo($header, 20)
+
+            $full = New-Object byte[] ($header.Length + $xor.Length + $mask.Length)
+            [Array]::Copy($header, 0, $full, 0, $header.Length)
+            [Array]::Copy($xor, 0, $full, $header.Length, $xor.Length)
+            [Array]::Copy($mask, 0, $full, $header.Length + $xor.Length, $mask.Length)
+            return $full
+          }
+
+          $sizes = @(16, 32)
+          $images = @()
+          foreach ($size in $sizes) {
+            $rgba = if ($size -eq $decoded.Width) { $decoded.Rgba } else { Resize-NearestRgba -Decoded $decoded -NewSize $size }
+            $images += ,@{ Size = $size; Data = (Build-IconImageData -Rgba $rgba -Size $size) }
+          }
+
+          # ---- Grupo GRPICONDIR (6 bytes) + GRPICONDIRENTRY (14 bytes) por imagen ----
+          $group = New-Object byte[] (6 + 14 * $images.Count)
+          [BitConverter]::GetBytes([uint16]0).CopyTo($group, 0)
+          [BitConverter]::GetBytes([uint16]1).CopyTo($group, 2)
+          [BitConverter]::GetBytes([uint16]$images.Count).CopyTo($group, 4)
+
+          for ($i=0; $i -lt $images.Count; $i++) {
+            $off = 6 + $i*14
+            $s = $images[$i].Size
+            $group[$off]   = [byte]($s -band 0xFF)   # 256 se representaría como 0, no aplica aquí
+            $group[$off+1] = [byte]($s -band 0xFF)
+            $group[$off+2] = 0
+            $group[$off+3] = 0
+            [BitConverter]::GetBytes([uint16]1).CopyTo($group, $off+4)
+            [BitConverter]::GetBytes([uint16]32).CopyTo($group, $off+6)
+            [BitConverter]::GetBytes([uint32]$images[$i].Data.Length).CopyTo($group, $off+8)
+            [BitConverter]::GetBytes([uint16]($i+1)).CopyTo($group, $off+12)
+          }
 
           Add-Type @'
           using System;
@@ -289,71 +439,55 @@ jobs:
               [DllImport("kernel32.dll", SetLastError = true)]
               public static extern bool EndUpdateResource(IntPtr hUpdate, bool fDiscard);
 
-              public static IntPtr MAKEINTRESOURCE(ushort value) {
-                  return new IntPtr(value);
-              }
+              public static IntPtr MAKEINTRESOURCE(ushort value) { return new IntPtr(value); }
 
               public const ushort LANG_NEUTRAL = 0x0000;
               public const ushort RT_ICON = 3;
               public const ushort RT_GROUP_ICON = 14;
           }
-          '@
-
-          $icoData = [IO.File]::ReadAllBytes($ico)
-          $pngOffset = [BitConverter]::ToUInt32($icoData, 18)
-          $pngSize = [BitConverter]::ToUInt32($icoData, 14)
-          $pngData = New-Object byte[] $pngSize
-          [Array]::Copy($icoData, [int]$pngOffset, $pngData, 0, [int]$pngSize)
-
-          $group = New-Object byte[] 20
-          $group[0] = 0; $group[1] = 0
-          $group[2] = 1; $group[3] = 0
-          $group[4] = 1; $group[5] = 0
-          $group[6] = 32; $group[7] = 32
-          $group[8] = 0; $group[9] = 0
-          $group[10] = 1; $group[11] = 0
-          $group[12] = 32; $group[13] = 0
-          [BitConverter]::GetBytes([uint32]$pngData.Length).CopyTo($group, 14)
-          [BitConverter]::GetBytes([uint16]1).CopyTo($group, 18)
+'@
 
           $handle = [MoonWolfResources]::BeginUpdateResource($exe, $false)
           if ($handle -eq [IntPtr]::Zero) {
-              throw "BeginUpdateResource falló. Win32Error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+            throw "BeginUpdateResource falló. Win32Error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
           }
 
           try {
+            for ($i=0; $i -lt $images.Count; $i++) {
+              $data = $images[$i].Data
               $ok = [MoonWolfResources]::UpdateResource(
-                  $handle,
-                  [MoonWolfResources]::MAKEINTRESOURCE([MoonWolfResources]::RT_ICON),
-                  [MoonWolfResources]::MAKEINTRESOURCE(1),
-                  [MoonWolfResources]::LANG_NEUTRAL,
-                  $pngData,
-                  [uint32]$pngData.Length
+                $handle,
+                [MoonWolfResources]::MAKEINTRESOURCE([MoonWolfResources]::RT_ICON),
+                [MoonWolfResources]::MAKEINTRESOURCE([uint16]($i+1)),
+                [MoonWolfResources]::LANG_NEUTRAL,
+                $data,
+                [uint32]$data.Length
               )
-              if (-not $ok) { throw "UpdateResource(RT_ICON) falló. Win32Error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+              if (-not $ok) { throw "UpdateResource(RT_ICON $($i+1)) falló. Win32Error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+            }
 
-              $ok = [MoonWolfResources]::UpdateResource(
-                  $handle,
-                  [MoonWolfResources]::MAKEINTRESOURCE([MoonWolfResources]::RT_GROUP_ICON),
-                  [MoonWolfResources]::MAKEINTRESOURCE(1),
-                  [MoonWolfResources]::LANG_NEUTRAL,
-                  $group,
-                  [uint32]$group.Length
-              )
-              if (-not $ok) { throw "UpdateResource(RT_GROUP_ICON) falló. Win32Error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+            $ok = [MoonWolfResources]::UpdateResource(
+              $handle,
+              [MoonWolfResources]::MAKEINTRESOURCE([MoonWolfResources]::RT_GROUP_ICON),
+              [MoonWolfResources]::MAKEINTRESOURCE(1),
+              [MoonWolfResources]::LANG_NEUTRAL,
+              $group,
+              [uint32]$group.Length
+            )
+            if (-not $ok) { throw "UpdateResource(RT_GROUP_ICON) falló. Win32Error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
 
-              if (-not [MoonWolfResources]::EndUpdateResource($handle, $false)) {
-                  throw "EndUpdateResource falló. Win32Error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
-              }
-              $handle = [IntPtr]::Zero
+            if (-not [MoonWolfResources]::EndUpdateResource($handle, $false)) {
+              throw "EndUpdateResource falló. Win32Error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+            }
+            $handle = [IntPtr]::Zero
           }
           finally {
-              if ($handle -ne [IntPtr]::Zero) {
-                  [MoonWolfResources]::EndUpdateResource($handle, $true) | Out-Null
-              }
+            if ($handle -ne [IntPtr]::Zero) {
+              [MoonWolfResources]::EndUpdateResource($handle, $true) | Out-Null
+            }
           }
 
-          Write-Host "Icono de MoonWolf incrustado correctamente en el ejecutable."
+          Write-Host "Icono de MoonWolf (16x16 + 32x32, DIB clásico) incrustado correctamente."
 
       - name: Verify executable
         shell: pwsh
