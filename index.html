@@ -42,7 +42,7 @@
       <nav class="sb-section">
         <div class="sb-section-label">Servidor</div>
         <div class="sb-item active" data-view="terminal"><span class="sb-icon">📟</span><span>Terminal</span></div>
-        <div class="sb-item" data-view="files"><span class="sb-icon">📁</span><span>Archivos</span></div>
+        <div class="sb-item" data-view="files"><span class="sb-icon">📂</span><span>Archivos</span></div>
         <div class="sb-item" data-view="plugins"><span class="sb-icon">🧩</span><span>Plugins</span></div>
         <div class="sb-item" data-view="versions"><span class="sb-icon">📦</span><span>Versiones</span></div>
       </nav>
@@ -50,8 +50,8 @@
       <nav class="sb-section">
         <div class="sb-section-label">Sistema</div>
         <div class="sb-item" data-view="databases"><span class="sb-icon">🗂️</span><span>Bases de datos</span></div>
-        <div class="sb-item" data-view="users"><span class="sb-icon">👤</span><span>Usuarios</span></div>
-        <div class="sb-item" data-view="backups"><span class="sb-icon">💾</span><span>Copias de seguridad</span></div>
+        <div class="sb-item" data-view="users"><span class="sb-icon">👥</span><span>Usuarios</span></div>
+        <div class="sb-item" data-view="backups"><span class="sb-icon">💾</span><span>Backups</span></div>
         <div class="sb-item" data-view="ports"><span class="sb-icon">🔌</span><span>Puertos</span></div>
       </nav>
 
@@ -217,15 +217,14 @@
                 <button class="plg-source" data-source="hangar">🔵 HANGAR</button>
               </div>
               <div class="plg-source-pills plg-price-pills">
-                <button class="plg-price active" data-price="all">TODOS</button>
+                <button class="plg-price active" data-price="all">)📝 TODOS</button>
                 <button class="plg-price" data-price="free">🆓 GRATIS</button>
                 <button class="plg-price" data-price="premium">💰 PREMIUM</button>
               </div>
               <button class="plg-search-btn" id="btnPluginSearch">BUSCAR</button>
             </div>
           </div>
-          <div id="plgTabSearchNote" class="plg-price-note">
-            El filtro de precio solo distingue plugins de SpigotMC (los únicos que pueden ser de pago) — Modrinth y Hangar son siempre gratis.
+          <div id="plgTabSearchNote" class="plg-price-note">El filtro de precio solo distingue plugins de SpigotMC (los únicos que pueden ser de pago) — Modrinth y Hangar son siempre gratis.
           </div>
           <div id="plgResults" class="plg-results">
             <div class="empty-state">
@@ -298,7 +297,7 @@
         <div class="page-header">
           <div>
             <div class="page-title">USUARIOS</div>
-            <div class="page-sub">Personas con acceso a este servidor desde MoonWolf Panel</div>
+            <div class="page-sub">Personas con acceso a este panel</div>
           </div>
         </div>
         <div id="userList"></div>
