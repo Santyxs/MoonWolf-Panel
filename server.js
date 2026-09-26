@@ -1136,13 +1136,9 @@ function launchServer() {
     broadcastStatus('offline');
     return false;
   }
-
-  let javaBin = String(cfg.javaPath || '').trim() || 'java';
-
-  if (process.platform === 'win32' && /^java(\.exe)?$/i.test(javaBin)) {
-      javaBin = 'javaw';
-  }
-
+   
+  const javaBin = String(cfg.javaPath || '').trim() || 'java';
+   
   const args = [
     `-Xms${cfg.minMemoryMb}M`,
     `-Xmx${cfg.maxMemoryMb}M`,
