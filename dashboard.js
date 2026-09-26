@@ -367,8 +367,10 @@ async function attemptLogin() {
 
   button.disabled = true;
 
+  button.textContent = 'Emparejando...';
+
   if ($('mwCloudError')) {
-    $('mwCloudError').textContent = 'Emparejando...';
+    $('mwCloudError').textContent = '';
   }
 
   pairingCode = code;
@@ -406,6 +408,7 @@ async function attemptLogin() {
       $('mwCloudError').textContent = error.message;
     }
 
+    button.textContent = 'CONECTAR SERVIDOR';
     button.disabled = false;
   }
 }
