@@ -473,7 +473,7 @@ body::after {
   color: var(--red);
 }
 
-.ctx-menu .ctx-item.danger:hover {
+.file-ctx-menu .ctx-item.danger:hover {
   background: rgba(255, 68, 85, 0.08);
   color: var(--red);
 }
