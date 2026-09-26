@@ -195,7 +195,7 @@ jobs:
 
           $config | ConvertTo-Json -Depth 10 | Set-Content -Path "dist/sea-config.json" -Encoding utf8
 
-      - name: Build MoonWolf Agent executable
+      - name: Build Agent executable
         shell: pwsh
         run: |
           node --experimental-sea-config dist/sea-config.json
@@ -247,17 +247,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "editbin terminó con código $LASTEXITCODE" }
           Write-Host "Terminal de Windows ocultada correctamente."
 
-      - name: Set MoonWolf executable icon (native Win32, no rcedit)
+      - name: Set executable icon
         shell: pwsh
         run: |
           $exe = (Resolve-Path "dist/MoonWolf-Agent.exe").Path
           $ico = Join-Path (Resolve-Path "dist").Path "MoonWolf-Agent.ico"
 
-          # Exactamente el mismo PNG embebido actualmente usado por la bandeja de MoonWolf.
           $pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABNElEQVR42s2XsQ6CMBRF+yf8mAmTq7OrswMxcXBz0w/wC4yzYdLJwbg5MZiIGkjtJWiwgZZC+yrJiaDUe9v32r4yVrmmg3sgiASxgFsmLv87YHWX+CEUJA6EZaAR1olzYsLqsCceDCRFOMq4cE9EzFHCtU5MZtpoOU75Zv7k2/WLz4b9TbQ2ANHrOefpjRfg2cYoaA2gl6d99hUGh11mLQxMJ3455j/iYDFKaQzIPbfde6UBxFgWB0g+EgPVhKuymjzcG8BUqxMnM9A0/GQhgEiTAZIkVBkgmYaqEJAsRKokJFuKm6ah7YQ0XohkYBTvyjsjntvslsZLsc4M2nw+nW1GOtCmba3QaTtWgXdNCpXOBUlTLjiriOpKMoB7fNdnFngvSr2X5X4PJt6PZn9xOPV5PH8DKeu0vPehIOQAAAAASUVORK5CYII='
           $png = [Convert]::FromBase64String($pngBase64)
 
-          # ICO de una sola imagen PNG (32x32). Windows acepta PNG-compressed icon images.
           $icoBytes = New-Object byte[] (6 + 16 + $png.Length)
           $icoBytes[0] = 0
           $icoBytes[1] = 0
@@ -301,15 +299,12 @@ jobs:
           }
           '@
 
-          # Leer la imagen PNG desde el ICO que acabamos de crear.
           $icoData = [IO.File]::ReadAllBytes($ico)
           $pngOffset = [BitConverter]::ToUInt32($icoData, 18)
           $pngSize = [BitConverter]::ToUInt32($icoData, 14)
           $pngData = New-Object byte[] $pngSize
           [Array]::Copy($icoData, [int]$pngOffset, $pngData, 0, [int]$pngSize)
 
-          # RT_GROUP_ICON: ICONDIR (6 bytes) + una GRPICONDIRENTRY (14 bytes), ID 1.
-          # Total: 20 bytes.
           $group = New-Object byte[] 20
           $group[0] = 0; $group[1] = 0
           $group[2] = 1; $group[3] = 0
