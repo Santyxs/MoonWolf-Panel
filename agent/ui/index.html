@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
   <title>MoonWolf Agent</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -34,6 +35,16 @@
         <div><span class="label">Versión</span><span id="version" class="value">—</span></div>
         <div class="local-status"><span id="local-dot" class="mini-dot"></span><span id="local-status">Servidor local</span></div>
       </div>
+    </section>
+    <section id="update-banner" class="update-banner hidden">
+      <div class="update-banner-content">
+        <strong id="update-title">Actualización disponible</strong>
+        <span id="update-description">—</span>
+        <div id="update-progress-track" class="update-progress-track hidden">
+          <div id="update-progress-fill" class="update-progress-fill"></div>
+        </div>
+      </div>
+      <button id="update-apply" class="button primary" type="button" disabled><span>⬆</span>Actualizar</button>
     </section>
     <section id="restart-banner" class="restart-banner hidden">
       <div class="restart-banner-content">
@@ -102,6 +113,11 @@
           <div class="info-row">
             <div class="wide"><span class="label">Agent ID</span><span id="settings-agent-id" class="value path">—</span></div>
             <button id="settings-copy-id" class="small-button" type="button">Copiar</button>
+          </div>
+          <div class="separator"></div>
+          <div class="info-row">
+            <div class="wide"><span class="label">Buscar actualizaciones</span><span class="value">Comprueba si hay una versión más reciente</span></div>
+            <button id="settings-check-update" class="small-button" type="button">Buscar</button>
           </div>
           <div class="separator"></div>
           <div class="info-row">
