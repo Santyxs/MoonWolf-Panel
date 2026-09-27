@@ -14,6 +14,7 @@ let state = {
   updateStatus: 'idle',
   updateProgress: 0,
   updateError: null,
+  updateNotice: null,
   logs: [],
 };
 
@@ -49,6 +50,7 @@ function render() {
   }
 
   renderUpdateBanner();
+  renderUpdateNotice();
   renderSettings();
   renderLogs();
 }
@@ -121,6 +123,29 @@ function renderUpdateBanner() {
     applyButton.disabled = true;
     applyButton.innerHTML = '<span>⬇</span>Preparando';
   }
+}
+
+let lastNoticeRef = null;
+
+function renderUpdateNotice() {
+  const element = $('update-notice');
+  if (!element) return;
+
+  const notice = state.updateNotice;
+
+  if (!notice || !notice.message) {
+    element.classList.add('hidden');
+    element.textContent = '';
+    lastNoticeRef = null;
+    return;
+  }
+
+  if (lastNoticeRef === notice) return;
+  lastNoticeRef = notice;
+
+  element.textContent = notice.message;
+  element.className = `update-notice ${notice.type || 'info'}`;
+  element.classList.remove('hidden');
 }
 
 function renderSettings() {
@@ -259,9 +284,9 @@ function bindEvents() {
     const ok = await copyText(state.agentId);
     flashButton(button, ok ? 'Copiado' : 'Error');
   });
-  $('settings-check-update')?.addEventListener('click', () => {
-    closeModal('settings-modal');
+  $('settings-check-update')?.addEventListener('click', event => {
     nativeApi().checkForUpdates?.();
+    flashButton(event.currentTarget, 'Buscando…');
   });
 
   $('close-serverdir')?.addEventListener('click', () => closeModal('serverdir-modal'));
