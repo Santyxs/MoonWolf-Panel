@@ -22,7 +22,7 @@ const CONFIG_PATH = path.join(CONFIG_DIR, 'agent.json');
 const FORWARD_TIMEOUT_MS = 120_000;
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
-const UPDATE_REPO = 'https://github.com/Santyxs/MoonWolf-Panel';
+const UPDATE_REPO = 'Santyxs/MoonWolf-Panel';
 const UPDATE_API = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
 const UPDATE_DIR = path.join(os.tmpdir(), 'MoonWolf-Update');
 
