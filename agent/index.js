@@ -289,6 +289,7 @@ async function main() {
   let reconnectTimer = null;
   let reconnectDelay = 1000;
   let updateCheckTimer = null;
+  let updateNoticeTimer = null;
   let shuttingDown = false;
   let gui = null;
   let pairingCode = '';
@@ -300,6 +301,7 @@ async function main() {
   let updateProgress = 0;
   let updateError = null;
   let updateFilePath = null;
+  let updateNotice = null;
 
   const logs = [];
   const MAX_LOGS = 500;
@@ -324,6 +326,18 @@ async function main() {
     addLog(`${context}: ${error?.stack || error?.message || error}`, 'error');
   }
 
+  function setUpdateNotice(message, type = 'info', ttl = 3500) {
+    updateNotice = { message, type };
+
+    clearTimeout(updateNoticeTimer);
+    updateNoticeTimer = setTimeout(() => {
+      updateNotice = null;
+      gui?.update();
+    }, ttl);
+
+    gui?.update();
+  }
+
   const getState = () => ({
     version: VERSION,
     agentId: config.agentId,
@@ -338,6 +352,7 @@ async function main() {
     updateStatus,
     updateProgress,
     updateError,
+    updateNotice,
     logs,
   });
 
@@ -363,11 +378,13 @@ async function main() {
       updateStatus = 'ready';
       updateProgress = 100;
       addLog(`Actualización v${updateAvailable.version} lista para instalar.`);
+      setUpdateNotice(`Actualización v${updateAvailable.version} descargada y lista`, 'ok', 5000);
     } catch (error) {
       updateStatus = 'error';
       updateError = error.message;
       updateFilePath = null;
       logError(error, 'Error descargando actualización');
+      setUpdateNotice(`Error descargando actualización: ${error.message}`, 'err', 5000);
     }
 
     gui?.update();
@@ -387,13 +404,17 @@ async function main() {
         updateProgress = 0;
         updateError = null;
         updateFilePath = null;
+
         addLog(`No hay actualizaciones. Versión actual: v${VERSION}.`);
+        setUpdateNotice(`Ya tienes la última versión · v${VERSION}`, 'ok');
+
         gui?.update();
         return;
       }
 
       if (updateAvailable && updateAvailable.version === info.version && updateStatus !== 'error') {
         addLog(`Actualización v${info.version} ya detectada.`);
+        setUpdateNotice(`Actualización v${info.version} ya detectada`, 'info');
         return;
       }
 
@@ -410,6 +431,7 @@ async function main() {
       updateStatus = 'error';
       updateError = error.message;
       logError(error, 'Error buscando actualización');
+      setUpdateNotice(`Error buscando actualización: ${error.message}`, 'err', 5000);
       gui?.update();
     }
   }
@@ -443,6 +465,7 @@ async function main() {
       gui?.update();
 
       addLog(`Aplicando actualización v${updateAvailable.version}...`);
+      setUpdateNotice('Aplicando actualización… el agent se reiniciará', 'info', 3000);
 
       applyUpdate(updateFilePath);
 
@@ -459,6 +482,7 @@ async function main() {
       updateStatus = 'error';
       updateError = error.message;
       logError(error, 'Error aplicando actualización');
+      setUpdateNotice(`Error aplicando actualización: ${error.message}`, 'err', 5000);
       gui?.update();
       return { ok: false, error: error.message };
     }
@@ -762,6 +786,7 @@ async function main() {
     shuttingDown = true;
     clearTimeout(reconnectTimer);
     clearTimeout(updateCheckTimer);
+    clearTimeout(updateNoticeTimer);
     cloudSocket?.disconnect();
     localSocket?.disconnect();
     cloudConnected = false;
