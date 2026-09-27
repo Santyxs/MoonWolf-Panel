@@ -761,7 +761,9 @@ function applyUpdate(downloadedPath) {
     throw new Error('El Agent no se está ejecutando como ejecutable.');
   }
 
-  const scriptPath = path.join(UPDATE_DIR, `apply-${Date.now()}.bat`);
+  const stamp = Date.now();
+  const scriptPath = path.join(UPDATE_DIR, `apply-${stamp}.bat`);
+  const vbsPath = path.join(UPDATE_DIR, `launch-${stamp}.vbs`);
 
   const script = [
     '@echo off',
@@ -792,10 +794,18 @@ function applyUpdate(downloadedPath) {
 
   fs.writeFileSync(scriptPath, script, 'utf8');
 
+  const vbsContent = [
+    'Set sh = CreateObject("WScript.Shell")',
+    `sh.Run "cmd.exe /c ""${scriptPath}"" ""${process.pid}"" ""${downloadedPath}"" ""${currentExe}""", 0, False`,
+  ].join('\r\n');
+
+  fs.writeFileSync(vbsPath, vbsContent, 'utf8');
+
   const child = spawn(
-    'cmd.exe',
-    ['/c', scriptPath, String(process.pid), downloadedPath, currentExe],
+    'wscript.exe',
+    [vbsPath],
     {
+      detached: true,
       windowsHide: true,
       stdio: 'ignore',
     }
