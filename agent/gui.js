@@ -104,6 +104,22 @@ let stateProvider = () => ({
 
 let actions = {};
 
+function cleanupOldExe() {
+  try {
+    const selfPath = process.execPath;
+
+    if (!/\.exe$/i.test(selfPath)) return;
+
+    const oldPath = selfPath + '.old';
+
+    if (fs.existsSync(oldPath)) {
+      fs.unlinkSync(oldPath);
+    }
+  } catch {}
+}
+
+cleanupOldExe();
+
 function decodePngRgba(png) {
   const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -761,82 +777,19 @@ function applyUpdate(downloadedPath) {
     throw new Error('El Agent no se está ejecutando como ejecutable.');
   }
 
-  const stamp = Date.now();
-  const scriptPath = path.join(UPDATE_DIR, `apply-${stamp}.bat`);
-  const vbsPath = path.join(UPDATE_DIR, `launch-${stamp}.vbs`);
+  const oldExe = currentExe + '.old';
 
-  const script = [
-    '@echo off',
-    'setlocal',
-    'set "LOG=%~dp0updater.log"',
-    '',
-    'echo ======================================= >> "%LOG%"',
-    'echo START %date% %time% >> "%LOG%"',
-    'echo PID recibido: %~1 >> "%LOG%"',
-    'echo SRC recibido: %~2 >> "%LOG%"',
-    'echo DST recibido: %~3 >> "%LOG%"',
-    '',
-    'set "TARGET_PID=%~1"',
-    'set "SRC=%~2"',
-    'set "DST=%~3"',
-    '',
-    ':wait',
-    'tasklist /FI "PID eq %TARGET_PID%" /NH 2>NUL | findstr /R /C:"%TARGET_PID%" >NUL',
-    'if errorlevel 1 goto :gone',
-    'echo [%time%] esperando al PID %TARGET_PID% >> "%LOG%"',
-    'ping -n 2 127.0.0.1 >NUL',
-    'goto :wait',
-    '',
-    ':gone',
-    'echo [%time%] PID %TARGET_PID% ya no existe >> "%LOG%"',
-    'ping -n 3 127.0.0.1 >NUL',
-    '',
-    'if exist "%DST%.old" del "%DST%.old%" >NUL 2>&1',
-    '',
-    'echo [%time%] renombrando DST a .old >> "%LOG%"',
-    'move /Y "%DST%" "%DST%.old" >> "%LOG%" 2>&1',
-    'if errorlevel 1 (',
-    '  echo [%time%] FALLO renombrando DST >> "%LOG%"',
-    '  goto :end',
-    ')',
-    '',
-    'echo [%time%] moviendo SRC a DST >> "%LOG%"',
-    'move /Y "%SRC%" "%DST%" >> "%LOG%" 2>&1',
-    'if errorlevel 1 (',
-    '  echo [%time%] FALLO moviendo SRC, restaurando >> "%LOG%"',
-    '  move /Y "%DST%.old" "%DST%" >NUL 2>&1',
-    '  goto :end',
-    ')',
-    '',
-    'del "%DST%.old%" >NUL 2>&1',
-    '',
-    'echo [%time%] lanzando nuevo exe >> "%LOG%"',
-    'start "" "%DST%"',
-    'echo [%time%] OK >> "%LOG%"',
-    '',
-    ':end',
-    'echo [%time%] fin >> "%LOG%"',
-    'del "%~f0" >NUL 2>&1',
-  ].join('\r\n');
+  try { fs.unlinkSync(oldExe); } catch {}
 
-  fs.writeFileSync(scriptPath, script, 'utf8');
+  fs.renameSync(currentExe, oldExe);
 
-  const vbsContent = [
-    'Set sh = CreateObject("WScript.Shell")',
-    `sh.Run "cmd.exe /c ""${scriptPath}"" ""${process.pid}"" ""${downloadedPath}"" ""${currentExe}""", 0, False`,
-  ].join('\r\n');
+  fs.copyFileSync(downloadedPath, currentExe);
 
-  fs.writeFileSync(vbsPath, vbsContent, 'utf8');
-
-  const child = spawn(
-    'wscript.exe',
-    [vbsPath],
-    {
-      detached: true,
-      windowsHide: true,
-      stdio: 'ignore',
-    }
-  );
+  const child = spawn(currentExe, [], {
+    detached: true,
+    windowsHide: true,
+    stdio: 'ignore',
+  });
 
   child.unref();
 
@@ -1061,7 +1014,7 @@ async function main() {
       setTimeout(() => {
         try { shutdown(); } catch {}
         process.exit(0);
-      }, 500);
+      }, 1500);
 
       return { ok: true };
     } catch (error) {
