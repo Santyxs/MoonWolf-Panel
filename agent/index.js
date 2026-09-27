@@ -1,3 +1,5 @@
+'use strict';
+
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -5,7 +7,7 @@ const crypto = require('node:crypto');
 const { io } = require('socket.io-client');
 const { startGui } = require('./gui');
 
-const PANEL_URL = 'https://moonwolf-panel.onrender.com';
+const PANEL_URL = process.env.MOONWOLF_PANEL_URL || 'https://moonwolf-panel.onrender.com';
 const CLOUD_PATH = '/socket.io';
 const VERSION = typeof __AGENT_VERSION__ !== 'undefined' ? __AGENT_VERSION__ : 'dev';
 
@@ -16,6 +18,7 @@ const PAIRING_CODE_RE = /^MW-P[A-Z2-9]{3}-[A-Z2-9]{4}$/;
 const DEFAULT_SERVER_DIR = process.env.MOONWOLF_SERVER_DIR || path.join(os.homedir(), 'MoonWolf');
 const CONFIG_DIR = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'MoonWolf');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'agent.json');
+const FORWARD_TIMEOUT_MS = 120_000;
 
 function ensureConfigDir() {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
@@ -104,6 +107,7 @@ async function main() {
   let gui = null;
   let pairingCode = '';
   let pairingExpiresAt = 0;
+  let pendingRestart = false;
 
   const logs = [];
   const MAX_LOGS = 500;
@@ -135,6 +139,7 @@ async function main() {
     configPath: CONFIG_PATH,
     cloudConnected,
     localServerReady,
+    restartRequired: pendingRestart,
     logs,
   });
 
@@ -155,9 +160,9 @@ async function main() {
       const logPath = path.join(CONFIG_DIR, 'agent.log');
       const content = logs
         .map(entry => `[${new Date(entry.time).toLocaleString('es-ES')}] [${entry.level.toUpperCase()}] ${entry.message}`)
-        .join('\\n\\n');
+        .join('\n\n');
 
-      fs.writeFileSync(logPath, content + (content ? '\\n' : ''), 'utf8');
+      fs.writeFileSync(logPath, content + (content ? '\n' : ''), 'utf8');
       return logPath;
     },
 
@@ -188,10 +193,35 @@ async function main() {
         return { ok: false, error: `No se pudo guardar la configuración: ${error.message}` };
       }
 
-      addLog(`Carpeta del servidor actualizada a: ${resolved}. Reinicia MoonWolf Agent para aplicar el cambio.`, 'warn');
+      pendingRestart = true;
+
+      addLog(
+        `Carpeta del servidor actualizada a: ${resolved}. ` +
+        'Es necesario reiniciar MoonWolf Agent para aplicar el cambio.',
+        'warn'
+      );
       gui.update();
 
-      return { ok: true, changed: true, serverDir: resolved, restartRequired: true };
+      return {
+        ok: true,
+        changed: true,
+        serverDir: resolved,
+        restartRequired: true,
+        message: 'Cierra y vuelve a abrir MoonWolf Agent para aplicar el cambio.',
+      };
+    },
+
+    restart: () => {
+      addLog('Reinicio solicitado desde la interfaz.', 'warn');
+      shutdown();
+
+      setImmediate(() => {
+        try {
+          process.exit(0);
+        } catch {}
+      });
+
+      return true;
     },
   });
 
@@ -219,6 +249,9 @@ async function main() {
   }
 
   async function forwardHttp(request) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), FORWARD_TIMEOUT_MS);
+
     try {
       const method = request.method || 'GET';
       const body = request.body !== undefined && request.body !== null ? JSON.stringify(request.body) : undefined;
@@ -227,6 +260,7 @@ async function main() {
         method,
         headers: body ? { 'Content-Type': 'application/json' } : undefined,
         body,
+        signal: controller.signal,
       });
 
       const bytes = Buffer.from(await response.arrayBuffer());
@@ -239,16 +273,28 @@ async function main() {
         bodyBase64: bytes.toString('base64'),
       };
     } catch (error) {
-      logError(error, 'Error reenviando petición');
+      const isTimeout = error?.name === 'AbortError';
+
+      logError(
+        error,
+        isTimeout
+          ? `Timeout (${FORWARD_TIMEOUT_MS / 1000}s) reenviando petición`
+          : 'Error reenviando petición'
+      );
+
       return {
         id: request.id,
         ok: false,
-        status: 502,
+        status: isTimeout ? 504 : 502,
         data: {
           ok: false,
-          error: error.message,
+          error: isTimeout
+            ? `El servidor local no respondió en ${FORWARD_TIMEOUT_MS / 1000}s.`
+            : error.message,
         },
       };
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
@@ -402,6 +448,19 @@ async function main() {
 
   process.on('uncaughtException', error => {
     logError(error, 'Error no controlado');
+    addLog('El proceso se cerrará para evitar un estado inconsistente.', 'error');
+
+    try {
+      gui?.update();
+    } catch {}
+
+    setTimeout(() => {
+      try {
+        shutdown();
+      } catch {}
+
+      process.exit(1);
+    }, 500);
   });
 
   process.on('unhandledRejection', reason => {
