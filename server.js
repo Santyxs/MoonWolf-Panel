@@ -9,7 +9,7 @@ const fsSync = require('fs');
 const path = require('path');
 
 /* ══════════════════════════════════════════════
-   .env (mini-loader, sin dependencias externas)
+   Enviroments
    ══════════════════════════════════════════════ */
 const ENV_PATH = path.join(__dirname, '.env');
 (function loadDotEnv() {
@@ -78,8 +78,6 @@ function requiredPermission(method, pathname) {
 
   if (verb === 'GET' || verb === 'HEAD') return 'read';
 
-  // Todas las operaciones que modifican el servidor requieren como mínimo
-  // permiso de control. La gestión de accesos compartidos es exclusiva del propietario.
   return 'control';
 }
 
@@ -377,8 +375,6 @@ io.use((socket, next) => {
       return next(new Error('unauthorized'));
     }
 
-    // El Agent Token solo sirve para autenticar al Agent con Cloud.
-    // Nunca se acepta como credencial de panel.
     if (agentId.length < 16 || token.length < 32) {
       return next(new Error('unauthorized'));
     }
@@ -616,7 +612,6 @@ const PLUGINS_DIR = path.join(BASE_DIR, 'plugins');
 const PORT = Number(process.env.MOONWOLF_PORT || process.env.PORT || 3000);
 const PAPER_UA = 'MoonWolfPanel/2.0 (contact@moonwolf.local)';
 
-/* ── Configuración de Startup (jar, java, memoria, args, comportamiento) ── */
 const STARTUP_DIR = path.join(BASE_DIR, '.moonwolf');
 const STARTUP_CONFIG_PATH = path.join(STARTUP_DIR, 'startup.json');
 const SERVER_PROPERTIES_PATH = path.join(BASE_DIR, 'server.properties');
@@ -1933,7 +1928,6 @@ app.post('/api/versions/install', async (req, res) => {
     await downloadFile(url, currentJar);
     const stats = await fs.stat(currentJar);
 
-    // El jar recién descargado pasa a ser automáticamente el activo en Startup.
     saveStartupConfig({ jar: 'server.jar' });
 
     ok(res, {
