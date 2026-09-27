@@ -10,7 +10,7 @@ const path = require('path');
 const net = require('net');
 
 /* ══════════════════════════════════════════════
-   .env (mini-loader, sin dependencias externas)
+   Environments
    ══════════════════════════════════════════════ */
 const ENV_PATH = path.join(__dirname, '.env');
 (function loadDotEnv() {
@@ -79,8 +79,6 @@ function requiredPermission(method, pathname) {
 
   if (verb === 'GET' || verb === 'HEAD') return 'read';
 
-  // Todas las operaciones que modifican el servidor requieren como mínimo
-  // permiso de control. La gestión de accesos compartidos es exclusiva del propietario.
   return 'control';
 }
 
@@ -378,8 +376,6 @@ io.use((socket, next) => {
       return next(new Error('unauthorized'));
     }
 
-    // El Agent Token solo sirve para autenticar al Agent con Cloud.
-    // Nunca se acepta como credencial de panel.
     if (agentId.length < 16 || token.length < 32) {
       return next(new Error('unauthorized'));
     }
@@ -423,11 +419,28 @@ for (const asset of PUBLIC_ASSETS) {
 
 app.use(express.json({ limit: '50mb' }));
 
-app.post('/api/pair', (req, res) => {
+/* ══════════════════════════════════════════════
+   RATE LIMIT CENTRALIZADO PARA /api
+/* ══════════════════════════════════════════════ */   
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, service: 'moonwolf-local' });
+});
+
+app.use('/api', (req, res, next) => {
   if (apiRateLimited(req.ip)) {
-    return res.status(429).json({ ok: false, error: 'Demasiadas peticiones, espera un momento.' });
+    return res.status(429).json({
+      ok: false,
+      error: 'Demasiadas peticiones, espera un momento.',
+    });
   }
 
+  next();
+});
+
+/* ══════════════════════════════════════════════
+   EMPAREJAMIENTO / SESIONES
+   ══════════════════════════════════════════════ */
+app.post('/api/pair', (req, res) => {
   const code = String(req.body?.code || '').trim().toUpperCase();
   let pairing = null;
   let share = null;
@@ -488,11 +501,10 @@ app.post('/api/pair', (req, res) => {
   });
 });
 
+/* ══════════════════════════════════════════════
+   SHARE TOKENS (propietario)
+   ══════════════════════════════════════════════ */
 app.get('/api/share-tokens', (req, res) => {
-  if (apiRateLimited(req.ip)) {
-    return res.status(429).json({ ok: false, error: 'Demasiadas peticiones, espera un momento.' });
-  }
-
   const session = getSessionFromRequest(req);
 
   if (!session || session.kind !== 'owner' || session.permission !== 'admin') {
@@ -508,10 +520,6 @@ app.get('/api/share-tokens', (req, res) => {
 });
 
 app.post('/api/share-tokens', (req, res) => {
-  if (apiRateLimited(req.ip)) {
-    return res.status(429).json({ ok: false, error: 'Demasiadas peticiones, espera un momento.' });
-  }
-
   const session = getSessionFromRequest(req);
 
   if (!session || session.kind !== 'owner' || session.permission !== 'admin') {
@@ -558,10 +566,6 @@ app.post('/api/share-tokens', (req, res) => {
 });
 
 app.delete('/api/share-tokens/:id', (req, res) => {
-  if (apiRateLimited(req.ip)) {
-    return res.status(429).json({ ok: false, error: 'Demasiadas peticiones, espera un momento.' });
-  }
-
   const session = getSessionFromRequest(req);
 
   if (!session || session.kind !== 'owner' || session.permission !== 'admin') {
@@ -586,21 +590,6 @@ app.delete('/api/share-tokens/:id', (req, res) => {
   }
 
   return res.json({ ok: true });
-});
-
-app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, service: 'moonwolf-local' });
-});
-
-app.use('/api', (req, res, next) => {
-  if (apiRateLimited(req.ip)) {
-    return res.status(429).json({
-      ok: false,
-      error: 'Demasiadas peticiones, espera un momento.',
-    });
-  }
-
-  next();
 });
 
 /* ══════════════════════════════════════════════
@@ -2344,6 +2333,136 @@ app.post('/api/files/delete', async (req, res) => {
     ok(res);
   } catch (e) {
     fail(res, e.message);
+  }
+});
+
+/* ══════════════════════════════════════════════
+    BACKUPS
+    ══════════════════════════════════════════════ */
+const BACKUPS_DIR = path.join(STARTUP_DIR, 'backups');
+const BACKUP_NAME_RE = /^[A-Za-z0-9 _.-]{1,80}$/;
+const BACKUP_FILE_RE = /^[A-Za-z0-9_.-]{1,120}\.zip$/;
+
+function ensureBackupsDir() {
+  if (!fsSync.existsSync(BACKUPS_DIR)) {
+    fsSync.mkdirSync(BACKUPS_DIR, { recursive: true });
+  }
+}
+
+function safeBackupPath(filename) {
+  if (!BACKUP_FILE_RE.test(filename) || filename.includes('..')) {
+    return null;
+  }
+
+  return path.join(BACKUPS_DIR, filename);
+}
+
+app.get('/api/backups', async (_req, res) => {
+  try {
+    ensureBackupsDir();
+
+    const entries = await fs.readdir(BACKUPS_DIR, { withFileTypes: true });
+    const backups = await Promise.all(
+      entries
+        .filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.zip'))
+        .map(async entry => {
+          const stats = await fs.stat(path.join(BACKUPS_DIR, entry.name));
+
+          return {
+            name: entry.name,
+            sizeMb: (stats.size / 1024 / 1024).toFixed(2),
+            createdAt: stats.mtime.getTime(),
+            date: stats.mtime.toLocaleString('es-ES'),
+          };
+        })
+    );
+
+    backups.sort((a, b) => b.createdAt - a.createdAt);
+    ok(res, { backups });
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
+
+app.post('/api/backups', async (req, res) => {
+  const label = String(req.body?.name || '').trim();
+
+  if (label && !BACKUP_NAME_RE.test(label)) {
+    return fail(res, 'Nombre no válido. Usa letras, números, espacios, guiones y puntos (máx. 80 caracteres).');
+  }
+
+  try {
+    ensureBackupsDir();
+
+    const wasRunning = Boolean(mcProcess && mcProcess.exitCode === null);
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeLabel = (label || 'backup').replace(/[^A-Za-z0-9._ -]/g, '_').replace(/\s+/g, '_').slice(0, 60);
+    const zipName = `${safeLabel}_${timestamp}.zip`;
+    const zipPath = path.join(BACKUPS_DIR, zipName);
+
+    await new Promise((resolve, reject) => {
+      const output = fsSync.createWriteStream(zipPath);
+      const archive = archiver('zip', { zlib: { level: 6 } });
+
+      output.on('close', resolve);
+      archive.on('error', reject);
+      archive.pipe(output);
+
+      // Excluimos la carpeta interna de MoonWolf (config/startup/backups) para no
+      // meter las copias de seguridad dentro de sí mismas.
+      archive.directory(BASE_DIR, false, entryData => {
+        if (entryData.name === '.moonwolf' || entryData.name.startsWith('.moonwolf/')) {
+          return false;
+        }
+
+        return entryData;
+      });
+
+      archive.finalize();
+    });
+
+    const stats = await fs.stat(zipPath);
+
+    ok(res, {
+      name: zipName,
+      sizeMb: (stats.size / 1024 / 1024).toFixed(2),
+      warning: wasRunning
+        ? 'El servidor sigue en marcha; algunos archivos (el mundo) pudieron cambiar durante la copia.'
+        : null,
+    });
+  } catch (e) {
+    fail(res, `No se pudo crear la copia de seguridad: ${e.message}`);
+  }
+});
+
+app.get('/api/backups/download/:name', async (req, res) => {
+  const full = safeBackupPath(req.params.name);
+
+  if (!full) {
+    return res.status(403).send('Nombre no válido');
+  }
+
+  try {
+    await fs.stat(full);
+    res.download(full);
+  } catch {
+    res.status(404).send('Copia de seguridad no encontrada');
+  }
+});
+
+app.delete('/api/backups/:name', async (req, res) => {
+  const full = safeBackupPath(req.params.name);
+
+  if (!full) {
+    return fail(res, 'Nombre no válido');
+  }
+
+  try {
+    await fs.unlink(full);
+    ok(res);
+  } catch (e) {
+    fail(res, `No se pudo eliminar: ${e.message}`);
   }
 });
 
