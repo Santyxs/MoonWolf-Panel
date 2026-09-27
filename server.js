@@ -7,9 +7,10 @@ const { Server } = require('socket.io');
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
+const net = require('net');
 
 /* ══════════════════════════════════════════════
-   Enviroments
+   .env (mini-loader, sin dependencias externas)
    ══════════════════════════════════════════════ */
 const ENV_PATH = path.join(__dirname, '.env');
 (function loadDotEnv() {
@@ -78,6 +79,8 @@ function requiredPermission(method, pathname) {
 
   if (verb === 'GET' || verb === 'HEAD') return 'read';
 
+  // Todas las operaciones que modifican el servidor requieren como mínimo
+  // permiso de control. La gestión de accesos compartidos es exclusiva del propietario.
   return 'control';
 }
 
@@ -375,6 +378,8 @@ io.use((socket, next) => {
       return next(new Error('unauthorized'));
     }
 
+    // El Agent Token solo sirve para autenticar al Agent con Cloud.
+    // Nunca se acepta como credencial de panel.
     if (agentId.length < 16 || token.length < 32) {
       return next(new Error('unauthorized'));
     }
@@ -612,6 +617,7 @@ const PLUGINS_DIR = path.join(BASE_DIR, 'plugins');
 const PORT = Number(process.env.MOONWOLF_PORT || process.env.PORT || 3000);
 const PAPER_UA = 'MoonWolfPanel/2.0 (contact@moonwolf.local)';
 
+/* ── Configuración de Startup (jar, java, memoria, args, comportamiento) ── */
 const STARTUP_DIR = path.join(BASE_DIR, '.moonwolf');
 const STARTUP_CONFIG_PATH = path.join(STARTUP_DIR, 'startup.json');
 const SERVER_PROPERTIES_PATH = path.join(BASE_DIR, 'server.properties');
@@ -689,6 +695,185 @@ function writeServerPort(port) {
 
   fsSync.writeFileSync(SERVER_PROPERTIES_PATH, content, 'utf8');
 }
+
+/* ══════════════════════════════════════════════
+   PUERTOS
+   ══════════════════════════════════════════════ */
+
+function readServerProperties() {
+  try {
+    const content = fsSync.readFileSync(SERVER_PROPERTIES_PATH, 'utf8');
+    const values = {};
+    for (const line of content.split(/\r?\n/)) {
+      if (!line || line.trim().startsWith('#')) continue;
+      const match = line.match(/^\s*([^=:#]+)\s*=\s*(.*?)\s*$/);
+      if (match) values[match[1].trim()] = match[2];
+    }
+    return values;
+  } catch {
+    return {};
+  }
+}
+
+function writeServerProperties(values) {
+  let content = '';
+  try { content = fsSync.readFileSync(SERVER_PROPERTIES_PATH, 'utf8'); } catch {}
+
+  const lines = content.split(/\r?\n/);
+  const updated = new Set();
+  const output = lines.map(line => {
+    const match = line.match(/^\s*([^=:#]+)\s*=\s*(.*?)\s*$/);
+    if (!match) return line;
+    const key = match[1].trim();
+    if (!(key in values)) return line;
+    updated.add(key);
+    return `${key}=${values[key]}`;
+  });
+
+  for (const [key, value] of Object.entries(values)) {
+    if (!updated.has(key)) {
+      if (output.length && output[output.length - 1] !== '') output.push('');
+      output.push(`${key}=${value}`);
+    }
+  }
+
+  fsSync.writeFileSync(
+    SERVER_PROPERTIES_PATH,
+    output.join('\n').replace(/\n+$/, '') + '\n',
+    'utf8'
+  );
+}
+
+function checkLocalPort(port, host = '127.0.0.1') {
+  return new Promise(resolve => {
+    const socket = new net.Socket();
+    let settled = false;
+    const finish = open => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(Boolean(open));
+    };
+    socket.setTimeout(700);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+    socket.connect(port, host);
+  });
+}
+
+function validPort(value) {
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
+}
+
+app.get('/api/ports', async (_req, res) => {
+  try {
+    const props = readServerProperties();
+    const serverPort = validPort(props['server-port']) || readServerPort() || 25565;
+    const queryEnabled = String(props['enable-query'] || 'false').toLowerCase() === 'true';
+    const queryPort = validPort(props['query.port']) || 25565;
+    const rconEnabled = String(props['enable-rcon'] || 'false').toLowerCase() === 'true';
+    const rconPort = validPort(props['rcon.port']) || 25575;
+
+    const definitions = [
+      {
+        id: 'minecraft',
+        name: 'Minecraft',
+        description: 'Puerto principal usado por los jugadores para conectarse al servidor.',
+        protocol: 'TCP',
+        port: serverPort,
+        enabled: true,
+      },
+      {
+        id: 'query',
+        name: 'Query',
+        description: queryEnabled
+          ? 'Game Query de Minecraft habilitado.'
+          : 'Game Query deshabilitado en server.properties.',
+        protocol: 'UDP',
+        port: queryPort,
+        enabled: queryEnabled,
+      },
+      {
+        id: 'rcon',
+        name: 'RCON',
+        description: rconEnabled
+          ? 'Control remoto de consola habilitado.'
+          : 'RCON deshabilitado en server.properties.',
+        protocol: 'TCP',
+        port: rconPort,
+        enabled: rconEnabled,
+      },
+    ];
+
+    const ports = await Promise.all(definitions.map(async item => ({
+      ...item,
+      state: !item.enabled
+        ? 'disabled'
+        : item.protocol === 'TCP'
+          ? (await checkLocalPort(item.port) ? 'open' : 'closed')
+          : 'configured',
+    })));
+
+    ok(res, {
+      ports,
+      properties: {
+        enableQuery: queryEnabled,
+        enableRcon: rconEnabled,
+        serverPort,
+        queryPort,
+        rconPort,
+        hasRconPassword: Boolean(String(props['rcon.password'] || '')),
+      },
+    });
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
+
+app.post('/api/ports', (req, res) => {
+  const body = req.body || {};
+  const serverPort = validPort(body.serverPort);
+  const queryPort = validPort(body.queryPort);
+  const rconPort = validPort(body.rconPort);
+
+  if (!serverPort || !queryPort || !rconPort) {
+    return fail(res, 'Todos los puertos deben estar entre 1 y 65535');
+  }
+
+  const enableQuery = Boolean(body.enableQuery);
+  const enableRcon = Boolean(body.enableRcon);
+  const current = readServerProperties();
+  const newPassword = String(body.rconPassword || '').trim();
+  const rconPassword = newPassword || String(current['rcon.password'] || '');
+
+  if (enableRcon && !rconPassword) {
+    return fail(res, 'Debes indicar una contraseña para activar RCON');
+  }
+
+  try {
+    writeServerProperties({
+      'server-port': serverPort,
+      'query.port': queryPort,
+      'enable-query': enableQuery,
+      'rcon.port': rconPort,
+      'enable-rcon': enableRcon,
+      ...(rconPassword ? { 'rcon.password': rconPassword } : {}),
+    });
+
+    ok(res, {
+      serverPort,
+      queryPort,
+      rconPort,
+      enableQuery,
+      enableRcon,
+      restartRequired: true,
+    });
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
 
 function safePath(rel) {
   const base = path.resolve(BASE_DIR);
