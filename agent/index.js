@@ -8,7 +8,7 @@ const { spawn } = require('node:child_process');
 const { io } = require('socket.io-client');
 const { startGui } = require('./gui');
 
-const PANEL_URL = process.env.MOONWOLF_PANEL_URL || 'https://moonwolf-panel.onrender.com';
+const PANEL_URL = 'https://moonwolf-panel.onrender.com';
 const CLOUD_PATH = '/socket.io';
 const VERSION = typeof __AGENT_VERSION__ !== 'undefined' ? __AGENT_VERSION__ : 'dev';
 
@@ -22,7 +22,7 @@ const CONFIG_PATH = path.join(CONFIG_DIR, 'agent.json');
 const FORWARD_TIMEOUT_MS = 120_000;
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
-const UPDATE_REPO = process.env.MOONWOLF_UPDATE_REPO || 'moonwolf/panel';
+const UPDATE_REPO = 'https://github.com/Santyxs/MoonWolf-Panel';
 const UPDATE_API = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
 const UPDATE_DIR = path.join(os.tmpdir(), 'MoonWolf-Update');
 
@@ -96,10 +96,6 @@ function startEmbeddedLocalServer(config) {
 
   require('../server.js');
 }
-
-/* ══════════════════════════════════════════════
-   ACTUALIZADOR
-   ══════════════════════════════════════════════ */
 
 function compareVersions(a, b) {
   const pa = String(a || '').split('.').map(n => parseInt(n, 10) || 0);
@@ -180,7 +176,7 @@ async function downloadUpdate(info, onProgress) {
       if (done) break;
 
       received += value.length;
-      fileStream.write(Buffer.from(value));
+      fileStream.write(value);
 
       if (onProgress && total > 0) {
         onProgress(Math.min(100, Math.round((received / total) * 100)));
@@ -261,9 +257,26 @@ function applyUpdate(downloadedPath) {
   return true;
 }
 
-/* ══════════════════════════════════════════════
-   MAIN
-   ══════════════════════════════════════════════ */
+function cleanUpdateDir() {
+  try {
+    if (!fs.existsSync(UPDATE_DIR)) return;
+
+    const now = Date.now();
+    const MAX_AGE = 24 * 60 * 60 * 1000;
+
+    for (const entry of fs.readdirSync(UPDATE_DIR)) {
+      const full = path.join(UPDATE_DIR, entry);
+
+      try {
+        const stat = fs.statSync(full);
+
+        if (now - stat.mtimeMs > MAX_AGE) {
+          fs.unlinkSync(full);
+        }
+      } catch {}
+    }
+  } catch {}
+}
 
 async function main() {
   const config = loadConfig();
@@ -290,6 +303,8 @@ async function main() {
 
   const logs = [];
   const MAX_LOGS = 500;
+
+  cleanUpdateDir();
 
   function addLog(message, level = 'info') {
     logs.push({
@@ -334,6 +349,7 @@ async function main() {
     updateStatus = 'downloading';
     updateProgress = 0;
     updateError = null;
+    updateFilePath = null;
     gui?.update();
 
     addLog(`Descargando actualización v${updateAvailable.version}...`);
@@ -350,6 +366,7 @@ async function main() {
     } catch (error) {
       updateStatus = 'error';
       updateError = error.message;
+      updateFilePath = null;
       logError(error, 'Error descargando actualización');
     }
 
@@ -367,11 +384,12 @@ async function main() {
         updateStatus = 'idle';
         updateProgress = 0;
         updateError = null;
+        updateFilePath = null;
         gui?.update();
         return;
       }
 
-      if (updateAvailable && updateAvailable.version === info.version) {
+      if (updateAvailable && updateAvailable.version === info.version && updateStatus !== 'error') {
         return;
       }
 
@@ -399,6 +417,17 @@ async function main() {
   }
 
   function applyUpdateNow() {
+    if (updateStatus === 'error') {
+      updateStatus = 'idle';
+      updateError = null;
+      updateFilePath = null;
+      gui?.update();
+
+      startUpdateDownload();
+
+      return { ok: true };
+    }
+
     if (updateStatus !== 'ready' || !updateFilePath) {
       return { ok: false, error: 'La actualización aún no está lista.' };
     }
