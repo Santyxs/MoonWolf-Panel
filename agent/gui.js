@@ -20,6 +20,19 @@ const UI_ASSETS = {
   '/app.js': 'ui/app.js',
 };
 
+const CSP_AGENT = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "img-src 'self' data:",
+  "font-src 'self'",
+  "connect-src 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join('; ');
+
 const TRAY_ICON_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABNElEQVR42s2XsQ6CMBRF+yf8mAmTq7OrswMxcXBz0w/wC4yzYdLJwbg5MZiIGkjtJWiwgZZC+yrJiaDUe9v32r4yVrmmg3sgiASxgFsmLv87YHWX+CEUJA6EZaAR1olzYsLqsCceDCRFOMq4cE9EzFHCtU5MZtpoOU75Zv7k2/WLz4b9TbQ2ANHrOefpjRfg2cYoaA2gl6d99hUGh11mLQxMJ3455j/iYDFKaQzIPbfde6UBxFgWB0g+EgPVhKuymjzcG8BUqxMnM9A0/GQhgEiTAZIkVBkgmYaqEJAsRKokJFuKm6ah7YQ0XohkYBTvyjsjntvslsZLsc4M2nw+nW1GOtCmba3QaTtWgXdNCpXOBUlTLjiriOpKMoB7fNdnFngvSr2X5X4PJt6PZn9xOPV5PH8DKeu0vPehIOQAAAAASUVORK5CYII=',
   'base64'
@@ -42,17 +55,11 @@ function prepareNativeAddon() {
   const runtimeDir = path.join(os.tmpdir(), 'MoonWolf-Agent', 'webviewjs');
   fs.mkdirSync(runtimeDir, { recursive: true });
 
-  const nativePath = path.join(
-    runtimeDir,
-    'webview.win32-x64-msvc.node'
-  );
+  const nativePath = path.join(runtimeDir, 'webview.win32-x64-msvc.node');
 
   try {
     if (!fs.existsSync(nativePath)) {
-      fs.writeFileSync(
-        nativePath,
-        Buffer.from(getAsset(NATIVE_ASSET))
-      );
+      fs.writeFileSync(nativePath, Buffer.from(getAsset(NATIVE_ASSET)));
     }
   } catch (error) {
     throw new Error(`No se pudo preparar WebViewJS: ${error.message}`);
@@ -131,15 +138,11 @@ function decodePngRgba(png) {
   }
 
   if (width !== 32 || height !== 32) {
-    throw new Error(
-      `Tamaño de icono no compatible: ${width}x${height}.`
-    );
+    throw new Error(`Tamaño de icono no compatible: ${width}x${height}.`);
   }
 
   if (bitDepth !== 8 || colorType !== 6) {
-    throw new Error(
-      `Formato PNG no compatible: bitDepth=${bitDepth}, colorType=${colorType}.`
-    );
+    throw new Error(`Formato PNG no compatible: bitDepth=${bitDepth}, colorType=${colorType}.`);
   }
 
   if (interlaceMethod !== 0) {
@@ -154,9 +157,7 @@ function decodePngRgba(png) {
   const expectedLength = height * (stride + 1);
 
   if (raw.length !== expectedLength) {
-    throw new Error(
-      `Datos PNG inesperados: ${raw.length} bytes, esperados ${expectedLength}.`
-    );
+    throw new Error(`Datos PNG inesperados: ${raw.length} bytes, esperados ${expectedLength}.`);
   }
 
   const rgba = Buffer.alloc(width * height * 4);
@@ -184,47 +185,19 @@ function decodePngRgba(png) {
     for (let x = 0; x < stride; x++) {
       const value = raw[rawOffset++];
 
-      const left =
-        x >= bytesPerPixel
-          ? current[x - bytesPerPixel]
-          : 0;
-
+      const left = x >= bytesPerPixel ? current[x - bytesPerPixel] : 0;
       const up = previous[x];
-
-      const upLeft =
-        x >= bytesPerPixel
-          ? previous[x - bytesPerPixel]
-          : 0;
+      const upLeft = x >= bytesPerPixel ? previous[x - bytesPerPixel] : 0;
 
       let reconstructed;
 
       switch (filterType) {
-        case 0:
-          reconstructed = value;
-          break;
-
-        case 1:
-          reconstructed = value + left;
-          break;
-
-        case 2:
-          reconstructed = value + up;
-          break;
-
-        case 3:
-          reconstructed =
-            value + Math.floor((left + up) / 2);
-          break;
-
-        case 4:
-          reconstructed =
-            value + paeth(left, up, upLeft);
-          break;
-
-        default:
-          throw new Error(
-            `Filtro PNG no compatible: ${filterType}.`
-          );
+        case 0: reconstructed = value; break;
+        case 1: reconstructed = value + left; break;
+        case 2: reconstructed = value + up; break;
+        case 3: reconstructed = value + Math.floor((left + up) / 2); break;
+        case 4: reconstructed = value + paeth(left, up, upLeft); break;
+        default: throw new Error(`Filtro PNG no compatible: ${filterType}.`);
       }
 
       current[x] = reconstructed & 0xff;
@@ -236,11 +209,7 @@ function decodePngRgba(png) {
     current.copy(previous);
   }
 
-  return {
-    data: rgba,
-    width,
-    height,
-  };
+  return { data: rgba, width, height };
 }
 
 function applyWindowIcon() {
@@ -250,26 +219,16 @@ function applyWindowIcon() {
     const icon = decodePngRgba(TRAY_ICON_PNG);
 
     if (typeof window.setWindowIcon === 'function') {
-      window.setWindowIcon(
-        icon.data,
-        icon.width,
-        icon.height
-      );
+      window.setWindowIcon(icon.data, icon.width, icon.height);
     }
 
     if (process.platform === 'win32') {
       if (typeof window.setTaskbarIcon === 'function') {
-        window.setTaskbarIcon(
-          icon.data,
-          icon.width,
-          icon.height
-        );
+        window.setTaskbarIcon(icon.data, icon.width, icon.height);
       }
     }
   } catch (error) {
-    console.warn(
-      `No se pudo aplicar el icono de MoonWolf: ${error.message}`
-    );
+    console.warn(`No se pudo aplicar el icono de MoonWolf: ${error.message}`);
   }
 }
 
@@ -296,37 +255,23 @@ function readUiAsset(assetName) {
 }
 
 function openUrl(url) {
-  try {
-    execFile('explorer.exe', [url], { windowsHide: true });
-  } catch {}
+  try { execFile('explorer.exe', [url], { windowsHide: true }); } catch {}
 }
 
 function openFolder(folder) {
   if (!folder) return;
-
-  try {
-    execFile('explorer.exe', [folder], { windowsHide: true });
-  } catch {}
+  try { execFile('explorer.exe', [folder], { windowsHide: true }); } catch {}
 }
 
 function openConfigFolder(configPath) {
   const folder = path.dirname(configPath || CONFIG_DIR);
-
-  try {
-    execFile('explorer.exe', [folder], { windowsHide: true });
-  } catch {}
+  try { execFile('explorer.exe', [folder], { windowsHide: true }); } catch {}
 }
 
-/* ── Bandeja del sistema ── */
 function hideToTray() {
   if (!tray || !window) return false;
 
-  try {
-    window.hide();
-    return true;
-  } catch {
-    return false;
-  }
+  try { window.hide(); return true; } catch { return false; }
 }
 
 function showFromTray() {
@@ -346,28 +291,20 @@ function quitApp() {
   if (isQuitting) return;
   isQuitting = true;
 
-  try {
-    actions.onQuit?.();
-  } catch (error) {
+  try { actions.onQuit?.(); } catch (error) {
     console.error('[app] onQuit falló:', error?.message || error);
   }
 
-  try {
-    tray?.dispose();
-  } catch (error) {
+  try { tray?.dispose(); } catch (error) {
     console.error('[app] tray.dispose falló:', error?.message || error);
   }
 
-  try {
-    app?.exit();
-  } catch (error) {
+  try { app?.exit(); } catch (error) {
     console.error('[app] app.exit falló:', error?.message || error);
   }
 
   setImmediate(() => {
-    try {
-      process.exit(0);
-    } catch {}
+    try { process.exit(0); } catch {}
   });
 }
 
@@ -377,20 +314,12 @@ function createTray() {
   try {
     tray = app.createTrayIcon({
       id: 'moonwolf-agent',
-      icon: {
-        data: TRAY_ICON_PNG,
-      },
+      icon: { data: TRAY_ICON_PNG },
       tooltip: 'MoonWolf Agent',
       menu: {
         items: [
-          {
-            id: 'tray-open',
-            label: 'Abrir MoonWolf Agent',
-          },
-          {
-            id: 'tray-quit',
-            label: 'Salir',
-          },
+          { id: 'tray-open', label: 'Abrir MoonWolf Agent' },
+          { id: 'tray-quit', label: 'Salir' },
         ],
       },
       menuOnLeftClick: false,
@@ -398,13 +327,8 @@ function createTray() {
     });
 
     tray.on('click', event => {
-      const button = String(
-        event?.button || ''
-      ).toLowerCase();
-
-      const buttonState = String(
-        event?.buttonState || ''
-      ).toLowerCase();
+      const button = String(event?.button || '').toLowerCase();
+      const buttonState = String(event?.buttonState || '').toLowerCase();
 
       if (button && !button.includes('left')) return;
       if (buttonState.includes('down')) return;
@@ -439,9 +363,7 @@ function createWindow() {
   window.registerProtocol('moonwolf', async request => {
     try {
       const url = new URL(request.url);
-      let pathname = decodeURIComponent(
-        url.pathname || '/'
-      );
+      let pathname = decodeURIComponent(url.pathname || '/');
 
       const assetName = UI_ASSETS[pathname];
 
@@ -449,39 +371,34 @@ function createWindow() {
         return new Response('Not found', {
           status: 404,
           headers: {
-            'Content-Type':
-              'text/plain; charset=utf-8',
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Content-Security-Policy': CSP_AGENT,
           },
         });
       }
 
-      return new Response(
-        readUiAsset(assetName),
-        {
-          status: 200,
-          headers: {
-            'Content-Type': mimeType(assetName),
-            'Cache-Control': 'no-store',
-          },
-        }
-      );
+      return new Response(readUiAsset(assetName), {
+        status: 200,
+        headers: {
+          'Content-Type': mimeType(assetName),
+          'Cache-Control': 'no-store',
+          'Content-Security-Policy': CSP_AGENT,
+          'X-Content-Type-Options': 'nosniff',
+          'Referrer-Policy': 'no-referrer',
+        },
+      });
     } catch (error) {
-      return new Response(
-        `MoonWolf UI error: ${error.message}`,
-        {
-          status: 500,
-          headers: {
-            'Content-Type':
-              'text/plain; charset=utf-8',
-          },
-        }
-      );
+      return new Response(`MoonWolf UI error: ${error.message}`, {
+        status: 500,
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Content-Security-Policy': CSP_AGENT,
+        },
+      });
     }
   });
 
-  fs.mkdirSync(WEBVIEW_DATA_DIR, {
-    recursive: true,
-  });
+  fs.mkdirSync(WEBVIEW_DATA_DIR, { recursive: true });
 
   const webContext = app.createWebContext({
     dataDirectory: WEBVIEW_DATA_DIR,
@@ -493,13 +410,9 @@ function createWindow() {
     webContext,
   });
 
-  /* ── Manejo de errores de la webview ── */
   if (typeof webview.on === 'function') {
     webview.on('error', error => {
-      console.error(
-        '[webview] error:',
-        error?.message || error
-      );
+      console.error('[webview] error:', error?.message || error);
     });
 
     webview.on('crashed', () => {
@@ -536,10 +449,7 @@ function createWindow() {
     setServerDir: dir =>
       typeof actions.setServerDir === 'function'
         ? actions.setServerDir(dir)
-        : {
-            ok: false,
-            error: 'No disponible.',
-          },
+        : { ok: false, error: 'No disponible.' },
 
     clearLogs: () =>
       typeof actions.clearLogs === 'function' &&
@@ -555,6 +465,15 @@ function createWindow() {
       typeof actions.restart === 'function' &&
       actions.restart(),
 
+    checkForUpdates: () =>
+      typeof actions.checkForUpdates === 'function' &&
+      actions.checkForUpdates(),
+
+    applyUpdate: () =>
+      typeof actions.applyUpdate === 'function'
+        ? actions.applyUpdate()
+        : { ok: false, error: 'No disponible.' },
+
     close: () => {
       quitApp();
       return true;
@@ -563,44 +482,29 @@ function createWindow() {
 
   window.on('resize', () => {
     try {
-      if (window.isMinimized()) {
-        hideToTray();
-      }
+      if (window.isMinimized()) hideToTray();
     } catch {}
   });
 
   window.on('close', event => {
     if (isQuitting) return;
 
-    try {
-      event?.preventDefault?.();
-    } catch {}
+    try { event?.preventDefault?.(); } catch {}
 
     quitApp();
   });
 
   window.on('error', error => {
-    console.error(
-      '[window] error:',
-      error?.message || error
-    );
+    console.error('[window] error:', error?.message || error);
   });
 
-  app.on(
-    'application-close-requested',
-    () => quitApp()
-  );
+  app.on('application-close-requested', () => quitApp());
 
   app.on('custom-menu-click', event => {
     const id = event?.customMenuEvent?.id;
 
-    if (id === 'tray-open') {
-      showFromTray();
-    }
-
-    if (id === 'tray-quit') {
-      quitApp();
-    }
+    if (id === 'tray-open') showFromTray();
+    if (id === 'tray-quit') quitApp();
   });
 
   const ready =
@@ -608,10 +512,7 @@ function createWindow() {
       ? app.whenReady({ autoRun: false })
       : null;
 
-  app.run({
-    interval: 16,
-    ref: true,
-  });
+  app.run({ interval: 16, ref: true });
 
   if (ready) {
     ready.then(createTray).catch(() => {});
@@ -626,9 +527,7 @@ function notifyStateChanged() {
   let stateJson;
 
   try {
-    stateJson = JSON.stringify(
-      stateProvider()
-    );
+    stateJson = JSON.stringify(stateProvider());
   } catch {
     return;
   }
@@ -637,37 +536,30 @@ function notifyStateChanged() {
 
   lastStateJson = stateJson;
 
+  const safeJson = stateJson
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+
   const script =
     `window.dispatchEvent(new CustomEvent(` +
-    `'moonwolf-state', { detail: ${stateJson} }));`;
+    `'moonwolf-state', { detail: ${safeJson} }));`;
 
-  try {
-    webview.evaluateScript(script);
-  } catch {}
+  try { webview.evaluateScript(script); } catch {}
 }
 
 function scheduleStateChanged() {
   if (notifyTimer !== null) return;
 
-  notifyTimer = setTimeout(
-    notifyStateChanged,
-    100
-  );
+  notifyTimer = setTimeout(notifyStateChanged, 100);
 }
 
-function startGui(
-  getState,
-  guiActions = {}
-) {
+function startGui(getState, guiActions = {}) {
   stateProvider = getState;
   actions = guiActions;
 
   createWindow();
 
-  setTimeout(
-    notifyStateChanged,
-    300
-  );
+  setTimeout(notifyStateChanged, 300);
 
   return {
     update: scheduleStateChanged,
