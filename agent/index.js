@@ -4,9 +4,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
+const { spawn } = require('node:child_process');
 const { io } = require('socket.io-client');
 const { startGui } = require('./gui');
-const updater = require('./updater');
 
 const PANEL_URL = process.env.MOONWOLF_PANEL_URL || 'https://moonwolf-panel.onrender.com';
 const CLOUD_PATH = '/socket.io';
@@ -21,6 +21,10 @@ const CONFIG_DIR = path.join(process.env.APPDATA || path.join(os.homedir(), 'App
 const CONFIG_PATH = path.join(CONFIG_DIR, 'agent.json');
 const FORWARD_TIMEOUT_MS = 120_000;
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+const UPDATE_REPO = process.env.MOONWOLF_UPDATE_REPO || 'moonwolf/panel';
+const UPDATE_API = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
+const UPDATE_DIR = path.join(os.tmpdir(), 'MoonWolf-Update');
 
 function ensureConfigDir() {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
@@ -92,6 +96,174 @@ function startEmbeddedLocalServer(config) {
 
   require('../server.js');
 }
+
+/* ══════════════════════════════════════════════
+   ACTUALIZADOR
+   ══════════════════════════════════════════════ */
+
+function compareVersions(a, b) {
+  const pa = String(a || '').split('.').map(n => parseInt(n, 10) || 0);
+  const pb = String(b || '').split('.').map(n => parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+
+  for (let i = 0; i < len; i++) {
+    const na = pa[i] || 0;
+    const nb = pb[i] || 0;
+    if (na !== nb) return na - nb;
+  }
+
+  return 0;
+}
+
+async function checkForUpdate(currentVersion) {
+  const response = await fetch(UPDATE_API, {
+    headers: {
+      'User-Agent': 'MoonWolf-Agent',
+      'Accept': 'application/vnd.github+json',
+    },
+    signal: AbortSignal.timeout(5000),
+  });
+
+  if (!response.ok) {
+    throw new Error(`GitHub HTTP ${response.status}`);
+  }
+
+  const release = await response.json();
+  const match = String(release.tag_name || '').match(/^agent-v(.+)$/);
+
+  if (!match) return null;
+
+  const latest = match[1];
+
+  if (compareVersions(currentVersion, latest) >= 0) {
+    return null;
+  }
+
+  const asset = (release.assets || []).find(a => /\.exe$/i.test(a.name));
+
+  if (!asset) return null;
+
+  return {
+    version: latest,
+    url: asset.browser_download_url,
+    size: asset.size || 0,
+    name: asset.name,
+    published: release.published_at || null,
+  };
+}
+
+async function downloadUpdate(info, onProgress) {
+  fs.mkdirSync(UPDATE_DIR, { recursive: true });
+
+  const dest = path.join(UPDATE_DIR, `MoonWolf-Agent-${info.version}.exe`);
+
+  try { fs.unlinkSync(dest); } catch {}
+
+  const response = await fetch(info.url, {
+    headers: { 'User-Agent': 'MoonWolf-Agent' },
+    redirect: 'follow',
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error(`Descarga HTTP ${response.status}`);
+  }
+
+  const total = Number(response.headers.get('content-length')) || info.size || 0;
+  const fileStream = fs.createWriteStream(dest);
+
+  let received = 0;
+  const reader = response.body.getReader();
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      received += value.length;
+      fileStream.write(Buffer.from(value));
+
+      if (onProgress && total > 0) {
+        onProgress(Math.min(100, Math.round((received / total) * 100)));
+      }
+    }
+  } finally {
+    await new Promise(resolve => fileStream.end(resolve));
+  }
+
+  const stat = fs.statSync(dest);
+
+  if (stat.size < 1024 * 1024) {
+    try { fs.unlinkSync(dest); } catch {}
+    throw new Error('El archivo descargado es demasiado pequeño.');
+  }
+
+  return dest;
+}
+
+function applyUpdate(downloadedPath) {
+  if (process.platform !== 'win32') {
+    throw new Error('La auto-actualización solo está disponible en Windows.');
+  }
+
+  if (!fs.existsSync(downloadedPath)) {
+    throw new Error('El archivo descargado no existe.');
+  }
+
+  const currentExe = process.execPath;
+
+  if (!/\.exe$/i.test(currentExe)) {
+    throw new Error('El Agent no se está ejecutando como ejecutable.');
+  }
+
+  const scriptPath = path.join(UPDATE_DIR, `apply-${Date.now()}.bat`);
+
+  const script = [
+    '@echo off',
+    'setlocal',
+    '',
+    'set "TARGET_PID=%~1"',
+    'set "SRC=%~2"',
+    'set "DST=%~3"',
+    '',
+    ':wait',
+    'tasklist /FI "PID eq %TARGET_PID%" /NH 2>NUL | findstr /R /C:"%TARGET_PID%" >NUL',
+    'if errorlevel 1 goto :replace',
+    'ping -n 2 127.0.0.1 >NUL',
+    'goto :wait',
+    '',
+    ':replace',
+    'ping -n 2 127.0.0.1 >NUL',
+    'move /Y "%DST%" "%DST%.old" >NUL 2>&1',
+    'move /Y "%SRC%" "%DST%" >NUL 2>&1',
+    'if errorlevel 1 (',
+    '  move /Y "%DST%.old" "%DST%" >NUL 2>&1',
+    '  exit /b 1',
+    ')',
+    'del "%DST%.old%" >NUL 2>&1',
+    'start "" "%DST%"',
+    'del "%~f0" >NUL 2>&1',
+  ].join('\r\n');
+
+  fs.writeFileSync(scriptPath, script, 'utf8');
+
+  const child = spawn(
+    'cmd.exe',
+    ['/c', scriptPath, String(process.pid), downloadedPath, currentExe],
+    {
+      detached: true,
+      windowsHide: true,
+      stdio: 'ignore',
+    }
+  );
+
+  child.unref();
+
+  return true;
+}
+
+/* ══════════════════════════════════════════════
+   MAIN
+   ══════════════════════════════════════════════ */
 
 async function main() {
   const config = loadConfig();
@@ -167,7 +339,7 @@ async function main() {
     addLog(`Descargando actualización v${updateAvailable.version}...`);
 
     try {
-      updateFilePath = await updater.downloadUpdate(updateAvailable, progress => {
+      updateFilePath = await downloadUpdate(updateAvailable, progress => {
         updateProgress = progress;
         gui?.update();
       });
@@ -184,11 +356,11 @@ async function main() {
     gui?.update();
   }
 
-  async function checkForUpdates() {
+  async function runUpdateCheck() {
     if (shuttingDown) return;
 
     try {
-      const info = await updater.checkForUpdate(VERSION);
+      const info = await checkForUpdate(VERSION);
 
       if (!info) {
         updateAvailable = null;
@@ -221,7 +393,7 @@ async function main() {
   function scheduleUpdateCheck() {
     clearTimeout(updateCheckTimer);
     updateCheckTimer = setTimeout(() => {
-      checkForUpdates();
+      runUpdateCheck();
       scheduleUpdateCheck();
     }, UPDATE_CHECK_INTERVAL_MS);
   }
@@ -237,7 +409,7 @@ async function main() {
 
       addLog(`Aplicando actualización v${updateAvailable.version}...`);
 
-      updater.applyUpdate(updateFilePath);
+      applyUpdate(updateFilePath);
 
       addLog('Cerrando para aplicar la actualización...');
       gui?.update();
@@ -337,7 +509,7 @@ async function main() {
     },
 
     checkForUpdates: () => {
-      checkForUpdates();
+      runUpdateCheck();
       return true;
     },
 
@@ -503,7 +675,7 @@ async function main() {
       addLog('Conectado a MoonWolf Cloud.');
       connectLocalSocket();
       requestPairingCode();
-      checkForUpdates();
+      runUpdateCheck();
       scheduleUpdateCheck();
       gui.update();
     });
