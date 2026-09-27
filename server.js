@@ -39,7 +39,29 @@ const ENV_PATH = path.join(__dirname, '.env');
    AUTENTICACIÓN / SESIONES
    ══════════════════════════════════════════════ */
 const LOCAL_AGENT_TOKEN = process.env.MOONWOLF_LOCAL_AUTH_TOKEN || '';
-const SESSION_SECRET = process.env.MOONWOLF_SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+
+const SESSION_SECRET = (() => {
+  const envSecret = process.env.MOONWOLF_SESSION_SECRET;
+  if (envSecret && envSecret.length >= 32) return envSecret;
+
+  const secretPath = path.join(__dirname, '.moonwolf-session-secret');
+
+  try {
+    const saved = fsSync.readFileSync(secretPath, 'utf8').trim();
+    if (saved.length >= 32) return saved;
+  } catch {}
+
+  const secret = crypto.randomBytes(32).toString('hex');
+
+  try {
+    fsSync.writeFileSync(secretPath, secret, { encoding: 'utf8', mode: 0o600 });
+  } catch (error) {
+    console.warn('[session] No se pudo persistir SESSION_SECRET:', error.message);
+  }
+
+  return secret;
+})();
+
 const PANEL_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const PAIRING_TTL_MS = 5 * 60 * 1000;
 
@@ -420,7 +442,7 @@ for (const asset of PUBLIC_ASSETS) {
 app.use(express.json({ limit: '50mb' }));
 
 /* ══════════════════════════════════════════════
-   RATE LIMIT CENTRALIZADO PARA /api
+   RATE LIMIT CENTRALIZADO
 /* ══════════════════════════════════════════════ */   
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'moonwolf-local' });
@@ -606,7 +628,6 @@ const PLUGINS_DIR = path.join(BASE_DIR, 'plugins');
 const PORT = Number(process.env.MOONWOLF_PORT || process.env.PORT || 3000);
 const PAPER_UA = 'MoonWolfPanel/2.0 (contact@moonwolf.local)';
 
-/* ── Configuración de Startup (jar, java, memoria, args, comportamiento) ── */
 const STARTUP_DIR = path.join(BASE_DIR, '.moonwolf');
 const STARTUP_CONFIG_PATH = path.join(STARTUP_DIR, 'startup.json');
 const SERVER_PROPERTIES_PATH = path.join(BASE_DIR, 'server.properties');
@@ -754,6 +775,98 @@ function checkLocalPort(port, host = '127.0.0.1') {
 function validPort(value) {
   const port = Number(value);
   return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
+}
+
+/* ══════════════════════════════════════════════
+   RCON (Minecraft Remote Console)
+   ══════════════════════════════════════════════ */
+function rconExec(port, password, command, timeoutMs = 2000) {
+  return new Promise((resolve, reject) => {
+    const socket = new net.Socket();
+    let buffer = Buffer.alloc(0);
+    let authed = false;
+    let settled = false;
+
+    const finish = (err, result) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      if (err) reject(err);
+      else resolve(result);
+    };
+
+    function writePacket(id, type, body) {
+      const bodyBuf = Buffer.from(body, 'utf8');
+      const packet = Buffer.alloc(12 + bodyBuf.length + 2);
+      packet.writeInt32LE(10 + bodyBuf.length, 0);
+      packet.writeInt32LE(id, 4);
+      packet.writeInt32LE(type, 8);
+      bodyBuf.copy(packet, 12);
+      socket.write(packet);
+    }
+
+    socket.setTimeout(timeoutMs);
+    socket.once('timeout', () => finish(new Error('RCON timeout')));
+    socket.once('error', err => finish(err));
+
+    socket.on('data', chunk => {
+      buffer = Buffer.concat([buffer, chunk]);
+
+      while (buffer.length >= 4) {
+        const size = buffer.readInt32LE(0);
+        if (buffer.length < 4 + size) break;
+
+        const id = buffer.readInt32LE(4);
+        const body = buffer.slice(12, 4 + size - 2).toString('utf8');
+        buffer = buffer.slice(4 + size);
+
+        if (!authed) {
+          if (id === -1) return finish(new Error('RCON auth failed'));
+          authed = true;
+          writePacket(1, 2, command);
+        } else if (body.length > 0) {
+          return finish(null, body);
+        }
+      }
+    });
+
+    socket.connect(port, '127.0.0.1', () => {
+      writePacket(0, 3, password);
+    });
+  });
+}
+
+async function queryRconStats() {
+  const props = readServerProperties();
+
+  if (String(props['enable-rcon'] || 'false').toLowerCase() !== 'true') {
+    return null;
+  }
+
+  const port = validPort(props['rcon.port']) || 25575;
+  const password = String(props['rcon.password'] || '');
+
+  if (!password) return null;
+
+  try {
+    const [listRaw, tpsRaw] = await Promise.all([
+      rconExec(port, password, 'list'),
+      rconExec(port, password, 'tps'),
+    ]);
+
+    const clean = value => String(value || '').replace(/§[0-9a-fk-or]/gi, '').trim();
+
+    const listMatch = clean(listRaw).match(/There are (\d+) of a max of (\d+) players online/i);
+    const tpsMatch = clean(tpsRaw).match(/TPS from last [^:]+:\s*([\d.]+)/i);
+
+    return {
+      players: listMatch ? Number(listMatch[1]) : 0,
+      maxPlayers: listMatch ? Number(listMatch[2]) : 0,
+      tps: tpsMatch ? Number(tpsMatch[1]) : 20,
+    };
+  } catch {
+    return null;
+  }
 }
 
 app.get('/api/ports', async (_req, res) => {
@@ -940,7 +1053,6 @@ function semverCmp(a, b) {
 const agentSockets = new Map();
 const panelSockets = new Set();
 
-/* PATCH: rooms por agente + helper de broadcasts scoped */
 const LOCAL_AGENT_ROOM = 'local-agent';
 const agentRoom  = id => `agent:${id}`;
 const panelsRoom = id => `panels:${id}`;
@@ -957,7 +1069,6 @@ io.on('connection', socket => {
   console.log('Cliente conectado:', socket.id, socket.data.role, socket.data.agentId || '');
 
   if (socket.data.role === 'local-agent') {
-    /* PATCH: unir el Agent local a su room */
     socket.join(LOCAL_AGENT_ROOM);
     console.log('🖥️ Agent local conectado:', socket.id);
     return;
@@ -972,7 +1083,6 @@ io.on('connection', socket => {
     }
 
     agentSockets.set(agentId, socket);
-    /* PATCH: unir el Agent remoto a su room */
     socket.join(agentRoom(agentId));
     console.log('🌙 MoonWolf Agent conectado:', agentId, socket.id);
 
@@ -1023,7 +1133,6 @@ io.on('connection', socket => {
   if (socket.data.role === 'panel') {
     socket.data.pendingRpc = new Set();
     panelSockets.add(socket);
-    /* PATCH: unir el panel al room de su agente */
     socket.join(panelsRoom(socket.data.agentId));
 
     const agentId = socket.data.agentId;
@@ -1465,8 +1574,8 @@ let restarting = false;
 let stopRequested = false;
 let crashCount = 0;
 let lastCrashTime = 0;
+let statsBusy = false;
 
-/* PATCH: broadcasts scoped al Agent local (ya no van a todos los sockets) */
 function broadcastStatus(s) {
   io.to(LOCAL_AGENT_ROOM).emit('status', s);
 }
@@ -1484,27 +1593,33 @@ function startStatsTimer() {
     clearInterval(statsTimer);
   }
 
-  statsTimer = setInterval(() => {
-    if (!mcProcess || mcProcess.exitCode !== null) {
-      return;
+  statsTimer = setInterval(async () => {
+    if (statsBusy) return;
+    if (!mcProcess || mcProcess.exitCode !== null) return;
+
+    statsBusy = true;
+
+    try {
+      const uptimeSec = Math.floor((Date.now() - startTime) / 1000);
+      const mem = process.memoryUsage();
+      const rcon = await queryRconStats();
+
+      io.to(LOCAL_AGENT_ROOM).emit('stats', {
+        players: rcon?.players ?? 0,
+        maxPlayers: rcon?.maxPlayers ?? 0,
+        tps: rcon?.tps ?? 0,
+        rconAvailable: Boolean(rcon),
+        uptime: `${Math.floor(uptimeSec / 3600)}h ${Math.floor((uptimeSec % 3600) / 60)}m`,
+        processMemory: Math.round(mem.rss / 1024 / 1024),
+        sysMemory: {
+          used: (mem.rss / 1024 / 1024 / 1024).toFixed(2),
+          total: '16.00',
+        },
+        cpuUsage: 0,
+      });
+    } finally {
+      statsBusy = false;
     }
-
-    const uptimeSec = Math.floor((Date.now() - startTime) / 1000);
-    const mem = process.memoryUsage();
-
-    /* PATCH: stats scoped */
-    io.to(LOCAL_AGENT_ROOM).emit('stats', {
-      players: 0,
-      maxPlayers: 20,
-      tps: 20,
-      uptime: `${Math.floor(uptimeSec / 3600)}h ${Math.floor((uptimeSec % 3600) / 60)}m`,
-      processMemory: Math.round(mem.rss / 1024 / 1024),
-      sysMemory: {
-        used: (mem.rss / 1024 / 1024 / 1024).toFixed(2),
-        total: '16.00',
-      },
-      cpuUsage: 0,
-    });
   }, 3000);
 }
 
@@ -2421,8 +2536,6 @@ app.post('/api/backups', async (req, res) => {
       archive.on('error', reject);
       archive.pipe(output);
 
-      // Excluimos la carpeta interna de MoonWolf (config/startup/backups) para no
-      // meter las copias de seguridad dentro de sí mismas.
       archive.directory(BASE_DIR, false, entryData => {
         if (entryData.name === '.moonwolf' || entryData.name.startsWith('.moonwolf/')) {
           return false;
