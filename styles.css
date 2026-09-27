@@ -821,7 +821,6 @@ body::after {
 }
 .ver-install-btn:hover { background: rgba(0,200,255,0.15); box-shadow: 0 0 14px rgba(0,200,255,0.12); }
 
-/* ── Instalation Modal ── */
 .ver-confirm-box {
   display: flex;
   align-items: center;
@@ -888,13 +887,11 @@ body::after {
 .ver-confirm-btn:hover:not(:disabled) { background: rgba(0,255,136,0.18); box-shadow: 0 0 16px rgba(0,255,136,0.12); }
 .ver-confirm-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* Progress bar */
 .ver-progress-bar  { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; margin-bottom: 10px; }
 .ver-progress-fill { height: 100%; width: 100%; background: linear-gradient(90deg, var(--accent), var(--green)); animation: progAnim 1.5s ease-in-out infinite; }
 @keyframes progAnim { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
 .ver-progress-text { font-size: 11px; color: var(--muted2); text-align: center; }
 
-/* Fabric command box */
 .ver-cmd-box {
   background: var(--bg);
   border: 1px solid var(--border2);
@@ -907,7 +904,6 @@ body::after {
   line-height: 1.6;
 }
 
-/* Loading spinner */
 .ver-loading {
   color: var(--muted2);
   font-size: 13px;
@@ -961,7 +957,6 @@ body::after {
 .port-edit { background: none; border: 1px solid var(--border); color: var(--muted2); font-size: 11px; padding: 5px 10px; border-radius: var(--r-sm); cursor: pointer; transition: all var(--t-base); font-family: inherit; }
 .port-edit:hover { border-color: var(--accent); color: var(--accent); }
 
-/* Ports extended */
 .ports-toolbar {
   display:flex;
   align-items:center;
@@ -1072,6 +1067,7 @@ body::after {
 .toast.show { transform: translateY(0); opacity: 1; }
 .toast.ok   { border-color: var(--green); color: var(--green); }
 .toast.err  { border-color: var(--red);   color: var(--red); }
+.toast.warn { border-color: var(--yellow); color: var(--yellow); }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -1105,7 +1101,6 @@ body::after {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
 }
-
 
 /* ── USERS ── */
 .user-stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--sp-md);margin-bottom:14px}
