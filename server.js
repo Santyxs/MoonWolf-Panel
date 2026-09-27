@@ -940,12 +940,13 @@ function semverCmp(a, b) {
 const agentSockets = new Map();
 const panelSockets = new Set();
 
+/* PATCH: rooms por agente + helper de broadcasts scoped */
+const LOCAL_AGENT_ROOM = 'local-agent';
+const agentRoom  = id => `agent:${id}`;
+const panelsRoom = id => `panels:${id}`;
+
 function emitToAgentPanels(agentId, event, payload) {
-  for (const panel of panelSockets) {
-    if (panel.data.agentId === agentId) {
-      panel.emit(event, payload);
-    }
-  }
+  io.to(panelsRoom(agentId)).emit(event, payload);
 }
 
 function agentIsOnline(agentId) {
@@ -956,6 +957,8 @@ io.on('connection', socket => {
   console.log('Cliente conectado:', socket.id, socket.data.role, socket.data.agentId || '');
 
   if (socket.data.role === 'local-agent') {
+    /* PATCH: unir el Agent local a su room */
+    socket.join(LOCAL_AGENT_ROOM);
     console.log('🖥️ Agent local conectado:', socket.id);
     return;
   }
@@ -969,6 +972,8 @@ io.on('connection', socket => {
     }
 
     agentSockets.set(agentId, socket);
+    /* PATCH: unir el Agent remoto a su room */
+    socket.join(agentRoom(agentId));
     console.log('🌙 MoonWolf Agent conectado:', agentId, socket.id);
 
     socket.on('pairing_create', () => {
@@ -1018,6 +1023,8 @@ io.on('connection', socket => {
   if (socket.data.role === 'panel') {
     socket.data.pendingRpc = new Set();
     panelSockets.add(socket);
+    /* PATCH: unir el panel al room de su agente */
+    socket.join(panelsRoom(socket.data.agentId));
 
     const agentId = socket.data.agentId;
     const online = agentIsOnline(agentId);
@@ -1459,9 +1466,13 @@ let stopRequested = false;
 let crashCount = 0;
 let lastCrashTime = 0;
 
-function broadcastStatus(s) { io.emit('status', s); }
+/* PATCH: broadcasts scoped al Agent local (ya no van a todos los sockets) */
+function broadcastStatus(s) {
+  io.to(LOCAL_AGENT_ROOM).emit('status', s);
+}
+
 function broadcastLog(line, type = 'info') {
-  io.emit('log', {
+  io.to(LOCAL_AGENT_ROOM).emit('log', {
     line,
     time: new Date().toLocaleTimeString('es-ES'),
     type,
@@ -1481,7 +1492,8 @@ function startStatsTimer() {
     const uptimeSec = Math.floor((Date.now() - startTime) / 1000);
     const mem = process.memoryUsage();
 
-    io.emit('stats', {
+    /* PATCH: stats scoped */
+    io.to(LOCAL_AGENT_ROOM).emit('stats', {
       players: 0,
       maxPlayers: 20,
       tps: 20,
