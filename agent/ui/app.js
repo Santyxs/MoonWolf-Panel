@@ -284,9 +284,8 @@ function bindEvents() {
     const ok = await copyText(state.agentId);
     flashButton(button, ok ? 'Copiado' : 'Error');
   });
-  $('settings-check-update')?.addEventListener('click', event => {
+  $('settings-check-update')?.addEventListener('click', () => {
     nativeApi().checkForUpdates?.();
-    flashButton(event.currentTarget, 'Buscando…');
   });
 
   $('close-serverdir')?.addEventListener('click', () => closeModal('serverdir-modal'));
