@@ -796,7 +796,6 @@ function applyUpdate(downloadedPath) {
     'cmd.exe',
     ['/c', scriptPath, String(process.pid), downloadedPath, currentExe],
     {
-      detached: true,
       windowsHide: true,
       stdio: 'ignore',
     }
