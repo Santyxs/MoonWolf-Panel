@@ -6,6 +6,7 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { io } = require('socket.io-client');
 const { startGui } = require('./gui');
+const updater = require('./updater');
 
 const PANEL_URL = process.env.MOONWOLF_PANEL_URL || 'https://moonwolf-panel.onrender.com';
 const CLOUD_PATH = '/socket.io';
@@ -19,6 +20,7 @@ const DEFAULT_SERVER_DIR = process.env.MOONWOLF_SERVER_DIR || path.join(os.homed
 const CONFIG_DIR = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'MoonWolf');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'agent.json');
 const FORWARD_TIMEOUT_MS = 120_000;
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 function ensureConfigDir() {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
@@ -74,9 +76,7 @@ async function waitForLocalServer(localUrl) {
         signal: AbortSignal.timeout(1000),
       });
 
-      if (response.ok) {
-        return;
-      }
+      if (response.ok) return;
     } catch {}
 
     await wait(Math.min(250 * attempt, 1500));
@@ -103,11 +103,18 @@ async function main() {
   let cloudSocket = null;
   let reconnectTimer = null;
   let reconnectDelay = 1000;
+  let updateCheckTimer = null;
   let shuttingDown = false;
   let gui = null;
   let pairingCode = '';
   let pairingExpiresAt = 0;
   let pendingRestart = false;
+
+  let updateAvailable = null;
+  let updateStatus = 'idle';
+  let updateProgress = 0;
+  let updateError = null;
+  let updateFilePath = null;
 
   const logs = [];
   const MAX_LOGS = 500;
@@ -140,8 +147,115 @@ async function main() {
     cloudConnected,
     localServerReady,
     restartRequired: pendingRestart,
+    updateAvailable,
+    updateStatus,
+    updateProgress,
+    updateError,
     logs,
   });
+
+  async function startUpdateDownload() {
+    if (!updateAvailable || updateStatus === 'downloading' || updateStatus === 'ready' || updateStatus === 'installing') {
+      return;
+    }
+
+    updateStatus = 'downloading';
+    updateProgress = 0;
+    updateError = null;
+    gui?.update();
+
+    addLog(`Descargando actualización v${updateAvailable.version}...`);
+
+    try {
+      updateFilePath = await updater.downloadUpdate(updateAvailable, progress => {
+        updateProgress = progress;
+        gui?.update();
+      });
+
+      updateStatus = 'ready';
+      updateProgress = 100;
+      addLog(`Actualización v${updateAvailable.version} lista para instalar.`);
+    } catch (error) {
+      updateStatus = 'error';
+      updateError = error.message;
+      logError(error, 'Error descargando actualización');
+    }
+
+    gui?.update();
+  }
+
+  async function checkForUpdates() {
+    if (shuttingDown) return;
+
+    try {
+      const info = await updater.checkForUpdate(VERSION);
+
+      if (!info) {
+        updateAvailable = null;
+        updateStatus = 'idle';
+        updateProgress = 0;
+        updateError = null;
+        gui?.update();
+        return;
+      }
+
+      if (updateAvailable && updateAvailable.version === info.version) {
+        return;
+      }
+
+      updateAvailable = info;
+      updateStatus = 'idle';
+      updateProgress = 0;
+      updateError = null;
+
+      addLog(`Actualización disponible: v${info.version} (actual: v${VERSION}).`);
+      gui?.update();
+
+      startUpdateDownload();
+    } catch (error) {
+      updateError = error.message;
+      gui?.update();
+    }
+  }
+
+  function scheduleUpdateCheck() {
+    clearTimeout(updateCheckTimer);
+    updateCheckTimer = setTimeout(() => {
+      checkForUpdates();
+      scheduleUpdateCheck();
+    }, UPDATE_CHECK_INTERVAL_MS);
+  }
+
+  function applyUpdateNow() {
+    if (updateStatus !== 'ready' || !updateFilePath) {
+      return { ok: false, error: 'La actualización aún no está lista.' };
+    }
+
+    try {
+      updateStatus = 'installing';
+      gui?.update();
+
+      addLog(`Aplicando actualización v${updateAvailable.version}...`);
+
+      updater.applyUpdate(updateFilePath);
+
+      addLog('Cerrando para aplicar la actualización...');
+      gui?.update();
+
+      setTimeout(() => {
+        try { shutdown(); } catch {}
+        process.exit(0);
+      }, 500);
+
+      return { ok: true };
+    } catch (error) {
+      updateStatus = 'error';
+      updateError = error.message;
+      logError(error, 'Error aplicando actualización');
+      gui?.update();
+      return { ok: false, error: error.message };
+    }
+  }
 
   gui = startGui(getState, {
     onQuit: () => {
@@ -216,13 +330,18 @@ async function main() {
       shutdown();
 
       setImmediate(() => {
-        try {
-          process.exit(0);
-        } catch {}
+        try { process.exit(0); } catch {}
       });
 
       return true;
     },
+
+    checkForUpdates: () => {
+      checkForUpdates();
+      return true;
+    },
+
+    applyUpdate: () => applyUpdateNow(),
   });
 
   addLog(`MoonWolf Agent v${VERSION} iniciado.`);
@@ -351,9 +470,7 @@ async function main() {
   }
 
   function scheduleReconnect() {
-    if (shuttingDown) {
-      return;
-    }
+    if (shuttingDown) return;
 
     clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(connectCloud, reconnectDelay);
@@ -361,9 +478,7 @@ async function main() {
   }
 
   function connectCloud() {
-    if (shuttingDown) {
-      return;
-    }
+    if (shuttingDown) return;
 
     cloudSocket?.disconnect();
     cloudConnected = false;
@@ -388,6 +503,8 @@ async function main() {
       addLog('Conectado a MoonWolf Cloud.');
       connectLocalSocket();
       requestPairingCode();
+      checkForUpdates();
+      scheduleUpdateCheck();
       gui.update();
     });
 
@@ -433,12 +550,11 @@ async function main() {
   }
 
   function shutdown() {
-    if (shuttingDown) {
-      return;
-    }
+    if (shuttingDown) return;
 
     shuttingDown = true;
     clearTimeout(reconnectTimer);
+    clearTimeout(updateCheckTimer);
     cloudSocket?.disconnect();
     localSocket?.disconnect();
     cloudConnected = false;
@@ -450,15 +566,10 @@ async function main() {
     logError(error, 'Error no controlado');
     addLog('El proceso se cerrará para evitar un estado inconsistente.', 'error');
 
-    try {
-      gui?.update();
-    } catch {}
+    try { gui?.update(); } catch {}
 
     setTimeout(() => {
-      try {
-        shutdown();
-      } catch {}
-
+      try { shutdown(); } catch {}
       process.exit(1);
     }, 500);
   });
