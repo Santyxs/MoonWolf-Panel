@@ -259,9 +259,9 @@ function bindEvents() {
     const ok = await copyText(state.agentId);
     flashButton(button, ok ? 'Copiado' : 'Error');
   });
-  $('settings-check-update')?.addEventListener('click', event => {
+  $('settings-check-update')?.addEventListener('click', () => {
+    closeModal('settings-modal');
     nativeApi().checkForUpdates?.();
-    flashButton(event.currentTarget, 'Buscando…');
   });
 
   $('close-serverdir')?.addEventListener('click', () => closeModal('serverdir-modal'));
@@ -294,13 +294,10 @@ function bindEvents() {
     if (!state.updateAvailable) return;
     if (state.updateStatus !== 'ready' && state.updateStatus !== 'error') return;
 
-    if (state.updateStatus === 'error') {
-      nativeApi().checkForUpdates?.();
-      return;
-    }
-
-    if (!confirm(`¿Actualizar MoonWolf Agent a v${state.updateAvailable.version}? Se reiniciará automáticamente.`)) {
-      return;
+    if (state.updateStatus === 'ready') {
+      if (!confirm(`¿Actualizar MoonWolf Agent a v${state.updateAvailable.version}? Se reiniciará automáticamente.`)) {
+        return;
+      }
     }
 
     const result = nativeApi().applyUpdate?.();
