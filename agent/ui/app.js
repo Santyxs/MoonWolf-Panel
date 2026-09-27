@@ -10,6 +10,10 @@ let state = {
   cloudConnected: false,
   localServerReady: false,
   restartRequired: false,
+  updateAvailable: null,
+  updateStatus: 'idle',
+  updateProgress: 0,
+  updateError: null,
   logs: [],
 };
 
@@ -44,8 +48,79 @@ function render() {
     banner.classList.toggle('hidden', !state.restartRequired);
   }
 
+  renderUpdateBanner();
   renderSettings();
   renderLogs();
+}
+
+function renderUpdateBanner() {
+  const banner = $('update-banner');
+  if (!banner) return;
+
+  const available = state.updateAvailable;
+
+  if (!available) {
+    banner.classList.add('hidden');
+    return;
+  }
+
+  banner.classList.remove('hidden');
+
+  const title = $('update-title');
+  const description = $('update-description');
+  const applyButton = $('update-apply');
+  const track = $('update-progress-track');
+  const fill = $('update-progress-fill');
+
+  const version = `v${available.version}`;
+  const status = String(state.updateStatus || 'idle');
+  const progress = Number(state.updateProgress) || 0;
+
+  if (status === 'downloading') {
+    if (title) title.textContent = `Descargando ${version}…`;
+    if (description) description.textContent = `${progress}% completado`;
+    if (track) track.classList.remove('hidden');
+    if (fill) fill.style.width = `${progress}%`;
+    if (applyButton) {
+      applyButton.disabled = true;
+      applyButton.innerHTML = '<span>⬇</span>Descargando';
+    }
+    return;
+  }
+
+  if (status === 'ready' || status === 'installing') {
+    if (title) title.textContent = `Listo para actualizar a ${version}`;
+    if (description) description.textContent = status === 'installing'
+      ? 'Aplicando actualización…'
+      : 'La actualización se instalará y MoonWolf Agent se reiniciará.';
+    if (track) track.classList.add('hidden');
+    if (applyButton) {
+      applyButton.disabled = status === 'installing';
+      applyButton.innerHTML = status === 'installing'
+        ? '<span>⏳</span>Instalando'
+        : '<span>⬆</span>Actualizar ahora';
+    }
+    return;
+  }
+
+  if (status === 'error') {
+    if (title) title.textContent = `Error actualizando a ${version}`;
+    if (description) description.textContent = state.updateError || 'No se pudo completar la actualización.';
+    if (track) track.classList.add('hidden');
+    if (applyButton) {
+      applyButton.disabled = false;
+      applyButton.innerHTML = '<span>↻</span>Reintentar';
+    }
+    return;
+  }
+
+  if (title) title.textContent = `Actualización disponible · ${version}`;
+  if (description) description.textContent = 'Se descargará automáticamente en segundo plano.';
+  if (track) track.classList.add('hidden');
+  if (applyButton) {
+    applyButton.disabled = true;
+    applyButton.innerHTML = '<span>⬇</span>Preparando';
+  }
 }
 
 function renderSettings() {
@@ -184,6 +259,10 @@ function bindEvents() {
     const ok = await copyText(state.agentId);
     flashButton(button, ok ? 'Copiado' : 'Error');
   });
+  $('settings-check-update')?.addEventListener('click', event => {
+    nativeApi().checkForUpdates?.();
+    flashButton(event.currentTarget, 'Buscando…');
+  });
 
   $('close-serverdir')?.addEventListener('click', () => closeModal('serverdir-modal'));
   $('cancel-serverdir')?.addEventListener('click', () => closeModal('serverdir-modal'));
@@ -208,6 +287,26 @@ function bindEvents() {
   $('restart-agent')?.addEventListener('click', () => {
     if (confirm('¿Reiniciar MoonWolf Agent ahora?')) {
       nativeApi().restart?.();
+    }
+  });
+
+  $('update-apply')?.addEventListener('click', () => {
+    if (!state.updateAvailable) return;
+    if (state.updateStatus !== 'ready' && state.updateStatus !== 'error') return;
+
+    if (state.updateStatus === 'error') {
+      nativeApi().checkForUpdates?.();
+      return;
+    }
+
+    if (!confirm(`¿Actualizar MoonWolf Agent a v${state.updateAvailable.version}? Se reiniciará automáticamente.`)) {
+      return;
+    }
+
+    const result = nativeApi().applyUpdate?.();
+
+    if (result && !result.ok) {
+      $('update-description').textContent = result.error || 'No se pudo aplicar la actualización.';
     }
   });
 
