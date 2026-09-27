@@ -25,7 +25,7 @@ function formatPath(value) {
 }
 
 /* ══════════════════════════════════════════════
-   CUSTOM CONFIRM — sustituye al confirm() nativo
+   CUSTOM CONFIRM
    ══════════════════════════════════════════════ */
 function ensureConfirmStyles() {
   if (document.getElementById('mw-confirm-style')) return;
