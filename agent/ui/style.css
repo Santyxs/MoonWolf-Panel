@@ -192,6 +192,14 @@ button {
     rgba(255, 92, 108, 0.45);
 }
 
+.status-dot.connecting {
+  background: var(--yellow);
+
+  box-shadow:
+    0 0 12px
+    rgba(242, 201, 76, 0.5);
+}
+
 .status-content {
   display: flex;
   flex-direction: column;
@@ -328,7 +336,7 @@ button {
   background: var(--red);
 }
 
-.mini-dot.online {
+.mini-dot.ready {
   background: var(--green);
 
   box-shadow:
@@ -671,4 +679,52 @@ footer {
   line-height: 1.5;
 
   color: var(--muted);
+}
+
+/* Banner de reinicio pendiente */
+
+.restart-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  gap: 16px;
+
+  margin-top: 14px;
+  padding: 14px 18px;
+
+  border-radius: 14px;
+
+  background: rgba(242, 201, 76, 0.08);
+  border: 1px solid rgba(242, 201, 76, 0.32);
+}
+
+.restart-banner.hidden {
+  display: none;
+}
+
+.restart-banner-content {
+  display: flex;
+  flex-direction: column;
+
+  gap: 3px;
+
+  min-width: 0;
+}
+
+.restart-banner-content strong {
+  font-size: 13px;
+  color: var(--yellow);
+}
+
+.restart-banner-content span {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.restart-banner .button {
+  min-height: auto;
+  padding: 9px 16px;
+
+  flex-shrink: 0;
 }
