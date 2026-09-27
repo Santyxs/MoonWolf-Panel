@@ -196,6 +196,9 @@ async function downloadUpdate(info, onProgress) {
   return dest;
 }
 
+/* ══════════════════════════════════════════════
+   UPDATE — applyUpdate
+   ══════════════════════════════════════════════ */
 function applyUpdate(downloadedPath) {
   if (process.platform !== 'win32') {
     throw new Error('La auto-actualización solo está disponible en Windows.');
@@ -211,7 +214,9 @@ function applyUpdate(downloadedPath) {
     throw new Error('El Agent no se está ejecutando como ejecutable.');
   }
 
-  const scriptPath = path.join(UPDATE_DIR, `apply-${Date.now()}.bat`);
+  const stamp = Date.now();
+  const scriptPath = path.join(UPDATE_DIR, `apply-${stamp}.bat`);
+  const launcherPath = path.join(UPDATE_DIR, `launch-${stamp}.vbs`);
 
   const script = [
     '@echo off',
@@ -228,29 +233,45 @@ function applyUpdate(downloadedPath) {
     'goto :wait',
     '',
     ':replace',
+    'ping -n 3 127.0.0.1 >NUL',
+    'set /a TRIES=0',
+    ':retry_move',
+    'set /a TRIES+=1',
+    'move /Y "%DST%" "%DST%.old" >NUL 2>&1 && goto :do_replace',
+    'if %TRIES% GEQ 10 goto :fail',
     'ping -n 2 127.0.0.1 >NUL',
-    'move /Y "%DST%" "%DST%.old" >NUL 2>&1',
+    'goto :retry_move',
+    '',
+    ':do_replace',
     'move /Y "%SRC%" "%DST%" >NUL 2>&1',
     'if errorlevel 1 (',
     '  move /Y "%DST%.old" "%DST%" >NUL 2>&1',
-    '  exit /b 1',
+    '  goto :fail',
     ')',
     'del "%DST%.old%" >NUL 2>&1',
     'start "" "%DST%"',
     'del "%~f0" >NUL 2>&1',
+    'exit /b 0',
+    '',
+    ':fail',
+    'move /Y "%DST%.old" "%DST%" >NUL 2>&1',
+    'exit /b 1',
   ].join('\r\n');
 
   fs.writeFileSync(scriptPath, script, 'utf8');
 
-  const child = spawn(
-    'cmd.exe',
-    ['/c', scriptPath, String(process.pid), downloadedPath, currentExe],
-    {
-      detached: true,
-      windowsHide: true,
-      stdio: 'ignore',
-    }
-  );
+  const vbs = [
+    'Set sh = CreateObject("WScript.Shell")',
+    `sh.Run "cmd.exe /c ""${scriptPath}"" ""${process.pid}"" ""${downloadedPath}"" ""${currentExe}""", 0, False`,
+  ].join('\r\n');
+
+  fs.writeFileSync(launcherPath, vbs, 'utf8');
+
+  const child = spawn('wscript.exe', [launcherPath], {
+    detached: true,
+    windowsHide: true,
+    stdio: 'ignore',
+  });
 
   child.unref();
 
@@ -444,6 +465,9 @@ async function main() {
     }, UPDATE_CHECK_INTERVAL_MS);
   }
 
+  /* ══════════════════════════════════════════════
+     UPDATE — applyUpdateNow
+     ══════════════════════════════════════════════ */
   function applyUpdateNow() {
     if (updateStatus === 'error') {
       updateStatus = 'idle';
@@ -474,7 +498,14 @@ async function main() {
 
       setTimeout(() => {
         try { shutdown(); } catch {}
-        process.exit(0);
+
+        try {
+          gui?.close?.();
+        } catch {}
+
+        setTimeout(() => {
+          try { process.exit(0); } catch {}
+        }, 1500);
       }, 500);
 
       return { ok: true };
