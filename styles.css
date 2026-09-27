@@ -961,6 +961,56 @@ body::after {
 .port-edit { background: none; border: 1px solid var(--border); color: var(--muted2); font-size: 11px; padding: 5px 10px; border-radius: var(--r-sm); cursor: pointer; transition: all var(--t-base); font-family: inherit; }
 .port-edit:hover { border-color: var(--accent); color: var(--accent); }
 
+/* Ports extended */
+.ports-toolbar {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  padding:0 4px 14px;
+}
+.port-toolbar-sub {
+  margin-top:4px;
+  color:var(--muted2);
+  font-size:10px;
+  line-height:1.5;
+}
+.ports-grid {
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:10px;
+  margin-bottom:14px;
+}
+.ports-grid .port-row {
+  margin:0;
+  min-width:0;
+  display:grid;
+  grid-template-columns:auto 1fr;
+  gap:8px 12px;
+  align-items:center;
+}
+.ports-grid .port-info { min-width:0; }
+.ports-grid .port-proto,
+.ports-grid .port-state { grid-row:2; }
+.ports-grid .port-state {
+  width:auto;
+  text-align:right;
+  white-space:nowrap;
+  font-size:9px;
+}
+.port-state.configured { color:var(--accent); }
+.ports-config-panel { margin-top:4px; }
+.ports-form {
+  padding:18px;
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+}
+@media (max-width:900px) {
+  .ports-grid { grid-template-columns:1fr; }
+  .ports-toolbar { align-items:flex-start; }
+}
+
 /* ══════════════════════════════════════════════
    STARTUP / SETTINGS
    ══════════════════════════════════════════════ */
