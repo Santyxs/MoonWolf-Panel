@@ -26,10 +26,6 @@ function formatPath(value) {
 
 /* ══════════════════════════════════════════════
    CUSTOM CONFIRM — sustituye al confirm() nativo
-   ──────────────────────────────────────────────
-   El confirm() de WebView2 muestra como título el "origin" de la página,
-   que en nuestro caso es "moonwolf.localhost". Con este modal propio
-   controlamos el título y el estilo, y evitamos ese texto feo.
    ══════════════════════════════════════════════ */
 function ensureConfirmStyles() {
   if (document.getElementById('mw-confirm-style')) return;
@@ -477,10 +473,9 @@ function bindEvents() {
     render();
   });
 
-  // Diálogo propio: Reiniciar Agent
   $('restart-agent')?.addEventListener('click', async () => {
     const ok = await customConfirm(
-      '¿Reiniciar MoonWolf Agent ahora?',
+      'Reiniciar MoonWolf Agent ahora?',
       'Reiniciar Agent'
     );
 
@@ -489,14 +484,13 @@ function bindEvents() {
     }
   });
 
-  // Diálogo propio: Reiniciar Agent (también para la actualización)
   $('update-apply')?.addEventListener('click', async () => {
     if (!state.updateAvailable) return;
     if (state.updateStatus !== 'ready' && state.updateStatus !== 'error') return;
 
     if (state.updateStatus === 'ready') {
       const ok = await customConfirm(
-        `¿Actualizar MoonWolf Agent a v${state.updateAvailable.version}?\n\nSe reiniciará automáticamente.`,
+        `Actualizar MoonWolf Agent a v${state.updateAvailable.version}?\n\nSe reiniciará automáticamente.`,
         'Reiniciar Agent'
       );
 
