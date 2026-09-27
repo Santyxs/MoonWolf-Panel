@@ -35,6 +35,13 @@
         <div class="local-status"><span id="local-dot" class="mini-dot"></span><span id="local-status">Servidor local</span></div>
       </div>
     </section>
+    <section id="restart-banner" class="restart-banner hidden">
+      <div class="restart-banner-content">
+        <strong>Reinicio pendiente</strong>
+        <span>Los cambios en la carpeta del servidor requieren reiniciar el Agent.</span>
+      </div>
+      <button id="restart-agent" class="button primary" type="button"><span>↻</span>Reiniciar ahora</button>
+    </section>
     <section class="actions">
       <button id="open-panel" class="button primary" type="button"><span>↗</span>Abrir Panel</button>
       <button id="settings" class="button secondary" type="button"><span>⚙</span>Configuración</button>
@@ -65,7 +72,7 @@
         <button id="close-serverdir" class="modal-close" type="button">×</button>
       </div>
       <div class="form-body">
-        <input id="serverdir-input" class="text-input" type="text" spellcheck="false" autocomplete="off" placeholder="C:\Users\HP\MoonWolf">
+        <input id="serverdir-input" class="text-input" type="text" spellcheck="false" autocomplete="off" placeholder="C:\Users\TuUsuario\MoonWolf">
         <div id="serverdir-error" class="field-error"></div>
         <div class="field-hint">Se creará la carpeta si no existe. Debes reiniciar MoonWolf Agent para aplicar el cambio.</div>
       </div>
