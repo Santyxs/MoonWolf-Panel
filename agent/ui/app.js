@@ -9,6 +9,7 @@ let state = {
   serverDir: '',
   cloudConnected: false,
   localServerReady: false,
+  restartRequired: false,
   logs: [],
 };
 
@@ -37,6 +38,11 @@ function render() {
   $('local-status').textContent = localReady
     ? 'Servidor local listo'
     : 'Servidor local iniciando';
+
+  const banner = $('restart-banner');
+  if (banner) {
+    banner.classList.toggle('hidden', !state.restartRequired);
+  }
 
   renderSettings();
   renderLogs();
@@ -190,8 +196,26 @@ function bindEvents() {
       return;
     }
     state.serverDir = result.serverDir || $('serverdir-input').value;
+
+    if (result.restartRequired) {
+      state.restartRequired = true;
+    }
+
     closeModal('serverdir-modal');
     render();
+  });
+
+  $('restart-agent')?.addEventListener('click', () => {
+    if (confirm('¿Reiniciar MoonWolf Agent ahora?')) {
+      nativeApi().restart?.();
+    }
+  });
+
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    for (const id of ['logs-modal', 'serverdir-modal', 'settings-modal']) {
+      $(id)?.classList.add('hidden');
+    }
   });
 }
 
