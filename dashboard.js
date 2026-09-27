@@ -2614,6 +2614,148 @@ async function loadDatabases() {
   });
 }
 
+/* PORTS */
+
+async function loadPorts() {
+  const element = $('portList');
+  if (!element) return;
+
+  element.innerHTML = '<div class="empty-state"><div style="animation:spin 1s linear infinite;font-size:28px">⟳</div><div class="empty-msg">Comprobando puertos...</div></div>';
+
+  try {
+    const data = await api('/api/ports');
+    if (!data.ok) throw new Error(data.error || 'No se pudieron cargar los puertos');
+
+    const props = data.properties || {};
+    const ports = Array.isArray(data.ports) ? data.ports : [];
+
+    element.innerHTML = `
+      <div class="ports-toolbar">
+        <div>
+          <div class="panel-title"><span>🔌</span> PUERTOS DEL SERVIDOR</div>
+          <div class="port-toolbar-sub">Configura los puertos de Minecraft, Query y RCON. Los cambios requieren reiniciar el servidor.</div>
+        </div>
+        <button class="small-btn" id="btnRefreshPorts">↺ Comprobar</button>
+      </div>
+
+      <div class="ports-grid">
+        ${ports.map(port => `
+          <div class="port-row">
+            <div class="port-num">${escHtml(port.port)}</div>
+            <div class="port-info">
+              <div class="port-name">${escHtml(port.name)}</div>
+              <div class="port-desc">${escHtml(port.description)}</div>
+            </div>
+            <span class="port-proto">${escHtml(port.protocol)}</span>
+            <span class="port-state ${escHtml(port.state)}">
+              ${port.state === 'open' ? '● ABIERTO' : port.state === 'closed' ? '● CERRADO' : port.state === 'disabled' ? '● DESACTIVADO' : '● CONFIGURADO'}
+            </span>
+          </div>
+        `).join('')}
+      </div>
+
+      <div class="panel ports-config-panel">
+        <div class="panel-header">
+          <div>
+            <div class="panel-title"><span>⚙️</span> CONFIGURACIÓN</div>
+            <div class="port-toolbar-sub">Los valores se escriben directamente en server.properties.</div>
+          </div>
+        </div>
+
+        <div class="ports-form">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Puerto de Minecraft</label>
+              <input id="portMinecraft" class="form-input" type="number" min="1" max="65535" value="${escHtml(props.serverPort ?? 25565)}">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Puerto Query</label>
+              <input id="portQuery" class="form-input" type="number" min="1" max="65535" value="${escHtml(props.queryPort ?? 25565)}">
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div>
+              <div class="setting-name">Game Query</div>
+              <div class="setting-desc">Permite consultar información del servidor mediante el protocolo Query.</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="portEnableQuery" ${props.enableQuery ? 'checked' : ''}>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Puerto RCON</label>
+              <input id="portRcon" class="form-input" type="number" min="1" max="65535" value="${escHtml(props.rconPort ?? 25575)}">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Contraseña RCON</label>
+              <input id="portRconPassword" class="form-input" type="password" placeholder="${props.hasRconPassword ? 'Dejar vacío para conservarla' : 'Contraseña nueva'}" autocomplete="new-password">
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div>
+              <div class="setting-name">RCON</div>
+              <div class="setting-desc">Permite administrar la consola remotamente. Usa una contraseña fuerte y no expongas este puerto innecesariamente a Internet.</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="portEnableRcon" ${props.enableRcon ? 'checked' : ''}>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <button class="save-btn" id="btnSavePorts">💾 GUARDAR PUERTOS</button>
+        </div>
+      </div>
+    `;
+
+    $('btnRefreshPorts')?.addEventListener('click', loadPorts);
+    $('btnSavePorts')?.addEventListener('click', savePorts);
+  } catch (error) {
+    element.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-msg">${escHtml(error.message)}</div><button class="small-btn" id="btnRetryPorts">↺ Reintentar</button></div>`;
+    $('btnRetryPorts')?.addEventListener('click', loadPorts);
+  }
+}
+
+async function savePorts() {
+  const body = {
+    serverPort: Number($('portMinecraft')?.value),
+    queryPort: Number($('portQuery')?.value),
+    rconPort: Number($('portRcon')?.value),
+    enableQuery: Boolean($('portEnableQuery')?.checked),
+    enableRcon: Boolean($('portEnableRcon')?.checked),
+    rconPassword: $('portRconPassword')?.value || '',
+  };
+
+  const button = $('btnSavePorts');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'GUARDANDO...';
+  }
+
+  try {
+    const data = await postJSON('/api/ports', body);
+    if (!data.ok) {
+      toast(`❌ ${data.error}`, 'err');
+      return;
+    }
+
+    toast('✅ Puertos guardados. Reinicia el servidor para aplicar los cambios.', 'ok');
+    addActivity('Configuración de puertos actualizada', 'ok', '🔌');
+    await loadPorts();
+  } catch (error) {
+    toast(error.message, 'err');
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '💾 GUARDAR PUERTOS';
+    }
+  }
+}
+
 /* STARTUP */
 
 async function loadStartup() {
@@ -2842,6 +2984,10 @@ function switchView(id) {
 
     case 'users':
       renderUsers();
+      break;
+
+    case 'ports':
+      loadPorts();
       break;
 
     case 'startup':
