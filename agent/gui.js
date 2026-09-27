@@ -71,6 +71,7 @@ let webview = null;
 let tray = null;
 let notifyTimer = null;
 let lastStateJson = null;
+let isQuitting = false;
 
 let stateProvider = () => ({
   version: '1.0.0',
@@ -317,7 +318,6 @@ function openConfigFolder(configPath) {
 }
 
 /* ── Bandeja del sistema ── */
-
 function hideToTray() {
   if (!tray || !window) return false;
 
@@ -343,17 +343,26 @@ function showFromTray() {
 }
 
 function quitApp() {
+  if (isQuitting) return;
+  isQuitting = true;
+
   try {
     actions.onQuit?.();
-  } catch {}
+  } catch (error) {
+    console.error('[app] onQuit falló:', error?.message || error);
+  }
 
   try {
     tray?.dispose();
-  } catch {}
+  } catch (error) {
+    console.error('[app] tray.dispose falló:', error?.message || error);
+  }
 
   try {
     app?.exit();
-  } catch {}
+  } catch (error) {
+    console.error('[app] app.exit falló:', error?.message || error);
+  }
 
   setImmediate(() => {
     try {
@@ -484,6 +493,28 @@ function createWindow() {
     webContext,
   });
 
+  /* ── Manejo de errores de la webview ── */
+  if (typeof webview.on === 'function') {
+    webview.on('error', error => {
+      console.error(
+        '[webview] error:',
+        error?.message || error
+      );
+    });
+
+    webview.on('crashed', () => {
+      console.error('[webview] proceso de renderizado crasheado.');
+    });
+
+    webview.on('unresponsive', () => {
+      console.warn('[webview] no responde.');
+    });
+
+    webview.on('responsive', () => {
+      console.log('[webview] vuelve a responder.');
+    });
+  }
+
   webview.expose('native', {
     getState: () => stateProvider(),
 
@@ -532,6 +563,23 @@ function createWindow() {
         hideToTray();
       }
     } catch {}
+  });
+
+  window.on('close', event => {
+    if (isQuitting) return;
+
+    try {
+      event?.preventDefault?.();
+    } catch {}
+
+    quitApp();
+  });
+
+  window.on('error', error => {
+    console.error(
+      '[window] error:',
+      error?.message || error
+    );
   });
 
   app.on(
