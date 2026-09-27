@@ -121,7 +121,7 @@ function ensureConfirmStyles() {
   document.head.appendChild(style);
 }
 
-function customConfirm(message, title = 'Reiniciar Agent') {
+function customConfirm(message, title = 'MoonWolf Agent') {
   ensureConfirmStyles();
 
   return new Promise(resolve => {
