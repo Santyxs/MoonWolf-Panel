@@ -1266,39 +1266,24 @@ function openFileContext(event, name, type) {
 
   menu.innerHTML = `
     ${
-      type !== 'dir'
-        ? '<div class="ctx-item" data-action="open">”📂 Abrir</div>'
-        : ''
+      type !== 'dir' ? '<div class="ctx-item" data-action="open">📂 Abrir</div>' : ''
     }
 
-    <div class="ctx-item" data-action="rename">
-      ✏️ Renombrar
-    </div>
+    <div class="ctx-item" data-action="rename">✏️ Renombrar</div>
 
-    <div class="ctx-item" data-action="copy">
-      📋 Copiar
-    </div>
+    <div class="ctx-item" data-action="copy">📋 Copiar</div>
 
-    <div class="ctx-item" data-action="move">
-      🔀 Mover
-    </div>
+    <div class="ctx-item" data-action="move">🔀 Mover</div>
 
     ${
-      type !== 'dir'
-        ? '<div class="ctx-item" data-action="download">⬇️ Descargar</div>'
-        : ''
+      type !== 'dir' ? '<div class="ctx-item" data-action="download">⬇️ Descargar</div>' : ''
     }
 
-    <div class="ctx-item" data-action="compress">
-      🗜️ Comprimir (.zip)
-    </div>
+    <div class="ctx-item" data-action="compress">🗜️ Comprimir</div>
 
     <div class="ctx-sep"></div>
 
-    <div class="ctx-item danger" data-action="delete">
-      🗑️ Eliminar
-    </div>
-  `;
+    <div class="ctx-item danger" data-action="delete">🗑️ Eliminar</div>`;
 
   document.body.appendChild(menu);
 
