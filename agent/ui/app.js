@@ -24,6 +24,175 @@ function formatPath(value) {
   return String(value || '—');
 }
 
+/* ══════════════════════════════════════════════
+   CUSTOM CONFIRM — sustituye al confirm() nativo
+   ──────────────────────────────────────────────
+   El confirm() de WebView2 muestra como título el "origin" de la página,
+   que en nuestro caso es "moonwolf.localhost". Con este modal propio
+   controlamos el título y el estilo, y evitamos ese texto feo.
+   ══════════════════════════════════════════════ */
+function ensureConfirmStyles() {
+  if (document.getElementById('mw-confirm-style')) return;
+
+  const style = document.createElement('style');
+  style.id = 'mw-confirm-style';
+  style.textContent = `
+    .mw-confirm-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.55);
+      backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 99999;
+      animation: mwConfirmIn 0.15s ease;
+    }
+    @keyframes mwConfirmIn {
+      from { opacity: 0; }
+      to   { opacity: 1; }
+    }
+    .mw-confirm-box {
+      width: min(420px, calc(100vw - 40px));
+      background: #171a21;
+      border: 1px solid #2a2e38;
+      border-radius: 14px;
+      padding: 22px 24px 18px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      color: #e8edf2;
+      animation: mwConfirmPop 0.18s ease;
+    }
+    @keyframes mwConfirmPop {
+      from { transform: translateY(-8px) scale(0.98); opacity: 0; }
+      to   { transform: none; opacity: 1; }
+    }
+    .mw-confirm-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 10px;
+      letter-spacing: 0.3px;
+    }
+    .mw-confirm-message {
+      font-size: 13px;
+      line-height: 1.55;
+      color: #b6c2d1;
+      margin-bottom: 18px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .mw-confirm-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .mw-confirm-actions button {
+      border: 1px solid transparent;
+      border-radius: 8px;
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.15s ease;
+    }
+    .mw-confirm-cancel {
+      background: transparent;
+      border-color: #2a2e38;
+      color: #8b97a6;
+    }
+    .mw-confirm-cancel:hover {
+      border-color: #4a5260;
+      color: #c9d3df;
+    }
+    .mw-confirm-accept {
+      background: #2563eb;
+      border-color: #2563eb;
+      color: #fff;
+    }
+    .mw-confirm-accept:hover {
+      background: #1d4fd8;
+      border-color: #1d4fd8;
+    }
+    .mw-confirm-accept:focus,
+    .mw-confirm-cancel:focus {
+      outline: 2px solid #3b82f6;
+      outline-offset: 2px;
+    }
+  `;
+
+  document.head.appendChild(style);
+}
+
+function customConfirm(message, title = 'Reiniciar Agent') {
+  ensureConfirmStyles();
+
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.className = 'mw-confirm-overlay';
+
+    const box = document.createElement('div');
+    box.className = 'mw-confirm-box';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'mw-confirm-title';
+    titleEl.textContent = title;
+
+    const msgEl = document.createElement('div');
+    msgEl.className = 'mw-confirm-message';
+    msgEl.textContent = message;
+
+    const actions = document.createElement('div');
+    actions.className = 'mw-confirm-actions';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'mw-confirm-cancel';
+    cancelBtn.textContent = 'Cancelar';
+
+    const acceptBtn = document.createElement('button');
+    acceptBtn.type = 'button';
+    acceptBtn.className = 'mw-confirm-accept';
+    acceptBtn.textContent = 'Aceptar';
+
+    actions.append(cancelBtn, acceptBtn);
+    box.append(titleEl, msgEl, actions);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    let closed = false;
+
+    const close = result => {
+      if (closed) return;
+      closed = true;
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+      resolve(result);
+    };
+
+    const onKey = event => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close(false);
+      } else if (event.key === 'Enter') {
+        event.preventDefault();
+        close(true);
+      }
+    };
+
+    acceptBtn.addEventListener('click', () => close(true));
+    cancelBtn.addEventListener('click', () => close(false));
+    overlay.addEventListener('click', event => {
+      if (event.target === overlay) close(false);
+    });
+
+    document.addEventListener('keydown', onKey);
+
+    setTimeout(() => acceptBtn.focus(), 30);
+  });
+}
+
 function render() {
   const cloudConnected = Boolean(state.cloudConnected);
   const localReady = Boolean(state.localServerReady);
@@ -308,20 +477,30 @@ function bindEvents() {
     render();
   });
 
-  $('restart-agent')?.addEventListener('click', () => {
-    if (confirm('¿Reiniciar MoonWolf Agent ahora?')) {
+  // Diálogo propio: Reiniciar Agent
+  $('restart-agent')?.addEventListener('click', async () => {
+    const ok = await customConfirm(
+      '¿Reiniciar MoonWolf Agent ahora?',
+      'Reiniciar Agent'
+    );
+
+    if (ok) {
       nativeApi().restart?.();
     }
   });
 
-  $('update-apply')?.addEventListener('click', () => {
+  // Diálogo propio: Reiniciar Agent (también para la actualización)
+  $('update-apply')?.addEventListener('click', async () => {
     if (!state.updateAvailable) return;
     if (state.updateStatus !== 'ready' && state.updateStatus !== 'error') return;
 
     if (state.updateStatus === 'ready') {
-      if (!confirm(`¿Actualizar MoonWolf Agent a v${state.updateAvailable.version}? Se reiniciará automáticamente.`)) {
-        return;
-      }
+      const ok = await customConfirm(
+        `¿Actualizar MoonWolf Agent a v${state.updateAvailable.version}?\n\nSe reiniciará automáticamente.`,
+        'Reiniciar Agent'
+      );
+
+      if (!ok) return;
     }
 
     const result = nativeApi().applyUpdate?.();
