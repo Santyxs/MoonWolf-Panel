@@ -116,6 +116,9 @@ async function checkForUpdate(currentVersion) {
     headers: {
       'User-Agent': 'MoonWolf-Agent',
       'Accept': 'application/vnd.github+json',
+      ...(process.env.MOONWOLF_GH_TOKEN
+        ? { 'Authorization': `Bearer ${process.env.MOONWOLF_GH_TOKEN}` }
+        : {}),
     },
     signal: AbortSignal.timeout(5000),
   });
@@ -196,12 +199,72 @@ async function downloadUpdate(info, onProgress) {
   return dest;
 }
 
-/* ══════════════════════════════════════════════
-   UPDATE — applyUpdate
-   ══════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   ═══ NUEVO: modo updater ═══
+   Cuando el agent viejo lanza este binario con --self-update,
+   esperamos a que muera, sobrescribimos su .exe y lo relanzamos.
+   ═══════════════════════════════════════════════════════════════ */
+async function runAsUpdater(oldPid, oldExe) {
+  const selfPath = process.execPath;
+
+  const isAlive = pid => {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  };
+
+  /* 1) Esperar a que el proceso viejo termine (máx. 60s) */
+  const deadline = Date.now() + 60_000;
+
+  while (Date.now() < deadline && isAlive(oldPid)) {
+    await wait(200);
+  }
+
+  /* 2) Gracia extra: Windows tarda en soltar los handles del .exe */
+  await wait(3000);
+
+  /* 3) Copiar nuestro binario encima del viejo, con reintentos */
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= 30; attempt++) {
+    try {
+      fs.copyFileSync(selfPath, oldExe);
+      lastError = null;
+      break;
+    } catch (error) {
+      lastError = error;
+      await wait(2000);
+    }
+  }
+
+  if (lastError) {
+    /* Falló todo: relanzamos el exe viejo para no dejar al usuario sin agent */
+    try {
+      spawn(oldExe, [], { detached: true, windowsHide: true, stdio: 'ignore' }).unref();
+    } catch {}
+
+    process.exit(1);
+  }
+
+  /* 4) Lanzar el exe actualizado normalmente */
+  try {
+    spawn(oldExe, [], { detached: true, windowsHide: true, stdio: 'ignore' }).unref();
+  } catch (error) {
+    process.exit(1);
+  }
+
+  /* 5) Salir. El próximo cleanUpdateDir() se encargará de este updater.exe */
+  process.exit(0);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   CAMBIO: applyUpdate reescrito — sin .bat ni .vbs
+   ═══════════════════════════════════════════════════════════════ */
 function applyUpdate(downloadedPath) {
   if (process.platform !== 'win32') {
     throw new Error('La auto-actualización solo está disponible en Windows.');
+  }
+
+  if (VERSION === 'dev') {
+    throw new Error('La auto-actualización solo funciona en el binario compilado.');
   }
 
   if (!fs.existsSync(downloadedPath)) {
@@ -214,92 +277,92 @@ function applyUpdate(downloadedPath) {
     throw new Error('El Agent no se está ejecutando como ejecutable.');
   }
 
-  const stamp = Date.now();
-  const scriptPath = path.join(UPDATE_DIR, `apply-${stamp}.bat`);
-  const launcherPath = path.join(UPDATE_DIR, `launch-${stamp}.vbs`);
+  fs.mkdirSync(UPDATE_DIR, { recursive: true });
 
-  const script = [
-    '@echo off',
-    'setlocal',
-    '',
-    'set "TARGET_PID=%~1"',
-    'set "SRC=%~2"',
-    'set "DST=%~3"',
-    '',
-    ':wait',
-    'tasklist /FI "PID eq %TARGET_PID%" /NH 2>NUL | findstr /R /C:"%TARGET_PID%" >NUL',
-    'if errorlevel 1 goto :replace',
-    'ping -n 2 127.0.0.1 >NUL',
-    'goto :wait',
-    '',
-    ':replace',
-    'ping -n 3 127.0.0.1 >NUL',
-    'set /a TRIES=0',
-    ':retry_move',
-    'set /a TRIES+=1',
-    'move /Y "%DST%" "%DST%.old" >NUL 2>&1 && goto :do_replace',
-    'if %TRIES% GEQ 10 goto :fail',
-    'ping -n 2 127.0.0.1 >NUL',
-    'goto :retry_move',
-    '',
-    ':do_replace',
-    'move /Y "%SRC%" "%DST%" >NUL 2>&1',
-    'if errorlevel 1 (',
-    '  move /Y "%DST%.old" "%DST%" >NUL 2>&1',
-    '  goto :fail',
-    ')',
-    'del "%DST%.old%" >NUL 2>&1',
-    'start "" "%DST%"',
-    'del "%~f0" >NUL 2>&1',
-    'exit /b 0',
-    '',
-    ':fail',
-    'move /Y "%DST%.old" "%DST%" >NUL 2>&1',
-    'exit /b 1',
-  ].join('\r\n');
+  /* Copiamos el exe nuevo a un updater.exe separado. Ese updater es
+     el mismo binario que vamos a instalar, pero arrancado en modo
+     "--self-update", así que sabe sobrescribirse y relanzarse. */
+  const updaterPath = path.join(UPDATE_DIR, 'updater.exe');
 
-  fs.writeFileSync(scriptPath, script, 'utf8');
+  try { fs.unlinkSync(updaterPath); } catch {}
 
-  const vbs = [
-    'Set sh = CreateObject("WScript.Shell")',
-    `sh.Run "cmd.exe /c ""${scriptPath}"" ""${process.pid}"" ""${downloadedPath}"" ""${currentExe}""", 0, False`,
-  ].join('\r\n');
+  fs.copyFileSync(downloadedPath, updaterPath);
 
-  fs.writeFileSync(launcherPath, vbs, 'utf8');
-
-  const child = spawn('wscript.exe', [launcherPath], {
-    detached: true,
-    windowsHide: true,
-    stdio: 'ignore',
-  });
+  /* Lanzamos el updater desacoplado con: pid del proceso viejo + ruta del exe viejo */
+  const child = spawn(
+    updaterPath,
+    ['--self-update', String(process.pid), currentExe],
+    {
+      detached: true,
+      windowsHide: true,
+      stdio: 'ignore',
+    }
+  );
 
   child.unref();
 
   return true;
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   CAMBIO: cleanUpdateDir más robusto
+   ═══════════════════════════════════════════════════════════════ */
 function cleanUpdateDir() {
+  if (!fs.existsSync(UPDATE_DIR)) return;
+
+  const now = Date.now();
+  const MAX_AGE = 24 * 60 * 60 * 1000;
+
+  let entries;
+
   try {
-    if (!fs.existsSync(UPDATE_DIR)) return;
+    entries = fs.readdirSync(UPDATE_DIR);
+  } catch {
+    return;
+  }
 
-    const now = Date.now();
-    const MAX_AGE = 24 * 60 * 60 * 1000;
+  for (const entry of entries) {
+    const full = path.join(UPDATE_DIR, entry);
 
-    for (const entry of fs.readdirSync(UPDATE_DIR)) {
-      const full = path.join(UPDATE_DIR, entry);
+    let stat;
 
-      try {
-        const stat = fs.statSync(full);
-
-        if (now - stat.mtimeMs > MAX_AGE) {
-          fs.unlinkSync(full);
-        }
-      } catch {}
+    try {
+      stat = fs.statSync(full);
+    } catch {
+      continue;
     }
-  } catch {}
+
+    if (now - stat.mtimeMs <= MAX_AGE) continue;
+
+    /* chmod por si quedó con atributo de solo lectura residual */
+    try { fs.chmodSync(full, 0o666); } catch {}
+
+    try {
+      fs.unlinkSync(full);
+    } catch (error) {
+      /* A veces Windows tarda en soltar el handle; lo reintentaremos en el próximo arranque */
+      try { console.warn(`[cleanUpdateDir] No se pudo borrar ${entry}: ${error.message}`); } catch {}
+    }
+  }
 }
 
 async function main() {
+  /* ═══ NUEVO: modo updater — se comprueba ANTES que nada ═══ */
+  const selfUpdateIdx = process.argv.indexOf('--self-update');
+
+  if (selfUpdateIdx !== -1) {
+    const oldPid = Number(process.argv[selfUpdateIdx + 1]);
+    const oldExe = String(process.argv[selfUpdateIdx + 2] || '');
+
+    if (Number.isFinite(oldPid) && /\.exe$/i.test(oldExe)) {
+      await runAsUpdater(oldPid, oldExe);
+      return;
+    }
+
+    process.exit(1);
+  }
+
+  /* Resto del arranque normal */
   const config = loadConfig();
   const localUrl = `http://127.0.0.1:${LOCAL_PORT}`;
 
@@ -465,9 +528,7 @@ async function main() {
     }, UPDATE_CHECK_INTERVAL_MS);
   }
 
-  /* ══════════════════════════════════════════════
-     UPDATE — applyUpdateNow
-     ══════════════════════════════════════════════ */
+  /* ═══ CAMBIO: timings de applyUpdateNow para dar margen al updater ═══ */
   function applyUpdateNow() {
     if (updateStatus === 'error') {
       updateStatus = 'idle';
@@ -496,17 +557,18 @@ async function main() {
       addLog('Cerrando para aplicar la actualización...');
       gui?.update();
 
+      /* Damos tiempo al updater.exe a arrancar y engancharse al PID viejo */
       setTimeout(() => {
         try { shutdown(); } catch {}
 
-        try {
-          gui?.close?.();
-        } catch {}
-
         setTimeout(() => {
-          try { process.exit(0); } catch {}
+          try { gui?.close?.(); } catch {}
+
+          setImmediate(() => {
+            try { process.exit(0); } catch {}
+          });
         }, 1500);
-      }, 500);
+      }, 1000);
 
       return { ok: true };
     } catch (error) {
