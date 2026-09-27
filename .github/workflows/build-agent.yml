@@ -105,23 +105,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           latest=$(
-            gh release list               --limit 100               --json tagName,isDraft,isPrerelease               --jq '
+            gh release list \
+              --limit 100 \
+              --json tagName,isDraft,isPrerelease \
+              --jq '
                 [.[] |
                   select(.isDraft == false and .isPrerelease == false) |
                   .tagName |
                   select(startswith("agent-v")) |
-                  split("-v")[1] |
+                  sub("^agent-v"; "") |
                   split(".") |
-                  select(length == 2) |
                   map(tonumber)
                 ] |
                 sort |
                 last |
-                if . == null then
-                  ""
-                else
-                  "agent-v" + (.[0] | tostring) + "." + (.[1] | tostring)
-                end
+                if . == null then "" else "agent-v" + (.[0]|tostring) + "." + (.[1]|tostring) end
               '
           )
 
@@ -131,7 +129,16 @@ jobs:
             version="${latest#agent-v}"
             major="${version%%.*}"
             minor="${version#*.}"
-            next="agent-v${major}.$((minor + 1))"
+
+            # Incrementamos minor; si llega a 100, subimos major y reseteamos minor
+            minor=$((minor + 1))
+
+            if [ "$minor" -ge 100 ]; then
+              major=$((major + 1))
+              minor=0
+            fi
+
+            next="agent-v${major}.${minor}"
           fi
 
           echo "Última versión: ${latest:-ninguna}"
