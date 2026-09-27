@@ -211,9 +211,7 @@ function applyUpdate(downloadedPath) {
     throw new Error('El Agent no se está ejecutando como ejecutable.');
   }
 
-  const stamp = Date.now();
-  const scriptPath = path.join(UPDATE_DIR, `apply-${stamp}.bat`);
-  const launcherPath = path.join(UPDATE_DIR, `launch-${stamp}.vbs`);
+  const scriptPath = path.join(UPDATE_DIR, `apply-${Date.now()}.bat`);
 
   const script = [
     '@echo off',
@@ -223,56 +221,35 @@ function applyUpdate(downloadedPath) {
     'set "SRC=%~2"',
     'set "DST=%~3"',
     '',
-    'ping -n 4 127.0.0.1 >NUL',
-    '',
+    ':wait',
     'tasklist /FI "PID eq %TARGET_PID%" /NH 2>NUL | findstr /R /C:"%TARGET_PID%" >NUL',
-    'if not errorlevel 1 (',
-    '  taskkill /F /PID %TARGET_PID% >NUL 2>&1',
-    '  ping -n 3 127.0.0.1 >NUL',
-    ')',
-    '',
+    'if errorlevel 1 goto :replace',
     'ping -n 2 127.0.0.1 >NUL',
+    'goto :wait',
     '',
-    'set /a TRIES=0',
-    ':retry',
-    'set /a TRIES+=1',
-    'move /Y "%DST%" "%DST%.old" >NUL 2>&1 && goto :swap',
-    'if %TRIES% GEQ 10 goto :fail',
+    ':replace',
     'ping -n 2 127.0.0.1 >NUL',
-    'goto :retry',
-    '',
-    ':swap',
+    'move /Y "%DST%" "%DST%.old" >NUL 2>&1',
     'move /Y "%SRC%" "%DST%" >NUL 2>&1',
     'if errorlevel 1 (',
     '  move /Y "%DST%.old" "%DST%" >NUL 2>&1',
-    '  goto :fail',
+    '  exit /b 1',
     ')',
     'del "%DST%.old%" >NUL 2>&1',
     'start "" "%DST%"',
     'del "%~f0" >NUL 2>&1',
-    'exit /b 0',
-    '',
-    ':fail',
-    'move /Y "%DST%.old" "%DST%" >NUL 2>&1',
-    'exit /b 1',
   ].join('\r\n');
 
   fs.writeFileSync(scriptPath, script, 'utf8');
 
-  const vbs = [
-    'Set sh = CreateObject("WScript.Shell")',
-    `sh.Run "cmd.exe /c ""${scriptPath}"" ""${process.pid}"" ""${downloadedPath}"" ""${currentExe}""", 0, False`,
-  ].join('\r\n');
-
-  fs.writeFileSync(launcherPath, vbs, 'utf8');
-
-  const child = spawn('wscript.exe', [launcherPath], {
-    detached: true,
-    windowsHide: true,
-    stdio: 'ignore',
-  });
-
-  child.unref();
+  const child = spawn(
+    'cmd.exe',
+    ['/c', scriptPath, String(process.pid), downloadedPath, currentExe],
+    {
+      windowsHide: true,
+      stdio: 'ignore',
+    }
+  );
 
   return true;
 }
