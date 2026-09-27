@@ -26,8 +26,6 @@ function formatPath(value) {
 
 /* ══════════════════════════════════════════════
    CUSTOM CONFIRM
-   Los estilos viven en style.css (el CSP del Agent bloquea los <style>
-   inyectados dinámicamente, por eso NO se añaden desde aquí).
    ══════════════════════════════════════════════ */
 function customConfirm(message, title = 'Reiniciar Agent') {
   return new Promise(resolve => {
@@ -390,24 +388,15 @@ function bindEvents() {
     }
   });
 
-  $('update-apply')?.addEventListener('click', async () => {
-    if (!state.updateAvailable) return;
-    if (state.updateStatus !== 'ready' && state.updateStatus !== 'error') return;
+  $('update-apply')?.addEventListener('click', () => {
+  if (!state.updateAvailable) return;
+  if (state.updateStatus !== 'ready' && state.updateStatus !== 'error') return;
 
-    if (state.updateStatus === 'ready') {
-      const ok = await customConfirm(
-        `Actualizar a v${state.updateAvailable.version}?`,
-        'Reiniciar Agent'
-      );
+  const result = nativeApi().applyUpdate?.();
 
-      if (!ok) return;
-    }
-
-    const result = nativeApi().applyUpdate?.();
-
-    if (result && !result.ok) {
-      $('update-description').textContent = result.error || 'No se pudo aplicar la actualización.';
-    }
+  if (result && !result.ok) {
+    $('update-description').textContent = result.error || 'No se pudo aplicar la actualización.';
+  }
   });
 
   document.addEventListener('keydown', event => {
