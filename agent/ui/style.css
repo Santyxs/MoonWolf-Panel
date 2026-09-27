@@ -834,16 +834,16 @@ footer {
   border-radius: 12px;
 
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
   letter-spacing: 0.2px;
   text-align: center;
 
-  background: var(--surface);
+  background: #11151d;
   border: 1px solid var(--border);
 
   box-shadow:
     0 12px 40px
-    rgba(0, 0, 0, 0.45);
+    rgba(0, 0, 0, 0.75);
 
   animation: noticeIn 0.22s ease;
 
@@ -856,20 +856,20 @@ footer {
 }
 
 .update-notice.ok {
-  background: rgba(53, 208, 127, 0.12);
-  border-color: rgba(53, 208, 127, 0.42);
+  background: #0f2a1d;
+  border-color: rgba(53, 208, 127, 0.55);
   color: var(--green);
 }
 
 .update-notice.err {
-  background: rgba(255, 92, 108, 0.12);
-  border-color: rgba(255, 92, 108, 0.42);
+  background: #2a1115;
+  border-color: rgba(255, 92, 108, 0.55);
   color: var(--red);
 }
 
 .update-notice.info {
-  background: rgba(139, 92, 246, 0.12);
-  border-color: rgba(139, 92, 246, 0.42);
+  background: #1c1330;
+  border-color: rgba(139, 92, 246, 0.55);
   color: var(--accent-light);
 }
 
