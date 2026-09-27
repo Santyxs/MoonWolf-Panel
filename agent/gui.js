@@ -551,6 +551,10 @@ function createWindow() {
 
     hideToTray: () => hideToTray(),
 
+    restart: () =>
+      typeof actions.restart === 'function' &&
+      actions.restart(),
+
     close: () => {
       quitApp();
       return true;
