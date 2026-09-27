@@ -376,6 +376,8 @@ async function main() {
   async function runUpdateCheck() {
     if (shuttingDown) return;
 
+    addLog(`Buscando actualizaciones (actual: v${VERSION})...`);
+
     try {
       const info = await checkForUpdate(VERSION);
 
@@ -385,11 +387,13 @@ async function main() {
         updateProgress = 0;
         updateError = null;
         updateFilePath = null;
+        addLog(`No hay actualizaciones. Versión actual: v${VERSION}.`);
         gui?.update();
         return;
       }
 
       if (updateAvailable && updateAvailable.version === info.version && updateStatus !== 'error') {
+        addLog(`Actualización v${info.version} ya detectada.`);
         return;
       }
 
@@ -403,7 +407,9 @@ async function main() {
 
       startUpdateDownload();
     } catch (error) {
+      updateStatus = 'error';
       updateError = error.message;
+      logError(error, 'Error buscando actualización');
       gui?.update();
     }
   }
