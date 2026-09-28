@@ -1173,6 +1173,103 @@ function openFileContext(event, name, type) {
   }, 0);
 }
 
+const FILE_UPLOAD_CHUNK_SIZE = 1024 * 1024;
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  const step = 0x8000;
+
+  for (let i = 0; i < bytes.length; i += step) {
+    binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + step, bytes.length)));
+  }
+
+  return btoa(binary);
+}
+
+function normalizeUploadRelativePath(value) {
+  return String(value || '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .split('/')
+    .filter(part => part && part !== '.' && part !== '..')
+    .join('/');
+}
+
+async function uploadOneFile(file, relativePath, progressState) {
+  const relPath = normalizeUploadRelativePath(relativePath || file.name);
+
+  if (!relPath) {
+    throw new Error(`Nombre de archivo no válido: ${file.name}`);
+  }
+
+  const target = currentDir
+    ? `${currentDir.replace(/\\/g, '/').replace(/\/$/, '')}/${relPath}`
+    : relPath;
+
+  const uploadId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${progressState.index}`;
+  let offset = 0;
+
+  while (offset < file.size || (file.size === 0 && offset === 0)) {
+    const end = file.size === 0 ? 0 : Math.min(offset + FILE_UPLOAD_CHUNK_SIZE, file.size);
+    const buffer = await file.slice(offset, end).arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+
+    const data = await postJSON('/api/files/upload-chunk', {
+      uploadId,
+      path: target,
+      offset,
+      totalSize: file.size,
+      chunkBase64: bytesToBase64(bytes),
+      final: end >= file.size,
+      overwrite: true,
+    });
+
+    if (!data.ok) {
+      throw new Error(data.error || `No se pudo subir ${file.name}`);
+    }
+
+    if (file.size === 0) {
+      offset = 1;
+      break;
+    }
+
+    offset = end;
+    progressState.doneBytes += bytes.length;
+    const percent = progressState.totalBytes > 0
+      ? Math.round((progressState.doneBytes / progressState.totalBytes) * 100)
+      : 100;
+
+    toast(`⬆️ Subiendo ${progressState.index + 1}/${progressState.totalFiles}: ${percent}%`, 'info');
+  }
+
+  progressState.index += 1;
+}
+
+async function uploadSelectedFiles(fileList) {
+  const files = Array.from(fileList || {}).filter(file => file && typeof file.size === 'number');
+
+  if (!files.length) return;
+
+  const progressState = {
+    index: 0,
+    totalFiles: files.length,
+    totalBytes: files.reduce((sum, file) => sum + file.size, 0),
+    doneBytes: 0,
+  };
+
+  try {
+    for (const file of files) {
+      const relative = file.webkitRelativePath || file.name;
+      await uploadOneFile(file, relative, progressState);
+    }
+
+    toast(`✅ ${files.length} ${files.length === 1 ? 'archivo subido' : 'archivos subidos'} correctamente`, 'ok');
+    populateFiles(currentDir);
+  } catch (error) {
+    toast(`❌ ${error.message}`, 'err');
+  }
+}
+
 async function downloadFile(rel, filename) {
   const result = await rpcHttp(
     `/api/files/download?path=${encodeURIComponent(rel)}`
@@ -2926,6 +3023,24 @@ function bindEvents() {
   });
 
   $('crumbHome')?.addEventListener('click', () => populateFiles(''));
+
+  $('btnUploadFiles')?.addEventListener('click', () => {
+    $('fileUploadInput')?.click();
+  });
+
+  $('btnUploadFolder')?.addEventListener('click', () => {
+    $('folderUploadInput')?.click();
+  });
+
+  $('fileUploadInput')?.addEventListener('change', async event => {
+    await uploadSelectedFiles(event.target.files);
+    event.target.value = '';
+  });
+
+  $('folderUploadInput')?.addEventListener('change', async event => {
+    await uploadSelectedFiles(event.target.files);
+    event.target.value = '';
+  });
 
   $('btnNewFile')?.addEventListener('click', async () => {
     const raw = prompt('Nombre del nuevo archivo (termina en "/" para carpeta):');

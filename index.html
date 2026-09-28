@@ -158,7 +158,13 @@
               <span class="crumb crumb-active" id="crumbHome">🏠 MoonWolf</span>
               <span id="crumbTrail"></span>
             </div>
-            <button class="small-btn" id="btnNewFile">➕ Nuevo archivo</button>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <button class="small-btn" id="btnUploadFiles">⬆️ Subir archivos</button>
+              <button class="small-btn" id="btnUploadFolder">📁 Subir carpeta</button>
+              <button class="small-btn" id="btnNewFile">➕ Nuevo archivo</button>
+              <input id="fileUploadInput" type="file" multiple hidden>
+              <input id="folderUploadInput" type="file" webkitdirectory directory multiple hidden>
+            </div>
           </div>
 
           <div class="panel files-table-panel" id="filesTablePanel">

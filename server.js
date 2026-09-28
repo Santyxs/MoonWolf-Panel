@@ -2734,6 +2734,119 @@ app.get('/api/versions/current', async (_req, res) => {
     ══════════════════════════════════════════════ */
 const archiver = require('archiver');
 
+const FILE_UPLOAD_MAX_CHUNK_BYTES = 2 * 1024 * 1024;
+const FILE_UPLOAD_ID_RE = /^[a-zA-Z0-9_-]{8,120}$/;
+const FILE_UPLOAD_DIR = path.join(BASE_DIR, '.moonwolf-uploads');
+
+app.post('/api/files/upload-chunk', async (req, res) => {
+  const {
+    uploadId,
+    path: rel,
+    offset,
+    totalSize,
+    chunkBase64,
+    final,
+    overwrite,
+  } = req.body || {};
+
+  if (!FILE_UPLOAD_ID_RE.test(String(uploadId || ''))) {
+    return fail(res, 'Identificador de subida no válido');
+  }
+
+  if (typeof rel !== 'string' || !rel.trim()) {
+    return fail(res, 'Ruta requerida');
+  }
+
+  const numericOffset = Number(offset);
+  const numericTotal = Number(totalSize);
+
+  if (!Number.isSafeInteger(numericOffset) || numericOffset < 0 ||
+      !Number.isSafeInteger(numericTotal) || numericTotal < 0) {
+    return fail(res, 'Tamaño de subida no válido');
+  }
+
+  if (typeof chunkBase64 !== 'string') {
+    return fail(res, 'Bloque de datos requerido');
+  }
+
+  let chunk;
+
+  try {
+    chunk = Buffer.from(chunkBase64, 'base64');
+  } catch {
+    return fail(res, 'Bloque de datos no válido');
+  }
+
+  if (chunk.length > FILE_UPLOAD_MAX_CHUNK_BYTES) {
+    return fail(res, 'Bloque demasiado grande');
+  }
+
+  const full = safePath(rel);
+  if (!full) {
+    return fail(res, 'Ruta no permitida');
+  }
+
+  if (numericOffset + chunk.length > numericTotal) {
+    return fail(res, 'El bloque excede el tamaño indicado');
+  }
+
+  const uploadDir = path.resolve(FILE_UPLOAD_DIR);
+  const uploadPath = path.join(uploadDir, `${uploadId}.part`);
+
+  if (!uploadPath.startsWith(uploadDir + path.sep)) {
+    return fail(res, 'Ruta temporal no permitida');
+  }
+
+  try {
+    await fs.mkdir(uploadDir, { recursive: true });
+
+    let currentSize = 0;
+    try {
+      currentSize = (await fs.stat(uploadPath)).size;
+    } catch {}
+
+    if (currentSize !== numericOffset) {
+      return fail(res, `Orden de bloques incorrecto (esperado ${currentSize}, recibido ${numericOffset})`);
+    }
+
+    if (numericOffset === 0) {
+      await fs.writeFile(uploadPath, chunk);
+    } else if (chunk.length) {
+      await fs.appendFile(uploadPath, chunk);
+    }
+
+    const completed = Boolean(final) || numericOffset + chunk.length === numericTotal;
+
+    if (!completed) {
+      return ok(res, { uploaded: numericOffset + chunk.length, complete: false });
+    }
+
+    const finalSize = (await fs.stat(uploadPath)).size;
+    if (finalSize !== numericTotal) {
+      return fail(res, `Tamaño final incorrecto: ${finalSize}/${numericTotal}`);
+    }
+
+    await fs.mkdir(path.dirname(full), { recursive: true });
+
+    if (!overwrite) {
+      try {
+        await fs.access(full);
+        return fail(res, 'Ya existe un archivo con ese nombre');
+      } catch {}
+    }
+
+    if (overwrite) {
+      try { await fs.rm(full, { recursive: true, force: true }); } catch {}
+    }
+
+    await fs.rename(uploadPath, full);
+    return ok(res, { uploaded: finalSize, complete: true, path: rel });
+  } catch (e) {
+    try { if (Boolean(final)) await fs.rm(uploadPath, { force: true }); } catch {}
+    return fail(res, e.message || 'No se pudo guardar el archivo');
+  }
+});
+
 app.post('/api/files/create', async (req, res) => {
   const { path: dir, name, isDir } = req.body || {};
 
