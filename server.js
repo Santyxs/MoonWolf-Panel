@@ -8,6 +8,7 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
 const net = require('net');
+const { spawn } = require('child_process');
 
 /* ══════════════════════════════════════════════
    Environments
@@ -625,6 +626,312 @@ if (!fsSync.existsSync(BASE_DIR)) {
 
 const PLUGINS_DIR = path.join(BASE_DIR, 'plugins');
 
+/* ══════════════════════════════════════════════
+   JAVA RUNTIMES GESTIONADOS POR MOONWOLF
+   ══════════════════════════════════════════════ */
+const MOONWOLF_APP_DIR = path.join(
+  process.env.APPDATA || path.join(require('os').homedir(), 'AppData', 'Roaming'),
+  'MoonWolf'
+);
+const JAVA_RUNTIMES_DIR = process.env.MOONWOLF_RUNTIME_DIR || path.join(MOONWOLF_APP_DIR, 'runtimes');
+const JAVA_RUNTIME_VERSIONS = [8, 11, 16, 17, 21, 25];
+const JAVA_DOWNLOAD_API = 'https://api.adoptium.net/v3/assets/latest';
+const javaInstallPromises = new Map();
+
+function parseMinecraftVersion(version) {
+  const match = String(version || '').trim().match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2] || 0),
+    patch: Number(match[3] || 0),
+  };
+}
+
+function compareMinecraftVersions(a, b) {
+  const pa = parseMinecraftVersion(a);
+  const pb = parseMinecraftVersion(b);
+  if (!pa || !pb) return null;
+
+  for (const key of ['major', 'minor', 'patch']) {
+    if (pa[key] !== pb[key]) return pa[key] - pb[key];
+  }
+
+  return 0;
+}
+
+function requiredJavaForMinecraft(version) {
+  const parsed = parseMinecraftVersion(version);
+  if (!parsed) return null;
+
+  const normalized = `${parsed.major}.${parsed.minor}${parsed.patch ? `.${parsed.patch}` : ''}`;
+
+  if (parsed.major >= 26) return 25;
+
+  if (parsed.major === 1) {
+    if (parsed.minor <= 11) return 8;
+    if (parsed.minor === 12 || parsed.minor === 13 || parsed.minor === 14 || parsed.minor === 15) return 11;
+    if (parsed.minor === 16) return parsed.patch >= 5 ? 16 : 11;
+    if (parsed.minor === 17) return 17;
+    if (parsed.minor === 18 || parsed.minor === 19) return 17;
+    if (parsed.minor >= 20 && parsed.minor <= 21) return 21;
+  }
+
+  return null;
+}
+
+function javaRuntimeDir(javaMajor) {
+  return path.join(JAVA_RUNTIMES_DIR, `java${javaMajor}`);
+}
+
+function javaExecutablePath(javaMajor) {
+  return path.join(javaRuntimeDir(javaMajor), 'bin', 'java.exe');
+}
+
+function detectMinecraftVersionFromJarName(jarName) {
+  const name = String(jarName || '');
+  const matches = name.match(/(?:^|[-_.])((?:1\.\d+(?:\.\d+)?|2[0-9]+(?:\.\d+){0,2}))(?:[-_.]|$)/gi);
+  if (!matches?.length) return null;
+
+  for (const raw of matches) {
+    const value = raw.replace(/^[-_.]/, '').replace(/[-_.]$/, '');
+    if (/^(?:1\.\d+(?:\.\d+)?|2[0-9]+(?:\.\d+){0,2})$/.test(value)) return value;
+  }
+
+  return null;
+}
+
+function getJavaRuntimeInfo(minecraftVersion) {
+  const javaMajor = requiredJavaForMinecraft(minecraftVersion);
+  if (!javaMajor) {
+    return {
+      minecraftVersion: minecraftVersion || null,
+      javaMajor: null,
+      installed: false,
+      executable: null,
+      supported: false,
+    };
+  }
+
+  const executable = javaExecutablePath(javaMajor);
+
+  return {
+    minecraftVersion: minecraftVersion || null,
+    javaMajor,
+    installed: fsSync.existsSync(executable),
+    executable,
+    supported: true,
+  };
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': 'MoonWolf-Agent',
+      Accept: 'application/json',
+    },
+    signal: AbortSignal.timeout(30_000),
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} al consultar ${url}`);
+  }
+
+  return response.json();
+}
+
+async function downloadToFile(url, destination) {
+  const response = await fetch(url, {
+    headers: { 'User-Agent': 'MoonWolf-Agent' },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(10 * 60 * 1000),
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error(`Descarga de Java fallida (HTTP ${response.status})`);
+  }
+
+  await fs.mkdir(path.dirname(destination), { recursive: true });
+  const file = fsSync.createWriteStream(destination);
+  const reader = response.body.getReader();
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!file.write(Buffer.from(value))) {
+        await new Promise(resolve => file.once('drain', resolve));
+      }
+    }
+  } finally {
+    file.end();
+    await new Promise(resolve => file.once('close', resolve));
+  }
+}
+
+async function verifySha256(filePath, expected) {
+  if (!expected) return true;
+
+  const hash = crypto.createHash('sha256');
+  const stream = fsSync.createReadStream(filePath);
+
+  for await (const chunk of stream) {
+    hash.update(chunk);
+  }
+
+  return hash.digest('hex').toLowerCase() === String(expected).toLowerCase();
+}
+
+async function findJavaExecutable(rootDir) {
+  const direct = path.join(rootDir, 'bin', 'java.exe');
+  if (fsSync.existsSync(direct)) return direct;
+
+  const entries = await fs.readdir(rootDir, { withFileTypes: true });
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    const candidate = path.join(rootDir, entry.name, 'bin', 'java.exe');
+    if (fsSync.existsSync(candidate)) return candidate;
+  }
+
+  return null;
+}
+
+async function ensureJavaRuntime(javaMajor) {
+  if (!JAVA_RUNTIME_VERSIONS.includes(Number(javaMajor))) {
+    throw new Error(`Java ${javaMajor} no está soportado por el gestor de MoonWolf.`);
+  }
+
+  const targetDir = javaRuntimeDir(javaMajor);
+  const executable = javaExecutablePath(javaMajor);
+
+  if (fsSync.existsSync(executable)) return executable;
+
+  if (javaInstallPromises.has(javaMajor)) {
+    return javaInstallPromises.get(javaMajor);
+  }
+
+  const promise = (async () => {
+    await fs.mkdir(JAVA_RUNTIMES_DIR, { recursive: true });
+
+    const metadataUrl =
+      `${JAVA_DOWNLOAD_API}/${javaMajor}/hotspot` +
+      '?architecture=x64&image_type=jdk&os=windows&vendor=eclipse' +
+      '&heap_size=normal&project=jdk&release_type=ga';
+
+    broadcastLog(`☕ Java ${javaMajor} no está instalado. Descargando runtime de MoonWolf...`, 'system');
+
+    const assets = await fetchJson(metadataUrl);
+    const asset = Array.isArray(assets)
+      ? assets.find(item => item?.binary?.package?.link && item?.binary?.package?.checksum)
+      : null;
+
+    if (!asset) {
+      throw new Error(`No se encontró un JDK Temurin ${javaMajor} compatible para Windows x64.`);
+    }
+
+    const archive = path.join(JAVA_RUNTIMES_DIR, `.java${javaMajor}-${Date.now()}.zip`);
+    const staging = path.join(JAVA_RUNTIMES_DIR, `.install-java${javaMajor}-${Date.now()}`);
+
+    try {
+      await downloadToFile(asset.binary.package.link, archive);
+      broadcastLog(`☕ Java ${javaMajor} descargado. Verificando integridad...`, 'system');
+
+      if (!(await verifySha256(archive, asset.binary.package.checksum))) {
+        throw new Error(`La verificación SHA-256 de Java ${javaMajor} ha fallado.`);
+      }
+
+      await fs.rm(staging, { recursive: true, force: true });
+      await fs.mkdir(staging, { recursive: true });
+
+      await new Promise((resolve, reject) => {
+        const child = spawn(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy', 'Bypass',
+            '-Command',
+            'Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force',
+            archive,
+            staging,
+          ],
+          { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }
+        );
+
+        let stderr = '';
+        child.stderr.on('data', data => { stderr += String(data); });
+        child.on('error', reject);
+        child.on('close', code => {
+          if (code === 0) resolve();
+          else reject(new Error(stderr.trim() || `PowerShell terminó con código ${code}`));
+        });
+      });
+
+      const extractedJava = await findJavaExecutable(staging);
+      if (!extractedJava) {
+        throw new Error(`El archivo de Java ${javaMajor} no contiene un bin/java.exe válido.`);
+      }
+
+      await fs.rm(targetDir, { recursive: true, force: true });
+      await fs.mkdir(targetDir, { recursive: true });
+
+      // Copiamos el runtime ya extraído al directorio definitivo.
+      await fs.cp(path.dirname(path.dirname(extractedJava)), targetDir, {
+        recursive: true,
+        force: true,
+      });
+
+      if (!fsSync.existsSync(executable)) {
+        // Algunos ZIP de Temurin contienen una carpeta superior adicional.
+        const nested = await findJavaExecutable(targetDir);
+        if (!nested) {
+          throw new Error(`No se pudo preparar correctamente Java ${javaMajor}.`);
+        }
+
+        if (nested !== executable) {
+          const nestedRoot = path.dirname(path.dirname(nested));
+          await fs.rm(targetDir, { recursive: true, force: true });
+          await fs.cp(nestedRoot, targetDir, { recursive: true, force: true });
+        }
+      }
+
+      if (!fsSync.existsSync(executable)) {
+        throw new Error(`No se encontró java.exe después de instalar Java ${javaMajor}.`);
+      }
+
+      broadcastLog(`☕ Java ${javaMajor} listo: ${executable}`, 'success');
+      return executable;
+    } finally {
+      await fs.rm(archive, { force: true }).catch(() => {});
+      await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+    }
+  })();
+
+  javaInstallPromises.set(javaMajor, promise);
+
+  try {
+    return await promise;
+  } finally {
+    javaInstallPromises.delete(javaMajor);
+  }
+}
+
+async function resolveJavaForServer(minecraftVersion) {
+  const javaMajor = requiredJavaForMinecraft(minecraftVersion);
+
+  if (!javaMajor) {
+    throw new Error(
+      `No se puede determinar automáticamente el Java necesario para Minecraft "${minecraftVersion || 'desconocido'}". ` +
+      'Indica una versión de Minecraft válida en Startup.'
+    );
+  }
+
+  return ensureJavaRuntime(javaMajor);
+}
+
+
 const PORT = Number(process.env.MOONWOLF_PORT || process.env.PORT || 3000);
 const PAPER_UA = 'MoonWolfPanel/2.0 (contact@moonwolf.local)';
 
@@ -635,6 +942,9 @@ const SERVER_PROPERTIES_PATH = path.join(BASE_DIR, 'server.properties');
 const DEFAULT_STARTUP_CONFIG = {
   jar: 'server.jar',
   javaPath: 'java',
+  javaMode: 'managed',
+  javaOverridePath: '',
+  minecraftVersion: '',
   minMemoryMb: 1024,
   maxMemoryMb: 2048,
   extraArgs: '',
@@ -1289,10 +1599,19 @@ app.get('/api/startup', async (_req, res) => {
       .map(entry => entry.name)
       .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 
+    const config = loadStartupConfig();
+    const detectedVersion =
+      config.minecraftVersion ||
+      detectMinecraftVersionFromJarName(config.jar) ||
+      detectMinecraftVersionFromJarName(jars.find(jar => jar === config.jar));
+
+    const runtime = getJavaRuntimeInfo(detectedVersion);
+
     ok(res, {
-      config: loadStartupConfig(),
+      config: { ...config, minecraftVersion: detectedVersion || '' },
       jars,
       serverPort: readServerPort(),
+      javaRuntime: runtime,
     });
   } catch (e) {
     fail(res, e.message);
@@ -1303,6 +1622,9 @@ app.post('/api/startup', (req, res) => {
   const {
     jar,
     javaPath,
+    javaMode,
+    javaOverridePath,
+    minecraftVersion,
     minMemoryMb,
     maxMemoryMb,
     extraArgs,
@@ -1343,6 +1665,9 @@ app.post('/api/startup', (req, res) => {
     const config = saveStartupConfig({
       jar: safeJar,
       javaPath: String(javaPath || '').trim() || 'java',
+      javaMode: String(javaMode || '').trim() === 'override' ? 'override' : 'managed',
+      javaOverridePath: String(javaOverridePath || '').trim(),
+      minecraftVersion: String(minecraftVersion || '').trim(),
       minMemoryMb: Math.round(min),
       maxMemoryMb: Math.round(max),
       extraArgs: String(extraArgs || '').trim(),
@@ -1565,7 +1890,6 @@ app.delete('/api/databases/:name', async (req, res) => {
 /* ══════════════════════════════════════════════
     MINECRAFT PROCESS
     ══════════════════════════════════════════════ */
-const { spawn } = require('child_process');
 
 let mcProcess = null;
 let startTime = null;
@@ -1623,7 +1947,7 @@ function startStatsTimer() {
   }, 3000);
 }
 
-function launchServer() {
+async function launchServer() {
   const cfg = loadStartupConfig();
   const jarPath = path.join(BASE_DIR, cfg.jar);
 
@@ -1633,8 +1957,24 @@ function launchServer() {
     return false;
   }
    
-  const javaBin = String(cfg.javaPath || '').trim() || 'java';
-   
+  const minecraftVersion =
+    String(cfg.minecraftVersion || '').trim() ||
+    detectMinecraftVersionFromJarName(cfg.jar);
+
+  let javaBin;
+
+  try {
+    if (cfg.javaMode === 'override' && String(cfg.javaOverridePath || '').trim()) {
+      javaBin = String(cfg.javaOverridePath).trim();
+    } else {
+      javaBin = await resolveJavaForServer(minecraftVersion);
+    }
+  } catch (error) {
+    broadcastLog(`❌ No se pudo preparar Java: ${error.message}`, 'error');
+    broadcastStatus('offline');
+    return false;
+  }
+
   const args = [
     `-Xms${cfg.minMemoryMb}M`,
     `-Xmx${cfg.maxMemoryMb}M`,
@@ -1693,7 +2033,7 @@ function launchServer() {
       broadcastLog('↺ Relanzando servidor...', 'system');
       setTimeout(() => {
         broadcastStatus('starting');
-        launchServer();
+        launchServer().catch(error => broadcastLog(`❌ Error relanzando servidor: ${error.message}`, 'error'));
       }, 2000);
       return;
     }
@@ -1717,7 +2057,7 @@ function launchServer() {
       } else {
         broadcastLog('⚠️ El servidor se cerró inesperadamente. Reiniciando automáticamente en 5s...', 'warn');
         broadcastStatus('starting');
-        setTimeout(launchServer, 5000);
+        setTimeout(() => launchServer().catch(error => broadcastLog(`❌ Error en reinicio automático: ${error.message}`, 'error')), 5000);
       }
 
       return;
@@ -1737,9 +2077,9 @@ app.post('/api/start', (_req, res) => {
   broadcastStatus('starting');
   broadcastLog('🌙 Arrancando servidor...', 'system');
 
-  if (!launchServer()) {
-    return fail(res, 'No se encontró el .jar configurado en Startup');
-  }
+  launchServer().catch(error => {
+    broadcastLog(`❌ Error al arrancar: ${error.message}`, 'error');
+  });
 
   ok(res);
 });
@@ -2202,6 +2542,8 @@ app.post('/api/versions/install', async (req, res) => {
         return fail(res, 'No se encontró installer de Fabric');
       }
 
+      const javaBin = await resolveJavaForServer(version);
+
       const instFile = path.join(BASE_DIR, `fabric-installer-${inst.version}.jar`);
       if (!fsSync.existsSync(instFile)) {
         await downloadFile(inst.url, instFile);
@@ -2209,9 +2551,9 @@ app.post('/api/versions/install', async (req, res) => {
 
       return ok(res, {
         type: 'fabric-installer',
-        installCmd: `java -jar "fabric-installer-${inst.version}.jar" server -mcversion ${version} -loader ${loaderVersion} -downloadMinecraft`,
+        installCmd: `"${javaBin}" -jar "fabric-installer-${inst.version}.jar" server -mcversion ${version} -loader ${loaderVersion} -downloadMinecraft`,
         jarName: 'fabric-server-launch.jar',
-        note: 'Ejecuta este comando en tu carpeta de servidor. Luego selecciona fabric-server-launch.jar en Startup.',
+        note: `Java ${requiredJavaForMinecraft(version)} gestionado por MoonWolf. Ejecuta el comando generado en tu carpeta de servidor y luego selecciona fabric-server-launch.jar en Startup.`,
       });
     }
 
@@ -2229,7 +2571,7 @@ app.post('/api/versions/install', async (req, res) => {
     await downloadFile(url, currentJar);
     const stats = await fs.stat(currentJar);
 
-    saveStartupConfig({ jar: 'server.jar' });
+    saveStartupConfig({ jar: 'server.jar', minecraftVersion: String(version) });
 
     ok(res, {
       type: 'direct',
@@ -2598,9 +2940,23 @@ app.get('/api/debug/start', async (_req, res) => {
   const cfg = loadStartupConfig();
   const jarPath = path.join(BASE_DIR, cfg.jar);
   const exists = fsSync.existsSync(jarPath);
-  const javaBin = String(cfg.javaPath || '').trim() || 'java';
+  const minecraftVersion =
+    String(cfg.minecraftVersion || '').trim() ||
+    detectMinecraftVersionFromJarName(cfg.jar);
 
-  const javaCheck = await new Promise(resolve => {
+  let javaBin = null;
+  let javaResolveError = null;
+
+  try {
+    javaBin =
+      cfg.javaMode === 'override' && String(cfg.javaOverridePath || '').trim()
+        ? String(cfg.javaOverridePath).trim()
+        : await resolveJavaForServer(minecraftVersion);
+  } catch (error) {
+    javaResolveError = error.message;
+  }
+
+  const javaCheck = javaBin ? await new Promise(resolve => {
     const j = spawn(javaBin, ['-version'], { windowsHide: true, stdio: 'pipe' });
     let out = '';
 
@@ -2608,9 +2964,19 @@ app.get('/api/debug/start', async (_req, res) => {
     j.stdout.on('data', d => { out += d; });
     j.on('close', code => resolve({ code, out }));
     j.on('error', e => resolve({ code: -1, out: e.message }));
-  });
+  }) : { code: -1, out: javaResolveError || 'Java no disponible' };
 
-  res.json({ BASE_DIR, jar: cfg.jar, javaPath: javaBin, jarExists: exists, jarPath, java: javaCheck });
+  res.json({
+    BASE_DIR,
+    jar: cfg.jar,
+    minecraftVersion,
+    javaPath: javaBin,
+    jarExists: exists,
+    jarPath,
+    java: javaCheck,
+    javaRuntime: getJavaRuntimeInfo(minecraftVersion),
+    javaResolveError,
+  });
 });
 
 /* ══════════════════════════════════════════════
@@ -2625,7 +2991,7 @@ async function start() {
     if (cfg.autoStartOnBoot) {
       broadcastLog('🌙 Arranque automático activado. Iniciando servidor...', 'system');
       broadcastStatus('starting');
-      launchServer();
+      launchServer().catch(error => broadcastLog(`❌ Error en arranque automático: ${error.message}`, 'error'));
     }
   });
 }

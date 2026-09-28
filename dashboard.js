@@ -2239,6 +2239,27 @@ async function savePorts() {
 
 /* STARTUP */
 
+function requiredJavaLabel(version) {
+  const match = String(version || '').trim().match(/^(\d+)\.(\d+)(?:\.(\d+))?/);
+  if (!match) return 'Java se seleccionará automáticamente';
+
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3] || 0);
+  let java = null;
+
+  if (major >= 26) java = 25;
+  else if (major === 1) {
+    if (minor <= 11) java = 8;
+    else if (minor >= 12 && minor <= 15) java = 11;
+    else if (minor === 16) java = patch >= 5 ? 16 : 11;
+    else if (minor >= 17 && minor <= 19) java = 17;
+    else if (minor >= 20 && minor <= 21) java = 21;
+  }
+
+  return java ? `Java ${java} · gestionado por MoonWolf` : 'Versión no reconocida';
+}
+
 async function loadStartup() {
   const element = $('startupList');
 
@@ -2299,9 +2320,41 @@ async function loadStartup() {
       </div>
 
       <div class="form-group">
-        <label class="form-label">Ejecutable de Java</label>
-        <input id="stJavaPath" class="form-input" type="text" placeholder="java" value="${escHtml(cfg.javaPath || 'java')}">
-        <div class="form-hint">Déjalo en "java" salvo que necesites otra versión, p. ej. "C:\\Program Files\\Java\\jdk-21\\bin\\java.exe".</div>
+        <label class="form-label">Versión de Minecraft</label>
+        <input id="stMinecraftVersion" class="form-input" type="text" placeholder="Ej. 1.21.11" value="${escHtml(cfg.minecraftVersion || '')}">
+        <div class="form-hint">MoonWolf usa esta versión para seleccionar automáticamente el Java compatible. Si instalaste el servidor desde Versiones, se rellena automáticamente.</div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Java</label>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:var(--panel)">
+          <span style="font-size:18px">☕</span>
+          <div style="flex:1;min-width:220px">
+            <div style="font-weight:700" id="stJavaManagedLabel">
+              ${
+                data.javaRuntime?.javaMajor
+                  ? `Java ${escHtml(data.javaRuntime.javaMajor)} ${data.javaRuntime.installed ? '✓ instalado' : '↓ se descargará automáticamente'}`
+                  : 'Java se seleccionará automáticamente'
+              }
+            </div>
+            <div class="form-hint" style="margin-top:3px">
+              ${
+                data.javaRuntime?.javaMajor
+                  ? `Runtime gestionado por MoonWolf · ${data.javaRuntime.installed ? 'listo para usar' : 'se instalará al arrancar'}`
+                  : 'Indica una versión de Minecraft válida para calcular el runtime.'
+              }
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:10px">
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
+            <input id="stJavaOverride" type="checkbox" ${cfg.javaMode === 'override' ? 'checked' : ''}>
+            Usar un Java personalizado (avanzado)
+          </label>
+          <input id="stJavaOverridePath" class="form-input" type="text" style="margin-top:8px;display:${cfg.javaMode === 'override' ? 'block' : 'none'}" placeholder="C:\Program Files\Java\jdk-21\bin\java.exe" value="${escHtml(cfg.javaOverridePath || cfg.javaPath || '')}">
+          <div class="form-hint">Normalmente no necesitas tocar esto. El modo gestionado evita depender de un JDK instalado en Windows.</div>
+        </div>
       </div>
 
       <div class="form-row">
@@ -2364,6 +2417,20 @@ async function loadStartup() {
 
   $('btnSaveStartup')?.addEventListener('click', saveStartup);
 
+  $('stJavaOverride')?.addEventListener('change', event => {
+    const input = $('stJavaOverridePath');
+    if (input) {
+      input.style.display = event.target.checked ? 'block' : 'none';
+    }
+  });
+
+  $('stMinecraftVersion')?.addEventListener('input', event => {
+    const version = event.target.value.trim();
+    const runtime = requiredJavaLabel(version);
+    const label = $('stJavaManagedLabel');
+    if (label) label.textContent = runtime;
+  });
+
   $('btnAikarFlags')?.addEventListener('click', () => {
     const input = $('stArgs');
 
@@ -2386,7 +2453,10 @@ async function saveStartup() {
 
   const body = {
     jar: jarSelect.value,
-    javaPath: $('stJavaPath')?.value.trim() || 'java',
+    javaPath: $('stJavaOverridePath')?.value.trim() || '',
+    javaMode: Boolean($('stJavaOverride')?.checked) ? 'override' : 'managed',
+    javaOverridePath: $('stJavaOverride')?.checked ? ($('stJavaOverridePath')?.value.trim() || '') : '',
+    minecraftVersion: $('stMinecraftVersion')?.value.trim() || '',
     minMemoryMb: Number($('stMinMem')?.value) || 1024,
     maxMemoryMb: Number($('stMaxMem')?.value) || 2048,
     extraArgs: $('stArgs')?.value.trim() || '',
