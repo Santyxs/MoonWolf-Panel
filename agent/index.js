@@ -55,6 +55,27 @@ function loadConfig() {
     config.localToken = makeSecret();
   }
 
+  // El secreto de sesión pertenece al perfil del Agent y no al directorio
+  // donde está instalado el ejecutable.
+  if (typeof config.sessionSecret !== 'string' || config.sessionSecret.length < 32) {
+    const legacySecretPath = path.join(__dirname, '.moonwolf-session-secret');
+
+    try {
+      const legacySecret = fs.readFileSync(legacySecretPath, 'utf8').trim();
+
+      if (legacySecret.length >= 32) {
+        config.sessionSecret = legacySecret;
+        try {
+          fs.unlinkSync(legacySecretPath);
+        } catch {}
+      }
+    } catch {}
+
+    if (typeof config.sessionSecret !== 'string' || config.sessionSecret.length < 32) {
+      config.sessionSecret = makeSecret();
+    }
+  }
+
   if (!config.serverDir) {
     config.serverDir = DEFAULT_SERVER_DIR;
   }
@@ -93,6 +114,7 @@ function startEmbeddedLocalServer(config) {
   process.env.MOONWOLF_SERVER_DIR = config.serverDir;
   process.env.MOONWOLF_PORT = String(LOCAL_PORT);
   process.env.MOONWOLF_LOCAL_AUTH_TOKEN = config.localToken;
+  process.env.MOONWOLF_SESSION_SECRET = config.sessionSecret;
 
   return require('../server.js');
 }

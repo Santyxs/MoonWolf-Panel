@@ -45,7 +45,13 @@ const SESSION_SECRET = (() => {
   const envSecret = process.env.MOONWOLF_SESSION_SECRET;
   if (envSecret && envSecret.length >= 32) return envSecret;
 
-  const secretPath = path.join(__dirname, '.moonwolf-session-secret');
+  // Servidor ejecutado fuera del Agent: conservar el secreto en AppData
+  // en lugar de crear archivos ocultos junto al proyecto/ejecutable.
+  const appDir = path.join(
+    process.env.APPDATA || path.join(require('os').homedir(), 'AppData', 'Roaming'),
+    'MoonWolf'
+  );
+  const secretPath = path.join(appDir, 'session-secret');
 
   try {
     const saved = fsSync.readFileSync(secretPath, 'utf8').trim();
@@ -55,6 +61,7 @@ const SESSION_SECRET = (() => {
   const secret = crypto.randomBytes(32).toString('hex');
 
   try {
+    fsSync.mkdirSync(appDir, { recursive: true });
     fsSync.writeFileSync(secretPath, secret, { encoding: 'utf8', mode: 0o600 });
   } catch (error) {
     console.warn('[session] No se pudo persistir SESSION_SECRET:', error.message);
