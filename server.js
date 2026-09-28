@@ -45,8 +45,6 @@ const SESSION_SECRET = (() => {
   const envSecret = process.env.MOONWOLF_SESSION_SECRET;
   if (envSecret && envSecret.length >= 32) return envSecret;
 
-  // Servidor ejecutado fuera del Agent: conservar el secreto en AppData
-  // en lugar de crear archivos ocultos junto al proyecto/ejecutable.
   const appDir = path.join(
     process.env.APPDATA || path.join(require('os').homedir(), 'AppData', 'Roaming'),
     'MoonWolf'
@@ -518,7 +516,6 @@ app.use('/api', (req, res, next) => {
     return next();
   }
 
-  // Modo cloud (Render): solo emparejamiento y tokens compartidos; el resto va por RPC al Agent
   if (!CLOUD_ONLY_ROUTE.test(req.path)) {
     return res.status(404).json({ ok: false, error: 'No encontrado.' });
   }
@@ -694,7 +691,7 @@ if (!fsSync.existsSync(BASE_DIR)) {
 const PLUGINS_DIR = path.join(BASE_DIR, 'plugins');
 
 /* ══════════════════════════════════════════════
-   JAVA RUNTIMES GESTIONADOS POR MOONWOLF
+   JAVA RUNTIMES
    ══════════════════════════════════════════════ */
 const MOONWOLF_APP_DIR = path.join(
   process.env.APPDATA || path.join(require('os').homedir(), 'AppData', 'Roaming'),
@@ -731,8 +728,6 @@ function requiredJavaForMinecraft(version) {
   const parsed = parseMinecraftVersion(version);
   if (!parsed) return null;
 
-  const normalized = `${parsed.major}.${parsed.minor}${parsed.patch ? `.${parsed.patch}` : ''}`;
-
   if (parsed.major >= 26) return 25;
 
   if (parsed.major === 1) {
@@ -741,7 +736,10 @@ function requiredJavaForMinecraft(version) {
     if (parsed.minor === 16) return parsed.patch >= 5 ? 16 : 11;
     if (parsed.minor === 17) return 17;
     if (parsed.minor === 18 || parsed.minor === 19) return 17;
-    if (parsed.minor >= 20 && parsed.minor <= 21) return 21;
+    // 1.20.0 – 1.20.4 → Java 17 | 1.20.5+ → Java 21
+    if (parsed.minor === 20) return parsed.patch >= 5 ? 21 : 17;
+    // 1.21.x → Java 21
+    if (parsed.minor === 21) return 21;
   }
 
   return null;
@@ -920,11 +918,17 @@ async function ensureJavaRuntime(javaMajor) {
             '-NonInteractive',
             '-ExecutionPolicy', 'Bypass',
             '-Command',
-            'Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force',
-            archive,
-            staging,
+            'Expand-Archive -LiteralPath $env:MOONWOLF_JAVA_ARCHIVE -DestinationPath $env:MOONWOLF_JAVA_STAGING -Force',
           ],
-          { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }
+          {
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: {
+              ...process.env,
+              MOONWOLF_JAVA_ARCHIVE: archive,
+              MOONWOLF_JAVA_STAGING: staging,
+            },
+          }
         );
 
         let stderr = '';
@@ -944,14 +948,12 @@ async function ensureJavaRuntime(javaMajor) {
       await fs.rm(targetDir, { recursive: true, force: true });
       await fs.mkdir(targetDir, { recursive: true });
 
-      // Copiamos el runtime ya extraído al directorio definitivo.
       await fs.cp(path.dirname(path.dirname(extractedJava)), targetDir, {
         recursive: true,
         force: true,
       });
 
       if (!fsSync.existsSync(executable)) {
-        // Algunos ZIP de Temurin contienen una carpeta superior adicional.
         const nested = await findJavaExecutable(targetDir);
         if (!nested) {
           throw new Error(`No se pudo preparar correctamente Java ${javaMajor}.`);
@@ -1086,7 +1088,6 @@ function writeServerPort(port) {
 /* ══════════════════════════════════════════════
    PUERTOS
    ══════════════════════════════════════════════ */
-
 function readServerProperties() {
   try {
     const content = fsSync.readFileSync(SERVER_PROPERTIES_PATH, 'utf8');
@@ -2010,7 +2011,6 @@ app.delete('/api/databases/:name', async (req, res) => {
 /* ══════════════════════════════════════════════
     MINECRAFT PROCESS
     ══════════════════════════════════════════════ */
-
 const DONE_RE = /Done \([\d.,]+s\)!|Listening on /;
 let mcProcess = null;
 let startTime = null;
