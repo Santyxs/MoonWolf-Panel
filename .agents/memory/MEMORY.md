@@ -1,1 +1,0 @@
-- [Replit package firewall lockfiles](replit-package-firewall.md) — npm dependency updates may replace registry URLs with Replit's internal package firewall URLs.
