@@ -375,13 +375,24 @@ function apiRateLimited(ip) {
   return rec.count > API_RATE_LIMIT;
 }
 
+/* Limpieza periódica de todos los Maps en memoria:
+   - apiHits: rate-limit global de /api
+   - loginAttempts: rate-limit de /api/pair
+   - pairingCodes: códigos de emparejamiento caducados
+   Un solo timer cada 10 min, sin bloquear el cierre del proceso (.unref). */
 setInterval(() => {
   const now = Date.now();
 
   for (const [ip, rec] of apiHits) {
-    if (now > rec.resetAt) {
-      apiHits.delete(ip);
-    }
+    if (now > rec.resetAt) apiHits.delete(ip);
+  }
+
+  for (const [ip, rec] of loginAttempts) {
+    if (now > rec.resetAt) loginAttempts.delete(ip);
+  }
+
+  for (const [code, pairing] of pairingCodes) {
+    if (pairing.expiresAt <= now) pairingCodes.delete(code);
   }
 }, 10 * 60 * 1000).unref();
 
@@ -911,6 +922,16 @@ async function ensureJavaRuntime(javaMajor) {
       await fs.mkdir(staging, { recursive: true });
 
       await new Promise((resolve, reject) => {
+        // Escapado para PowerShell: comillas simples, duplicando las internas
+        const psQuote = value => `'${String(value).replace(/'/g, "''")}'`;
+
+        const psCommand =
+          `$ErrorActionPreference='Stop'; ` +
+          `Expand-Archive -LiteralPath ${psQuote(archive)} ` +
+          `-DestinationPath ${psQuote(staging)} -Force`;
+
+        console.log('[java] Expand-Archive →', psCommand);
+
         const child = spawn(
           'powershell.exe',
           [
@@ -918,25 +939,24 @@ async function ensureJavaRuntime(javaMajor) {
             '-NonInteractive',
             '-ExecutionPolicy', 'Bypass',
             '-Command',
-            'Expand-Archive -LiteralPath $env:MOONWOLF_JAVA_ARCHIVE -DestinationPath $env:MOONWOLF_JAVA_STAGING -Force',
+            psCommand,
           ],
           {
             windowsHide: true,
             stdio: ['ignore', 'pipe', 'pipe'],
-            env: {
-              ...process.env,
-              MOONWOLF_JAVA_ARCHIVE: archive,
-              MOONWOLF_JAVA_STAGING: staging,
-            },
           }
         );
 
         let stderr = '';
+        let stdout = '';
         child.stderr.on('data', data => { stderr += String(data); });
+        child.stdout.on('data', data => { stdout += String(data); });
         child.on('error', reject);
         child.on('close', code => {
-          if (code === 0) resolve();
-          else reject(new Error(stderr.trim() || `PowerShell terminó con código ${code}`));
+          if (code === 0) return resolve();
+          const detail = (stderr || stdout).trim();
+          console.warn('[java] PowerShell falló:', detail);
+          reject(new Error(detail || `PowerShell terminó con código ${code}`));
         });
       });
 
