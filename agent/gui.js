@@ -300,10 +300,15 @@ function quitApp() {
   if (isQuitting) return;
   isQuitting = true;
 
-  try { actions.onQuit?.(); } catch (error) {
-    console.error('[app] onQuit falló:', error?.message || error);
-  }
+  try { window?.hide(); } catch {}
 
+  Promise.resolve()
+    .then(() => actions.onQuit?.())
+    .catch(error => console.error('[app] onQuit falló:', error?.message || error))
+    .then(finishQuit);
+}
+
+function finishQuit() {
   try { tray?.dispose(); } catch (error) {
     console.error('[app] tray.dispose falló:', error?.message || error);
   }

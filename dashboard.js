@@ -1365,7 +1365,7 @@ function renderPluginResults(results, errors) {
     warning +
     (results
       .map((plugin, index) => {
-        const tag = plugin.source === 'modrinth' ? 'MODRINTH' : 'SPIGOT';
+        const tag = ({ modrinth: 'MODRINTH', spigot: 'SPIGOT', hangar: 'HANGAR' })[plugin.source] || String(plugin.source || '').toUpperCase();
         const external = plugin.external
           ? '<span class="plg-src-badge">🔗 EXTERNO</span>'
           : '';
@@ -1384,7 +1384,7 @@ function renderPluginResults(results, errors) {
               <div class="plg-card-info">
                 <div class="plg-card-name">${escHtml(plugin.name)}</div>
                 <div class="plg-card-tags">
-                  <span class="plg-src-badge">${tag}</span>
+                  <span class="plg-src-badge ${escHtml(plugin.source)}">${tag}</span>
                   ${premium}
                   ${external}
                   <span class="plg-src-badge dl">⬇ ${formatDownloads(plugin.downloads)}</span>
@@ -2460,7 +2460,6 @@ async function saveStartup() {
     minMemoryMb: Number($('stMinMem')?.value) || 1024,
     maxMemoryMb: Number($('stMaxMem')?.value) || 2048,
     extraArgs: $('stArgs')?.value.trim() || '',
-    programArgs: $('stProgramArgs')?.value.trim() || '',
     stopCommand: $('stStopCmd')?.value.trim() || 'stop',
     autoRestartOnCrash: Boolean($('stAutoRestart')?.checked),
     autoStartOnBoot: Boolean($('stAutoStart')?.checked),

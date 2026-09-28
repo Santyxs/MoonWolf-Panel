@@ -100,6 +100,8 @@ function requiredPermission(method, pathname) {
   const verb = String(method || 'GET').toUpperCase();
   const route = String(pathname || '').split('?')[0];
 
+  if (/^\/api\/(files|backups|databases|debug)(\/|$)/.test(route)) return 'admin';
+  if (verb !== 'GET' && verb !== 'HEAD' && /^\/api\/(startup|ports|versions\/install|plugins\/install|plugins\/installed)/.test(route)) return 'admin';
   if (verb === 'GET' || verb === 'HEAD') return 'read';
 
   return 'control';
@@ -243,6 +245,36 @@ function verifyPanelSession(token) {
   }
 }
 
+const AGENT_STORE_PATH =
+  process.env.MOONWOLF_AGENT_STORE ||
+  path.join(__dirname, '.moonwolf-agents.json');
+
+function verifyOrRegisterAgent(agentId, token) {
+  if (!/^[A-Za-z0-9-]{16,64}$/.test(agentId)) return false;
+
+  let db = {};
+
+  try {
+    db = JSON.parse(fsSync.readFileSync(AGENT_STORE_PATH, 'utf8')) || {};
+  } catch {}
+
+  const hash = hashShareToken(token);
+
+  if (!Object.prototype.hasOwnProperty.call(db, agentId)) {
+    db[agentId] = hash;
+
+    try {
+      fsSync.writeFileSync(AGENT_STORE_PATH, JSON.stringify(db), { encoding: 'utf8', mode: 0o600 });
+    } catch (error) {
+      console.warn('[agents] No se pudo persistir el registro:', error.message);
+    }
+
+    return true;
+  }
+
+  return timingSafeEqualStr(db[agentId], hash);
+}
+
 const pairingCodes = new Map();
 
 function makePairingCode() {
@@ -352,6 +384,7 @@ setInterval(() => {
    EXPRESS / SOCKET.IO
    ══════════════════════════════════════════════ */
 const app = express();
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
@@ -370,6 +403,7 @@ app.use((req, res, next) => {
 });
 
 const io = new Server(server, {
+  maxHttpBufferSize: 64e6,
   cors: {
     origin: ALLOWED_ORIGIN,
     methods: ['GET', 'POST'],
@@ -399,7 +433,7 @@ io.use((socket, next) => {
       return next(new Error('unauthorized'));
     }
 
-    if (agentId.length < 16 || token.length < 32) {
+    if (agentId.length < 16 || token.length < 32 || !verifyOrRegisterAgent(agentId, token)) {
       return next(new Error('unauthorized'));
     }
 
@@ -463,7 +497,33 @@ app.use('/api', (req, res, next) => {
 /* ══════════════════════════════════════════════
    EMPAREJAMIENTO / SESIONES
    ══════════════════════════════════════════════ */
+const CLOUD_ONLY_ROUTE = /^\/(pair|share-tokens)(\/|$)/;
+
+app.use('/api', (req, res, next) => {
+  if (LOCAL_AGENT_TOKEN) {
+    // Modo Agent local: solo el propio Agent (con su token) puede llamar a la API
+    if (CLOUD_ONLY_ROUTE.test(req.path)) return res.status(404).json({ ok: false, error: 'No encontrado.' });
+
+    if (!timingSafeEqualStr(req.get('x-moonwolf-token'), LOCAL_AGENT_TOKEN)) {
+      return res.status(401).json({ ok: false, error: 'No autorizado.' });
+    }
+
+    return next();
+  }
+
+  // Modo cloud (Render): solo emparejamiento y tokens compartidos; el resto va por RPC al Agent
+  if (!CLOUD_ONLY_ROUTE.test(req.path)) {
+    return res.status(404).json({ ok: false, error: 'No encontrado.' });
+  }
+
+  next();
+});
+
 app.post('/api/pair', (req, res) => {
+  if (loginRateLimited(req.ip)) {
+    return res.status(429).json({ ok: false, error: 'Demasiados intentos, espera unos minutos.' });
+  }
+
   const code = String(req.body?.code || '').trim().toUpperCase();
   let pairing = null;
   let share = null;
@@ -1362,6 +1422,8 @@ function semverCmp(a, b) {
     ══════════════════════════════════════════════ */
 const agentSockets = new Map();
 const panelSockets = new Set();
+const agentCache = new Map();
+const AGENT_EVENTS = new Set(['status', 'log', 'stats']);
 
 const LOCAL_AGENT_ROOM = 'local-agent';
 const agentRoom  = id => `agent:${id}`;
@@ -1380,6 +1442,7 @@ io.on('connection', socket => {
 
   if (socket.data.role === 'local-agent') {
     socket.join(LOCAL_AGENT_ROOM);
+    socket.emit('status', lastStatus);
     console.log('🖥️ Agent local conectado:', socket.id);
     return;
   }
@@ -1403,6 +1466,18 @@ io.on('connection', socket => {
 
     socket.on('event', event => {
       if (!event?.name) return;
+      if (!AGENT_EVENTS.has(event.name)) return;
+
+      const cache = agentCache.get(agentId) || { status: null, stats: null, logs: [] };
+
+      if (event.name === 'status') cache.status = event.payload;
+      else if (event.name === 'stats') cache.stats = event.payload;
+      else {
+        cache.logs.push(event.payload);
+        if (cache.logs.length > 300) cache.logs.shift();
+      }
+
+      agentCache.set(agentId, cache);
       emitToAgentPanels(agentId, event.name, event.payload);
     });
 
@@ -1455,6 +1530,14 @@ io.on('connection', socket => {
 
     socket.emit('cloud_ready', { agentOnline: online });
     socket.emit('agent_status', { online });
+
+    const cached = online ? agentCache.get(agentId) : null;
+
+    if (cached) {
+      socket.emit('history', cached.logs);
+      if (cached.status) socket.emit('status', cached.status);
+      if (cached.stats) socket.emit('stats', cached.stats);
+    }
     socket.emit('session_info', {
       permission: socket.data.permission || 'admin',
       kind: socket.data.kind || 'owner',
@@ -1462,6 +1545,35 @@ io.on('connection', socket => {
     });
 
     socket.on('rpc', request => {
+      const rejectRpc = (status, message) => socket.emit('rpc_result', {
+        id: request?.id || null,
+        ok: false,
+        status,
+        contentType: 'application/json',
+        bodyBase64: Buffer.from(JSON.stringify({ ok: false, error: message })).toString('base64'),
+      });
+
+      if (!request || typeof request !== 'object') return;
+
+      let rpcUrl;
+
+      try {
+        rpcUrl = new URL(String(request.path || ''), 'http://moonwolf.invalid');
+      } catch {
+        return rejectRpc(400, 'Petición no válida.');
+      }
+
+      if (rpcUrl.origin !== 'http://moonwolf.invalid' || !rpcUrl.pathname.startsWith('/api/')) {
+        return rejectRpc(400, 'Ruta no válida.');
+      }
+
+      request.path = rpcUrl.pathname + rpcUrl.search;
+      request.method = String(request.method || 'GET').toUpperCase();
+
+      if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) {
+        return rejectRpc(400, 'Método no válido.');
+      }
+
       if (socket.data.kind === 'share') {
         const share = loadShareTokens().find(item => item.id === socket.data.shareTokenId && item.agentId === agentId);
 
@@ -1671,7 +1783,7 @@ app.post('/api/startup', (req, res) => {
       minMemoryMb: Math.round(min),
       maxMemoryMb: Math.round(max),
       extraArgs: String(extraArgs || '').trim(),
-      programArgs: String(programArgs || '').trim(),
+      programArgs: programArgs === undefined ? loadStartupConfig().programArgs : String(programArgs || '').trim(),
       stopCommand: String(stopCommand || '').trim() || 'stop',
       autoRestartOnCrash: Boolean(autoRestartOnCrash),
       autoStartOnBoot: Boolean(autoStartOnBoot),
@@ -1815,6 +1927,7 @@ app.post('/api/databases', async (req, res) => {
       const password = generateDbPassword();
 
       await pool.query('CREATE USER IF NOT EXISTS ?@\'%\' IDENTIFIED BY ?', [username, password]);
+      await pool.query("ALTER USER ?@'%' IDENTIFIED BY ?", [username, password]);
       await pool.query(`GRANT ALL PRIVILEGES ON \`${name}\`.* TO ?@'%'`, [username]);
       await pool.query('FLUSH PRIVILEGES');
 
@@ -1891,6 +2004,7 @@ app.delete('/api/databases/:name', async (req, res) => {
     MINECRAFT PROCESS
     ══════════════════════════════════════════════ */
 
+const DONE_RE = /Done \([\d.,]+s\)!|Listening on /;
 let mcProcess = null;
 let startTime = null;
 let statsTimer = null;
@@ -1900,7 +2014,10 @@ let crashCount = 0;
 let lastCrashTime = 0;
 let statsBusy = false;
 
+let lastStatus = 'offline';
+
 function broadcastStatus(s) {
+  lastStatus = s;
   io.to(LOCAL_AGENT_ROOM).emit('status', s);
 }
 
@@ -1996,12 +2113,14 @@ async function launchServer() {
 
   startTime = Date.now();
 
+  mcProcess.stdin.on('error', () => {});
+
   mcProcess.stdout.on('data', data => {
     String(data).split(/\r?\n/).filter(Boolean).forEach(line => {
-      const type = /WARN/i.test(line) ? 'warn' : /ERROR/i.test(line) ? 'error' : /Done/i.test(line) ? 'success' : 'info';
+      const type = /WARN/i.test(line) ? 'warn' : /ERROR/i.test(line) ? 'error' : DONE_RE.test(line) ? 'success' : 'info';
       broadcastLog(line, type);
 
-      if (/Done/.test(line)) {
+      if (DONE_RE.test(line)) {
         broadcastStatus('online');
         startStatsTimer();
       }
@@ -2686,7 +2805,7 @@ app.post('/api/files/copy', async (req, res) => {
 
   try {
     await fs.mkdir(path.dirname(fullDest), { recursive: true });
-    await fs.copyFile(full, fullDest);
+    await fs.cp(full, fullDest, { recursive: true });
     ok(res);
   } catch (e) {
     fail(res, e.message);
@@ -2794,6 +2913,10 @@ app.post('/api/files/delete', async (req, res) => {
 
   try {
     if (isDir) {
+      if (path.resolve(full) === path.resolve(BASE_DIR)) {
+        return fail(res, 'No se puede eliminar la carpeta raíz del servidor');
+      }
+
       await fs.rm(full, { recursive: true, force: true });
     } else {
       await fs.unlink(full);
@@ -2982,8 +3105,36 @@ app.get('/api/debug/start', async (_req, res) => {
 /* ══════════════════════════════════════════════
     INICIO
     ══════════════════════════════════════════════ */
+function stopMinecraft(timeoutMs = 30000) {
+  return new Promise(resolve => {
+    if (!mcProcess || mcProcess.exitCode !== null) return resolve();
+
+    const proc = mcProcess;
+
+    stopRequested = true;
+    restarting = false;
+
+    const killTimer = setTimeout(() => {
+      try { proc.kill(); } catch {}
+    }, timeoutMs);
+
+    proc.once('close', () => {
+      clearTimeout(killTimer);
+      resolve();
+    });
+
+    try {
+      proc.stdin.write(`${loadStartupConfig().stopCommand || 'stop'}\n`);
+    } catch {
+      try { proc.kill(); } catch {}
+    }
+  });
+}
+
+module.exports = { stopMinecraft };
+
 async function start() {
-  server.listen(PORT, () => {
+  server.listen(PORT, LOCAL_AGENT_TOKEN ? '127.0.0.1' : '0.0.0.0', () => {
     console.log(`MoonWolf Panel → http://localhost:${PORT}`);
 
     const cfg = loadStartupConfig();

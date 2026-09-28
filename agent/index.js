@@ -94,7 +94,7 @@ function startEmbeddedLocalServer(config) {
   process.env.MOONWOLF_PORT = String(LOCAL_PORT);
   process.env.MOONWOLF_LOCAL_AUTH_TOKEN = config.localToken;
 
-  require('../server.js');
+  return require('../server.js');
 }
 
 function compareVersions(a, b) {
@@ -362,6 +362,20 @@ async function main() {
     process.exit(1);
   }
 
+  const waitPidIdx = process.argv.indexOf('--wait-pid');
+
+  if (waitPidIdx !== -1) {
+    const waitPid = Number(process.argv[waitPidIdx + 1]);
+    const limit = Date.now() + 60_000;
+
+    while (Number.isFinite(waitPid) && Date.now() < limit) {
+      try { process.kill(waitPid, 0); } catch { break; }
+      await wait(200);
+    }
+
+    await wait(1500);
+  }
+
   /* Resto del arranque normal */
   const config = loadConfig();
   const localUrl = `http://127.0.0.1:${LOCAL_PORT}`;
@@ -370,6 +384,7 @@ async function main() {
   let cloudConnected = false;
   let localSocket = null;
   let cloudSocket = null;
+  let localServerApi = null;
   let reconnectTimer = null;
   let reconnectDelay = 1000;
   let updateCheckTimer = null;
@@ -378,6 +393,7 @@ async function main() {
   let gui = null;
   let pairingCode = '';
   let pairingExpiresAt = 0;
+  let pairingRenewTimer = null;
   let pendingRestart = false;
 
   let updateAvailable = null;
@@ -559,15 +575,7 @@ async function main() {
 
       /* Damos tiempo al updater.exe a arrancar y engancharse al PID viejo */
       setTimeout(() => {
-        try { shutdown(); } catch {}
-
-        setTimeout(() => {
-          try { gui?.close?.(); } catch {}
-
-          setImmediate(() => {
-            try { process.exit(0); } catch {}
-          });
-        }, 1500);
+        try { gui?.close?.(); } catch { try { process.exit(0); } catch {} }
       }, 1000);
 
       return { ok: true };
@@ -582,7 +590,8 @@ async function main() {
   }
 
   gui = startGui(getState, {
-    onQuit: () => {
+    onQuit: async () => {
+      try { await localServerApi?.stopMinecraft?.(); } catch {}
       shutdown();
     },
 
@@ -651,11 +660,24 @@ async function main() {
 
     restart: () => {
       addLog('Reinicio solicitado desde la interfaz.', 'warn');
-      shutdown();
 
-      setImmediate(() => {
-        try { process.exit(0); } catch {}
-      });
+      (async () => {
+        try { await localServerApi?.stopMinecraft?.(); } catch {}
+
+        shutdown();
+
+        try {
+          if (VERSION !== 'dev' && /\.exe$/i.test(process.execPath)) {
+            spawn(process.execPath, ['--wait-pid', String(process.pid)], {
+              detached: true,
+              windowsHide: true,
+              stdio: 'ignore',
+            }).unref();
+          }
+        } catch {}
+
+        process.exit(0);
+      })();
 
       return true;
     },
@@ -673,7 +695,7 @@ async function main() {
 
   try {
     addLog('Iniciando servidor local...');
-    startEmbeddedLocalServer(config);
+    localServerApi = startEmbeddedLocalServer(config);
   } catch (error) {
     logError(error, 'No se pudo iniciar el servidor local');
     throw error;
@@ -697,11 +719,21 @@ async function main() {
 
     try {
       const method = request.method || 'GET';
+      const parsedPath = new URL(String(request.path || ''), 'http://moonwolf.invalid');
+
+      if (parsedPath.origin !== 'http://moonwolf.invalid' || !parsedPath.pathname.startsWith('/api/')) {
+        throw new Error('Ruta RPC no válida.');
+      }
+
+      const safeRequestPath = parsedPath.pathname + parsedPath.search;
       const body = request.body !== undefined && request.body !== null ? JSON.stringify(request.body) : undefined;
 
-      const response = await fetch(`${localUrl}${request.path}`, {
+      const response = await fetch(`${localUrl}${safeRequestPath}`, {
         method,
-        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        headers: {
+          'X-MoonWolf-Token': config.localToken,
+          ...(body ? { 'Content-Type': 'application/json' } : {}),
+        },
         body,
         signal: controller.signal,
       });
@@ -742,6 +774,7 @@ async function main() {
   }
 
   function clearPairing() {
+    clearTimeout(pairingRenewTimer);
     pairingCode = '';
     pairingExpiresAt = 0;
     gui?.update();
@@ -842,6 +875,12 @@ async function main() {
 
       pairingCode = code;
       pairingExpiresAt = Number(data?.expiresAt || 0);
+
+      clearTimeout(pairingRenewTimer);
+      pairingRenewTimer = setTimeout(
+        requestPairingCode,
+        Math.max(5000, pairingExpiresAt - Date.now() - 20_000)
+      );
       addLog(`Código de emparejamiento disponible: ${code}`);
       gui.update();
     });
