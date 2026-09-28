@@ -92,9 +92,7 @@ function ensureSocketIo() {
 
     if (existing) {
       existing.addEventListener('load', resolve, { once: true });
-      existing.addEventListener(
-        'error',
-        () => reject(new Error('No se pudo cargar Socket.IO.')),
+      existing.addEventListener('error', () => reject(new Error('No se pudo cargar Socket.IO.')),
         { once: true }
       );
       return;
@@ -102,12 +100,12 @@ function ensureSocketIo() {
 
     const script = document.createElement('script');
 
-    script.src = 'https://cdn.socket.io/4.8.3/socket.io.min.js';
+    script.src = '/socket.io/socket.io.js';
     script.async = true;
     script.dataset.moonwolfSocketio = '1';
 
     script.onload = resolve;
-    script.onerror = () => reject(new Error('No se pudo cargar Socket.IO desde CDN.'));
+    script.onerror = () => reject(new Error('No se pudo cargar Socket.IO.'));
 
     document.head.appendChild(script);
   });
