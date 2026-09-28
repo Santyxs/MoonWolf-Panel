@@ -16,7 +16,7 @@ const LOCAL_PORT = 3000;
 const AGENT_TOKEN_RE = /^[A-Za-z0-9_-]{43,}$/;
 const LOCAL_TOKEN_RE = /^[A-Za-z0-9_-]{43,}$/;
 const PAIRING_CODE_RE = /^MW-P[A-Z2-9]{3}-[A-Z2-9]{4}$/;
-const DEFAULT_SERVER_DIR = process.env.MOONWOLF_SERVER_DIR || path.join(os.homedir(), 'MoonWolf');
+const DEFAULT_SERVER_DIR = process.env.MOONWOLF_SERVER_DIR || path.join(os.homedir(), 'MoonWolf', 'server');
 const CONFIG_DIR = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'MoonWolf');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'agent.json');
 const FORWARD_TIMEOUT_MS = 120_000;
@@ -24,7 +24,7 @@ const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 const UPDATE_REPO = 'Santyxs/MoonWolf-Panel';
 const UPDATE_API = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
-const UPDATE_DIR = path.join(os.tmpdir(), 'MoonWolf-Update');
+const UPDATE_DIR = path.join(CONFIG_DIR, 'updates');
 
 function ensureConfigDir() {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
