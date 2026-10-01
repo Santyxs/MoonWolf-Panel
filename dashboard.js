@@ -2896,7 +2896,10 @@ function switchView(id) {
       break;
 
     case 'versions':
-      loadSoftware().catch(error => toast(error.message, 'err'));
+      loadVersionState().catch(error => {
+        console.error('[versions]', error);
+        toast(error.message || 'No se pudieron cargar las versiones.', 'err');
+      });
       break;
 
     case 'plugins':
