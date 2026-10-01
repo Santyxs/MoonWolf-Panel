@@ -1435,6 +1435,210 @@ select:focus:not(:focus-visible) {
   }
 }
 
+
+/* ── VERSIONES DE MINECRAFT ── */
+.ver-loading-page,
+.ver-loading {
+  min-height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--muted2);
+  font-size: var(--fs-sm);
+}
+.ver-loading-spinner {
+  font-size: 24px;
+  animation: ver-spin 1s linear infinite;
+}
+@keyframes ver-spin { to { transform: rotate(360deg); } }
+
+.ver-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.ver-back-btn {
+  flex-shrink: 0;
+}
+.ver-panel-title {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 800;
+}
+.ver-panel-subtitle {
+  margin-top: 4px;
+  color: var(--muted2);
+  font-size: 11px;
+}
+.ver-version-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 18px 0 12px;
+}
+.ver-section-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+.ver-section-subtitle {
+  margin-top: 3px;
+  color: var(--muted2);
+  font-size: 11px;
+}
+.ver-search {
+  width: 220px;
+  max-width: 45%;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+}
+.ver-search:focus {
+  border-color: var(--accent);
+}
+.ver-version-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(135px, 1fr));
+  gap: 8px;
+}
+.ver-version-card {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  transition: all var(--t-fast);
+}
+.ver-version-card:hover,
+.ver-version-card.current {
+  border-color: var(--accent);
+  background: var(--accentDim);
+}
+.ver-version-card span {
+  font-size: var(--fs-sm);
+  font-weight: 700;
+}
+.ver-version-card small {
+  color: var(--accent);
+  font-size: 8px;
+  letter-spacing: .7px;
+}
+.ver-no-results {
+  grid-column: 1 / -1;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted2);
+}
+.ver-build-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ver-build-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.ver-build-item.selected {
+  border-color: rgba(0,200,255,.35);
+}
+.ver-build-main {
+  min-width: 0;
+  flex: 1;
+}
+.ver-build-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+.ver-build-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 5px;
+}
+.ver-build-meta span {
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted2);
+  font-size: 9px;
+}
+.ver-build-changes {
+  margin-top: 8px;
+  color: var(--muted2);
+  font-size: 10px;
+}
+.ver-build-sha {
+  margin-top: 6px;
+  color: var(--muted2);
+  font-family: monospace;
+  font-size: 9px;
+  word-break: break-all;
+}
+.ver-install-btn {
+  flex-shrink: 0;
+}
+.ver-software-external {
+  display: inline-block;
+  margin-top: 7px;
+  color: var(--accent);
+  font-size: 9px;
+  text-decoration: none;
+}
+.ver-software-external:hover {
+  text-decoration: underline;
+}
+.ver-empty {
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 30px;
+  text-align: center;
+  color: var(--muted2);
+}
+.ver-empty-icon {
+  font-size: 34px;
+}
+.ver-empty-title {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 800;
+}
+.ver-empty-text {
+  max-width: 560px;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.ver-retry-btn {
+  margin-top: 7px;
+}
+
 /* ══════════════════════════════════════════════
    USERS
    ══════════════════════════════════════════════ */

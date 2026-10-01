@@ -1700,122 +1700,42 @@ async function loadInstalledPlugins() {
    VERSIONS & SOFTWARE
    ══════════════════════════════════════════════ */
 
-const VERSION_SOFTWARE = {
-  plugins: [
-    {
-      id: 'paper',
-      name: 'Paper',
-      description: 'Servidor optimizado compatible con plugins Bukkit/Spigot.',
-      icon: '📄',
-    },
-    {
-      id: 'purpur',
-      name: 'Purpur',
-      description: 'Servidor basado en Paper con más opciones de configuración.',
-      icon: '🟣',
-    },
-    {
-      id: 'spigot',
-      name: 'Spigot',
-      description: 'Servidor Bukkit optimizado y ampliamente compatible.',
-      icon: '🧩',
-    },
-    {
-      id: 'bukkit',
-      name: 'Bukkit',
-      description: 'Servidor clásico para plugins Bukkit.',
-      icon: '🔌',
-    },
-    {
-      id: 'leaf',
-      name: 'Leaf',
-      description: 'Servidor de alto rendimiento basado en Paper.',
-      icon: '🍃',
-    },
-  ],
-
-  mods: [
-    {
-      id: 'fabric',
-      name: 'Fabric',
-      description: 'Loader ligero y moderno para servidores con mods.',
-      icon: '🧵',
-    },
-    {
-      id: 'forge',
-      name: 'Forge',
-      description: 'Uno de los loaders de mods más utilizados.',
-      icon: '🔨',
-    },
-    {
-      id: 'neoforge',
-      name: 'NeoForge',
-      description: 'Loader moderno para mods de Minecraft.',
-      icon: '⚒️',
-    },
-    {
-      id: 'quilt',
-      name: 'Quilt',
-      description: 'Loader compatible con el ecosistema de mods de Fabric.',
-      icon: '🧶',
-    },
-  ],
-
-  vanilla: [
-    {
-      id: 'vanilla',
-      name: 'Vanilla',
-      description: 'Servidor oficial de Minecraft sin modificaciones.',
-      icon: '🌿',
-    },
-  ],
+let versionCatalog = [];
+let versionCurrent = {
+  software: '',
+  version: '',
+  build: '',
 };
 
-function getVersionCategoryIcon(category) {
-  return {
-    plugins: '🧩',
-    mods: '🧱',
-    vanilla: '🌿',
-  }[category] || '📦';
+function versionFindSoftware(id) {
+  return versionCatalog.find(item => item.id === id) || {
+    id,
+    label: id,
+    desc: '',
+  };
 }
 
-function getVersionCategoryName(category) {
-  return {
-    plugins: 'Servidores de plugins',
-    mods: 'Servidores de mods',
-    vanilla: 'Servidores Vanilla',
-  }[category] || 'Servidores';
+function versionCategoryName(category) {
+  if (category === 'proxy') return 'Proxies';
+  if (category === 'mod') return 'Servidores de mods';
+  return 'Servidores de Minecraft';
 }
 
 function renderVersionSoftwareCard(software) {
+  const external = software.external
+    ? `<a class="ver-software-external" href="${escHtml(software.external)}" target="_blank" rel="noopener noreferrer">Web oficial ↗</a>`
+    : '';
+
   return `
-    <button
-      type="button"
-      class="ver-software-card"
-      data-software="${escHtml(software.id)}"
-    >
-      <div class="ver-software-icon">${software.icon}</div>
+    <button type="button" class="ver-software-card" data-software="${escHtml(software.id)}">
+      <div class="ver-software-icon">${software.icon || '📦'}</div>
       <div class="ver-software-content">
-        <div class="ver-software-name">${escHtml(software.name)}</div>
-        <div class="ver-software-desc">${escHtml(software.description)}</div>
+        <div class="ver-software-name">${escHtml(software.label || software.name || software.id)}</div>
+        <div class="ver-software-desc">${escHtml(software.desc || software.description || '')}</div>
+        ${external}
       </div>
       <div class="ver-software-arrow">›</div>
     </button>
-  `;
-}
-
-function renderVersionCategory(category, softwareList) {
-  return `
-    <section class="ver-category">
-      <div class="ver-category-header">
-        <div class="ver-category-icon">${getVersionCategoryIcon(category)}</div>
-        <div class="ver-category-name">${getVersionCategoryName(category)}</div>
-        <div class="ver-category-count">${softwareList.length} disponibles</div>
-      </div>
-      <div class="ver-software-grid">
-        ${softwareList.map(renderVersionSoftwareCard).join('')}
-      </div>
-    </section>
   `;
 }
 
@@ -1823,20 +1743,46 @@ function renderVersionSoftware() {
   const container = $('versionList');
   if (!container) return;
 
+  if (!versionCatalog.length) {
+    container.innerHTML = `
+      <div class="ver-empty">
+        <div class="ver-empty-icon">📦</div>
+        <div class="ver-empty-title">No se han podido cargar los servidores</div>
+        <div class="ver-empty-text">Comprueba que el Agent esté conectado y vuelve a intentarlo.</div>
+        <button type="button" class="btn btn-primary ver-retry-btn" id="verRetry">Reintentar</button>
+      </div>
+    `;
+    $('verRetry')?.addEventListener('click', () => loadVersionState());
+    return;
+  }
+
+  const groups = {};
+  for (const item of versionCatalog) {
+    const category = item.category || 'server';
+    (groups[category] ||= []).push(item);
+  }
+
   container.innerHTML = `
     <div class="ver-hero">
       <div class="ver-hero-icon">📦</div>
       <div>
         <div class="ver-hero-title">Servidores de Minecraft</div>
-        <div class="ver-hero-description">
-          Elige el tipo de servidor y después selecciona la versión que quieres instalar.
-        </div>
+        <div class="ver-hero-description">Elige el software y después la versión que quieres instalar.</div>
       </div>
     </div>
 
-    ${renderVersionCategory('plugins', VERSION_SOFTWARE.plugins)}
-    ${renderVersionCategory('mods', VERSION_SOFTWARE.mods)}
-    ${renderVersionCategory('vanilla', VERSION_SOFTWARE.vanilla)}
+    ${Object.entries(groups).map(([category, items]) => `
+      <section class="ver-category">
+        <div class="ver-category-header">
+          <div class="ver-category-icon">${category === 'proxy' ? '🌐' : '🧩'}</div>
+          <div class="ver-category-name">${escHtml(versionCategoryName(category))}</div>
+          <div class="ver-category-count">${items.length} disponibles</div>
+        </div>
+        <div class="ver-software-grid">
+          ${items.map(renderVersionSoftwareCard).join('')}
+        </div>
+      </section>
+    `).join('')}
   `;
 
   container.querySelectorAll('[data-software]').forEach(card => {
@@ -1844,293 +1790,301 @@ function renderVersionSoftware() {
   });
 }
 
-function getVersionSoftware(software) {
-  return Object.values(VERSION_SOFTWARE)
-    .flat()
-    .find(entry => entry.id === software) || {
-      id: software,
-      name: software,
-      description: '',
-      icon: '📦',
-    };
-}
-
-function versionApiError(data, fallback) {
-  if (!data || data.ok !== false) return null;
-  return data.error || fallback;
-}
-
 async function selectVersionSoftware(software) {
-  const item = getVersionSoftware(software);
-
-  versionState = {
-    software,
-    softwareLabel: item.name,
-    version: '',
-    builds: [],
-    build: null,
-    loaderVersion: '',
-  };
-
+  const item = versionFindSoftware(software);
   const container = $('versionList');
   if (!container) return;
 
-  let versions = [];
+  container.innerHTML = `
+    <div class="ver-panel-head">
+      <button type="button" class="btn ver-back-btn" id="verBack">← Volver</button>
+      <div>
+        <div class="ver-panel-title">${item.icon || '📦'} ${escHtml(item.label || software)}</div>
+        <div class="ver-panel-subtitle">${escHtml(item.desc || '')}</div>
+      </div>
+    </div>
+    <div class="ver-loading">Cargando versiones de ${escHtml(item.label || software)}…</div>
+  `;
+
+  $('verBack')?.addEventListener('click', renderVersionSoftware);
+
+  if (item.external && !['paper', 'purpur', 'folia', 'fabric', 'vanilla'].includes(software)) {
+    container.querySelector('.ver-loading').outerHTML = `
+      <div class="ver-empty">
+        <div class="ver-empty-icon">🌐</div>
+        <div class="ver-empty-title">Descarga externa</div>
+        <div class="ver-empty-text">MoonWolf no dispone de una API de versiones para este software.</div>
+        <a class="btn btn-primary" href="${escHtml(item.external)}" target="_blank" rel="noopener noreferrer">Abrir web oficial ↗</a>
+      </div>
+    `;
+    return;
+  }
 
   try {
-    container.querySelector('.ver-selected-software')?.remove();
+    const data = await api(`/api/versions/list?software=${encodeURIComponent(software)}`);
 
-    const data = await api(
-      `/api/versions/list?software=${encodeURIComponent(software)}`
-    );
+    if (!data?.ok) {
+      throw new Error(data?.error || 'No se pudieron cargar las versiones.');
+    }
 
-    const error = versionApiError(data, 'No se pudieron cargar las versiones.');
-    if (error) throw new Error(error);
-
-    versions = Array.isArray(data.versions) ? data.versions : [];
+    const versions = Array.isArray(data.versions) ? data.versions : [];
 
     if (!versions.length) {
-      throw new Error(`No hay versiones disponibles para ${item.name}.`);
+      throw new Error('La API no devolvió ninguna versión disponible.');
     }
 
-    showVersionSoftwareInfo(item, versions);
+    versionCurrent.software = software;
+
+    container.innerHTML = `
+      <div class="ver-panel-head">
+        <button type="button" class="btn ver-back-btn" id="verBack">← Volver</button>
+        <div>
+          <div class="ver-panel-title">${item.icon || '📦'} ${escHtml(item.label || software)}</div>
+          <div class="ver-panel-subtitle">${escHtml(item.desc || '')}</div>
+        </div>
+      </div>
+
+      <div class="ver-version-header">
+        <div>
+          <div class="ver-section-title">Versiones disponibles</div>
+          <div class="ver-section-subtitle">${versions.length} versiones encontradas</div>
+        </div>
+        <input id="verVersionSearch" class="ver-search" type="search" placeholder="Buscar versión…">
+      </div>
+
+      <div class="ver-version-grid" id="verVersionGrid"></div>
+    `;
+
+    $('verBack')?.addEventListener('click', renderVersionSoftware);
+
+    const grid = $('verVersionGrid');
+
+    const drawVersions = (filter = '') => {
+      const q = filter.trim().toLowerCase();
+      const filtered = versions.filter(v => String(v).toLowerCase().includes(q));
+
+      grid.innerHTML = filtered.map(v => `
+        <button type="button" class="ver-version-card ${String(v) === String(versionCurrent.version) && software === versionCurrent.software ? 'current' : ''}" data-version="${escHtml(v)}">
+          <span>${escHtml(v)}</span>
+          ${String(v) === String(versionCurrent.version) && software === versionCurrent.software ? '<small>ACTUAL</small>' : ''}
+        </button>
+      `).join('') || `<div class="ver-no-results">No hay versiones que coincidan.</div>`;
+
+      grid.querySelectorAll('[data-version]').forEach(btn => {
+        btn.addEventListener('click', () => selectVersionBuilds(software, btn.dataset.version, item));
+      });
+    };
+
+    $('verVersionSearch')?.addEventListener('input', e => drawVersions(e.target.value));
+    drawVersions();
+
   } catch (error) {
-    showVersionSoftwareInfo(item, [], error.message);
+    const box = container.querySelector('.ver-loading');
+    if (box) {
+      box.className = 'ver-empty';
+      box.innerHTML = `
+        <div class="ver-empty-icon">⚠️</div>
+        <div class="ver-empty-title">No se pudieron cargar las versiones</div>
+        <div class="ver-empty-text">${escHtml(error.message || 'Error desconocido')}</div>
+        <button type="button" class="btn btn-primary" id="verRetrySoftware">Reintentar</button>
+      `;
+      $('verRetrySoftware')?.addEventListener('click', () => selectVersionSoftware(software));
+    }
   }
 }
 
-function showVersionSoftwareInfo(software, versions = [], errorMessage = '') {
-  const existing = document.querySelector('.ver-selected-software');
-  existing?.remove();
-
+async function selectVersionBuilds(software, version, item = versionFindSoftware(software)) {
   const container = $('versionList');
   if (!container) return;
 
-  const info = document.createElement('div');
-  info.className = 'ver-selected-software';
+  versionCurrent.software = software;
+  versionCurrent.version = version;
+  versionCurrent.build = '';
 
-  const options = versions.map(version => {
-    const value = String(version);
-    return `<option value="${escHtml(value)}">${escHtml(value)}</option>`;
-  }).join('');
-
-  info.innerHTML = `
-    <div class="ver-selected-header">
-      <div class="ver-selected-icon">${software.icon}</div>
+  container.innerHTML = `
+    <div class="ver-panel-head">
+      <button type="button" class="btn ver-back-btn" id="verBackVersions">← Versiones</button>
       <div>
-        <div class="ver-selected-title">${escHtml(software.name)}</div>
-        <div class="ver-selected-description">${escHtml(software.description)}</div>
+        <div class="ver-panel-title">${item.icon || '📦'} ${escHtml(item.label || software)} ${escHtml(version)}</div>
+        <div class="ver-panel-subtitle">${escHtml(item.desc || '')}</div>
       </div>
     </div>
-
-    ${
-      errorMessage
-        ? `<div class="ver-selected-message">
-             <span>⚠</span>
-             <span>${escHtml(errorMessage)}</span>
-           </div>`
-        : `
-          <div style="display:flex;flex-direction:column;gap:12px;margin-top:18px">
-            <label style="font-weight:600">Versión de Minecraft</label>
-            <select id="versionMinecraftSelect"
-              style="width:100%;padding:11px 12px;border-radius:10px;border:1px solid var(--border);background:var(--panel2,var(--panel));color:var(--text);font:inherit">
-              <option value="">Selecciona una versión...</option>
-              ${options}
-            </select>
-
-            <div id="versionBuildsArea"></div>
-          </div>
-        `
-    }
+    <div class="ver-loading">Cargando builds de ${escHtml(version)}…</div>
   `;
 
-  container.prepend(info);
-
-  const select = info.querySelector('#versionMinecraftSelect');
-  if (select) {
-    select.addEventListener('change', () => {
-      changeSoftwareOrVersion(select.value);
-    });
-  }
-
-  info.scrollIntoView({
-    behavior: 'smooth',
-    block: 'nearest',
-  });
-}
-
-async function changeSoftwareOrVersion(version) {
-  if (!version || !versionState.software) return;
-
-  versionState.version = version;
-  versionState.builds = [];
-  versionState.build = null;
-  versionState.loaderVersion = '';
-
-  const area = document.querySelector('#versionBuildsArea');
-  if (!area) return;
-
-  area.innerHTML = `
-    <div class="ver-selected-message">
-      <span style="animation:spin 1s linear infinite">⟳</span>
-      <span>Cargando builds de ${escHtml(version)}...</span>
-    </div>
-  `;
+  $('verBackVersions')?.addEventListener('click', () => selectVersionSoftware(software));
 
   try {
     const data = await api(
-      `/api/versions/builds?software=${encodeURIComponent(versionState.software)}&version=${encodeURIComponent(version)}`
+      `/api/versions/builds?software=${encodeURIComponent(software)}&version=${encodeURIComponent(version)}`
     );
 
-    const error = versionApiError(data, 'No se pudieron cargar los builds.');
-    if (error) throw new Error(error);
+    if (!data?.ok) {
+      throw new Error(data?.error || 'No se pudieron cargar los builds.');
+    }
 
     const builds = Array.isArray(data.builds) ? data.builds : [];
-    versionState.builds = builds;
-    versionState.build = builds[0] || null;
 
     if (!builds.length) {
-      area.innerHTML = `
-        <div class="ver-selected-message">
-          <span>⚠</span>
-          <span>No hay builds disponibles para ${escHtml(version)}.</span>
-        </div>
-      `;
-      return;
+      throw new Error('No hay builds disponibles para esta versión.');
     }
 
-    const isFabric = Boolean(data.isFabric);
-    const buildOptions = builds.map((build, index) => {
-      const buildId = build.build ?? index + 1;
-      const extra = build.loaderVersion ? ` · Loader ${escHtml(build.loaderVersion)}` : '';
-      const channel = build.channel ? ` · ${escHtml(build.channel)}` : '';
-      return `<option value="${index}">Build ${escHtml(String(buildId))}${extra}${channel}</option>`;
-    }).join('');
+    versionCurrent.build = builds[0]?.build ?? '';
 
-    area.innerHTML = `
-      <label style="font-weight:600">Build${isFabric ? ' / Loader' : ''}</label>
-      <select id="versionBuildSelect"
-        style="width:100%;padding:11px 12px;border-radius:10px;border:1px solid var(--border);background:var(--panel2,var(--panel));color:var(--text);font:inherit">
-        ${buildOptions}
-      </select>
+    container.innerHTML = `
+      <div class="ver-panel-head">
+        <button type="button" class="btn ver-back-btn" id="verBackVersions">← Versiones</button>
+        <div>
+          <div class="ver-panel-title">${item.icon || '📦'} ${escHtml(item.label || software)} ${escHtml(version)}</div>
+          <div class="ver-panel-subtitle">${builds.length} builds disponibles</div>
+        </div>
+      </div>
 
-      <div id="versionBuildInfo" style="margin-top:10px"></div>
-
-      <button type="button" id="versionInstallBtn"
-        class="btn primary"
-        style="margin-top:12px;width:100%">
-        Instalar ${escHtml(versionState.softwareLabel)} ${escHtml(version)}
-      </button>
-    `;
-
-    const buildSelect = area.querySelector('#versionBuildSelect');
-    const updateBuild = () => {
-      const index = Number(buildSelect.value);
-      versionState.build = versionState.builds[index] || null;
-      versionState.loaderVersion = versionState.build?.loaderVersion || '';
-
-      const selected = versionState.build;
-      const info = area.querySelector('#versionBuildInfo');
-
-      if (info && selected) {
-        const changes = selected.changes
-          ? `<div style="margin-top:5px">${escHtml(selected.changes)}</div>`
-          : '';
-        const sha = selected.sha256
-          ? `<div style="margin-top:5px;font-family:monospace;font-size:11px;word-break:break-all">SHA-256: ${escHtml(selected.sha256)}</div>`
-          : '';
-
-        info.innerHTML = `
-          <div style="font-size:12px;color:var(--muted)">
-            ${selected.time ? new Date(selected.time).toLocaleString('es-ES') : ''}
-            ${changes}
-            ${sha}
+      <div class="ver-build-list">
+        ${builds.map((b, index) => `
+          <div class="ver-build-item ${index === 0 ? 'selected' : ''}" data-build="${escHtml(b.build)}">
+            <div class="ver-build-main">
+              <div class="ver-build-title">Build ${escHtml(b.build)}</div>
+              <div class="ver-build-meta">
+                <span>${escHtml(b.channel || 'STABLE')}</span>
+                ${b.loaderVersion ? `<span>Loader ${escHtml(b.loaderVersion)}</span>` : ''}
+                ${b.time ? `<span>${escHtml(new Date(b.time).toLocaleString('es-ES'))}</span>` : ''}
+              </div>
+              ${b.changes ? `<div class="ver-build-changes">${escHtml(b.changes)}</div>` : ''}
+              ${b.sha256 ? `<div class="ver-build-sha">SHA-256: ${escHtml(b.sha256)}</div>` : ''}
+            </div>
+            <button type="button" class="btn btn-primary ver-install-btn" data-build-index="${index}">
+              ${software === 'fabric' ? 'Preparar instalación' : 'Instalar'}
+            </button>
           </div>
-        `;
-      }
-    };
-
-    buildSelect.addEventListener('change', updateBuild);
-    area.querySelector('#versionInstallBtn').addEventListener('click', installSelectedVersion);
-    updateBuild();
-  } catch (error) {
-    area.innerHTML = `
-      <div class="ver-selected-message">
-        <span>⚠</span>
-        <span>${escHtml(error.message)}</span>
+        `).join('')}
       </div>
     `;
-  }
-}
 
-async function loadVersionState() {
-  renderVersionSoftware();
+    $('verBackVersions')?.addEventListener('click', () => selectVersionSoftware(software));
 
-  // Recuperamos la versión configurada en Startup para mostrarla como referencia.
-  try {
-    const data = await api('/api/startup');
-    if (data?.ok && data.config?.minecraftVersion) {
-      versionState.version = data.config.minecraftVersion;
+    container.querySelectorAll('[data-build-index]').forEach(button => {
+      button.addEventListener('click', () => {
+        const build = builds[Number(button.dataset.buildIndex)];
+        installVersionSelection(software, version, build);
+      });
+    });
+  } catch (error) {
+    const box = container.querySelector('.ver-loading');
+    if (box) {
+      box.className = 'ver-empty';
+      box.innerHTML = `
+        <div class="ver-empty-icon">⚠️</div>
+        <div class="ver-empty-title">No se pudieron cargar los builds</div>
+        <div class="ver-empty-text">${escHtml(error.message || 'Error desconocido')}</div>
+        <button type="button" class="btn btn-primary" id="verRetryBuilds">Reintentar</button>
+      `;
+      $('verRetryBuilds')?.addEventListener('click', () => selectVersionBuilds(software, version, item));
     }
-  } catch {}
+  }
 }
 
-async function installSelectedVersion() {
-  const software = versionState.software;
-  const version = versionState.version;
-  const selectedBuild = versionState.build || versionState.builds?.[0];
+async function installVersionSelection(software, version, build) {
+  const label = versionFindSoftware(software).label || software;
+  const buildLabel = build?.build !== undefined ? `Build ${build.build}` : 'versión seleccionada';
 
-  if (!software) {
-    toast('Selecciona un servidor primero.', 'warn');
-    return;
-  }
-
-  if (!version) {
-    toast('Selecciona una versión de Minecraft.', 'warn');
-    return;
-  }
-
-  if (!selectedBuild) {
-    toast('Selecciona un build primero.', 'warn');
-    return;
-  }
-
-  const item = getVersionSoftware(software);
-
-  if (!confirm(
-    `¿Deseas instalar ${item.name} ${version}${selectedBuild.build ? ` (build ${selectedBuild.build})` : ''}?`
-  )) {
-    return;
-  }
+  if (!confirm(`¿Quieres instalar ${label} ${version} (${buildLabel})?`)) return;
 
   try {
-    toast('⏳ Descargando e instalando el servidor...', 'info');
+    toast('⏳ Descargando e instalando...', 'info');
 
     const data = await postJSON('/api/versions/install', {
       software,
       version,
-      build: selectedBuild.build ?? 1,
-      url: selectedBuild.url || undefined,
-      loaderVersion: selectedBuild.loaderVersion || undefined,
+      build: build?.build ?? '',
+      url: build?.url || '',
+      loaderVersion: build?.loaderVersion || '',
     });
 
-    if (!data.ok) {
-      throw new Error(data.error || 'No se pudo instalar el servidor.');
+    if (!data?.ok) {
+      throw new Error(data?.error || 'No se pudo instalar la versión.');
     }
 
-    toast('✅ Servidor actualizado con éxito.', 'ok');
+    if (data.type === 'fabric-installer') {
+      toast('⚠️ Fabric preparado. Ejecuta el comando indicado y selecciona fabric-server-launch.jar en Startup.', 'info');
+      alert(
+        `Fabric ${version} preparado.\n\n` +
+        `${data.note || ''}\n\n` +
+        `Comando:\n${data.installCmd || 'No disponible'}`
+      );
+    } else {
+      toast(`✅ ${label} ${version} instalado correctamente.`, 'ok');
+    }
 
-    // El backend guarda también minecraftVersion en Startup.
     await loadVersionState();
-    await selectVersionSoftware(software);
-
-    const versionSelect = document.querySelector('#versionMinecraftSelect');
-    if (versionSelect) {
-      versionSelect.value = version;
-      await changeSoftwareOrVersion(version);
-    }
   } catch (error) {
     toast(`❌ ${error.message}`, 'err');
+  }
+}
+
+async function loadVersionState() {
+  const container = $('versionList');
+  if (container) {
+    container.innerHTML = `
+      <div class="ver-loading-page">
+        <div class="ver-loading-spinner">⟳</div>
+        <div>Cargando catálogo de versiones…</div>
+      </div>
+    `;
+  }
+
+  try {
+    const [softwareData, startupData] = await Promise.all([
+      api('/api/versions/software'),
+      api('/api/startup'),
+    ]);
+
+    if (!softwareData?.ok) {
+      throw new Error(softwareData?.error || 'No se pudo cargar el catálogo de software.');
+    }
+
+    versionCatalog = Array.isArray(softwareData.software)
+      ? softwareData.software.map(item => ({
+          ...item,
+          icon:
+            item.id === 'paper' ? '📄' :
+            item.id === 'purpur' ? '🟣' :
+            item.id === 'folia' ? '🌱' :
+            item.id === 'fabric' ? '🧵' :
+            item.id === 'forge' ? '🔨' :
+            item.id === 'vanilla' ? '🌿' :
+            item.id === 'velocity' ? '⚡' :
+            item.id === 'waterfall' ? '🌊' :
+            item.id === 'bungeecord' ? '🔗' : '📦',
+        }))
+      : [];
+
+    versionCurrent = {
+      software: '',
+      version: startupData?.config?.minecraftVersion || '',
+      build: '',
+    };
+
+    renderVersionSoftware();
+  } catch (error) {
+    versionCatalog = [];
+    renderVersionSoftware();
+    toast(`❌ ${error.message}`, 'err');
+  }
+}
+
+/* Legacy compatibility */
+function renderBuildsSelect() {}
+async function changeSoftwareOrVersion() {}
+async function installSelectedVersion() {
+  if (versionCurrent.software && versionCurrent.version) {
+    await selectVersionBuilds(
+      versionCurrent.software,
+      versionCurrent.version,
+      versionFindSoftware(versionCurrent.software)
+    );
+  } else {
+    toast('Selecciona un servidor y una versión primero.', 'warn');
   }
 }
 
@@ -2896,10 +2850,7 @@ function switchView(id) {
       break;
 
     case 'versions':
-      loadVersionState().catch(error => {
-        console.error('[versions]', error);
-        toast(error.message || 'No se pudieron cargar las versiones.', 'err');
-      });
+      loadVersionState().catch(error => toast(error.message, 'err'));
       break;
 
     case 'plugins':
