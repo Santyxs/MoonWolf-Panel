@@ -2523,25 +2523,29 @@ async function loadStartup() {
         </div>
       </div>
 
-      <div class="setting-row">
-        <div>
-          <div class="setting-name">Reinicio automático si se cae</div>
-          <div class="setting-desc">Relanza el servidor si el proceso termina de forma inesperada (no cuenta pulsar DETENER).</div>
-        </div>
-        <label class="toggle">
-          <input type="checkbox" id="stAutoRestart" ${cfg.autoRestartOnCrash ? 'checked' : ''}>
-          <span class="toggle-slider"></span>
+      <div class="startup-toggles">
+        <label class="startup-toggle" for="stAutoRestart">
+          <div class="startup-toggle-icon">🔄</div>
+          <div class="startup-toggle-info">
+            <div class="startup-toggle-title">Reinicio automático si se cae</div>
+            <div class="startup-toggle-desc">Relanza el servidor si el proceso termina de forma inesperada. No cuenta si pulsas DETENER.</div>
+          </div>
+          <span class="toggle">
+            <input type="checkbox" id="stAutoRestart" ${cfg.autoRestartOnCrash ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+          </span>
         </label>
-      </div>
 
-      <div class="setting-row" style="border-bottom:none">
-        <div>
-          <div class="setting-name">Arranque automático</div>
-          <div class="setting-desc">Inicia el servidor en cuanto MoonWolf Panel/Agent se ponga en marcha.</div>
-        </div>
-        <label class="toggle">
-          <input type="checkbox" id="stAutoStart" ${cfg.autoStartOnBoot ? 'checked' : ''}>
-          <span class="toggle-slider"></span>
+        <label class="startup-toggle" for="stAutoStart">
+          <div class="startup-toggle-icon">🚀</div>
+          <div class="startup-toggle-info">
+            <div class="startup-toggle-title">Arranque automático</div>
+            <div class="startup-toggle-desc">Inicia el servidor en cuanto MoonWolf Panel/Agent se ponga en marcha.</div>
+          </div>
+          <span class="toggle">
+            <input type="checkbox" id="stAutoStart" ${cfg.autoStartOnBoot ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+          </span>
         </label>
       </div>
 
