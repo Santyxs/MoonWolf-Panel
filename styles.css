@@ -18,7 +18,8 @@
   --green:     #00ff88;
   --red:       #ff4455;
   --yellow:    #ffcc00;
-  --blue:    #7ec8ff;
+  --blue:      #7ec8ff;
+  --purple:    #7ec8ff;  /* alias de --blue para compatibilidad */
 
   --text:      #d3e0ee;
   --textSoft:  #a8bccf;
@@ -1779,6 +1780,87 @@ select:focus:not(:focus-visible) {
   background: rgba(0,200,255,0.15);
   box-shadow: 0 0 16px rgba(0,200,255,0.12);
   transform: translateY(-1px);
+}
+
+/* ── Toggle cards (startup) ── */
+.startup-toggles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.startup-toggle {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: all var(--t-base);
+  user-select: none;
+}
+
+.startup-toggle:hover {
+  border-color: var(--border2);
+  background: var(--surface3);
+  box-shadow: var(--shadow-sm);
+}
+
+.startup-toggle:has(input:checked) {
+  border-color: rgba(0,200,255,0.35);
+  background: rgba(0,200,255,0.04);
+}
+
+.startup-toggle-icon {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  font-size: 18px;
+  transition: all var(--t-base);
+}
+
+.startup-toggle:has(input:checked) .startup-toggle-icon {
+  border-color: rgba(0,200,255,0.4);
+  background: rgba(0,200,255,0.08);
+  box-shadow: 0 0 12px rgba(0,200,255,0.15);
+}
+
+.startup-toggle-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.startup-toggle-title {
+  font-family: 'Orbitron', sans-serif;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: var(--text);
+}
+
+.startup-toggle-desc {
+  margin-top: 4px;
+  font-size: var(--fs-xs);
+  color: var(--muted2);
+  line-height: 1.5;
+}
+
+.startup-toggle .toggle {
+  flex-shrink: 0;
+}
+
+@media (max-width: 850px) {
+  .startup-toggles {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ══════════════════════════════════════════════
