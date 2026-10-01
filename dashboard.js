@@ -838,10 +838,33 @@ function updateStats(stats = {}) {
   }
 }
 
+/* ══════════════════════════════════════════════
+   FILTRO DE LOGS
+   ══════════════════════════════════════════════
+   Patrones de líneas que NO queremos mostrar en la consola del panel.
+   Se comprueban contra el texto completo de cada línea del log.
+   Añade aquí más regex si quieres silenciar otros mensajes repetitivos. */
+const LOG_IGNORE_PATTERNS = [
+  /Thread RCON Client \/127\.0\.0\.1 (started|shutting down)/i,
+];
+
+function shouldIgnoreLog(line) {
+  const text = String(line || '');
+
+  return LOG_IGNORE_PATTERNS.some(re => re.test(text));
+}
+
 function appendLog(entry) {
   const consoleEl = $('console');
 
   if (!consoleEl) return;
+
+  const line = String(entry?.line || '');
+
+  // Filtramos el ruido del servidor (RCON) antes de renderizar
+  if (shouldIgnoreLog(line)) {
+    return;
+  }
 
   const div = document.createElement('div');
 
@@ -849,7 +872,7 @@ function appendLog(entry) {
 
   div.innerHTML =
     `<span class="log-time">${escHtml(entry?.time || '--:--:--')}</span>` +
-    `<span class="log-text">${escHtml(entry?.line || '')}</span>`;
+    `<span class="log-text">${escHtml(line)}</span>`;
 
   consoleEl.appendChild(div);
   consoleEl.scrollTop = consoleEl.scrollHeight;
