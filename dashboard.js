@@ -840,10 +840,7 @@ function updateStats(stats = {}) {
 
 /* ══════════════════════════════════════════════
    FILTRO DE LOGS
-   ══════════════════════════════════════════════
-   Patrones de líneas que NO queremos mostrar en la consola del panel.
-   Se comprueban contra el texto completo de cada línea del log.
-   Añade aquí más regex si quieres silenciar otros mensajes repetitivos. */
+   ══════════════════════════════════════════════ */
 const LOG_IGNORE_PATTERNS = [
   /Thread RCON Client \/127\.0\.0\.1 (started|shutting down)/i,
 ];
@@ -861,7 +858,6 @@ function appendLog(entry) {
 
   const line = String(entry?.line || '');
 
-  // Filtramos el ruido del servidor (RCON) antes de renderizar
   if (shouldIgnoreLog(line)) {
     return;
   }
@@ -2706,23 +2702,59 @@ function renderActivity() {
 
   if (!element) return;
 
-  element.innerHTML = activities.length
-    ? activities
-        .slice()
-        .reverse()
-        .map(
-          item => `
-            <div class="activity-row">
-              <span>${escHtml(item.icon)}</span>
-              <div>
-                <strong>${escHtml(item.message)}</strong>
-                <div style="font-size:10px;color:var(--muted2)">${escHtml(item.time)}</div>
-              </div>
-            </div>
-          `
-        )
-        .join('')
-    : `<div class="empty-state">No hay actividad todavía.</div>`;
+  if (!activities.length) {
+    element.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">📭</div>
+        <div class="empty-msg">No hay actividad todavía</div>
+      </div>
+    `;
+    return;
+  }
+
+  const counts = activities.reduce((acc, item) => {
+    const level = item.level || 'info';
+    acc[level] = (acc[level] || 0) + 1;
+    return acc;
+  }, {});
+
+  const toolbar = `
+    <div class="activity-toolbar">
+      <div class="activity-counter">
+        <span class="activity-counter-num">${activities.length}</span>
+        <span class="activity-counter-label">eventos</span>
+      </div>
+      <div class="activity-filters">
+        ${counts.info  ? `<span class="activity-filter info">${counts.info} info</span>` : ''}
+        ${counts.ok    ? `<span class="activity-filter ok">${counts.ok} ok</span>` : ''}
+        ${counts.warn  ? `<span class="activity-filter warn">${counts.warn} aviso</span>` : ''}
+        ${counts.error ? `<span class="activity-filter error">${counts.error} error</span>` : ''}
+      </div>
+    </div>
+  `;
+
+  const items = activities
+    .slice()
+    .reverse()
+    .map(item => {
+      const level = String(item.level || 'info').toLowerCase();
+      const safeLevel = ['info', 'ok', 'warn', 'error'].includes(level) ? level : 'info';
+      const label = { info: 'INFO', ok: 'OK', warn: 'AVISO', error: 'ERROR' }[safeLevel];
+
+      return `
+        <div class="activity-item ${safeLevel}">
+          <div class="activity-icon">${escHtml(item.icon || '📌')}</div>
+          <div class="activity-body">
+            <div class="activity-msg">${escHtml(item.message)}</div>
+            <div class="activity-time">${escHtml(item.time || '--:--:--')}</div>
+          </div>
+          <span class="activity-badge ${safeLevel}">${label}</span>
+        </div>
+      `;
+    })
+    .join('');
+
+  element.innerHTML = toolbar + `<div class="activity-feed">${items}</div>`;
 }
 
 /* USERS */
