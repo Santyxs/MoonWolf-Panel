@@ -1716,19 +1716,9 @@ function versionFindSoftware(id) {
 }
 
 function versionCategoryName(category) {
-  if (category === 'plugins') return 'Versiones de plugins';
-  if (category === 'mods' || category === 'mod') return 'Versiones de mods';
   if (category === 'proxy') return 'Proxies';
-  if (category === 'vanilla') return 'Vanilla';
-  return 'Servidores';
-}
-
-function versionCategoryIcon(category) {
-  if (category === 'plugins') return '🧩';
-  if (category === 'mods' || category === 'mod') return '🛠️';
-  if (category === 'proxy') return '🌐';
-  if (category === 'vanilla') return '🌿';
-  return '📦';
+  if (category === 'mod') return 'Servidores de mods';
+  return 'Servidores de Minecraft';
 }
 
 function renderVersionSoftwareCard(software) {
@@ -1781,22 +1771,18 @@ function renderVersionSoftware() {
       </div>
     </div>
 
-    ${['plugins', 'mods', 'proxy', 'vanilla'].map(category => {
-      const items = groups[category] || [];
-      if (!items.length) return '';
-      return `
-        <section class="ver-category">
-          <div class="ver-category-header">
-            <div class="ver-category-icon">${versionCategoryIcon(category)}</div>
-            <div class="ver-category-name">${escHtml(versionCategoryName(category))}</div>
-            <div class="ver-category-count">${items.length} disponibles</div>
-          </div>
-          <div class="ver-software-grid">
-            ${items.map(renderVersionSoftwareCard).join('')}
-          </div>
-        </section>
-      `;
-    }).join('')}
+    ${Object.entries(groups).map(([category, items]) => `
+      <section class="ver-category">
+        <div class="ver-category-header">
+          <div class="ver-category-icon">${category === 'proxy' ? '🌐' : '🧩'}</div>
+          <div class="ver-category-name">${escHtml(versionCategoryName(category))}</div>
+          <div class="ver-category-count">${items.length} disponibles</div>
+        </div>
+        <div class="ver-software-grid">
+          ${items.map(renderVersionSoftwareCard).join('')}
+        </div>
+      </section>
+    `).join('')}
   `;
 
   container.querySelectorAll('[data-software]').forEach(card => {
