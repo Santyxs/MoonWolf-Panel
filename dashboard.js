@@ -2952,45 +2952,66 @@ function renderSettings() {
   if (!element) return;
 
   element.innerHTML = `
-    <div class="settings-row">
-      <div>
-        <strong>MoonWolf Cloud</strong>
-        <div style="font-size:11px;color:var(--muted2)">WebSocket</div>
+    <div class="settings-group">
+      <div class="settings-group-header">
+        <div class="settings-group-icon">☁️</div>
+        <div class="settings-group-info">
+          <div class="settings-group-title">MoonWolf Cloud</div>
+          <div class="settings-group-sub">Conexión WebSocket con el panel remoto</div>
+        </div>
+        <span class="settings-status ${cloudSocket?.connected ? 'online' : 'offline'}">
+          ${cloudSocket?.connected ? '● ONLINE' : '● OFFLINE'}
+        </span>
       </div>
-      <span>${agentOnline ? '🟢 Agent conectado' : '🔴 Agent desconectado'}</span>
     </div>
 
-    <div class="settings-row">
-      <div>
-        <strong>Agent conectado</strong>
-        <div style="font-size:11px;color:var(--muted2)">Identificador de la instalación</div>
+    <div class="settings-group">
+      <div class="settings-group-header">
+        <div class="settings-group-icon">🛰️</div>
+        <div class="settings-group-info">
+          <div class="settings-group-title">MoonWolf Agent</div>
+          <div class="settings-group-sub">Identificador único de esta instalación</div>
+        </div>
+        <span class="settings-status ${agentOnline ? 'online' : 'offline'}">
+          ${agentOnline ? '● CONECTADO' : '● DESCONECTADO'}
+        </span>
       </div>
-      <code>${escHtml(agentId || '—')}</code>
+      <div class="settings-group-body">
+        <div class="settings-field">
+          <code class="settings-field-value" title="${escHtml(agentId || '—')}">${escHtml(agentId || '—')}</code>
+          <button class="small-btn" id="btnCopyAgentId">Copiar</button>
+        </div>
+      </div>
     </div>
 
-    <div class="settings-row">
-      <div>
-        <strong>Conexión</strong>
-        <div style="font-size:11px;color:var(--muted2)">MoonWolf Cloud / Render WebSocket</div>
+    <div class="settings-danger">
+      <div class="settings-danger-info">
+        <div class="settings-danger-title">⚠️ Desconectar del Cloud</div>
+        <div class="settings-danger-sub">
+          Cerrará la sesión actual del panel. Necesitarás un nuevo código de emparejamiento para reconectar.
+        </div>
       </div>
-      <span>${cloudSocket?.connected ? '🟢 ONLINE' : '🔴 OFFLINE'}</span>
-    </div>
-
-    <div style="padding-top:12px">
-      <button class="small-btn" id="btnDisconnectCloud">Desconectar</button>
+      <button class="settings-danger-btn" id="btnDisconnectCloud">Desconectar</button>
     </div>
   `;
 
+  $('btnCopyAgentId')?.addEventListener('click', async event => {
+    if (!agentId) return;
+
+    try {
+      await navigator.clipboard.writeText(agentId);
+      flashButton(event.currentTarget, 'Copiado');
+    } catch {
+      toast('No se pudo copiar.', 'err');
+    }
+  });
+
   $('btnDisconnectCloud')?.addEventListener('click', () => {
     cloudSocket?.disconnect();
-
     setAgentOnline(false);
-
     currentStatus = 'offline';
     updateStatusUi('offline');
-
     clearSession();
-
     showLogin('Desconectado.');
   });
 }
