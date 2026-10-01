@@ -2289,17 +2289,6 @@ async function loadPorts() {
             </div>
           </div>
 
-          <div class="setting-row">
-            <div>
-              <div class="setting-name">Game Query</div>
-              <div class="setting-desc">Permite consultar información del servidor mediante el protocolo Query.</div>
-            </div>
-            <label class="toggle">
-              <input type="checkbox" id="portEnableQuery" ${props.enableQuery ? 'checked' : ''}>
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-
           <div class="form-row">
             <div class="form-group">
               <label class="form-label">Puerto RCON</label>
@@ -2311,14 +2300,29 @@ async function loadPorts() {
             </div>
           </div>
 
-          <div class="setting-row">
-            <div>
-              <div class="setting-name">RCON</div>
-              <div class="setting-desc">Permite administrar la consola remotamente. Usa una contraseña fuerte y no expongas este puerto innecesariamente a Internet.</div>
-            </div>
-            <label class="toggle">
-              <input type="checkbox" id="portEnableRcon" ${props.enableRcon ? 'checked' : ''}>
-              <span class="toggle-slider"></span>
+          <div class="startup-toggles">
+            <label class="startup-toggle" for="portEnableQuery">
+              <div class="startup-toggle-icon">📡</div>
+              <div class="startup-toggle-info">
+                <div class="startup-toggle-title">Game Query</div>
+                <div class="startup-toggle-desc">Permite consultar información del servidor mediante el protocolo Query (jugadores, MOTD...).</div>
+              </div>
+              <span class="toggle">
+                <input type="checkbox" id="portEnableQuery" ${props.enableQuery ? 'checked' : ''}>
+                <span class="toggle-slider"></span>
+              </span>
+            </label>
+
+            <label class="startup-toggle" for="portEnableRcon">
+              <div class="startup-toggle-icon">🎛️</div>
+              <div class="startup-toggle-info">
+                <div class="startup-toggle-title">RCON</div>
+                <div class="startup-toggle-desc">Consola remota. Usa una contraseña fuerte y no expongas este puerto innecesariamente a Internet.</div>
+              </div>
+              <span class="toggle">
+                <input type="checkbox" id="portEnableRcon" ${props.enableRcon ? 'checked' : ''}>
+                <span class="toggle-slider"></span>
+              </span>
             </label>
           </div>
 
