@@ -1479,46 +1479,49 @@ function renderPluginResults(results, errors) {
     ? `<div class="plg-warn-bar">⚠ ${errors.map(escHtml).join(' · ')}</div>`
     : '';
 
-  $('plgResults').innerHTML =
-    warning +
-    (results
-      .map((plugin, index) => {
-        const tag = ({ modrinth: 'MODRINTH', spigot: 'SPIGOT', hangar: 'HANGAR' })[plugin.source] || String(plugin.source || '').toUpperCase();
-        const external = plugin.external
-          ? '<span class="plg-src-badge">🔗 EXTERNO</span>'
-          : '';
-        const premium = plugin.premium
-          ? '<span class="plg-src-badge">💰 PREMIUM</span>'
-          : '';
+  const cards = results
+    .map((plugin, index) => {
+      const tag = ({ modrinth: 'MODRINTH', spigot: 'SPIGOT', hangar: 'HANGAR' })[plugin.source] || String(plugin.source || '').toUpperCase();
+      const external = plugin.external
+        ? '<span class="plg-src-badge">🔗 EXTERNO</span>'
+        : '';
+      const premium = plugin.premium
+        ? '<span class="plg-src-badge">💰 PREMIUM</span>'
+        : '';
 
-        return `
-          <div class="plg-card" data-index="${index}">
-            <div class="plg-card-top">
-              ${
-                plugin.icon
-                  ? `<img class="plg-card-icon" src="${escHtml(plugin.icon)}" width="42" height="42" loading="lazy">`
-                  : `<div class="plg-card-icon-placeholder">🧩</div>`
-              }
-              <div class="plg-card-info">
-                <div class="plg-card-name">${escHtml(plugin.name)}</div>
-                <div class="plg-card-tags">
-                  <span class="plg-src-badge ${escHtml(plugin.source)}">${tag}</span>
-                  ${premium}
-                  ${external}
-                  <span class="plg-src-badge dl">⬇ ${formatDownloads(plugin.downloads)}</span>
-                </div>
+      return `
+        <div class="plg-card" data-index="${index}">
+          <div class="plg-card-top">
+            ${
+              plugin.icon
+                ? `<img class="plg-card-icon" src="${escHtml(plugin.icon)}" width="42" height="42" loading="lazy">`
+                : `<div class="plg-card-icon-placeholder">🧩</div>`
+            }
+            <div class="plg-card-info">
+              <div class="plg-card-name">${escHtml(plugin.name)}</div>
+              <div class="plg-card-tags">
+                <span class="plg-src-badge ${escHtml(plugin.source)}">${tag}</span>
+                ${premium}
+                ${external}
+                <span class="plg-src-badge dl">⬇ ${formatDownloads(plugin.downloads)}</span>
               </div>
             </div>
-            <div class="plg-card-desc">${escHtml(plugin.description || '')}</div>
-            <div class="plg-card-footer">
-              <span></span>
-              <button class="plg-versions-btn">Ver versiones →</button>
-            </div>
           </div>
-        `;
-      })
-      .join('') ||
-      `<div class="empty-state"><div class="empty-msg">Sin resultados</div></div>`);
+          <div class="plg-card-desc">${escHtml(plugin.description || '')}</div>
+          <div class="plg-card-footer">
+            <span></span>
+            <button class="plg-versions-btn">Ver versiones →</button>
+          </div>
+        </div>
+      `;
+    })
+    .join('');
+
+  $('plgResults').innerHTML =
+    warning +
+    (cards
+      ? `<div class="plg-grid">${cards}</div>`
+      : `<div class="empty-state"><div class="empty-msg">Sin resultados</div></div>`);
 
   $('plgResults')
     .querySelectorAll('.plg-card')
@@ -1553,32 +1556,49 @@ async function openPluginVersions(plugin) {
       throw new Error(data.error);
     }
 
-    $('plgModalBody').innerHTML =
-      (data.versions || [])
-        .map(
-          (version, index) => `
-          <div class="plg-version-row">
-            <div>
-              <strong>${escHtml(version.versionNumber || version.name || 'Versión')}</strong>
-              <div style="font-size:11px;color:var(--muted2)">
-                ${version.published ? new Date(version.published).toLocaleString('es-ES') : ''}
-              </div>
+    const versions = data.versions || [];
+
+    if (!versions.length) {
+      $('plgModalBody').innerHTML = '<div class="empty-state"><div class="empty-msg">No hay versiones.</div></div>';
+      return;
+    }
+
+    $('plgModalBody').innerHTML = versions
+      .map((version, index) => {
+        const published = version.published
+          ? new Date(version.published).toLocaleString('es-ES')
+          : '';
+
+        const changelog = version.changelog
+          ? `<div class="plg-ver-changelog">${version.changelogIsHtml
+              ? version.changelog
+              : escHtml(version.changelog)}</div>`
+          : '';
+
+        const action = version.isExternal
+          ? `<a class="plg-dl-btn external" href="${escHtml(version.externalUrl)}" target="_blank" rel="noopener">ABRIR</a>`
+          : `<button class="plg-dl-btn" data-version="${index}">INSTALAR</button>`;
+
+        return `
+          <div class="plg-ver-row">
+            <div class="plg-ver-left">
+              <div class="plg-ver-number">${escHtml(version.versionNumber || version.name || 'Versión')}</div>
+              ${published ? `<div class="plg-ver-meta"><span class="plg-vm">${escHtml(published)}</span></div>` : ''}
+              ${changelog}
             </div>
-            ${
-              version.isExternal
-                ? `<a class="plg-install-btn" href="${escHtml(version.externalUrl)}" target="_blank" rel="noopener">ABRIR</a>`
-                : `<button class="plg-install-btn" data-version="${index}">INSTALAR</button>`
-            }
+            <div class="plg-ver-right">
+              ${action}
+            </div>
           </div>
-        `
-        )
-        .join('') || '<div class="empty-state">No hay versiones.</div>';
+        `;
+      })
+      .join('');
 
     $('plgModalBody')
       .querySelectorAll('[data-version]')
       .forEach(button => {
         button.addEventListener('click', () =>
-          installPlugin(data.versions[Number(button.dataset.version)])
+          installPlugin(versions[Number(button.dataset.version)])
         );
       });
   } catch (error) {
