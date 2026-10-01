@@ -93,9 +93,7 @@ function ensureSocketIo() {
 
     if (existing) {
       existing.addEventListener('load', resolve, { once: true });
-      existing.addEventListener(
-        'error',
-        () => reject(new Error('No se pudo cargar Socket.IO.')),
+      existing.addEventListener('error', () => reject(new Error('No se pudo cargar Socket.IO.')),
         { once: true }
       );
       return;
@@ -108,8 +106,7 @@ function ensureSocketIo() {
     script.dataset.moonwolfSocketio = '1';
 
     script.onload = resolve;
-    script.onerror = () =>
-      reject(new Error('No se pudo cargar Socket.IO.'));
+    script.onerror = () => reject(new Error('No se pudo cargar Socket.IO.'));
 
     document.head.appendChild(script);
   });
@@ -258,12 +255,8 @@ function ensureLoginGate() {
         .replace(/^MW-SHARE-?/, '')
         .replace(/[^A-Z2-9]/g, '')
         .slice(0, 16);
-
       const groups = value.match(/.{1,4}/g) || [];
-
-      event.target.value =
-        `MW-SHARE-${groups.join('-')}`.replace(/-$/, '');
-
+      event.target.value = `MW-SHARE-${groups.join('-')}`.replace(/-$/, '');
       return;
     }
 
@@ -285,8 +278,7 @@ function ensureLoginGate() {
     const first = value.slice(0, 3);
     const second = value.slice(3, 7);
 
-    event.target.value =
-      `MW-P${first}${second ? `-${second}` : ''}`;
+    event.target.value = `MW-P${first}${second ? `-${second}` : ''}`;
   });
 
   $('btnLogin').addEventListener('click', attemptLogin);
@@ -348,17 +340,9 @@ function clearSession() {
   pairingCode = '';
 }
 
-const PERMISSION_RANK = {
-  read: 1,
-  control: 2,
-  admin: 3,
-};
-
+const PERMISSION_RANK = { read: 1, control: 2, admin: 3 };
 function hasPermission(required) {
-  return (
-    (PERMISSION_RANK[panelPermission] || 0) >=
-    (PERMISSION_RANK[required] || 99)
-  );
+  return (PERMISSION_RANK[panelPermission] || 0) >= (PERMISSION_RANK[required] || 99);
 }
 
 async function attemptLogin() {
@@ -369,10 +353,7 @@ async function attemptLogin() {
     .trim()
     .toUpperCase();
 
-  if (
-    !PAIRING_CODE_RE.test(code) &&
-    !SHARE_TOKEN_RE.test(code)
-  ) {
+  if (!PAIRING_CODE_RE.test(code) && !SHARE_TOKEN_RE.test(code)) {
     if ($('mwCloudError')) {
       $('mwCloudError').textContent =
         'Código inválido. Usa MW-PXXX-XXXX o un token MW-SHARE-...';
@@ -393,23 +374,14 @@ async function attemptLogin() {
   try {
     const response = await fetch('/api/pair', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code }),
     });
 
     const data = await response.json();
 
-    if (
-      !response.ok ||
-      !data.ok ||
-      !data.session ||
-      !data.agent?.id
-    ) {
-      throw new Error(
-        data.error || 'No se pudo emparejar el panel.'
-      );
+    if (!response.ok || !data.ok || !data.session || !data.agent?.id) {
+      throw new Error(data.error || 'No se pudo emparejar el panel.');
     }
 
     setSession(
@@ -418,7 +390,6 @@ async function attemptLogin() {
       data.permission || 'admin',
       data.kind || 'owner'
     );
-
     pairingCode = '';
 
     await connectCloud(true);
@@ -462,9 +433,7 @@ async function connectCloud(manual = false) {
   if (!panelSession || !agentId) {
     showLogin('Empareja este panel con MoonWolf Agent.');
 
-    return Promise.reject(
-      new Error('Código de conexión inválido.')
-    );
+    return Promise.reject(new Error('Código de conexión inválido.'));
   }
 
   if (cloudSocket?.connected) {
@@ -509,28 +478,20 @@ async function connectCloud(manual = false) {
 
       showApp();
 
-      addActivity(
-        'Conectado a MoonWolf Cloud',
-        'ok',
-        '☁️'
-      );
+      addActivity('Conectado a MoonWolf Cloud', 'ok', '☁️');
 
       finish(resolve);
     });
 
     cloudSocket.once('connect_error', error => {
       const message =
-        error?.message ||
-        'No se pudo conectar con MoonWolf Cloud.';
+        error?.message || 'No se pudo conectar con MoonWolf Cloud.';
 
       addActivity(message, 'warn', '⚠️');
 
       if (/unauthorized/i.test(message)) {
         clearSession();
-
-        showLogin(
-          'La sesión del panel ha caducado. Introduce un nuevo código.'
-        );
+        showLogin('La sesión del panel ha caducado. Introduce un nuevo código.');
       }
 
       finish(reject, new Error(message));
@@ -545,37 +506,16 @@ async function connectCloud(manual = false) {
     });
 
     cloudSocket.on('session_info', data => {
-      panelPermission = String(
-        data?.permission ||
-        panelPermission ||
-        'admin'
-      );
-
-      panelKind = String(
-        data?.kind ||
-        panelKind ||
-        'owner'
-      );
-
-      sessionStorage.setItem(
-        PERMISSION_KEY,
-        panelPermission
-      );
-
-      sessionStorage.setItem(
-        SESSION_KIND_KEY,
-        panelKind
-      );
-
+      panelPermission = String(data?.permission || panelPermission || 'admin');
+      panelKind = String(data?.kind || panelKind || 'owner');
+      sessionStorage.setItem(PERMISSION_KEY, panelPermission);
+      sessionStorage.setItem(SESSION_KIND_KEY, panelKind);
       renderSettings();
     });
 
     cloudSocket.on('share_revoked', () => {
       clearSession();
-
-      showLogin(
-        'Este acceso compartido ha sido revocado.'
-      );
+      showLogin('Este acceso compartido ha sido revocado.');
     });
 
     cloudSocket.on('status', setStatus);
@@ -588,9 +528,7 @@ async function connectCloud(manual = false) {
 
       consoleEl.innerHTML = '';
 
-      (Array.isArray(logs) ? logs : []).forEach(
-        appendLog
-      );
+      (Array.isArray(logs) ? logs : []).forEach(appendLog);
     });
 
     cloudSocket.on('stats', updateStats);
@@ -610,15 +548,9 @@ async function connectCloud(manual = false) {
       currentStatus = 'offline';
       updateStatusUi('offline');
 
-      clearPending(
-        'Conexión con MoonWolf Cloud perdida.'
-      );
+      clearPending('Conexión con MoonWolf Cloud perdida.');
 
-      addActivity(
-        `Cloud desconectado (${reason})`,
-        'warn',
-        '⚠️'
-      );
+      addActivity(`Cloud desconectado (${reason})`, 'warn', '⚠️');
 
       if (manual) {
         showLogin(
@@ -632,10 +564,7 @@ async function connectCloud(manual = false) {
         connectCloud(false).catch(() => {});
       }, reconnectDelay);
 
-      reconnectDelay = Math.min(
-        reconnectDelay * 2,
-        30000
-      );
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
     });
 
     cloudSocket.connect();
@@ -645,33 +574,13 @@ async function connectCloud(manual = false) {
 /* RPC / API */
 
 async function cloudApi(pathname, init = {}) {
-  const headers = new Headers(
-    init.headers || {}
-  );
-
-  headers.set(
-    'Authorization',
-    `Bearer ${panelSession}`
-  );
-
-  if (
-    init.body !== undefined &&
-    !headers.has('Content-Type')
-  ) {
-    headers.set(
-      'Content-Type',
-      'application/json'
-    );
+  const headers = new Headers(init.headers || {});
+  headers.set('Authorization', `Bearer ${panelSession}`);
+  if (init.body !== undefined && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
   }
 
-  const response = await fetch(
-    pathname,
-    {
-      ...init,
-      headers,
-    }
-  );
-
+  const response = await fetch(pathname, { ...init, headers });
   let data = null;
 
   try {
@@ -679,10 +588,7 @@ async function cloudApi(pathname, init = {}) {
   } catch {}
 
   if (!response.ok || !data?.ok) {
-    throw new Error(
-      data?.error ||
-      `Error HTTP ${response.status}`
-    );
+    throw new Error(data?.error || `Error HTTP ${response.status}`);
   }
 
   return data;
@@ -690,32 +596,21 @@ async function cloudApi(pathname, init = {}) {
 
 function rpcHttp(pathname, init = {}) {
   if (!cloudSocket?.connected) {
-    return Promise.reject(
-      new Error(
-        'MoonWolf Cloud no está conectado.'
-      )
-    );
+    return Promise.reject(new Error('MoonWolf Cloud no está conectado.'));
   }
 
-  const id =
-    `${Date.now()}-${++requestSequence}`;
+  const id = `${Date.now()}-${++requestSequence}`;
 
   const request = {
     id,
-    method: String(
-      init.method || 'GET'
-    ).toUpperCase(),
+    method: String(init.method || 'GET').toUpperCase(),
     path: pathname,
     body: init.body ?? undefined,
   };
 
   return new Promise(resolve => {
     pending.set(id, resolve);
-
-    cloudSocket.emit(
-      'rpc',
-      request
-    );
+    cloudSocket.emit('rpc', request);
   });
 }
 
@@ -724,62 +619,35 @@ function decodeResultBody(result) {
     return null;
   }
 
-  const binary = atob(
-    result.bodyBase64
-  );
+  const binary = atob(result.bodyBase64);
+  const bytes = new Uint8Array(binary.length);
 
-  const bytes =
-    new Uint8Array(binary.length);
-
-  for (
-    let i = 0;
-    i < binary.length;
-    i++
-  ) {
-    bytes[i] =
-      binary.charCodeAt(i);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
   }
 
   return bytes;
 }
 
 async function api(pathname, init = {}) {
-  const result = await rpcHttp(
-    pathname,
-    init
-  );
+  const result = await rpcHttp(pathname, init);
 
-  const status =
-    result?.status || 500;
+  const status = result?.status || 500;
+  const contentType = result?.contentType || 'application/json';
 
-  const contentType =
-    result?.contentType ||
-    'application/json';
-
-  if (
-    result?.bodyBase64 !== undefined
-  ) {
-    const bytes =
-      decodeResultBody(result);
-
-    const text =
-      new TextDecoder().decode(bytes);
+  if (result?.bodyBase64 !== undefined) {
+    const bytes = decodeResultBody(result);
+    const text = new TextDecoder().decode(bytes);
 
     if (
-      contentType.includes(
-        'application/json'
-      ) ||
-      contentType.includes(
-        'text/'
-      )
+      contentType.includes('application/json') ||
+      contentType.includes('text/')
     ) {
       try {
         return JSON.parse(text);
       } catch {
         return {
-          ok:
-            status >= 200 &&
-            status < 300,
+          ok: status >= 200 && status < 300,
           status,
           content: text,
         };
@@ -795,55 +663,33 @@ async function api(pathname, init = {}) {
 }
 
 function postJSON(pathname, body) {
-  return api(
-    pathname,
-    {
-      method: 'POST',
-      body,
-    }
-  );
+  return api(pathname, { method: 'POST', body });
 }
 
 /* AGENT STATUS */
 
 function setAgentOnline(online) {
-  const nextState =
-    Boolean(online);
+  const nextState = Boolean(online);
 
-  if (
-    agentOnline === nextState
-  ) {
+  if (agentOnline === nextState) {
     updateAgentUi(nextState);
     updateStatusUi(currentStatus);
     return;
   }
 
   agentOnline = nextState;
-
   updateAgentUi(nextState);
   updateStatusUi(currentStatus);
 
   if (nextState) {
-    if (
-      lastAgentActivityState !== true
-    ) {
-      addActivity(
-        'MoonWolf Agent conectado',
-        'ok',
-        '🟢'
-      );
+    if (lastAgentActivityState !== true) {
+      addActivity('MoonWolf Agent conectado', 'ok', '🟢');
     }
 
     lastAgentActivityState = true;
   } else {
-    if (
-      lastAgentActivityState !== false
-    ) {
-      addActivity(
-        'MoonWolf Agent desconectado',
-        'warn',
-        '🔴'
-      );
+    if (lastAgentActivityState !== false) {
+      addActivity('MoonWolf Agent desconectado', 'warn', '🔴');
     }
 
     lastAgentActivityState = false;
@@ -860,415 +706,235 @@ function updateAgentUi(online) {
   for (const element of elements) {
     if (!element) continue;
 
-    element.classList.toggle(
-      'online',
-      Boolean(online)
-    );
+    element.classList.toggle('online', Boolean(online));
+    element.classList.toggle('offline', !online);
 
-    element.classList.toggle(
-      'offline',
-      !online
-    );
-
-    if (
-      element.dataset &&
-      element.dataset.agentStatus !== undefined
-    ) {
-      element.dataset.agentStatus =
-        online
-          ? 'online'
-          : 'offline';
+    if (element.dataset && element.dataset.agentStatus !== undefined) {
+      element.dataset.agentStatus = online ? 'online' : 'offline';
     }
   }
 
-  const textElements = [
-    $('agentStatusText'),
-    $('sbAgentStatusText'),
-  ];
+  const textElements = [$('agentStatusText'), $('sbAgentStatusText')];
 
-  for (
-    const element of textElements
-  ) {
+  for (const element of textElements) {
     if (!element) continue;
 
-    element.textContent =
-      online
-        ? 'AGENT ONLINE'
-        : 'AGENT OFFLINE';
+    element.textContent = online ? 'AGENT ONLINE' : 'AGENT OFFLINE';
   }
 }
 
 /* SERVER / TERMINAL */
 
 function updateStatusUi(status) {
-  status =
-    STATUS_LABELS[status]
-      ? status
-      : 'offline';
+  status = STATUS_LABELS[status] ? status : 'offline';
 
   currentStatus = status;
 
-  const statusEl =
-    $('sbStatus');
+  const statusEl = $('sbStatus');
 
   if (statusEl) {
-    statusEl.className =
-      `sb-status ${status}`;
+    statusEl.className = `sb-status ${status}`;
   }
 
-  const statusText =
-    $('sbStatusText');
+  const statusText = $('sbStatusText');
 
   if (statusText) {
     statusText.textContent =
-      STATUS_LABELS[status] ||
-      String(status).toUpperCase();
+      STATUS_LABELS[status] || String(status).toUpperCase();
   }
 
-  const startButton =
-    $('btnStart');
+  const startButton = $('btnStart');
 
   if (startButton) {
-    startButton.disabled =
-      status !== 'offline' ||
-      !agentOnline;
+    startButton.disabled = status !== 'offline' || !agentOnline;
   }
 
-  const stopButton =
-    $('btnStop');
+  const stopButton = $('btnStop');
 
   if (stopButton) {
-    stopButton.disabled =
-      status !== 'online' ||
-      !agentOnline;
+    stopButton.disabled = status !== 'online' || !agentOnline;
   }
 
-  const restartButton =
-    $('btnRestart');
+  const restartButton = $('btnRestart');
 
   if (restartButton) {
-    restartButton.disabled =
-      status !== 'online' ||
-      !agentOnline;
+    restartButton.disabled = status !== 'online' || !agentOnline;
   }
 
-  const stats =
-    $('statsGrid');
+  const stats = $('statsGrid');
 
   if (stats) {
-    stats.classList.toggle(
-      'hidden',
-      status === 'offline'
-    );
-
-    stats.classList.toggle(
-      'visible',
-      status !== 'offline'
-    );
+    stats.classList.toggle('hidden', status === 'offline');
+    stats.classList.toggle('visible', status !== 'offline');
   }
 }
 
 function setStatus(status) {
   updateStatusUi(status);
 
-  const normalized =
-    STATUS_LABELS[status]
-      ? status
-      : 'offline';
+  const normalized = STATUS_LABELS[status] ? status : 'offline';
 
-  if (
-    lastStatusActivity === normalized
-  ) {
+  if (lastStatusActivity === normalized) {
     return;
   }
 
-  lastStatusActivity =
-    normalized;
+  lastStatusActivity = normalized;
 
   addActivity(
-    STATUS_LABELS[normalized] ||
-      normalized,
-    STATUS_LEVELS[normalized] ||
-      'info',
-    STATUS_ICONS[normalized] ||
-      '📌'
+    STATUS_LABELS[normalized] || normalized,
+    STATUS_LEVELS[normalized] || 'info',
+    STATUS_ICONS[normalized] || '📌'
   );
 }
 
 function updateStats(stats = {}) {
-  const players =
-    Number(stats.players);
+  const players = Number(stats.players);
+  const maxPlayers = Number(stats.maxPlayers);
+  const tps = Number(stats.tps);
+  const processMemory = Number(stats.processMemory);
+  const cpuUsage = Number(stats.cpuUsage);
 
-  const maxPlayers =
-    Number(stats.maxPlayers);
-
-  const tps =
-    Number(stats.tps);
-
-  const processMemory =
-    Number(stats.processMemory);
-
-  const cpuUsage =
-    Number(stats.cpuUsage);
-
-  const safePlayers =
-    Number.isFinite(players)
-      ? players
-      : 0;
-
-  const safeMaxPlayers =
-    Number.isFinite(maxPlayers)
-      ? maxPlayers
-      : 0;
-
-  const safeTps =
-    Number.isFinite(tps)
-      ? tps
-      : 20;
-
-  const safeProcessMemory =
-    Number.isFinite(processMemory)
-      ? processMemory
-      : 0;
-
-  const safeCpu =
-    Number.isFinite(cpuUsage)
-      ? cpuUsage
-      : 0;
+  const safePlayers = Number.isFinite(players) ? players : 0;
+  const safeMaxPlayers = Number.isFinite(maxPlayers) ? maxPlayers : 0;
+  const safeTps = Number.isFinite(tps) ? tps : 20;
+  const safeProcessMemory = Number.isFinite(processMemory) ? processMemory : 0;
+  const safeCpu = Number.isFinite(cpuUsage) ? cpuUsage : 0;
 
   if ($('statPlayers')) {
-    $('statPlayers').innerHTML =
-      `${safePlayers}<span class="stat-unit">/${safeMaxPlayers}</span>`;
+    $('statPlayers').innerHTML = `${safePlayers}<span class="stat-unit">/${safeMaxPlayers}</span>`;
   }
 
-  const tpsEl =
-    $('statTps');
+  const tpsEl = $('statTps');
 
   if (tpsEl) {
-    tpsEl.className =
-      `stat-value ${
-        safeTps < 15
-          ? 'tps-bad'
-          : safeTps < 18
-            ? 'tps-warn'
-            : 'tps-good'
-      }`;
+    tpsEl.className = `stat-value ${
+      safeTps < 15 ? 'tps-bad' : safeTps < 18 ? 'tps-warn' : 'tps-good'
+    }`;
 
-    tpsEl.innerHTML =
-      `${safeTps}<span class="stat-unit"> tps</span>`;
+    tpsEl.innerHTML = `${safeTps}<span class="stat-unit"> tps</span>`;
   }
 
   if ($('statUptime')) {
-    $('statUptime').textContent =
-      stats.uptime ||
-      '0h 0m';
+    $('statUptime').textContent = stats.uptime || '0h 0m';
   }
 
   if ($('statMemProc')) {
-    $('statMemProc').innerHTML =
-      `${safeProcessMemory}<span class="stat-unit"> MB</span>`;
+    $('statMemProc').innerHTML = `${safeProcessMemory}<span class="stat-unit"> MB</span>`;
   }
 
-  const sys =
-    stats.sysMemory ||
-    {
-      used: 0,
-      total: 0,
-    };
+  const sys = stats.sysMemory || { used: 0, total: 0 };
 
-  const used =
-    Number(sys.used);
+  const used = Number(sys.used);
+  const total = Number(sys.total);
 
-  const total =
-    Number(sys.total);
-
-  const safeUsed =
-    Number.isFinite(used)
-      ? used
-      : 0;
-
-  const safeTotal =
-    Number.isFinite(total)
-      ? total
-      : 0;
+  const safeUsed = Number.isFinite(used) ? used : 0;
+  const safeTotal = Number.isFinite(total) ? total : 0;
 
   if ($('statMemSys')) {
-    $('statMemSys').innerHTML =
-      `${safeUsed}/${safeTotal}<span class="stat-unit"> GB</span>`;
+    $('statMemSys').innerHTML = `${safeUsed}/${safeTotal}<span class="stat-unit"> GB</span>`;
   }
 
   if ($('statCpu')) {
-    $('statCpu').innerHTML =
-      `${safeCpu}<span class="stat-unit"> %</span>`;
+    $('statCpu').innerHTML = `${safeCpu}<span class="stat-unit"> %</span>`;
   }
 }
 
-/* FILTRO DE LOGS */
-
+/* ══════════════════════════════════════════════
+   FILTRO DE LOGS
+   ══════════════════════════════════════════════ */
 const LOG_IGNORE_PATTERNS = [
   /Thread RCON Client \/127\.0\.0\.1 (started|shutting down)/i,
 ];
 
 function shouldIgnoreLog(line) {
-  const text =
-    String(line || '');
+  const text = String(line || '');
 
-  return LOG_IGNORE_PATTERNS.some(
-    re => re.test(text)
-  );
+  return LOG_IGNORE_PATTERNS.some(re => re.test(text));
 }
 
 function appendLog(entry) {
-  const consoleEl =
-    $('console');
+  const consoleEl = $('console');
 
   if (!consoleEl) return;
 
-  const line =
-    String(entry?.line || '');
+  const line = String(entry?.line || '');
 
   if (shouldIgnoreLog(line)) {
     return;
   }
 
-  const div =
-    document.createElement('div');
+  const div = document.createElement('div');
 
-  div.className =
-    `log-line ${entry?.type || 'info'}`;
+  div.className = `log-line ${entry?.type || 'info'}`;
 
   div.innerHTML =
     `<span class="log-time">${escHtml(entry?.time || '--:--:--')}</span>` +
     `<span class="log-text">${escHtml(line)}</span>`;
 
   consoleEl.appendChild(div);
-
-  consoleEl.scrollTop =
-    consoleEl.scrollHeight;
+  consoleEl.scrollTop = consoleEl.scrollHeight;
 }
 
 async function startServer() {
   if (!agentOnline) {
-    toast(
-      'MoonWolf Agent no está conectado.',
-      'err'
-    );
-
+    toast('MoonWolf Agent no está conectado.', 'err');
     return;
   }
 
-  const data =
-    await api(
-      '/api/start',
-      {
-        method: 'POST',
-      }
-    );
+  const data = await api('/api/start', { method: 'POST' });
 
   if (!data.ok) {
-    toast(
-      data.error ||
-        'Error al arrancar',
-      'err'
-    );
+    toast(data.error || 'Error al arrancar', 'err');
   }
 }
 
 async function stopServer() {
   if (!agentOnline) {
-    toast(
-      'MoonWolf Agent no está conectado.',
-      'err'
-    );
-
+    toast('MoonWolf Agent no está conectado.', 'err');
     return;
   }
 
-  const data =
-    await api(
-      '/api/stop',
-      {
-        method: 'POST',
-      }
-    );
+  const data = await api('/api/stop', { method: 'POST' });
 
   if (!data.ok) {
-    toast(
-      data.error ||
-        'Error al detener',
-      'err'
-    );
+    toast(data.error || 'Error al detener', 'err');
   }
 }
 
 async function restartServer() {
-  if (
-    currentStatus === 'restarting' ||
-    currentStatus === 'stopping'
-  ) {
+  if (currentStatus === 'restarting' || currentStatus === 'stopping') {
     return;
   }
 
   if (!agentOnline) {
-    toast(
-      'MoonWolf Agent no está conectado.',
-      'err'
-    );
-
+    toast('MoonWolf Agent no está conectado.', 'err');
     return;
   }
 
-  const data =
-    await api(
-      '/api/restart',
-      {
-        method: 'POST',
-      }
-    );
+  const data = await api('/api/restart', { method: 'POST' });
 
   if (!data.ok) {
-    toast(
-      data.error ||
-        'Error al reiniciar',
-      'err'
-    );
+    toast(data.error || 'Error al reiniciar', 'err');
   }
 }
 
 async function sendCmd() {
-  const input =
-    $('cmdInput');
-
-  const cmd =
-    input?.value.trim();
+  const input = $('cmdInput');
+  const cmd = input?.value.trim();
 
   if (!cmd) return;
 
   if (!agentOnline) {
-    toast(
-      'MoonWolf Agent no está conectado.',
-      'err'
-    );
-
+    toast('MoonWolf Agent no está conectado.', 'err');
     return;
   }
 
   input.value = '';
 
-  const data =
-    await postJSON(
-      '/api/command',
-      {
-        cmd,
-      }
-    );
+  const data = await postJSON('/api/command', { cmd });
 
   if (!data.ok) {
-    toast(
-      data.error ||
-        'Error al enviar comando',
-      'err'
-    );
+    toast(data.error || 'Error al enviar comando', 'err');
   }
 }
 
@@ -1286,8 +952,7 @@ function fileIcon(type) {
 function populateFiles(dir = '') {
   currentDir = dir;
 
-  const list =
-    $('fileList');
+  const list = $('fileList');
 
   if (!list) return;
 
@@ -1300,37 +965,18 @@ function populateFiles(dir = '') {
 
   renderBreadcrumb(dir);
 
-  api(
-    `/api/files?dir=${encodeURIComponent(dir)}`
-  )
+  api(`/api/files?dir=${encodeURIComponent(dir)}`)
     .then(data => {
       if (!data.ok) {
-        throw new Error(
-          data.error ||
-            'No se pudo leer la carpeta.'
-        );
+        throw new Error(data.error || 'No se pudo leer la carpeta.');
       }
 
-      const items =
-        Array.isArray(data.items)
-          ? data.items.slice()
-          : [];
+      const items = Array.isArray(data.items) ? data.items.slice() : [];
 
       items.sort(
         (a, b) =>
-          (a.type === 'dir'
-            ? -1
-            : 1) -
-            (b.type === 'dir'
-              ? -1
-              : 1) ||
-          a.name.localeCompare(
-            b.name,
-            undefined,
-            {
-              sensitivity: 'base',
-            }
-          )
+          (a.type === 'dir' ? -1 : 1) - (b.type === 'dir' ? -1 : 1) ||
+          a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
       );
 
       if (!items.length) {
@@ -1344,531 +990,260 @@ function populateFiles(dir = '') {
         return;
       }
 
-      list.innerHTML =
-        items
-          .map(
-            item => `
-              <div
-                class="file-row"
-                data-name="${escHtml(item.name)}"
-                data-type="${escHtml(item.type)}"
-              >
-                <span
-                  class="file-name"
-                  style="flex:1"
-                >
-                  ${fileIcon(item.type)}
-                  <span>
-                    ${escHtml(item.name)}
-                  </span>
-                </span>
+      list.innerHTML = items
+        .map(
+          item => `
+          <div class="file-row" data-name="${escHtml(item.name)}" data-type="${escHtml(item.type)}">
+            <span class="file-name" style="flex:1">
+              ${fileIcon(item.type)}
+              <span>${escHtml(item.name)}</span>
+            </span>
+            <span style="width:90px;text-align:right;color:var(--muted2)">${escHtml(item.size)}</span>
+            <span style="width:140px;text-align:right;color:var(--muted2)">${escHtml(item.date)}</span>
+          </div>
+        `
+        )
+        .join('');
 
-                <span
-                  style="width:90px;text-align:right;color:var(--muted2)"
-                >
-                  ${escHtml(item.size)}
-                </span>
+      list.querySelectorAll('.file-row').forEach(row => {
+        row.addEventListener('dblclick', () => {
+          const name = row.dataset.name;
+          const type = row.dataset.type;
 
-                <span
-                  style="width:140px;text-align:right;color:var(--muted2)"
-                >
-                  ${escHtml(item.date)}
-                </span>
-              </div>
-            `
-          )
-          .join('');
+          const rel = currentDir ? `${currentDir}/${name}` : name;
 
-      list
-        .querySelectorAll('.file-row')
-        .forEach(row => {
-          row.addEventListener(
-            'dblclick',
-            () => {
-              const name =
-                row.dataset.name;
-
-              const type =
-                row.dataset.type;
-
-              const rel =
-                currentDir
-                  ? `${currentDir}/${name}`
-                  : name;
-
-              if (type === 'dir') {
-                populateFiles(rel);
-              } else if (
-                type !== 'jar'
-              ) {
-                openFile(rel);
-              }
-            }
-          );
-
-          row.addEventListener(
-            'contextmenu',
-            event =>
-              openFileContext(
-                event,
-                row.dataset.name,
-                row.dataset.type
-              )
-          );
+          if (type === 'dir') {
+            populateFiles(rel);
+          } else if (type !== 'jar') {
+            openFile(rel);
+          }
         });
+
+        row.addEventListener('contextmenu', event =>
+          openFileContext(event, row.dataset.name, row.dataset.type)
+        );
+      });
     })
     .catch(error => {
       list.innerHTML = `
         <div class="empty-state">
-          <div
-            class="empty-icon"
-            style="color:var(--red)"
-          >
-            ⚠
-          </div>
-
-          <div class="empty-msg">
-            ${escHtml(error.message)}
-          </div>
+          <div class="empty-icon" style="color:var(--red)">⚠</div>
+          <div class="empty-msg">${escHtml(error.message)}</div>
         </div>
       `;
     });
 }
 
 function renderBreadcrumb(dir) {
-  const trail =
-    $('crumbTrail');
+  const trail = $('crumbTrail');
 
   if (!trail) return;
 
-  const parts =
-    dir
-      ? dir.split('/').filter(Boolean)
-      : [];
+  const parts = dir ? dir.split('/').filter(Boolean) : [];
 
   let acc = '';
 
-  trail.innerHTML =
-    parts
-      .map(
-        (part, index) => {
-          acc +=
-            (index ? '/' : '') +
-            part;
+  trail.innerHTML = parts
+    .map((part, index) => {
+      acc += (index ? '/' : '') + part;
 
-          return `
-            /
-            <span
-              class="crumb"
-              data-path="${escHtml(acc)}"
-            >
-              ${escHtml(part)}
-            </span>
-          `;
-        }
-      )
-      .join('');
+      return `
+        /
+        <span class="crumb" data-path="${escHtml(acc)}">${escHtml(part)}</span>
+      `;
+    })
+    .join('');
 
-  trail
-    .querySelectorAll('.crumb')
-    .forEach(crumb => {
-      crumb.addEventListener(
-        'click',
-        () =>
-          populateFiles(
-            crumb.dataset.path
-          )
-      );
-    });
+  trail.querySelectorAll('.crumb').forEach(crumb => {
+    crumb.addEventListener('click', () => populateFiles(crumb.dataset.path));
+  });
 }
 
-function openFileContext(
-  event,
-  name,
-  type
-) {
+function openFileContext(event, name, type) {
   event.preventDefault();
 
-  document
-    .querySelector('.file-ctx-menu')
-    ?.remove();
+  document.querySelector('.file-ctx-menu')?.remove();
 
-  const rel =
-    currentDir
-      ? `${currentDir}/${name}`
-      : name;
+  const rel = currentDir ? `${currentDir}/${name}` : name;
 
-  const menu =
-    document.createElement('div');
+  const menu = document.createElement('div');
 
-  menu.className =
-    'file-ctx-menu';
-
-  menu.style.left =
-    `${event.clientX}px`;
-
-  menu.style.top =
-    `${event.clientY}px`;
+  menu.className = 'file-ctx-menu';
+  menu.style.left = `${event.clientX}px`;
+  menu.style.top = `${event.clientY}px`;
 
   menu.innerHTML = `
-    ${
-      type !== 'dir'
-        ? '<div class="ctx-item" data-action="open">📂 Abrir</div>'
-        : ''
-    }
-
-    <div
-      class="ctx-item"
-      data-action="rename"
-    >
-      ✏️ Renombrar
-    </div>
-
-    <div
-      class="ctx-item"
-      data-action="copy"
-    >
-      📋 Copiar
-    </div>
-
-    <div
-      class="ctx-item"
-      data-action="move"
-    >
-      🔀 Mover
-    </div>
-
-    ${
-      type !== 'dir'
-        ? '<div class="ctx-item" data-action="download">⬇️ Descargar</div>'
-        : ''
-    }
-
-    <div
-      class="ctx-item"
-      data-action="compress"
-    >
-      🗜️ Comprimir
-    </div>
-
+    ${type !== 'dir' ? '<div class="ctx-item" data-action="open">📂 Abrir</div>' : ''}
+    <div class="ctx-item" data-action="rename">✏️ Renombrar</div>
+    <div class="ctx-item" data-action="copy">📋 Copiar</div>
+    <div class="ctx-item" data-action="move">🔀 Mover</div>
+    ${type !== 'dir' ? '<div class="ctx-item" data-action="download">⬇️ Descargar</div>' : ''}
+    <div class="ctx-item" data-action="compress">🗜️ Comprimir</div>
     <div class="ctx-sep"></div>
-
-    <div
-      class="ctx-item danger"
-      data-action="delete"
-    >
-      🗑️ Eliminar
-    </div>
+    <div class="ctx-item danger" data-action="delete">🗑️ Eliminar</div>
   `;
 
   document.body.appendChild(menu);
 
-  menu.addEventListener(
-    'click',
-    async click => {
-      const action =
-        click.target
-          .closest('.ctx-item')
-          ?.dataset.action;
+  menu.addEventListener('click', async click => {
+    const action = click.target.closest('.ctx-item')?.dataset.action;
 
-      if (!action) return;
+    if (!action) return;
 
-      menu.remove();
+    menu.remove();
 
-      try {
-        if (action === 'open') {
-          return openFile(rel);
-        }
-
-        if (action === 'rename') {
-          const newName =
-            prompt(
-              `Nuevo nombre para "${name}":`,
-              name
-            );
-
-          if (
-            !newName ||
-            newName === name
-          ) {
-            return;
-          }
-
-          const data =
-            await postJSON(
-              '/api/files/rename',
-              {
-                path: rel,
-                newName,
-              }
-            );
-
-          if (!data.ok) {
-            throw new Error(
-              data.error
-            );
-          }
-        }
-
-        if (action === 'copy') {
-          const dest =
-            prompt(
-              `Ruta relativa de destino para "${name}":`,
-              currentDir || ''
-            );
-
-          if (dest === null) return;
-
-          const target =
-            dest
-              ? `${dest
-                  .replace(/\\/g, '/')
-                  .replace(/\/$/, '')}/${name}`
-              : name;
-
-          const data =
-            await postJSON(
-              '/api/files/copy',
-              {
-                path: rel,
-                dest: target,
-              }
-            );
-
-          if (!data.ok) {
-            throw new Error(
-              data.error
-            );
-          }
-        }
-
-        if (action === 'move') {
-          const dest =
-            prompt(
-              `Carpeta relativa de destino para "${name}":`,
-              currentDir || ''
-            );
-
-          if (dest === null) return;
-
-          const target =
-            dest
-              ? `${dest
-                  .replace(/\\/g, '/')
-                  .replace(/\/$/, '')}/${name}`
-              : name;
-
-          const data =
-            await postJSON(
-              '/api/files/move',
-              {
-                path: rel,
-                dest: target,
-              }
-            );
-
-          if (!data.ok) {
-            throw new Error(
-              data.error
-            );
-          }
-        }
-
-        if (action === 'download') {
-          return downloadFile(
-            rel,
-            name
-          );
-        }
-
-        if (action === 'compress') {
-          const data =
-            await postJSON(
-              '/api/files/compress',
-              {
-                path: rel,
-                name,
-              }
-            );
-
-          if (!data.ok) {
-            throw new Error(
-              data.error
-            );
-          }
-        }
-
-        if (action === 'delete') {
-          if (
-            !confirm(
-              `¿Eliminar "${name}"?`
-            )
-          ) {
-            return;
-          }
-
-          const data =
-            await postJSON(
-              '/api/files/delete',
-              {
-                path: rel,
-                isDir:
-                  type === 'dir',
-              }
-            );
-
-          if (!data.ok) {
-            throw new Error(
-              data.error
-            );
-          }
-        }
-
-        toast(
-          '✅ Operación completada',
-          'ok'
-        );
-
-        populateFiles(
-          currentDir
-        );
-      } catch (error) {
-        toast(
-          `❌ ${error.message}`,
-          'err'
-        );
+    try {
+      if (action === 'open') {
+        return openFile(rel);
       }
+
+      if (action === 'rename') {
+        const newName = prompt(`Nuevo nombre para "${name}":`, name);
+
+        if (!newName || newName === name) {
+          return;
+        }
+
+        const data = await postJSON('/api/files/rename', {
+          path: rel,
+          newName,
+        });
+
+        if (!data.ok) throw new Error(data.error);
+      }
+
+      if (action === 'copy') {
+        const dest = prompt(
+          `Ruta relativa de destino para "${name}":`,
+          currentDir || ''
+        );
+
+        if (dest === null) return;
+
+        const target = dest
+          ? `${dest.replace(/\\/g, '/').replace(/\/$/, '')}/${name}`
+          : name;
+
+        const data = await postJSON('/api/files/copy', {
+          path: rel,
+          dest: target,
+        });
+
+        if (!data.ok) throw new Error(data.error);
+      }
+
+      if (action === 'move') {
+        const dest = prompt(
+          `Carpeta relativa de destino para "${name}":`,
+          currentDir || ''
+        );
+
+        if (dest === null) return;
+
+        const target = dest
+          ? `${dest.replace(/\\/g, '/').replace(/\/$/, '')}/${name}`
+          : name;
+
+        const data = await postJSON('/api/files/move', {
+          path: rel,
+          dest: target,
+        });
+
+        if (!data.ok) throw new Error(data.error);
+      }
+
+      if (action === 'download') {
+        return downloadFile(rel, name);
+      }
+
+      if (action === 'compress') {
+        const data = await postJSON('/api/files/compress', {
+          path: rel,
+          name,
+        });
+
+        if (!data.ok) throw new Error(data.error);
+      }
+
+      if (action === 'delete') {
+        if (!confirm(`¿Eliminar "${name}"?`)) {
+          return;
+        }
+
+        const data = await postJSON('/api/files/delete', {
+          path: rel,
+          isDir: type === 'dir',
+        });
+
+        if (!data.ok) throw new Error(data.error);
+      }
+
+      toast('✅ Operación completada', 'ok');
+
+      populateFiles(currentDir);
+    } catch (error) {
+      toast(`❌ ${error.message}`, 'err');
     }
-  );
+  });
 
   setTimeout(() => {
-    document.addEventListener(
-      'click',
-      () => menu.remove(),
-      { once: true }
-    );
+    document.addEventListener('click', () => menu.remove(), { once: true });
   }, 0);
 }
 
-const FILE_UPLOAD_CHUNK_SIZE =
-  1024 * 1024;
+const FILE_UPLOAD_CHUNK_SIZE = 1024 * 1024;
 
 function bytesToBase64(bytes) {
   let binary = '';
-
   const step = 0x8000;
 
-  for (
-    let i = 0;
-    i < bytes.length;
-    i += step
-  ) {
-    binary += String.fromCharCode(
-      ...bytes.subarray(
-        i,
-        Math.min(
-          i + step,
-          bytes.length
-        )
-      )
-    );
+  for (let i = 0; i < bytes.length; i += step) {
+    binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + step, bytes.length)));
   }
 
   return btoa(binary);
 }
 
-function normalizeUploadRelativePath(
-  value
-) {
+function normalizeUploadRelativePath(value) {
   return String(value || '')
     .replace(/\\/g, '/')
     .replace(/^\/+/, '')
     .split('/')
-    .filter(
-      part =>
-        part &&
-        part !== '.' &&
-        part !== '..'
-    )
+    .filter(part => part && part !== '.' && part !== '..')
     .join('/');
 }
 
-async function uploadOneFile(
-  file,
-  relativePath,
-  progressState
-) {
-  const relPath =
-    normalizeUploadRelativePath(
-      relativePath || file.name
-    );
+async function uploadOneFile(file, relativePath, progressState) {
+  const relPath = normalizeUploadRelativePath(relativePath || file.name);
 
   if (!relPath) {
-    throw new Error(
-      `Nombre de archivo no válido: ${file.name}`
-    );
+    throw new Error(`Nombre de archivo no válido: ${file.name}`);
   }
 
-  const target =
-    currentDir
-      ? `${currentDir
-          .replace(/\\/g, '/')
-          .replace(/\/$/, '')}/${relPath}`
-      : relPath;
+  const target = currentDir
+    ? `${currentDir.replace(/\\/g, '/').replace(/\/$/, '')}/${relPath}`
+    : relPath;
 
-  const uploadId =
-    `${Date.now().toString(36)}-${Math.random()
-      .toString(36)
-      .slice(2)}-${progressState.index}`;
-
+  const uploadId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${progressState.index}`;
   let offset = 0;
 
-  while (
-    offset < file.size ||
-    (
-      file.size === 0 &&
-      offset === 0
-    )
-  ) {
-    const end =
-      file.size === 0
-        ? 0
-        : Math.min(
-            offset +
-              FILE_UPLOAD_CHUNK_SIZE,
-            file.size
-          );
+  while (offset < file.size || (file.size === 0 && offset === 0)) {
+    const end = file.size === 0 ? 0 : Math.min(offset + FILE_UPLOAD_CHUNK_SIZE, file.size);
+    const buffer = await file.slice(offset, end).arrayBuffer();
+    const bytes = new Uint8Array(buffer);
 
-    const buffer =
-      await file
-        .slice(offset, end)
-        .arrayBuffer();
-
-    const bytes =
-      new Uint8Array(buffer);
-
-    const data =
-      await postJSON(
-        '/api/files/upload-chunk',
-        {
-          uploadId,
-          path: target,
-          offset,
-          totalSize:
-            file.size,
-          chunkBase64:
-            bytesToBase64(bytes),
-          final:
-            end >= file.size,
-          overwrite: true,
-        }
-      );
+    const data = await postJSON('/api/files/upload-chunk', {
+      uploadId,
+      path: target,
+      offset,
+      totalSize: file.size,
+      chunkBase64: bytesToBase64(bytes),
+      final: end >= file.size,
+      overwrite: true,
+    });
 
     if (!data.ok) {
-      throw new Error(
-        data.error ||
-          `No se pudo subir ${file.name}`
-      );
+      throw new Error(data.error || `No se pudo subir ${file.name}`);
     }
 
     if (file.size === 0) {
@@ -1877,667 +1252,484 @@ async function uploadOneFile(
     }
 
     offset = end;
+    progressState.doneBytes += bytes.length;
+    const percent = progressState.totalBytes > 0
+      ? Math.round((progressState.doneBytes / progressState.totalBytes) * 100)
+      : 100;
 
-    progressState.doneBytes +=
-      bytes.length;
-
-    const percent =
-      progressState.totalBytes > 0
-        ? Math.round(
-            (
-              progressState.doneBytes /
-              progressState.totalBytes
-            ) * 100
-          )
-        : 100;
-
-    toast(
-      `⬆️ Subiendo ${progressState.index + 1}/${progressState.totalFiles}: ${percent}%`,
-      'info'
-    );
+    toast(`⬆️ Subiendo ${progressState.index + 1}/${progressState.totalFiles}: ${percent}%`, 'info');
   }
 
   progressState.index += 1;
 }
 
-async function uploadSelectedFiles(
-  fileList
-) {
-  const files =
-    Array.from(
-      fileList || {}
-    ).filter(
-      file =>
-        file &&
-        typeof file.size ===
-          'number'
-    );
+async function uploadSelectedFiles(fileList) {
+  const files = Array.from(fileList || {}).filter(file => file && typeof file.size === 'number');
 
   if (!files.length) return;
 
   const progressState = {
     index: 0,
     totalFiles: files.length,
-    totalBytes:
-      files.reduce(
-        (sum, file) =>
-          sum + file.size,
-        0
-      ),
+    totalBytes: files.reduce((sum, file) => sum + file.size, 0),
     doneBytes: 0,
   };
 
   try {
     for (const file of files) {
-      const relative =
-        file.webkitRelativePath ||
-        file.name;
-
-      await uploadOneFile(
-        file,
-        relative,
-        progressState
-      );
+      const relative = file.webkitRelativePath || file.name;
+      await uploadOneFile(file, relative, progressState);
     }
 
-    toast(
-      `✅ ${files.length} ${
-        files.length === 1
-          ? 'archivo subido'
-          : 'archivos subidos'
-      } correctamente`,
-      'ok'
-    );
-
-    populateFiles(
-      currentDir
-    );
+    toast(`✅ ${files.length} ${files.length === 1 ? 'archivo subido' : 'archivos subidos'} correctamente`, 'ok');
+    populateFiles(currentDir);
   } catch (error) {
-    toast(
-      `❌ ${error.message}`,
-      'err'
-    );
+    toast(`❌ ${error.message}`, 'err');
   }
 }
 
-async function downloadFile(
-  rel,
-  filename
-) {
-  const result =
-    await rpcHttp(
-      `/api/files/download?path=${encodeURIComponent(rel)}`
-    );
+async function downloadFile(rel, filename) {
+  const result = await rpcHttp(
+    `/api/files/download?path=${encodeURIComponent(rel)}`
+  );
 
   if (!result?.bodyBase64) {
-    toast(
-      result?.data?.error ||
-        'No se pudo descargar el archivo.',
-      'err'
-    );
-
+    toast(result?.data?.error || 'No se pudo descargar el archivo.', 'err');
     return;
   }
 
-  const bytes =
-    decodeResultBody(result);
+  const bytes = decodeResultBody(result);
 
-  const blob =
-    new Blob(
-      [bytes],
-      {
-        type:
-          result.contentType ||
-          'application/octet-stream',
-      }
-    );
+  const blob = new Blob([bytes], {
+    type: result.contentType || 'application/octet-stream',
+  });
 
-  const url =
-    URL.createObjectURL(blob);
+  const url = URL.createObjectURL(blob);
 
-  const anchor =
-    document.createElement('a');
+  const anchor = document.createElement('a');
 
   anchor.href = url;
-  anchor.download =
-    filename;
-
+  anchor.download = filename;
   anchor.click();
 
-  setTimeout(
-    () =>
-      URL.revokeObjectURL(url),
-    1000
-  );
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function openFile(rel) {
   try {
-    const data =
-      await api(
-        `/api/files/content?path=${encodeURIComponent(rel)}`
-      );
+    const data = await api(
+      `/api/files/content?path=${encodeURIComponent(rel)}`
+    );
 
     if (!data.ok) {
-      throw new Error(
-        data.error
-      );
+      throw new Error(data.error);
     }
 
     currentFile = rel;
 
     if ($('filesTablePanel')) {
-      $('filesTablePanel').style.display =
-        'none';
+      $('filesTablePanel').style.display = 'none';
     }
 
     if ($('filesEditorPanel')) {
-      $('filesEditorPanel').style.display =
-        'block';
+      $('filesEditorPanel').style.display = '';
     }
 
     if ($('editorFileName')) {
-      $('editorFileName').textContent =
-        rel;
+      $('editorFileName').innerHTML = `📄 ${escHtml(
+        data.filename || rel.split('/').pop()
+      )}`;
     }
 
-    initEditor(
-      data.content || ''
-    );
+    if ($('edSaveMsg')) {
+      $('edSaveMsg').textContent = '';
+    }
+
+    if (editor) {
+      editor.toTextArea?.();
+    }
+
+    $('editorContainer').innerHTML = '<textarea id="mwEditorArea"></textarea>';
+
+    const ext = String(rel.split('.').pop() || '').toLowerCase();
+
+    const mode = {
+      yml: 'yaml',
+      yaml: 'yaml',
+      json: 'javascript',
+      js: 'javascript',
+      xml: 'xml',
+      properties: 'properties',
+      conf: 'properties',
+      cfg: 'properties',
+      sh: 'shell',
+      bat: 'shell',
+      cmd: 'shell',
+    }[ext] || 'text/plain';
+
+    if (window.CodeMirror) {
+      editor = CodeMirror.fromTextArea($('mwEditorArea'), {
+        lineNumbers: true,
+        mode,
+        theme: 'dracula',
+        lineWrapping: false,
+        viewportMargin: Infinity,
+      });
+
+      editor.setValue(data.content || '');
+
+      editor.on('cursorActivity', updateEditorStatus);
+
+      updateEditorStatus();
+    } else {
+      $('mwEditorArea').value = data.content || '';
+    }
   } catch (error) {
-    toast(
-      `❌ ${error.message}`,
-      'err'
-    );
+    toast(`❌ ${error.message}`, 'err');
   }
 }
 
-function initEditor(content) {
-  const container =
-    $('editorContainer');
+function updateEditorStatus() {
+  if (!editor) return;
 
-  if (!container) return;
+  const cursor = editor.getCursor();
 
-  container.innerHTML = '';
-
-  if (window.CodeMirror) {
-    let mode =
-      'text/plain';
-
-    if (currentFile) {
-      if (
-        /\.(yml|yaml)$/i.test(
-          currentFile
-        )
-      ) {
-        mode = 'yaml';
-      } else if (
-        /\.json$/i.test(
-          currentFile
-        )
-      ) {
-        mode = 'application/json';
-      } else if (
-        /\.(properties|ini|conf)$/i.test(
-          currentFile
-        )
-      ) {
-        mode = 'properties';
-      } else if (
-        /\.(xml|html)$/i.test(
-          currentFile
-        )
-      ) {
-        mode = 'xml';
-      } else if (
-        /\.(js|mjs)$/i.test(
-          currentFile
-        )
-      ) {
-        mode = 'javascript';
-      } else if (
-        /\.sh$/i.test(
-          currentFile
-        )
-      ) {
-        mode = 'shell';
-      }
-    }
-
-    editor =
-      window.CodeMirror(
-        container,
-        {
-          value: content,
-          mode,
-          theme: 'dracula',
-          lineNumbers: true,
-          tabSize: 2,
-          indentWithTabs: false,
-          lineWrapping: true,
-        }
-      );
-  } else {
-    const textarea =
-      document.createElement(
-        'textarea'
-      );
-
-    textarea.id =
-      'editorTextarea';
-
-    textarea.className =
-      'editor-fallback';
-
-    textarea.value =
-      content;
-
-    container.appendChild(
-      textarea
-    );
-
-    editor = {
-      getValue: () =>
-        textarea.value,
-
-      setValue: val => {
-        textarea.value = val;
-      },
-    };
-  }
+  if ($('edLine')) $('edLine').textContent = cursor.line + 1;
+  if ($('edCol')) $('edCol').textContent = cursor.ch + 1;
+  if ($('edLines')) $('edLines').textContent = editor.lineCount();
 }
 
-function closeEditor() {
-  currentFile = null;
-  editor = null;
+async function saveCurrentFile() {
+  if (!currentFile) return;
 
-  if ($('filesEditorPanel')) {
-    $('filesEditorPanel').style.display =
-      'none';
-  }
+  const content = editor ? editor.getValue() : $('mwEditorArea')?.value || '';
 
-  if ($('filesTablePanel')) {
-    $('filesTablePanel').style.display =
-      'block';
-  }
-}
+  const data = await postJSON('/api/files/content', {
+    path: currentFile,
+    content,
+  });
 
-async function saveFile() {
-  if (
-    !currentFile ||
-    !editor
-  ) {
+  if (!data.ok) {
+    toast(`❌ ${data.error}`, 'err');
     return;
   }
 
-  const content =
-    editor.getValue();
-
-  try {
-    const data =
-      await postJSON(
-        '/api/files/save',
-        {
-          path: currentFile,
-          content,
-        }
-      );
-
-    if (!data.ok) {
-      throw new Error(
-        data.error
-      );
-    }
-
-    toast(
-      '💾 Archivo guardado correctamente',
-      'ok'
-    );
-  } catch (error) {
-    toast(
-      `❌ ${error.message}`,
-      'err'
-    );
+  if ($('edSaveMsg')) {
+    $('edSaveMsg').textContent = 'Guardado';
   }
+
+  toast('💾 Archivo guardado', 'ok');
 }
 
-/* PLUGIN STORE */
+/* PLUGINS */
 
-async function searchPlugins() {
-  const query =
-    $('pluginSearchInput')
-      ?.value.trim() || '';
+async function pluginSearch() {
+  const query = $('plgSearchInput')?.value.trim();
 
-  const grid =
-    $('pluginsGrid');
+  if (!query) return;
 
-  if (!grid) return;
-
-  grid.innerHTML = `
+  $('plgResults').innerHTML = `
     <div class="empty-state">
-      <div
-        class="empty-icon"
-        style="display:inline-block;animation:spin 1s linear infinite"
-      >
-        ⟳
-      </div>
-
-      <div class="empty-msg">
-        Buscando plugins...
-      </div>
+      <div style="font-size:32px;animation:spin 1s linear infinite">⟳</div>
+      <div class="empty-msg">Buscando...</div>
     </div>
   `;
 
   try {
-    const data =
-      await api(
-        `/api/plugins/search?q=${encodeURIComponent(query)}&source=${pluginSource}&price=${priceFilter}`
-      );
+    const data = await api(
+      `/api/plugins/search?q=${encodeURIComponent(query)}&source=${encodeURIComponent(pluginSource)}`
+    );
 
     if (!data.ok) {
-      throw new Error(
-        data.error ||
-          'No se pudieron cargar los plugins.'
-      );
+      throw new Error(data.error);
     }
 
-    const items =
-      Array.isArray(data.items)
-        ? data.items
-        : [];
+    let results = data.results || [];
 
-    if (!items.length) {
-      grid.innerHTML = `
-        <div class="empty-state">
-          <div class="empty-icon">🔌</div>
-          <div class="empty-msg">
-            No se encontraron plugins
-          </div>
-        </div>
-      `;
-
-      return;
+    if (priceFilter === 'free') {
+      results = results.filter(plugin => !plugin.premium);
+    } else if (priceFilter === 'premium') {
+      results = results.filter(plugin => plugin.premium);
     }
 
-    grid.innerHTML =
-      items
-        .map(
-          item => `
-            <div
-              class="plugin-card"
-              data-id="${escHtml(item.id)}"
-              data-source="${escHtml(item.source)}"
-            >
-              <div class="plugin-card-header">
-                <img
-                  class="plugin-icon"
-                  src="${escHtml(
-                    item.icon ||
-                      '/assets/plugin-placeholder.png'
-                  )}"
-                  alt="icon"
-                  onerror="this.src='/assets/plugin-placeholder.png'"
-                >
-
-                <div class="plugin-info">
-                  <div class="plugin-title">
-                    ${escHtml(item.name)}
-                  </div>
-
-                  <div class="plugin-author">
-                    por ${escHtml(
-                      item.author ||
-                        'Desconocido'
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div class="plugin-desc">
-                ${escHtml(
-                  item.description ||
-                    'Sin descripción disponible.'
-                )}
-              </div>
-
-              <div class="plugin-footer">
-                <span
-                  class="plugin-tag ${
-                    item.premium
-                      ? 'premium'
-                      : 'free'
-                  }"
-                >
-                  ${
-                    item.premium
-                      ? 'PREMIUM'
-                      : 'GRATIS'
-                  }
-                </span>
-
-                <span class="plugin-source">
-                  ${escHtml(
-                    item.source.toUpperCase()
-                  )}
-                </span>
-              </div>
-            </div>
-          `
-        )
-        .join('');
-
-    grid
-      .querySelectorAll(
-        '.plugin-card'
-      )
-      .forEach(card => {
-        card.addEventListener(
-          'click',
-          () => {
-            openPluginDetails(
-              card.dataset.id,
-              card.dataset.source
-            );
-          }
-        );
-      });
+    renderPluginResults(results, data.errors || []);
   } catch (error) {
-    grid.innerHTML = `
+    $('plgResults').innerHTML = `
       <div class="empty-state">
-        <div
-          class="empty-icon"
-          style="color:var(--red)"
-        >
-          ⚠
-        </div>
-
-        <div class="empty-msg">
-          ${escHtml(error.message)}
-        </div>
+        <div class="empty-msg">${escHtml(error.message)}</div>
       </div>
     `;
   }
 }
 
-async function openPluginDetails(
-  id,
-  source
-) {
-  try {
-    const data =
-      await api(
-        `/api/plugins/details?id=${encodeURIComponent(id)}&source=${encodeURIComponent(source)}`
+function renderPluginResults(results, errors) {
+  const formatDownloads = value => {
+    const n = Number(value) || 0;
+
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1000) return `${Math.round(n / 1000)}k`;
+
+    return String(n);
+  };
+
+  const warning = errors.length
+    ? `<div class="plg-warn-bar">⚠ ${errors.map(escHtml).join(' · ')}</div>`
+    : '';
+
+  const cards = results
+    .map((plugin, index) => {
+      const tag = ({ modrinth: 'MODRINTH', spigot: 'SPIGOT', hangar: 'HANGAR' })[plugin.source] || String(plugin.source || '').toUpperCase();
+      const external = plugin.external
+        ? '<span class="plg-src-badge">🔗 EXTERNO</span>'
+        : '';
+      const premium = plugin.premium
+        ? '<span class="plg-src-badge">💰 PREMIUM</span>'
+        : '';
+
+      return `
+        <div class="plg-card" data-index="${index}">
+          <div class="plg-card-top">
+            ${
+              plugin.icon
+                ? `<img class="plg-card-icon" src="${escHtml(plugin.icon)}" width="42" height="42" loading="lazy">`
+                : `<div class="plg-card-icon-placeholder">🧩</div>`
+            }
+            <div class="plg-card-info">
+              <div class="plg-card-name">${escHtml(plugin.name)}</div>
+              <div class="plg-card-tags">
+                <span class="plg-src-badge ${escHtml(plugin.source)}">${tag}</span>
+                ${premium}
+                ${external}
+                <span class="plg-src-badge dl">⬇ ${formatDownloads(plugin.downloads)}</span>
+              </div>
+            </div>
+          </div>
+          <div class="plg-card-desc">${escHtml(plugin.description || '')}</div>
+          <div class="plg-card-footer">
+            <span></span>
+            <button class="plg-versions-btn">Ver versiones →</button>
+          </div>
+        </div>
+      `;
+    })
+    .join('');
+
+  $('plgResults').innerHTML =
+    warning +
+    (cards
+      ? `<div class="plg-grid">${cards}</div>`
+      : `<div class="empty-state"><div class="empty-msg">Sin resultados</div></div>`);
+
+  $('plgResults')
+    .querySelectorAll('.plg-card')
+    .forEach(card => {
+      card.addEventListener('click', () =>
+        openPluginVersions(results[Number(card.dataset.index)])
       );
+    });
+}
+
+async function openPluginVersions(plugin) {
+  currentPlugin = plugin;
+
+  $('plgVersionModal').style.display = '';
+  $('plgModalIcon').src = plugin.icon || '';
+  $('plgModalName').textContent = plugin.name;
+  $('plgModalMeta').textContent = `${plugin.source.toUpperCase()} · ${plugin.downloads || 0} descargas`;
+
+  $('plgModalBody').innerHTML = `
+    <div class="empty-state">
+      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
+      <div class="empty-msg">Cargando versiones...</div>
+    </div>
+  `;
+
+  try {
+    const data = await api(
+      `/api/plugins/versions?id=${encodeURIComponent(plugin.id)}&source=${encodeURIComponent(plugin.source)}`
+    );
 
     if (!data.ok) {
-      throw new Error(
-        data.error ||
-          'No se obtuvieron detalles del plugin.'
-      );
+      throw new Error(data.error);
     }
 
-    currentPlugin =
-      data.plugin;
+    const versions = data.versions || [];
 
-    if ($('pluginModalTitle')) {
-      $('pluginModalTitle').textContent =
-        currentPlugin.name;
+    if (!versions.length) {
+      $('plgModalBody').innerHTML = '<div class="empty-state"><div class="empty-msg">No hay versiones.</div></div>';
+      return;
     }
 
-    if ($('pluginModalAuthor')) {
-      $('pluginModalAuthor').textContent =
-        `por ${
-          currentPlugin.author ||
-          'Desconocido'
-        }`;
-    }
+    $('plgModalBody').innerHTML = versions
+      .map((version, index) => {
+        const published = version.published
+          ? new Date(version.published).toLocaleString('es-ES')
+          : '';
 
-    if ($('pluginModalDesc')) {
-      $('pluginModalDesc').textContent =
-        currentPlugin.description ||
-        '';
-    }
+        const changelog = version.changelog
+          ? `<div class="plg-ver-changelog">${version.changelogIsHtml
+              ? version.changelog
+              : escHtml(version.changelog)}</div>`
+          : '';
 
-    if ($('pluginModalIcon')) {
-      $('pluginModalIcon').src =
-        currentPlugin.icon ||
-        '/assets/plugin-placeholder.png';
-    }
+        const action = version.isExternal
+          ? `<a class="plg-dl-btn external" href="${escHtml(version.externalUrl)}" target="_blank" rel="noopener">ABRIR</a>`
+          : `<button class="plg-dl-btn" data-version="${index}">INSTALAR</button>`;
 
-    if ($('pluginModalVersion')) {
-      $('pluginModalVersion').textContent =
-        currentPlugin.version ||
-        'Última';
-    }
+        return `
+          <div class="plg-ver-row">
+            <div class="plg-ver-left">
+              <div class="plg-ver-number">${escHtml(version.versionNumber || version.name || 'Versión')}</div>
+              ${published ? `<div class="plg-ver-meta"><span class="plg-vm">${escHtml(published)}</span></div>` : ''}
+              ${changelog}
+            </div>
+            <div class="plg-ver-right">
+              ${action}
+            </div>
+          </div>
+        `;
+      })
+      .join('');
 
-    const installBtn =
-      $('btnInstallPlugin');
-
-    if (installBtn) {
-      installBtn.disabled =
-        currentPlugin.premium &&
-        !currentPlugin.downloadUrl;
-
-      installBtn.textContent =
-        currentPlugin.premium
-          ? 'Comprar / Descargar Externa'
-          : 'Instalar en Servidor';
-    }
-
-    $('pluginModal')
-      ?.classList.remove(
-        'hidden'
-      );
+    $('plgModalBody')
+      .querySelectorAll('[data-version]')
+      .forEach(button => {
+        button.addEventListener('click', () =>
+          installPlugin(versions[Number(button.dataset.version)])
+        );
+      });
   } catch (error) {
-    toast(
-      `❌ ${error.message}`,
-      'err'
-    );
+    $('plgModalBody').innerHTML = `
+      <div class="empty-state">
+        <div class="empty-msg">${escHtml(error.message)}</div>
+      </div>
+    `;
   }
 }
 
-async function installCurrentPlugin() {
-  if (!currentPlugin) return;
+async function installPlugin(version) {
+  const file = (version.files || []).find(item => item.primary) || version.files?.[0];
 
-  const btn =
-    $('btnInstallPlugin');
-
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent =
-      'Instalando...';
+  if (!file?.url) {
+    toast('Esta versión requiere instalación externa.', 'err');
+    return;
   }
 
-  try {
-    const data =
-      await postJSON(
-        '/api/plugins/install',
-        {
-          id:
-            currentPlugin.id,
+  const filename =
+    file.filename ||
+    `${String(currentPlugin?.name || 'plugin').replace(/[^a-zA-Z0-9._-]/g, '_')}.jar`;
 
-          source:
-            currentPlugin.source,
+  $('plgModalBody').insertAdjacentHTML(
+    'afterbegin',
+    '<div class="plg-warn-bar">📥 Instalando...</div>'
+  );
 
-          downloadUrl:
-            currentPlugin.downloadUrl,
+  const data = await postJSON('/api/plugins/install', {
+    url: file.url,
+    filename,
+  });
 
-          name:
-            currentPlugin.name,
-        }
-      );
-
-    if (!data.ok) {
-      throw new Error(
-        data.error ||
-          'Fallo la instalación.'
-      );
-    }
-
-    toast(
-      `✅ Plugin "${currentPlugin.name}" instalado correctamente`,
-      'ok'
-    );
-
-    $('pluginModal')
-      ?.classList.add(
-        'hidden'
-      );
-  } catch (error) {
-    toast(
-      `❌ ${error.message}`,
-      'err'
-    );
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent =
-        'Instalar en Servidor';
-    }
+  if (!data.ok) {
+    toast(`❌ ${data.error}`, 'err');
+    return;
   }
+
+  toast(`✅ ${filename} instalado`, 'ok');
+
+  loadInstalledPlugins();
 }
 
-/* VERSIONS & SOFTWARE */
+async function loadInstalledPlugins() {
+  const element = $('plgInstalledList');
+
+  if (!element) return;
+
+  element.innerHTML = `
+    <div class="empty-state">
+      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
+      <div class="empty-msg">Cargando...</div>
+    </div>
+  `;
+
+  const data = await api('/api/plugins/installed');
+
+  if (!data.ok) {
+    element.innerHTML = `<div class="empty-state">${escHtml(data.error)}</div>`;
+    return;
+  }
+
+  element.innerHTML =
+    (data.plugins || [])
+      .map(
+        plugin => `
+        <div class="installed-plugin-row">
+          <div>
+            <strong>☕ ${escHtml(plugin.filename)}</strong>
+            <div style="font-size:11px;color:var(--muted2)">${escHtml(plugin.size)} · ${escHtml(plugin.modified)}</div>
+          </div>
+          <button class="small-btn danger" data-delete-plugin="${escHtml(plugin.filename)}">Eliminar</button>
+        </div>
+      `
+      )
+      .join('') ||
+    `<div class="empty-state">No hay plugins .jar instalados.</div>`;
+
+  element.querySelectorAll('[data-delete-plugin]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const filename = button.dataset.deletePlugin;
+
+      if (!confirm(`¿Eliminar ${filename}?`)) {
+        return;
+      }
+
+      const data = await api(
+        `/api/plugins/installed/${encodeURIComponent(filename)}`,
+        { method: 'DELETE' }
+      );
+
+      if (!data.ok) {
+        toast(`❌ ${data.error}`, 'err');
+      } else {
+        loadInstalledPlugins();
+      }
+    });
+  });
+}
+
+/* ══════════════════════════════════════════════
+   VERSIONS & SOFTWARE
+   ══════════════════════════════════════════════ */
 
 const VERSION_SOFTWARE = {
   plugins: [
     {
       id: 'paper',
       name: 'Paper',
-      description:
-        'Servidor optimizado compatible con plugins Bukkit/Spigot.',
+      description: 'Servidor optimizado compatible con plugins Bukkit/Spigot.',
       icon: '📄',
     },
-
     {
       id: 'purpur',
       name: 'Purpur',
-      description:
-        'Servidor basado en Paper con más opciones de configuración.',
+      description: 'Servidor basado en Paper con más opciones de configuración.',
       icon: '🟣',
     },
-
     {
       id: 'spigot',
       name: 'Spigot',
-      description:
-        'Servidor Bukkit optimizado y ampliamente compatible.',
+      description: 'Servidor Bukkit optimizado y ampliamente compatible.',
       icon: '🧩',
     },
-
     {
       id: 'bukkit',
       name: 'Bukkit',
-      description:
-        'Servidor clásico para plugins Bukkit.',
+      description: 'Servidor clásico para plugins Bukkit.',
       icon: '🔌',
     },
-
     {
       id: 'leaf',
       name: 'Leaf',
-      description:
-        'Servidor de alto rendimiento basado en Paper.',
+      description: 'Servidor de alto rendimiento basado en Paper.',
       icon: '🍃',
     },
   ],
@@ -2546,32 +1738,25 @@ const VERSION_SOFTWARE = {
     {
       id: 'fabric',
       name: 'Fabric',
-      description:
-        'Loader ligero y moderno para servidores con mods.',
+      description: 'Loader ligero y moderno para servidores con mods.',
       icon: '🧵',
     },
-
     {
       id: 'forge',
       name: 'Forge',
-      description:
-        'Uno de los loaders de mods más utilizados.',
+      description: 'Uno de los loaders de mods más utilizados.',
       icon: '🔨',
     },
-
     {
       id: 'neoforge',
       name: 'NeoForge',
-      description:
-        'Loader moderno para mods de Minecraft.',
+      description: 'Loader moderno para mods de Minecraft.',
       icon: '⚒️',
     },
-
     {
       id: 'quilt',
       name: 'Quilt',
-      description:
-        'Loader compatible con el ecosistema de mods de Fabric.',
+      description: 'Loader compatible con el ecosistema de mods de Fabric.',
       icon: '🧶',
     },
   ],
@@ -2580,31 +1765,13 @@ const VERSION_SOFTWARE = {
     {
       id: 'vanilla',
       name: 'Vanilla',
-      description:
-        'Servidor oficial de Minecraft sin modificaciones.',
+      description: 'Servidor oficial de Minecraft sin modificaciones.',
       icon: '🌿',
     },
   ],
 };
 
-function getAllVersionSoftware() {
-  return Object.values(
-    VERSION_SOFTWARE
-  ).flat();
-}
-
-function getVersionSoftware(
-  software
-) {
-  return getAllVersionSoftware().find(
-    item =>
-      item.id === software
-  );
-}
-
-function getVersionCategoryIcon(
-  category
-) {
+function getVersionCategoryIcon(category) {
   return {
     plugins: '🧩',
     mods: '🧱',
@@ -2612,107 +1779,70 @@ function getVersionCategoryIcon(
   }[category] || '📦';
 }
 
-function getVersionCategoryName(
-  category
-) {
+function getVersionCategoryName(category) {
   return {
-    plugins:
-      'Servidores de plugins',
-
-    mods:
-      'Servidores de mods',
-
-    vanilla:
-      'Servidores Vanilla',
-  }[category] ||
-    'Servidores';
+    plugins: 'Servidores de plugins',
+    mods: 'Servidores de mods',
+    vanilla: 'Servidores Vanilla',
+  }[category] || 'Servidores';
 }
 
-function renderVersionSoftwareCard(
-  software
-) {
+function renderVersionSoftwareCard(software) {
   return `
     <button
       type="button"
       class="ver-software-card"
-      data-software="${escHtml(
-        software.id
-      )}"
+      data-software="${escHtml(software.id)}"
     >
-      <div class="ver-software-icon">
-        ${software.icon}
-      </div>
+      <div class="ver-software-icon">${software.icon}</div>
 
       <div class="ver-software-content">
         <div class="ver-software-name">
-          ${escHtml(
-            software.name
-          )}
+          ${escHtml(software.name)}
         </div>
 
         <div class="ver-software-desc">
-          ${escHtml(
-            software.description
-          )}
+          ${escHtml(software.description)}
         </div>
       </div>
 
-      <div class="ver-software-arrow">
-        ›
-      </div>
+      <div class="ver-software-arrow">›</div>
     </button>
   `;
 }
 
-function renderVersionCategory(
-  category,
-  softwareList
-) {
+function renderVersionCategory(category, softwareList) {
   return `
     <section class="ver-category">
       <div class="ver-category-header">
         <div class="ver-category-icon">
-          ${getVersionCategoryIcon(
-            category
-          )}
+          ${getVersionCategoryIcon(category)}
         </div>
 
         <div class="ver-category-name">
-          ${getVersionCategoryName(
-            category
-          )}
+          ${getVersionCategoryName(category)}
         </div>
 
         <div class="ver-category-count">
-          ${softwareList.length}
-          disponibles
+          ${softwareList.length} disponibles
         </div>
       </div>
 
       <div class="ver-software-grid">
-        ${softwareList
-          .map(
-            renderVersionSoftwareCard
-          )
-          .join('')}
+        ${softwareList.map(renderVersionSoftwareCard).join('')}
       </div>
     </section>
   `;
 }
 
 function renderVersionSoftware() {
-  const container =
-    $('versionList');
+  const container = $('versionList');
 
-  if (!container) {
-    return;
-  }
+  if (!container) return;
 
   container.innerHTML = `
     <div class="ver-hero">
-      <div class="ver-hero-icon">
-        📦
-      </div>
+      <div class="ver-hero-icon">📦</div>
 
       <div>
         <div class="ver-hero-title">
@@ -2725,97 +1855,64 @@ function renderVersionSoftware() {
       </div>
     </div>
 
-    ${renderVersionCategory(
-      'plugins',
-      VERSION_SOFTWARE.plugins
-    )}
+    ${renderVersionCategory('plugins', VERSION_SOFTWARE.plugins)}
 
-    ${renderVersionCategory(
-      'mods',
-      VERSION_SOFTWARE.mods
-    )}
+    ${renderVersionCategory('mods', VERSION_SOFTWARE.mods)}
 
-    ${renderVersionCategory(
-      'vanilla',
-      VERSION_SOFTWARE.vanilla
-    )}
+    ${renderVersionCategory('vanilla', VERSION_SOFTWARE.vanilla)}
   `;
 
-  container
-    .querySelectorAll(
-      '[data-software]'
-    )
-    .forEach(card => {
-      card.addEventListener(
-        'click',
-        () => {
-          selectVersionSoftware(
-            card.dataset.software
-          );
-        }
-      );
+  container.querySelectorAll('[data-software]').forEach(card => {
+    card.addEventListener('click', () => {
+      selectVersionSoftware(card.dataset.software);
     });
+  });
 }
 
-function removeSelectedVersionInfo() {
-  document
-    .querySelector(
-      '.ver-selected-software'
-    )
-    ?.remove();
+async function selectVersionSoftware(software) {
+  const item = Object.values(VERSION_SOFTWARE)
+    .flat()
+    .find(entry => entry.id === software);
+
+  if (!item) return;
+
+  versionState.software = software;
+  versionState.softwareLabel = item.name;
+  versionState.version = '';
+  versionState.builds = [];
+
+  try {
+    const data = await api(
+      `/api/version/status?software=${encodeURIComponent(software)}`
+    );
+
+    if (data?.ok) {
+      versionState = {
+        ...versionState,
+        software: data.software || software,
+        softwareLabel: data.softwareLabel || item.name,
+        version: data.version || '',
+        builds: Array.isArray(data.builds) ? data.builds : [],
+      };
+    }
+
+    showVersionSoftwareInfo(item);
+  } catch (error) {
+    showVersionSoftwareInfo(item);
+  }
 }
 
-function renderSelectedVersionInfo(
-  software,
-  data = null
-) {
-  removeSelectedVersionInfo();
+function showVersionSoftwareInfo(software) {
+  const existing = document.querySelector('.ver-selected-software');
+  existing?.remove();
 
-  const container =
-    $('versionList');
+  const container = $('versionList');
 
   if (!container) return;
 
-  const currentVersion =
-    data?.version ||
-    versionState.version ||
-    '';
+  const info = document.createElement('div');
 
-  const builds =
-    Array.isArray(data?.builds)
-      ? data.builds
-      : Array.isArray(
-          versionState.builds
-        )
-        ? versionState.builds
-        : [];
-
-  const info =
-    document.createElement('div');
-
-  info.className =
-    'ver-selected-software';
-
-  const versionText =
-    currentVersion
-      ? `Versión disponible: ${escHtml(
-          currentVersion
-        )}`
-      : 'Versión disponible en el servidor';
-
-  const buildText =
-    builds.length
-      ? `
-        <div class="ver-selected-builds">
-          <span>Build disponible</span>
-          <strong>
-            ${escHtml(
-              builds[0]
-            )}
-          </strong>
-        </div>
-      `
-      : '';
+  info.className = 'ver-selected-software';
 
   info.innerHTML = `
     <div class="ver-selected-header">
@@ -2823,86 +1920,24 @@ function renderSelectedVersionInfo(
         ${software.icon}
       </div>
 
-      <div class="ver-selected-content">
+      <div>
         <div class="ver-selected-title">
-          ${escHtml(
-            software.name
-          )}
+          ${escHtml(software.name)}
         </div>
 
         <div class="ver-selected-description">
-          ${escHtml(
-            software.description
-          )}
+          ${escHtml(software.description)}
         </div>
-
-        <div class="ver-selected-version">
-          ${versionText}
-        </div>
-
-        ${buildText}
       </div>
     </div>
 
-    <div class="ver-selected-actions">
-      <button
-        type="button"
-        class="ver-back-btn"
-        data-version-back
-      >
-        ← Volver
-      </button>
-
-      <button
-        type="button"
-        class="ver-install-btn"
-        data-version-install
-        ${
-          !currentVersion
-            ? 'disabled'
-            : ''
-        }
-      >
-        ${currentVersion
-          ? 'Instalar servidor'
-          : 'Versión no disponible'}
-      </button>
+    <div class="ver-selected-message">
+      <span>✓</span>
+      <span>Servidor seleccionado</span>
     </div>
   `;
 
   container.prepend(info);
-
-  info
-    .querySelector(
-      '[data-version-back]'
-    )
-    ?.addEventListener(
-      'click',
-      () => {
-        removeSelectedVersionInfo();
-
-        renderVersionSoftware();
-
-        const versionList =
-          $('versionList');
-
-        versionList?.scrollIntoView({
-          behavior: 'smooth',
-          block: 'start',
-        });
-      }
-    );
-
-  info
-    .querySelector(
-      '[data-version-install]'
-    )
-    ?.addEventListener(
-      'click',
-      () => {
-        installSelectedVersion();
-      }
-    );
 
   info.scrollIntoView({
     behavior: 'smooth',
@@ -2910,136 +1945,37 @@ function renderSelectedVersionInfo(
   });
 }
 
-async function selectVersionSoftware(
-  software
-) {
-  const item =
-    getVersionSoftware(
-      software
-    );
-
-  if (!item) return;
-
-  versionState = {
-    software,
-    softwareLabel:
-      item.name,
-    version: '',
-    builds: [],
-  };
-
-  renderSelectedVersionInfo(
-    item
-  );
-
-  try {
-    const data =
-      await api(
-        `/api/version/status?software=${encodeURIComponent(software)}`
-      );
-
-    if (
-      data?.ok
-    ) {
-      versionState = {
-        ...versionState,
-
-        software:
-          data.software ||
-          software,
-
-        softwareLabel:
-          data.softwareLabel ||
-          item.name,
-
-        version:
-          data.version ||
-          '',
-
-        builds:
-          Array.isArray(
-            data.builds
-          )
-            ? data.builds
-            : [],
-      };
-
-      renderSelectedVersionInfo(
-        item,
-        data
-      );
-    }
-  } catch (error) {
-    renderSelectedVersionInfo(
-      item
-    );
-  }
-}
-
 async function loadVersionState() {
   renderVersionSoftware();
 
   try {
-    const data =
-      await api(
-        '/api/version/status'
-      );
+    const data = await api('/api/version/status');
 
-    if (!data?.ok) {
-      return;
-    }
+    if (!data.ok) return;
 
     versionState = {
-      software:
-        data.software ||
-        'paper',
-
-      softwareLabel:
-        data.softwareLabel ||
-        'Paper',
-
-      version:
-        data.version ||
-        '',
-
-      builds:
-        Array.isArray(
-          data.builds
-        )
-          ? data.builds
-          : [],
+      software: data.software || 'paper',
+      softwareLabel: data.softwareLabel || 'Paper',
+      version: data.version || '',
+      builds: Array.isArray(data.builds) ? data.builds : [],
     };
-  } catch (error) {
-    /*
-     * La pantalla de software se mantiene visible
-     * aunque el servidor todavía no esté disponible.
-     */
-  }
+  } catch {}
+}
+
+function renderBuildsSelect() {
+  return;
+}
+async function changeSoftwareOrVersion() {
+  return;
 }
 
 async function installSelectedVersion() {
-  const software =
-    versionState.software;
-
-  const version =
-    versionState.version;
-
-  const build =
-    Array.isArray(
-      versionState.builds
-    )
-      ? (
-          versionState.builds[0] ||
-          ''
-        )
-      : '';
+  const software = versionState.software;
+  const version = versionState.version;
+  const build = versionState.builds?.[0] || '';
 
   if (!software) {
-    toast(
-      'Selecciona un servidor primero.',
-      'warn'
-    );
-
+    toast('Selecciona un servidor primero.', 'warn');
     return;
   }
 
@@ -3048,824 +1984,1435 @@ async function installSelectedVersion() {
       'No hay una versión disponible para este servidor.',
       'warn'
     );
-
     return;
   }
 
-  const softwareLabel =
-    versionState.softwareLabel ||
-    software;
-
   if (
     !confirm(
-      `¿Deseas cambiar el servidor a ${softwareLabel}?`
+      `¿Deseas cambiar el servidor a ${versionState.softwareLabel || software}?`
     )
   ) {
     return;
   }
 
   try {
-    toast(
-      '⏳ Descargando e instalando el servidor...',
-      'info'
-    );
+    toast('⏳ Descargando e instalando el servidor...', 'info');
 
-    const data =
-      await postJSON(
-        '/api/version/install',
-        {
-          software,
-          version,
-          build,
-        }
-      );
+    const data = await postJSON('/api/version/install', {
+      software,
+      version,
+      build,
+    });
 
     if (!data.ok) {
-      throw new Error(
-        data.error ||
-          'No se pudo instalar el servidor.'
-      );
+      throw new Error(data.error || 'No se pudo instalar el servidor.');
     }
 
-    toast(
-      '✅ Servidor actualizado con éxito.',
-      'ok'
-    );
+    toast('✅ Servidor actualizado con éxito.', 'ok');
 
     await loadVersionState();
   } catch (error) {
-    toast(
-      `❌ ${error.message}`,
-      'err'
-    );
+    toast(`❌ ${error.message}`, 'err');
   }
 }
 
-/*
- * Compatibilidad con código antiguo.
- * Ya no existen selectores de software,
- * versión o build en la nueva interfaz.
- */
-function renderBuildsSelect() {
-  return;
-}
+/* DATABASES (MySQL / MariaDB) */
 
-async function changeSoftwareOrVersion() {
-  return;
-}
+function showDbCredentials(creds) {
+  const text =
+    `Host: ${creds.host}:${creds.port}\n` +
+    `Base de datos: ${creds.database}\n` +
+    `Usuario: ${creds.user}\n` +
+    `Contraseña: ${creds.password}`;
 
-/* SETTINGS / CONFIGS */
-
-async function loadSettings() {
   try {
-    const data =
-      await api(
-        '/api/settings'
-      );
-
-    if (!data.ok) return;
-
-    const cfg =
-      data.config || {};
-
-    if ($('cfgJavaFlags')) {
-      $('cfgJavaFlags').value =
-        cfg.flags ||
-        AIKAR_FLAGS;
-    }
-
-    if ($('cfgMemory')) {
-      $('cfgMemory').value =
-        cfg.memory ||
-        '2G';
-    }
-
-    if ($('cfgAutoRestart')) {
-      $('cfgAutoRestart').checked =
-        Boolean(
-          cfg.autoRestart
-        );
-    }
-
-    if ($('cfgJarName')) {
-      $('cfgJarName').value =
-        cfg.jarName ||
-        'server.jar';
-    }
-
-    renderSettings();
+    navigator.clipboard?.writeText(text);
   } catch {}
-}
 
-async function saveSettings() {
-  const flags =
-    $('cfgJavaFlags')
-      ?.value || '';
-
-  const memory =
-    $('cfgMemory')
-      ?.value || '2G';
-
-  const autoRestart =
-    Boolean(
-      $('cfgAutoRestart')
-        ?.checked
-    );
-
-  const jarName =
-    $('cfgJarName')
-      ?.value ||
-    'server.jar';
-
-  try {
-    const data =
-      await postJSON(
-        '/api/settings/save',
-        {
-          flags,
-          memory,
-          autoRestart,
-          jarName,
-        }
-      );
-
-    if (!data.ok) {
-      throw new Error(
-        data.error
-      );
-    }
-
-    toast(
-      '💾 Configuración guardada',
-      'ok'
-    );
-  } catch (error) {
-    toast(
-      `❌ ${error.message}`,
-      'err'
-    );
-  }
-}
-
-function renderSettings() {
-  if ($('infoPermission')) {
-    $('infoPermission').textContent =
-      panelPermission.toUpperCase();
-  }
-
-  if ($('infoKind')) {
-    $('infoKind').textContent =
-      panelKind.toUpperCase();
-  }
-
-  if ($('infoAgentId')) {
-    $('infoAgentId').textContent =
-      agentId ||
-      'Sin Conectar';
-  }
-
-  const adminOnlyElements =
-    document.querySelectorAll(
-      '.admin-only'
-    );
-
-  adminOnlyElements.forEach(
-    el => {
-      el.style.display =
-        hasPermission('admin')
-          ? ''
-          : 'none';
-    }
+  alert(
+    `Credenciales de la base de datos (copiadas al portapapeles):\n\n${text}\n\n⚠️ Esta contraseña no se volverá a mostrar.`
   );
 }
 
-/* SHARED TOKENS */
+async function createDatabase() {
+  const name = prompt(
+    'Nombre de la nueva base de datos (letras, números y guion bajo, máx. 48 caracteres):'
+  );
 
-async function loadShareTokens() {
-  const container =
-    $('shareTokensList');
+  if (!name) return;
 
-  if (!container) return;
+  const data = await postJSON('/api/databases', {
+    name: name.trim(),
+    createUser: true,
+  });
 
-  try {
-    const data =
-      await cloudApi(
-        '/api/shares'
-      );
-
-    if (
-      !data.ok ||
-      !Array.isArray(
-        data.shares
-      )
-    ) {
-      container.innerHTML =
-        '<div class="empty-msg">No hay tokens activos</div>';
-
-      return;
-    }
-
-    if (!data.shares.length) {
-      container.innerHTML =
-        '<div class="empty-msg">No hay tokens activos</div>';
-
-      return;
-    }
-
-    container.innerHTML =
-      data.shares
-        .map(
-          s => `
-            <div class="share-token-row">
-              <div class="share-info">
-                <span class="share-token-code">
-                  ${escHtml(s.token)}
-                </span>
-
-                <span
-                  class="share-permission-badge ${escHtml(
-                    s.permission
-                  )}"
-                >
-                  ${escHtml(
-                    s.permission
-                  )}
-                </span>
-              </div>
-
-              <button
-                class="btn-icon danger"
-                data-revoke="${escHtml(
-                  s.token
-                )}"
-              >
-                🗑️
-              </button>
-            </div>
-          `
-        )
-        .join('');
-
-    container
-      .querySelectorAll(
-        '[data-revoke]'
-      )
-      .forEach(btn => {
-        btn.addEventListener(
-          'click',
-          () =>
-            revokeShareToken(
-              btn.dataset.revoke
-            )
-        );
-      });
-  } catch {
-    container.innerHTML =
-      '<div class="empty-msg">Error cargando tokens</div>';
-  }
-}
-
-async function createShareToken() {
-  const permission =
-    $('sharePermissionSelect')
-      ?.value ||
-    'read';
-
-  try {
-    const data =
-      await cloudApi(
-        '/api/shares/create',
-        {
-          method: 'POST',
-          body:
-            JSON.stringify({
-              permission,
-            }),
-        }
-      );
-
-    if (!data.ok) {
-      throw new Error(
-        data.error
-      );
-    }
-
-    toast(
-      '✅ Token generado con éxito',
-      'ok'
-    );
-
-    loadShareTokens();
-  } catch (error) {
-    toast(
-      `❌ ${error.message}`,
-      'err'
-    );
-  }
-}
-
-async function revokeShareToken(
-  token
-) {
-  if (
-    !confirm(
-      '¿Revocar este token de acceso?'
-    )
-  ) {
+  if (!data.ok) {
+    toast(`❌ ${data.error}`, 'err');
     return;
   }
 
-  try {
-    const data =
-      await cloudApi(
-        '/api/shares/revoke',
-        {
-          method: 'POST',
-          body:
-            JSON.stringify({
-              token,
-            }),
-        }
-      );
+  toast('✅ Base de datos creada', 'ok');
 
-    if (!data.ok) {
-      throw new Error(
-        data.error
-      );
-    }
-
-    toast(
-      '✅ Token revocado',
-      'ok'
-    );
-
-    loadShareTokens();
-  } catch (error) {
-    toast(
-      `❌ ${error.message}`,
-      'err'
-    );
+  if (data.credentials) {
+    showDbCredentials(data.credentials);
   }
+
+  loadDatabases();
 }
 
-/* ACTIVITIES & TOASTS */
+async function loadDatabases() {
+  const container = $('dbList');
 
-function addActivity(
-  text,
-  level = 'info',
-  icon = '📌'
-) {
-  const time =
-    new Date().toLocaleTimeString(
-      'es-ES'
-    );
+  if (!container) return;
 
-  activities.unshift({
-    time,
-    text,
-    level,
-    icon,
-  });
+  container.innerHTML = `
+    <div class="empty-state">
+      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
+      <div class="empty-msg">Conectando con MySQL...</div>
+    </div>
+  `;
 
-  if (activities.length > 30) {
-    activities.pop();
+  let status = { connected: false };
+
+  try {
+    status = await api('/api/databases/status');
+  } catch (error) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-msg">${escHtml(error.message)}</div>
+      </div>
+    `;
+    return;
   }
 
-  const list =
-    $('activityList');
+  if (!status.connected) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon" style="color:var(--red)">⚠</div>
+        <div class="empty-msg">
+          No se pudo conectar con MySQL (${escHtml(status.host || '')}:${escHtml(String(status.port || ''))}).<br>
+          <span style="font-size:11px;color:var(--muted)">
+            ${escHtml(status.error || 'Configura MOONWOLF_MYSQL_HOST / MOONWOLF_MYSQL_USER / MOONWOLF_MYSQL_PASSWORD en el .env del servidor.')}
+          </span>
+        </div>
+      </div>
+    `;
+    return;
+  }
 
-  if (!list) return;
+  const data = await api('/api/databases');
 
-  list.innerHTML =
-    activities
-      .map(
-        act => `
-          <div class="activity-item ${act.level}">
-            <span class="act-icon">
-              ${act.icon}
+  if (!data.ok) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-msg">${escHtml(data.error)}</div>
+      </div>
+    `;
+    return;
+  }
+
+  const databases = data.databases || [];
+
+  container.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 4px 14px">
+      <span style="font-size:11px;color:var(--muted2)">
+        🟢 Conectado a MySQL — ${escHtml(status.host)}:${escHtml(String(status.port))}
+      </span>
+      <button class="small-btn" id="btnNewDatabase">➕ Nueva base de datos</button>
+    </div>
+
+    ${
+      databases.length
+        ? databases
+            .map(
+              db => `
+          <div class="backup-row">
+            <span class="bk-icon">🗄️</span>
+            <span class="bk-name">
+              ${escHtml(db.name)}
+              <small>${escHtml(db.tables)} tablas · ${escHtml(db.user || 'sin usuario dedicado')}</small>
             </span>
-
-            <span class="act-time">
-              ${act.time}
-            </span>
-
-            <span class="act-text">
-              ${escHtml(
-                act.text
-              )}
+            <span class="bk-size">${escHtml(db.sizeMb)} MB</span>
+            <span class="bk-actions">
+              ${
+                db.user
+                  ? `<button class="icon-btn edit" data-reset-db="${escHtml(db.name)}" title="Restablecer contraseña">🔑</button>`
+                  : ''
+              }
+              <button class="icon-btn" data-delete-db="${escHtml(db.name)}" title="Eliminar">🗑️</button>
             </span>
           </div>
         `
-      )
-      .join('');
-}
+            )
+            .join('')
+        : '<div class="empty-state"><div class="empty-msg">No hay bases de datos todavía.</div></div>'
+    }
+  `;
 
-function toast(
-  msg,
-  type = 'info'
-) {
-  let container =
-    $('toastContainer');
+  $('btnNewDatabase')?.addEventListener('click', createDatabase);
 
-  if (!container) {
-    container =
-      document.createElement(
-        'div'
+  container.querySelectorAll('[data-delete-db]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const name = button.dataset.deleteDb;
+
+      if (
+        !confirm(
+          `¿Eliminar la base de datos "${name}"? Esta acción no se puede deshacer.`
+        )
+      ) {
+        return;
+      }
+
+      const data = await api(`/api/databases/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
+      });
+
+      if (!data.ok) {
+        toast(`❌ ${data.error}`, 'err');
+        return;
+      }
+
+      toast('✅ Base de datos eliminada', 'ok');
+      loadDatabases();
+    });
+  });
+
+  container.querySelectorAll('[data-reset-db]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const name = button.dataset.resetDb;
+
+      if (!confirm(`¿Restablecer la contraseña del usuario de "${name}"?`)) {
+        return;
+      }
+
+      const data = await postJSON(
+        `/api/databases/${encodeURIComponent(name)}/reset-password`,
+        {}
       );
 
-    container.id =
-      'toastContainer';
-
-    container.style.cssText =
-      'position:fixed;bottom:20px;right:20px;z-index:999999;display:flex;flex-direction:column;gap:8px;';
-
-    document.body.appendChild(
-      container
-    );
-  }
-
-  const el =
-    document.createElement(
-      'div'
-    );
-
-  el.className =
-    `toast toast-${type}`;
-
-  el.style.cssText =
-    'padding:12px 18px;background:#1e222d;color:#fff;border-left:4px solid #6c5ce7;border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.3);font-size:13px;animation:fadeIn 0.2s ease;';
-
-  if (type === 'err') {
-    el.style.borderLeftColor =
-      '#ff6b6b';
-  }
-
-  if (type === 'ok') {
-    el.style.borderLeftColor =
-      '#51cf66';
-  }
-
-  if (type === 'warn') {
-    el.style.borderLeftColor =
-      '#fcc419';
-  }
-
-  el.textContent =
-    msg;
-
-  container.appendChild(
-    el
-  );
-
-  setTimeout(() => {
-    el.style.opacity = '0';
-
-    el.style.transition =
-      'opacity 0.3s ease';
-
-    setTimeout(
-      () => el.remove(),
-      300
-    );
-  }, 3500);
-}
-
-/* NAVIGATION & TABS */
-
-function bindNavigation() {
-  const links =
-    document.querySelectorAll(
-      '.nav-link[data-tab]'
-    );
-
-  links.forEach(link => {
-    link.addEventListener(
-      'click',
-      event => {
-        event.preventDefault();
-
-        const tabId =
-          link.dataset.tab;
-
-        links.forEach(
-          l =>
-            l.classList.remove(
-              'active'
-            )
-        );
-
-        link.classList.add(
-          'active'
-        );
-
-        document
-          .querySelectorAll(
-            '.tab-content'
-          )
-          .forEach(tab => {
-            tab.classList.add(
-              'hidden'
-            );
-          });
-
-        const activeTab =
-          $(`tab-${tabId}`);
-
-        if (activeTab) {
-          activeTab.classList.remove(
-            'hidden'
-          );
-        }
-
-        if (
-          tabId === 'files'
-        ) {
-          populateFiles(
-            currentDir
-          );
-        }
-
-        if (
-          tabId === 'plugins'
-        ) {
-          searchPlugins();
-        }
-
-        if (
-          tabId === 'version'
-        ) {
-          loadVersionState();
-        }
-
-        if (
-          tabId === 'settings'
-        ) {
-          loadSettings();
-
-          if (
-            hasPermission(
-              'admin'
-            )
-          ) {
-            loadShareTokens();
-          }
-        }
+      if (!data.ok) {
+        toast(`❌ ${data.error}`, 'err');
+        return;
       }
-    );
+
+      showDbCredentials(data.credentials);
+    });
   });
 }
 
-/* EVENTS BINDING */
+/* BACKUPS */
 
-function bindEvents() {
-  bindNavigation();
+async function loadBackups() {
+  const container = $('backupList');
 
-  $('btnStart')
-    ?.addEventListener(
-      'click',
-      startServer
+  if (!container) return;
+
+  container.innerHTML = `
+    <div class="empty-state">
+      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
+      <div class="empty-msg">Cargando copias de seguridad...</div>
+    </div>
+  `;
+
+  const data = await api('/api/backups');
+
+  if (!data.ok) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-msg">${escHtml(data.error)}</div></div>`;
+    return;
+  }
+
+  const backups = data.backups || [];
+
+  container.innerHTML = backups.length
+    ? backups
+        .map(
+          backup => `
+        <div class="backup-row">
+          <span class="bk-icon">🗄️</span>
+          <span class="bk-name">
+            ${escHtml(backup.name)}
+            <small>${escHtml(backup.date)}</small>
+          </span>
+          <span class="bk-size">${escHtml(backup.sizeMb)} MB</span>
+          <span class="bk-actions">
+            <button class="icon-btn edit" data-download-backup="${escHtml(backup.name)}" title="Descargar">⬇️</button>
+            <button class="icon-btn" data-delete-backup="${escHtml(backup.name)}" title="Eliminar">🗑️</button>
+          </span>
+        </div>
+      `
+        )
+        .join('')
+    : '<div class="empty-state"><div class="empty-msg">No hay copias de seguridad todavía.</div></div>';
+
+  container.querySelectorAll('[data-download-backup]').forEach(button => {
+    button.addEventListener('click', () =>
+      downloadBackup(button.dataset.downloadBackup)
     );
+  });
 
-  $('btnStop')
-    ?.addEventListener(
-      'click',
-      stopServer
-    );
+  container.querySelectorAll('[data-delete-backup]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const name = button.dataset.deleteBackup;
 
-  $('btnRestart')
-    ?.addEventListener(
-      'click',
-      restartServer
-    );
-
-  $('btnSendCmd')
-    ?.addEventListener(
-      'click',
-      sendCmd
-    );
-
-  $('cmdInput')
-    ?.addEventListener(
-      'keydown',
-      event => {
-        if (
-          event.key === 'Enter'
-        ) {
-          sendCmd();
-        }
+      if (
+        !confirm(
+          `¿Eliminar la copia de seguridad "${name}"? Esta acción no se puede deshacer.`
+        )
+      ) {
+        return;
       }
-    );
 
-  $('btnEditorSave')
-    ?.addEventListener(
-      'click',
-      saveFile
-    );
+      const data = await api(`/api/backups/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
+      });
 
-  $('btnEditorClose')
-    ?.addEventListener(
-      'click',
-      closeEditor
-    );
-
-  $('fileUploadInput')
-    ?.addEventListener(
-      'change',
-      event => {
-        uploadSelectedFiles(
-          event.target.files
-        );
-
-        event.target.value =
-          '';
+      if (!data.ok) {
+        toast(`❌ ${data.error}`, 'err');
+        return;
       }
-    );
 
-  $('btnUploadFiles')
-    ?.addEventListener(
-      'click',
-      () => {
-        $('fileUploadInput')
-          ?.click();
-      }
-    );
-
-  $('btnNewFolder')
-    ?.addEventListener(
-      'click',
-      async () => {
-        const name =
-          prompt(
-            'Nombre de la nueva carpeta:'
-          );
-
-        if (!name) return;
-
-        const target =
-          currentDir
-            ? `${currentDir}/${name}`
-            : name;
-
-        try {
-          const data =
-            await postJSON(
-              '/api/files/mkdir',
-              {
-                path: target,
-              }
-            );
-
-          if (!data.ok) {
-            throw new Error(
-              data.error
-            );
-          }
-
-          toast(
-            '📁 Carpeta creada',
-            'ok'
-          );
-
-          populateFiles(
-            currentDir
-          );
-        } catch (error) {
-          toast(
-            `❌ ${error.message}`,
-            'err'
-          );
-        }
-      }
-    );
-
-  $('btnPluginSearch')
-    ?.addEventListener(
-      'click',
-      searchPlugins
-    );
-
-  $('pluginSearchInput')
-    ?.addEventListener(
-      'keydown',
-      event => {
-        if (
-          event.key === 'Enter'
-        ) {
-          searchPlugins();
-        }
-      }
-    );
-
-  $('pluginSourceSelect')
-    ?.addEventListener(
-      'change',
-      event => {
-        pluginSource =
-          event.target.value;
-
-        searchPlugins();
-      }
-    );
-
-  $('pluginPriceSelect')
-    ?.addEventListener(
-      'change',
-      event => {
-        priceFilter =
-          event.target.value;
-
-        searchPlugins();
-      }
-    );
-
-  $('btnInstallPlugin')
-    ?.addEventListener(
-      'click',
-      installCurrentPlugin
-    );
-
-  $('closePluginModal')
-    ?.addEventListener(
-      'click',
-      () => {
-        $('pluginModal')
-          ?.classList.add(
-            'hidden'
-          );
-      }
-    );
-
-  /*
-   * Los antiguos selectores de Versiones ya no
-   * forman parte de la interfaz nueva.
-   *
-   * Se mantienen estas comprobaciones opcionales
-   * por compatibilidad con HTML antiguo.
-   */
-  $('softwareSelect')
-    ?.addEventListener(
-      'change',
-      changeSoftwareOrVersion
-    );
-
-  $('versionSelect')
-    ?.addEventListener(
-      'change',
-      changeSoftwareOrVersion
-    );
-
-  $('btnInstallVersion')
-    ?.addEventListener(
-      'click',
-      installSelectedVersion
-    );
-
-  $('btnSaveSettings')
-    ?.addEventListener(
-      'click',
-      saveSettings
-    );
-
-  $('btnCreateShareToken')
-    ?.addEventListener(
-      'click',
-      createShareToken
-    );
-
-  $('btnLogout')
-    ?.addEventListener(
-      'click',
-      () => {
-        clearSession();
-
-        if (cloudSocket) {
-          cloudSocket.disconnect();
-        }
-
-        showLogin(
-          'Has cerrado la sesión del panel.'
-        );
-      }
-    );
+      toast('✅ Copia de seguridad eliminada', 'ok');
+      loadBackups();
+    });
+  });
 }
 
-/* INIT */
+async function createBackup() {
+  const name = prompt('Nombre para la copia de seguridad (opcional):', '');
+  if (name === null) return;
 
-document.addEventListener(
-  'DOMContentLoaded',
-  () => {
-    ensureLoginGate();
+  const button = $('btnNewBackup');
 
-    bindEvents();
+  if (button) {
+    button.disabled = true;
+    button.textContent = '⏳ Creando...';
+  }
 
-    if (
-      panelSession &&
-      agentId
-    ) {
-      connectCloud(false)
-        .catch(() => {});
-    } else {
-      showLogin();
+  try {
+    const data = await postJSON('/api/backups', { name: name.trim() });
+
+    if (!data.ok) {
+      toast(`❌ ${data.error}`, 'err');
+      return;
+    }
+
+    toast(
+      data.warning
+        ? `⚠️ ${data.warning}`
+        : `✅ Copia de seguridad creada (${data.sizeMb} MB)`,
+      data.warning ? 'warn' : 'ok'
+    );
+
+    loadBackups();
+  } catch (error) {
+    toast(`❌ ${error.message}`, 'err');
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '➕ Nueva copia';
     }
   }
-);
+}
+
+async function downloadBackup(name) {
+  try {
+    const result = await rpcHttp(
+      `/api/backups/download/${encodeURIComponent(name)}`
+    );
+
+    if (!result?.bodyBase64) {
+      toast(
+        result?.data?.error || 'No se pudo descargar la copia de seguridad.',
+        'err'
+      );
+      return;
+    }
+
+    const bytes = decodeResultBody(result);
+    const blob = new Blob([bytes], {
+      type: result.contentType || 'application/zip',
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+
+    anchor.href = url;
+    anchor.download = name;
+    anchor.click();
+
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) {
+    toast(`❌ ${error.message}`, 'err');
+  }
+}
+
+/* PORTS */
+
+async function loadPorts() {
+  const element = $('portList');
+  if (!element) return;
+
+  element.innerHTML =
+    '<div class="empty-state"><div style="animation:spin 1s linear infinite;font-size:28px">⟳</div><div class="empty-msg">Comprobando puertos...</div></div>';
+
+  try {
+    const data = await api('/api/ports');
+    if (!data.ok) throw new Error(data.error || 'No se pudieron cargar los puertos');
+
+    const props = data.properties || {};
+    const ports = Array.isArray(data.ports) ? data.ports : [];
+
+    element.innerHTML = `
+      <div class="ports-toolbar">
+        <div>
+          <div class="panel-title"><span>🔌</span> PUERTOS DEL SERVIDOR</div>
+          <div class="port-toolbar-sub">Configura los puertos de Minecraft, Query y RCON. Los cambios requieren reiniciar el servidor.</div>
+        </div>
+        <button class="small-btn" id="btnRefreshPorts">↺ Comprobar</button>
+      </div>
+
+      <div class="ports-grid">
+        ${ports
+          .map(
+            port => `
+          <div class="port-row">
+            <div class="port-num">${escHtml(port.port)}</div>
+            <div class="port-info">
+              <div class="port-name">${escHtml(port.name)}</div>
+              <div class="port-desc">${escHtml(port.description)}</div>
+            </div>
+            <span class="port-proto">${escHtml(port.protocol)}</span>
+            <span class="port-state ${escHtml(port.state)}">
+              ${
+                port.state === 'open'
+                  ? '● ABIERTO'
+                  : port.state === 'closed'
+                    ? '● CERRADO'
+                    : port.state === 'disabled'
+                      ? '● DESACTIVADO'
+                      : '● CONFIGURADO'
+              }
+            </span>
+          </div>
+        `
+          )
+          .join('')}
+      </div>
+
+      <div class="panel ports-config-panel">
+        <div class="panel-header">
+          <div>
+            <div class="panel-title"><span>⚙️</span> CONFIGURACIÓN</div>
+            <div class="port-toolbar-sub">Los valores se escriben directamente en server.properties.</div>
+          </div>
+        </div>
+
+        <div class="ports-form">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Puerto de Minecraft</label>
+              <input id="portMinecraft" class="form-input" type="number" min="1" max="65535" value="${escHtml(props.serverPort ?? 25565)}">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Puerto Query</label>
+              <input id="portQuery" class="form-input" type="number" min="1" max="65535" value="${escHtml(props.queryPort ?? 25565)}">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Puerto RCON</label>
+              <input id="portRcon" class="form-input" type="number" min="1" max="65535" value="${escHtml(props.rconPort ?? 25575)}">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Contraseña RCON</label>
+              <input id="portRconPassword" class="form-input" type="password" placeholder="${props.hasRconPassword ? 'Dejar vacío para conservarla' : 'Contraseña nueva'}" autocomplete="new-password">
+            </div>
+          </div>
+
+          <div class="startup-toggles">
+            <label class="startup-toggle" for="portEnableQuery">
+              <div class="startup-toggle-icon">📡</div>
+              <div class="startup-toggle-info">
+                <div class="startup-toggle-title">Game Query</div>
+                <div class="startup-toggle-desc">Permite consultar información del servidor mediante el protocolo Query (jugadores, MOTD...).</div>
+              </div>
+              <span class="toggle">
+                <input type="checkbox" id="portEnableQuery" ${props.enableQuery ? 'checked' : ''}>
+                <span class="toggle-slider"></span>
+              </span>
+            </label>
+
+            <label class="startup-toggle" for="portEnableRcon">
+              <div class="startup-toggle-icon">🎛️</div>
+              <div class="startup-toggle-info">
+                <div class="startup-toggle-title">RCON</div>
+                <div class="startup-toggle-desc">Consola remota. Usa una contraseña fuerte y no expongas este puerto innecesariamente a Internet.</div>
+              </div>
+              <span class="toggle">
+                <input type="checkbox" id="portEnableRcon" ${props.enableRcon ? 'checked' : ''}>
+                <span class="toggle-slider"></span>
+              </span>
+            </label>
+          </div>
+
+          <button class="save-btn" id="btnSavePorts">💾 GUARDAR PUERTOS</button>
+        </div>
+      </div>
+    `;
+
+    $('btnRefreshPorts')?.addEventListener('click', loadPorts);
+    $('btnSavePorts')?.addEventListener('click', savePorts);
+  } catch (error) {
+    element.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-msg">${escHtml(error.message)}</div><button class="small-btn" id="btnRetryPorts">↺ Reintentar</button></div>`;
+    $('btnRetryPorts')?.addEventListener('click', loadPorts);
+  }
+}
+
+async function savePorts() {
+  const body = {
+    serverPort: Number($('portMinecraft')?.value),
+    queryPort: Number($('portQuery')?.value),
+    rconPort: Number($('portRcon')?.value),
+    enableQuery: Boolean($('portEnableQuery')?.checked),
+    enableRcon: Boolean($('portEnableRcon')?.checked),
+    rconPassword: $('portRconPassword')?.value || '',
+  };
+
+  const button = $('btnSavePorts');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'GUARDANDO...';
+  }
+
+  try {
+    const data = await postJSON('/api/ports', body);
+    if (!data.ok) {
+      toast(`❌ ${data.error}`, 'err');
+      return;
+    }
+
+    toast('✅ Puertos guardados. Reinicia el servidor para aplicar los cambios.', 'ok');
+    addActivity('Configuración de puertos actualizada', 'ok', '🔌');
+    await loadPorts();
+  } catch (error) {
+    toast(error.message, 'err');
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '💾 GUARDAR PUERTOS';
+    }
+  }
+}
+
+/* STARTUP */
+
+function requiredJavaLabel(version) {
+  const match = String(version || '').trim().match(/^(\d+)\.(\d+)(?:\.(\d+))?/);
+  if (!match) return 'Java se seleccionará automáticamente';
+
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3] || 0);
+  let java = null;
+
+  if (major >= 26) java = 25;
+  else if (major === 1) {
+    if (minor <= 11) java = 8;
+    else if (minor >= 12 && minor <= 15) java = 11;
+    else if (minor === 16) java = patch >= 5 ? 16 : 11;
+    else if (minor >= 17 && minor <= 19) java = 17;
+    else if (minor >= 20 && minor <= 21) java = 21;
+  }
+
+  return java ? `Java ${java} · gestionado por MoonWolf` : 'Versión no reconocida';
+}
+
+async function loadStartup() {
+  const element = $('startupList');
+
+  if (!element) return;
+
+  element.innerHTML = `
+    <div class="empty-state">
+      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
+      <div class="empty-msg">Cargando configuración...</div>
+    </div>
+  `;
+
+  const data = await api('/api/startup');
+
+  if (!data.ok) {
+    element.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-msg">${escHtml(data.error)}</div>
+      </div>
+    `;
+
+    return;
+  }
+
+  const cfg = data.config || {};
+  const jars = Array.isArray(data.jars) ? data.jars : [];
+  const hasCurrentJar = jars.includes(cfg.jar);
+  const port = data.serverPort;
+
+  element.innerHTML = `
+    <div class="startup-form">
+
+      <div class="form-group">
+        <label class="form-label">Archivo .jar del servidor</label>
+        ${
+          jars.length
+            ? `
+              <select id="stJar" class="form-select">
+                ${jars
+                  .map(
+                    jar => `
+                  <option value="${escHtml(jar)}" ${jar === cfg.jar ? 'selected' : ''}>${escHtml(jar)}</option>
+                `
+                  )
+                  .join('')}
+              </select>
+              <div class="form-hint">
+                Se lanzará este archivo al pulsar ARRANCAR.
+                ${!hasCurrentJar ? ` El configurado actualmente ("${escHtml(cfg.jar)}") no está en la carpeta — elige uno de la lista y guarda.` : ''}
+              </div>
+            `
+            : `
+              <div class="form-hint" style="color:var(--red)">
+                No se encontró ningún .jar en la carpeta del servidor. Sube uno desde Archivos o instala uno desde Versiones.
+              </div>
+            `
+        }
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Versión de Minecraft</label>
+        <input id="stMinecraftVersion" class="form-input" type="text" placeholder="Ej. 1.21.11" value="${escHtml(cfg.minecraftVersion || '')}">
+        <div class="form-hint">MoonWolf usa esta versión para seleccionar automáticamente el Java compatible. Si instalaste el servidor desde Versiones, se rellena automáticamente.</div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Java</label>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:var(--panel)">
+          <span style="font-size:18px">☕</span>
+          <div style="flex:1;min-width:220px">
+            <div style="font-weight:700" id="stJavaManagedLabel">
+              ${
+                data.javaRuntime?.javaMajor
+                  ? `Java ${escHtml(data.javaRuntime.javaMajor)} ${data.javaRuntime.installed ? '✓ instalado' : '↓ se descargará automáticamente'}`
+                  : 'Java se seleccionará automáticamente'
+              }
+            </div>
+            <div class="form-hint" style="margin-top:3px">
+              ${
+                data.javaRuntime?.javaMajor
+                  ? `Runtime gestionado por MoonWolf · ${data.javaRuntime.installed ? 'listo para usar' : 'se instalará al arrancar'}`
+                  : 'Indica una versión de Minecraft válida para calcular el runtime.'
+              }
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:10px">
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
+            <input id="stJavaOverride" type="checkbox" ${cfg.javaMode === 'override' ? 'checked' : ''}>
+            Usar un Java personalizado (avanzado)
+          </label>
+          <input id="stJavaOverridePath" class="form-input" type="text" style="margin-top:8px;display:${cfg.javaMode === 'override' ? 'block' : 'none'}" placeholder="C:\Program Files\Java\jdk-21\bin\java.exe" value="${escHtml(cfg.javaOverridePath || cfg.javaPath || '')}">
+          <div class="form-hint">Normalmente no necesitas tocar esto. El modo gestionado evita depender de un JDK instalado en Windows.</div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Memoria mínima (MB)</label>
+          <input id="stMinMem" class="form-input" type="number" min="256" step="256" value="${escHtml(cfg.minMemoryMb ?? 1024)}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Memoria máxima (MB)</label>
+          <input id="stMaxMem" class="form-input" type="number" min="256" step="256" value="${escHtml(cfg.maxMemoryMb ?? 2048)}">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+          <label class="form-label" style="margin-bottom:0">Argumentos JVM extra (antes de "-jar")</label>
+          <button type="button" class="small-btn" id="btnAikarFlags" style="font-size:10px;padding:4px 9px;flex-shrink:0">⚡ Usar Aikar's Flags</button>
+        </div>
+        <input id="stArgs" class="form-input" type="text" placeholder="-XX:+UseG1GC" value="${escHtml(cfg.extraArgs || '')}">
+        <div class="form-hint">Flags de la JVM (recolector de basura, memoria avanzada...). Se insertan justo antes de "-jar".</div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Puerto del servidor</label>
+          <input id="stPort" class="form-input" type="number" min="1" max="65535" placeholder="25565" value="${port ?? ''}">
+          <div class="form-hint">Se guarda como server-port en server.properties.</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Comando de parada</label>
+          <input id="stStopCmd" class="form-input" type="text" placeholder="stop" value="${escHtml(cfg.stopCommand || 'stop')}">
+        </div>
+      </div>
+
+      <div class="startup-toggles">
+        <label class="startup-toggle" for="stAutoRestart">
+          <div class="startup-toggle-icon">🔄</div>
+          <div class="startup-toggle-info">
+            <div class="startup-toggle-title">Reinicio automático si se cae</div>
+            <div class="startup-toggle-desc">Relanza el servidor si el proceso termina de forma inesperada. No cuenta si pulsas DETENER.</div>
+          </div>
+          <span class="toggle">
+            <input type="checkbox" id="stAutoRestart" ${cfg.autoRestartOnCrash ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+          </span>
+        </label>
+
+        <label class="startup-toggle" for="stAutoStart">
+          <div class="startup-toggle-icon">🚀</div>
+          <div class="startup-toggle-info">
+            <div class="startup-toggle-title">Arranque automático</div>
+            <div class="startup-toggle-desc">Inicia el servidor en cuanto MoonWolf Panel/Agent se ponga en marcha.</div>
+          </div>
+          <span class="toggle">
+            <input type="checkbox" id="stAutoStart" ${cfg.autoStartOnBoot ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+          </span>
+        </label>
+      </div>
+
+      <button class="save-btn" id="btnSaveStartup" ${jars.length ? '' : 'disabled'}>💾 GUARDAR</button>
+    </div>
+  `;
+
+  $('btnSaveStartup')?.addEventListener('click', saveStartup);
+
+  $('stJavaOverride')?.addEventListener('change', event => {
+    const input = $('stJavaOverridePath');
+    if (input) {
+      input.style.display = event.target.checked ? 'block' : 'none';
+    }
+  });
+
+  $('stMinecraftVersion')?.addEventListener('input', event => {
+    const version = event.target.value.trim();
+    const runtime = requiredJavaLabel(version);
+    const label = $('stJavaManagedLabel');
+    if (label) label.textContent = runtime;
+  });
+
+  $('btnAikarFlags')?.addEventListener('click', () => {
+    const input = $('stArgs');
+
+    if (!input) return;
+
+    input.value = AIKAR_FLAGS;
+    toast('⚡ Flags de Aikar aplicados — recuerda GUARDAR', 'ok');
+  });
+}
+
+async function saveStartup() {
+  const jarSelect = $('stJar');
+
+  if (!jarSelect || !jarSelect.value) {
+    toast('❌ No hay ningún .jar seleccionable', 'err');
+    return;
+  }
+
+  const portValue = $('stPort')?.value.trim();
+
+  const body = {
+    jar: jarSelect.value,
+    javaPath: $('stJavaOverridePath')?.value.trim() || '',
+    javaMode: Boolean($('stJavaOverride')?.checked) ? 'override' : 'managed',
+    javaOverridePath: $('stJavaOverride')?.checked ? ($('stJavaOverridePath')?.value.trim() || '') : '',
+    minecraftVersion: $('stMinecraftVersion')?.value.trim() || '',
+    minMemoryMb: Number($('stMinMem')?.value) || 1024,
+    maxMemoryMb: Number($('stMaxMem')?.value) || 2048,
+    extraArgs: $('stArgs')?.value.trim() || '',
+    stopCommand: $('stStopCmd')?.value.trim() || 'stop',
+    autoRestartOnCrash: Boolean($('stAutoRestart')?.checked),
+    autoStartOnBoot: Boolean($('stAutoStart')?.checked),
+    serverPort: portValue ? Number(portValue) : undefined,
+  };
+
+  const button = $('btnSaveStartup');
+
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'GUARDANDO...';
+  }
+
+  const data = await postJSON('/api/startup', body);
+
+  if (button) {
+    button.disabled = false;
+    button.textContent = '💾 GUARDAR';
+  }
+
+  if (!data.ok) {
+    toast(`❌ ${data.error}`, 'err');
+    return;
+  }
+
+  toast('✅ Configuración de arranque guardada', 'ok');
+  loadStartup();
+}
+
+/* NAVIGATION */
+
+function switchView(id) {
+  document.querySelectorAll('.view').forEach(view => view.classList.remove('active'));
+  document.querySelectorAll('.sb-item').forEach(item => item.classList.remove('active'));
+
+  $(`view-${id}`)?.classList.add('active');
+
+  document
+    .querySelector(`.sb-item[data-view="${id}"]`)
+    ?.classList.add('active');
+
+  switch (id) {
+    case 'files':
+      populateFiles(currentDir);
+      break;
+
+    case 'versions':
+      loadSoftware().catch(error => toast(error.message, 'err'));
+      break;
+
+    case 'plugins':
+      loadInstalledPlugins();
+      break;
+
+    case 'databases':
+      loadDatabases();
+      break;
+
+    case 'users':
+      renderUsers();
+      break;
+
+    case 'backups':
+      loadBackups();
+      break;
+
+    case 'ports':
+      loadPorts();
+      break;
+
+    case 'startup':
+      loadStartup();
+      break;
+
+    case 'activitylog':
+      renderActivity();
+      break;
+
+    case 'settings':
+      renderSettings();
+      break;
+  }
+}
+
+/* ACTIVITY */
+
+function addActivity(message, level = 'info', icon = '📌') {
+  activities.push({
+    message,
+    level,
+    icon,
+    time: new Date().toLocaleTimeString('es-ES'),
+  });
+
+  if (activities.length > 200) {
+    activities.shift();
+  }
+
+  if ($('view-activitylog')?.classList.contains('active')) {
+    renderActivity();
+  }
+}
+
+function renderActivity() {
+  const element = $('activityList');
+
+  if (!element) return;
+
+  if (!activities.length) {
+    element.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">📭</div>
+        <div class="empty-msg">No hay actividad todavía</div>
+      </div>
+    `;
+    return;
+  }
+
+  const counts = activities.reduce((acc, item) => {
+    const level = item.level || 'info';
+    acc[level] = (acc[level] || 0) + 1;
+    return acc;
+  }, {});
+
+  const toolbar = `
+    <div class="activity-toolbar">
+      <div class="activity-counter">
+        <span class="activity-counter-num">${activities.length}</span>
+        <span class="activity-counter-label">eventos</span>
+      </div>
+      <div class="activity-filters">
+        ${counts.info  ? `<span class="activity-filter info">${counts.info} info</span>` : ''}
+        ${counts.ok    ? `<span class="activity-filter ok">${counts.ok} ok</span>` : ''}
+        ${counts.warn  ? `<span class="activity-filter warn">${counts.warn} aviso</span>` : ''}
+        ${counts.error ? `<span class="activity-filter error">${counts.error} error</span>` : ''}
+      </div>
+    </div>
+  `;
+
+  const items = activities
+    .slice()
+    .reverse()
+    .map(item => {
+      const level = String(item.level || 'info').toLowerCase();
+      const safeLevel = ['info', 'ok', 'warn', 'error'].includes(level) ? level : 'info';
+      const label = { info: 'INFO', ok: 'OK', warn: 'AVISO', error: 'ERROR' }[safeLevel];
+
+      return `
+        <div class="activity-item ${safeLevel}">
+          <div class="activity-icon">${escHtml(item.icon || '📌')}</div>
+          <div class="activity-body">
+            <div class="activity-msg">${escHtml(item.message)}</div>
+            <div class="activity-time">${escHtml(item.time || '--:--:--')}</div>
+          </div>
+          <span class="activity-badge ${safeLevel}">${label}</span>
+        </div>
+      `;
+    })
+    .join('');
+
+  element.innerHTML = toolbar + `<div class="activity-feed">${items}</div>`;
+}
+
+/* USERS */
+
+async function loadShareTokens() {
+  if (panelKind !== 'owner' || panelPermission !== 'admin') return;
+
+  const list = $('shareTokenList');
+  if (!list) return;
+
+  try {
+    const data = await cloudApi('/api/share-tokens');
+    const tokens = Array.isArray(data.tokens) ? data.tokens : [];
+
+    const control = tokens.filter(token => token.permission === 'control').length;
+    const read = tokens.filter(token => token.permission !== 'control').length;
+
+    if ($('userStatTotal')) $('userStatTotal').textContent = tokens.length;
+    if ($('userStatControl')) $('userStatControl').textContent = control;
+    if ($('userStatRead')) $('userStatRead').textContent = read;
+
+    list.innerHTML = tokens.length
+      ? tokens
+          .map(token => {
+            const expiry = token.expiresAt
+              ? new Date(token.expiresAt).toLocaleString('es-ES')
+              : 'Nunca';
+            return `
+            <div class="user-row">
+              <div class="user-avatar">👤</div>
+              <div class="user-row-main">
+                <strong>${escHtml(token.label || 'Usuario')}</strong>
+                <div class="user-row-meta">
+                  <span class="user-permission-pill ${token.permission === 'control' ? 'control' : 'read'}">
+                    ${token.permission === 'control' ? '🎮 Control' : '👁️ Solo lectura'}
+                  </span>
+                  <span>Caduca: ${escHtml(expiry)}</span>
+                </div>
+              </div>
+              <button class="small-btn user-revoke-btn" data-revoke-share="${escHtml(token.id)}">Revocar</button>
+            </div>
+          `;
+          })
+          .join('')
+      : '<div class="empty-state"><div class="empty-icon">👥</div><div class="empty-msg">No hay usuarios con acceso.</div></div>';
+
+    list.querySelectorAll('[data-revoke-share]').forEach(button => {
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+          await cloudApi(
+            `/api/share-tokens/${encodeURIComponent(button.dataset.revokeShare)}`,
+            { method: 'DELETE' }
+          );
+          toast('Acceso revocado.', 'ok');
+          await loadShareTokens();
+        } catch (error) {
+          toast(error.message, 'err');
+          button.disabled = false;
+        }
+      });
+    });
+  } catch (error) {
+    list.innerHTML = `<div class="empty-state">${escHtml(error.message)}</div>`;
+  }
+}
+
+function renderUsers() {
+  const element = $('userList');
+  if (!element) return;
+
+  const isOwner = panelKind === 'owner' && panelPermission === 'admin';
+
+  if (!isOwner) {
+    element.innerHTML = `
+      <div class="user-access-grid">
+        <div class="panel user-access-card">
+          <div class="panel-header">
+            <div class="panel-title"><span>👤</span> TU ACCESO</div>
+          </div>
+          <div class="user-access-body">
+            <div class="user-profile-icon">👤</div>
+            <div>
+              <div class="user-profile-title">Acceso compartido</div>
+              <div class="user-profile-sub">Este panel te ha sido compartido por el propietario.</div>
+            </div>
+          </div>
+          <div class="user-permission-row">
+            <span>Permiso</span>
+            <strong>${panelPermission === 'control' ? '🎮 Control' : '👁️ Solo lectura'}</strong>
+          </div>
+          <div class="user-info-note">
+            Tu acceso está limitado a los permisos asignados por el propietario. No puedes crear ni revocar accesos.
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  element.innerHTML = `
+    <div class="user-stats-grid">
+      <div class="user-stat-card">
+        <span class="user-stat-icon">👥</span>
+        <div><span class="user-stat-label">Accesos activos</span><strong id="userStatTotal">—</strong></div>
+      </div>
+      <div class="user-stat-card">
+        <span class="user-stat-icon">🎮</span>
+        <div><span class="user-stat-label">Con control</span><strong id="userStatControl">—</strong></div>
+      </div>
+      <div class="user-stat-card">
+        <span class="user-stat-icon">👁️</span>
+        <div><span class="user-stat-label">Solo lectura</span><strong id="userStatRead">—</strong></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title"><span>➕</span> NUEVO USUARIO</div>
+          <div class="user-panel-subtitle">Crea un acceso independiente sin compartir tu código de propietario.</div>
+        </div>
+      </div>
+      <div class="user-create-form">
+        <input id="shareLabel" class="form-input" placeholder="Nombre (ej. Paco)" maxlength="60">
+        <select id="sharePermission" class="form-input">
+          <option value="read">👁️ Solo lectura</option>
+          <option value="control">🎮 Control</option>
+        </select>
+        <select id="shareExpiry" class="form-input">
+          <option value="never">Sin caducidad</option>
+          <option value="1h">1 hora</option>
+          <option value="1d">1 día</option>
+          <option value="7d">7 días</option>
+          <option value="30d">30 días</option>
+        </select>
+        <button class="small-btn user-create-btn" id="btnCreateShare">Crear acceso</button>
+      </div>
+    </div>
+
+    <div id="shareCreatedBox" class="panel user-token-panel" style="display:none">
+      <div class="user-token-title">🔐 ACCESO CREADO</div>
+      <div class="user-token-sub">Este token se muestra una sola vez. Entrégaselo a la persona que va a usar el panel.</div>
+      <div class="user-token-row">
+        <code id="shareCreatedToken"></code>
+        <button class="small-btn" id="btnCopyShareToken">Copiar</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title"><span>👥</span> USUARIOS CON ACCESO</div>
+          <div class="user-panel-subtitle">Puedes revocar cualquier acceso inmediatamente.</div>
+        </div>
+        <button class="small-btn" id="btnRefreshUsers">↺ Actualizar</button>
+      </div>
+      <div id="shareTokenList"></div>
+    </div>
+  `;
+
+  bindShareSettings();
+  $('btnRefreshUsers')?.addEventListener('click', loadShareTokens);
+}
+
+function bindShareSettings() {
+  if (panelKind !== 'owner' || panelPermission !== 'admin') return;
+
+  $('btnCreateShare')?.addEventListener('click', async () => {
+    const button = $('btnCreateShare');
+    button.disabled = true;
+
+    try {
+      const data = await cloudApi('/api/share-tokens', {
+        method: 'POST',
+        body: JSON.stringify({
+          label: $('shareLabel')?.value || '',
+          permission: $('sharePermission')?.value || 'read',
+          expires: $('shareExpiry')?.value || 'never',
+        }),
+      });
+
+      const token = data.token;
+      let copied = false;
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(token);
+          copied = true;
+        }
+      } catch {}
+
+      $('shareCreatedToken').textContent = token;
+      $('shareCreatedBox').style.display = '';
+      $('shareLabel').value = '';
+      toast(
+        copied
+          ? 'Token creado y copiado al portapapeles.'
+          : 'Token creado. Cópialo antes de cerrar esta pantalla.',
+        'ok'
+      );
+      await loadShareTokens();
+    } catch (error) {
+      toast(error.message, 'err');
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  $('btnCopyShareToken')?.addEventListener('click', async event => {
+    const token = $('shareCreatedToken')?.textContent || '';
+    try {
+      await navigator.clipboard.writeText(token);
+      flashButton(event.currentTarget, 'Copiado');
+    } catch {
+      toast('No se pudo copiar el token.', 'err');
+    }
+  });
+
+  loadShareTokens();
+}
+
+/* SETTINGS */
+
+function renderSettings() {
+  const element = $('settingsList');
+
+  if (!element) return;
+
+  element.innerHTML = `
+    <div class="settings-group">
+      <div class="settings-group-header">
+        <div class="settings-group-icon">☁️</div>
+        <div class="settings-group-info">
+          <div class="settings-group-title">MoonWolf Cloud</div>
+          <div class="settings-group-sub">Conexión WebSocket con el panel remoto</div>
+        </div>
+        <span class="settings-status ${cloudSocket?.connected ? 'online' : 'offline'}">
+          ${cloudSocket?.connected ? '● ONLINE' : '● OFFLINE'}
+        </span>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <div class="settings-group-header">
+        <div class="settings-group-icon">🛰️</div>
+        <div class="settings-group-info">
+          <div class="settings-group-title">MoonWolf Agent</div>
+          <div class="settings-group-sub">Identificador único de esta instalación</div>
+        </div>
+        <span class="settings-status ${agentOnline ? 'online' : 'offline'}">
+          ${agentOnline ? '● CONECTADO' : '● DESCONECTADO'}
+        </span>
+      </div>
+      <div class="settings-group-body">
+        <div class="settings-field">
+          <code class="settings-field-value" title="${escHtml(agentId || '—')}">${escHtml(agentId || '—')}</code>
+          <button class="small-btn" id="btnCopyAgentId">Copiar</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-danger">
+      <div class="settings-danger-info">
+        <div class="settings-danger-title">⚠️ Desconectar del Cloud</div>
+        <div class="settings-danger-sub">
+          Cerrará la sesión actual del panel. Necesitarás un nuevo código de emparejamiento para reconectar.
+        </div>
+      </div>
+      <button class="settings-danger-btn" id="btnDisconnectCloud">Desconectar</button>
+    </div>
+  `;
+
+  $('btnCopyAgentId')?.addEventListener('click', async event => {
+    if (!agentId) return;
+
+    try {
+      await navigator.clipboard.writeText(agentId);
+      flashButton(event.currentTarget, 'Copiado');
+    } catch {
+      toast('No se pudo copiar.', 'err');
+    }
+  });
+
+  $('btnDisconnectCloud')?.addEventListener('click', () => {
+    cloudSocket?.disconnect();
+    setAgentOnline(false);
+    currentStatus = 'offline';
+    updateStatusUi('offline');
+    clearSession();
+    showLogin('Desconectado.');
+  });
+}
+
+/* TOAST & HELPERS */
+
+function toast(message, type = 'info') {
+  const element = $('toast');
+
+  if (!element) return;
+
+  element.textContent = message;
+  element.className = `toast show ${type}`;
+
+  clearTimeout(toast.timer);
+
+  toast.timer = setTimeout(() => {
+    element.className = 'toast';
+  }, 3000);
+}
+
+function flashButton(button, label, duration = 1200) {
+  if (!button) return;
+
+  const original = button.textContent;
+
+  button.textContent = label;
+  button.disabled = true;
+
+  setTimeout(() => {
+    button.textContent = original;
+    button.disabled = false;
+  }, duration);
+}
+
+/* EVENTS */
+
+function bindEvents() {
+  ensureLoginGate();
+
+  document.querySelectorAll('.sb-item').forEach(item => {
+    item.addEventListener('click', () => switchView(item.dataset.view));
+  });
+
+  $('btnStart')?.addEventListener('click', startServer);
+  $('btnStop')?.addEventListener('click', stopServer);
+  $('btnRestart')?.addEventListener('click', restartServer);
+  $('btnSendCmd')?.addEventListener('click', sendCmd);
+
+  $('cmdInput')?.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      sendCmd();
+    }
+  });
+
+  document.querySelectorAll('.quick-btn').forEach(button => {
+    button.addEventListener('click', () => {
+      const input = $('cmdInput');
+
+      if (!input) return;
+
+      input.value = button.dataset.cmd || '';
+      sendCmd();
+    });
+  });
+
+  $('btnClearConsole')?.addEventListener('click', () => {
+    if ($('console')) {
+      $('console').innerHTML = '';
+    }
+  });
+
+  $('crumbHome')?.addEventListener('click', () => populateFiles(''));
+
+  $('btnUploadFiles')?.addEventListener('click', () => {
+    $('fileUploadInput')?.click();
+  });
+
+  $('btnUploadFolder')?.addEventListener('click', () => {
+    $('folderUploadInput')?.click();
+  });
+
+  $('fileUploadInput')?.addEventListener('change', async event => {
+    await uploadSelectedFiles(event.target.files);
+    event.target.value = '';
+  });
+
+  $('folderUploadInput')?.addEventListener('change', async event => {
+    await uploadSelectedFiles(event.target.files);
+    event.target.value = '';
+  });
+
+  $('btnNewFile')?.addEventListener('click', async () => {
+    const raw = prompt('Nombre del nuevo archivo (termina en "/" para carpeta):');
+    if (!raw) return;
+
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+
+    const isDir = trimmed.endsWith('/');
+    const name = isDir ? trimmed.slice(0, -1) : trimmed;
+    if (!name) return;
+
+    const data = await postJSON('/api/files/create', {
+      path: currentDir,
+      name,
+      isDir,
+    });
+
+    if (!data.ok) {
+      toast(`❌ ${data.error}`, 'err');
+      return;
+    }
+
+    toast('✅ Creado correctamente', 'ok');
+    populateFiles(currentDir);
+  });
+
+  $('btnEditorBack')?.addEventListener('click', () => {
+    if ($('filesEditorPanel')) {
+      $('filesEditorPanel').style.display = 'none';
+    }
+
+    if ($('filesTablePanel')) {
+      $('filesTablePanel').style.display = '';
+    }
+
+    if (editor?.toTextArea) {
+      editor.toTextArea();
+    }
+
+    editor = null;
+    currentFile = null;
+  });
+
+  $('btnSaveFile')?.addEventListener('click', saveCurrentFile);
+
+  document.addEventListener('keydown', event => {
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      event.key.toLowerCase() === 's' &&
+      currentFile
+    ) {
+      event.preventDefault();
+      saveCurrentFile();
+    }
+  });
+
+  document.querySelectorAll('.plg-source').forEach(button => {
+    button.addEventListener('click', () => {
+      pluginSource = button.dataset.source;
+
+      document.querySelectorAll('.plg-source').forEach(item =>
+        item.classList.toggle('active', item === button)
+      );
+    });
+  });
+
+  document.querySelectorAll('.plg-price').forEach(button => {
+    button.addEventListener('click', () => {
+      priceFilter = button.dataset.price;
+
+      document.querySelectorAll('.plg-price').forEach(item =>
+        item.classList.toggle('active', item === button)
+      );
+    });
+  });
+
+  document.querySelectorAll('.plg-tab-btn').forEach(button => {
+    button.addEventListener('click', () => {
+      const tab = button.dataset.tab;
+
+      document.querySelectorAll('.plg-tab-btn').forEach(item =>
+        item.classList.toggle('active', item === button)
+      );
+
+      if ($('plgTabSearch')) {
+        $('plgTabSearch').style.display = tab === 'search' ? '' : 'none';
+      }
+
+      if ($('plgTabInstalled')) {
+        $('plgTabInstalled').style.display = tab === 'installed' ? '' : 'none';
+      }
+
+      if (tab === 'installed') {
+        loadInstalledPlugins();
+      }
+    });
+  });
+
+  $('btnPluginSearch')?.addEventListener('click', pluginSearch);
+
+  $('plgSearchInput')?.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      pluginSearch();
+    }
+  });
+
+  $('btnRefreshInstalled')?.addEventListener('click', loadInstalledPlugins);
+
+  $('btnClosePlgModal')?.addEventListener('click', () => {
+    if ($('plgVersionModal')) {
+      $('plgVersionModal').style.display = 'none';
+    }
+  });
+
+  $('plgVersionModal')?.addEventListener('click', event => {
+    if (event.target === $('plgVersionModal')) {
+      $('plgVersionModal').style.display = 'none';
+    }
+  });
+
+  $('btnNewBackup')?.addEventListener('click', createBackup);
+
+  updateAgentUi(agentOnline);
+  updateStatusUi(currentStatus);
+
+  if (panelSession && agentId) {
+    connectCloud(false).catch(() =>
+      showLogin(
+        'La sesión no es válida. Introduce un nuevo código de emparejamiento.'
+      )
+    );
+  } else {
+    showLogin('');
+  }
+}
+
+/* START */
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', bindEvents, { once: true });
+} else {
+  bindEvents();
+}
