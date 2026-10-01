@@ -70,6 +70,7 @@ let priceFilter = 'all';
 
 let versionState = {
   software: null,
+  softwareLabel: null,
   version: null,
   builds: [],
 };
@@ -1695,7 +1696,62 @@ async function loadInstalledPlugins() {
   });
 }
 
-/* MINECRAFT VERSIONS */
+/* ══════════════════════════════════════════════
+   MINECRAFT VERSIONS (rediseñado)
+   ══════════════════════════════════════════════ */
+
+const VER_SOFTWARE_META = {
+  paper:      { icon: '📄', color: '#00c8ff' },
+  purpur:     { icon: '🟣', color: '#aa88ff' },
+  folia:      { icon: '⚡', color: '#00ff88' },
+  fabric:     { icon: '🧵', color: '#d4aa70' },
+  vanilla:    { icon: '🟫', color: '#c9d8e8' },
+  forge:      { icon: '🔨', color: '#c0873f' },
+  velocity:   { icon: '💨', color: '#ffcc00' },
+  waterfall:  { icon: '💧', color: '#ff8844' },
+  bungeecord: { icon: '🔌', color: '#ff4455' },
+};
+
+function verMeta(id) {
+  return VER_SOFTWARE_META[id] || { icon: '🧩', color: '#00c8ff' };
+}
+
+function renderVersionFlow(step) {
+  const steps = ['Software', 'Versión', 'Build'];
+
+  return `
+    <div class="ver-flow">
+      ${steps.map((label, i) => {
+        const num = i + 1;
+        const state = num < step ? 'done' : num === step ? 'active' : '';
+
+        return `
+          <div class="ver-flow-step ${state}">
+            <span class="ver-flow-num">${num < step ? '✓' : num}</span>
+            <span class="ver-flow-label">${label}</span>
+          </div>
+          ${i < steps.length - 1 ? '<span class="ver-flow-arrow">›</span>' : ''}
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderSoftwareCard(sw) {
+  const meta = verMeta(sw.id);
+  const isExternal = Boolean(sw.external);
+
+  return `
+    <div class="ver-software-card ${isExternal ? 'external' : ''}"
+         data-software="${escHtml(sw.id)}"
+         style="--sw-color:${meta.color}">
+      <div class="ver-software-icon">${meta.icon}</div>
+      <div class="ver-software-name">${escHtml(sw.label)}</div>
+      <div class="ver-software-desc">${escHtml(sw.desc || '')}</div>
+      ${isExternal ? '<div class="ver-software-external">🔗 Descarga externa</div>' : ''}
+    </div>
+  `;
+}
 
 async function loadSoftware() {
   const data = await api('/api/versions/software');
@@ -1709,181 +1765,333 @@ async function loadSoftware() {
 
   if (!element) return;
 
+  const servers = list.filter(sw => sw.category === 'server');
+  const proxies = list.filter(sw => sw.category === 'proxy');
+
+  let jarInfo = '<span class="ver-jar-missing">❌ No hay server.jar instalado</span>';
+
+  try {
+    const current = await api('/api/versions/current');
+
+    if (current.ok && current.exists) {
+      jarInfo = `
+        <span class="ver-jar-ok">✅ server.jar instalado</span>
+        <span class="ver-jar-meta">${escHtml(current.size)} · ${escHtml(current.modified)}</span>
+      `;
+    }
+  } catch {}
+
   element.innerHTML = `
-    <div style="padding:8px 0 18px;color:var(--muted2)">
-      Selecciona un software para consultar sus versiones y builds.
+    <div class="ver-hero">
+      <div class="ver-hero-icon">📦</div>
+      <div class="ver-hero-info">
+        <div class="ver-hero-title">Gestor de versiones</div>
+        <div class="ver-hero-sub">${jarInfo}</div>
+      </div>
     </div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">
-      ${list
-        .map(
-          sw => `
-        <button class="small-btn" data-software="${escHtml(sw.id)}">${escHtml(sw.label)}</button>
-      `
-        )
-        .join('')}
+
+    ${renderVersionFlow(1)}
+
+    <div class="ver-category">
+      <div class="ver-category-header">
+        <span class="ver-category-icon">🖥️</span>
+        <span class="ver-category-name">Servidores</span>
+        <span class="ver-category-count">${servers.length}</span>
+      </div>
+      <div class="ver-software-grid">
+        ${servers.map(renderSoftwareCard).join('')}
+      </div>
     </div>
+
+    ${
+      proxies.length
+        ? `
+          <div class="ver-category">
+            <div class="ver-category-header">
+              <span class="ver-category-icon">🌐</span>
+              <span class="ver-category-name">Proxies</span>
+              <span class="ver-category-count">${proxies.length}</span>
+            </div>
+            <div class="ver-software-grid">
+              ${proxies.map(renderSoftwareCard).join('')}
+            </div>
+          </div>
+        `
+        : ''
+    }
+
     <div id="mwVersionDetails" style="margin-top:18px"></div>
   `;
 
-  element.querySelectorAll('[data-software]').forEach(button => {
-    button.addEventListener('click', () =>
-      selectSoftware(
-        button.dataset.software,
-        list.find(sw => sw.id === button.dataset.software)
-      )
-    );
+  element.querySelectorAll('[data-software]').forEach(card => {
+    const sw = list.find(item => item.id === card.dataset.software);
+
+    if (!sw || sw.external) return;
+
+    card.addEventListener('click', () => selectSoftware(sw.id, sw));
   });
-
-  const current = await api('/api/versions/current');
-
-  if (current.ok) {
-    $('mwVersionDetails').insertAdjacentHTML(
-      'afterbegin',
-      `
-        <div class="panel" style="margin-bottom:12px;padding:12px">
-          📦 server.jar:
-          ${
-            current.exists
-              ? `✅ ${escHtml(current.size)} ·${escHtml(current.modified)}`
-              : '❌ no encontrado'
-          }
-        </div>
-      `
-    );
-  }
 }
 
 async function selectSoftware(id, meta) {
-  versionState = { software: id, version: null, builds: [] };
+  versionState = {
+    software: id,
+    softwareLabel: meta?.label || id,
+    version: null,
+    builds: [],
+  };
 
   const details = $('mwVersionDetails');
 
+  if (!details) return;
+
+  const swMeta = verMeta(id);
+
   details.innerHTML = `
-    <div class="panel" style="padding:12px">
-      <strong>${escHtml(meta?.label || id)}</strong>
-      <div style="margin-top:12px">Cargando versiones...</div>
+    ${renderVersionFlow(2)}
+
+    <div class="ver-panel">
+      <div class="ver-panel-header">
+        <button class="ver-back-btn" id="verBackToSoftware">
+          <span>←</span> Volver
+        </button>
+        <div class="ver-panel-title">
+          <span class="ver-panel-icon">${swMeta.icon}</span>
+          <span>${escHtml(meta?.label || id)}</span>
+        </div>
+      </div>
+      <div class="ver-panel-body">
+        <div class="ver-loading">
+          <div style="animation:spin 1s linear infinite;font-size:24px">⟳</div>
+          <div>Cargando versiones...</div>
+        </div>
+      </div>
     </div>
   `;
 
-  const data = await api(
-    `/api/versions/list?software=${encodeURIComponent(id)}`
-  );
+  details.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
-  if (!data.ok) {
-    details.innerHTML = `<div class="empty-state">${escHtml(data.error)}</div>`;
-    return;
-  }
-
-  const versions = data.versions || [];
-
-  details.innerHTML = `
-    <div class="panel" style="padding:12px">
-      <strong>Versiones</strong>
-      <input id="mwVersionSearch" class="cmd-input" style="margin-top:10px;width:100%" placeholder="Buscar versión...">
-      <div id="mwVersionPills" style="display:flex;flex-wrap:wrap;gap:7px;margin-top:12px"></div>
-      <div id="mwBuilds" style="margin-top:14px"></div>
-    </div>
-  `;
-
-  const renderVersions = list => {
-    $('mwVersionPills').innerHTML = list
-      .map(
-        version => `
-        <button class="small-btn" data-version="${escHtml(version)}">${escHtml(version)}</button>
-      `
-      )
-      .join('');
-
-    $('mwVersionPills')
-      .querySelectorAll('[data-version]')
-      .forEach(button => {
-        button.addEventListener('click', () =>
-          selectVersion(button.dataset.version)
-        );
-      });
-  };
-
-  renderVersions(versions);
-
-  $('mwVersionSearch').addEventListener('input', event => {
-    const query = event.target.value.toLowerCase();
-
-    renderVersions(
-      query
-        ? versions.filter(version => version.toLowerCase().includes(query))
-        : versions
-    );
+  $('verBackToSoftware')?.addEventListener('click', () => {
+    details.innerHTML = '';
+    loadSoftware().catch(error => toast(error.message, 'err'));
   });
+
+  try {
+    const data = await api(
+      `/api/versions/list?software=${encodeURIComponent(id)}`
+    );
+
+    if (!data.ok) {
+      throw new Error(data.error);
+    }
+
+    const versions = data.versions || [];
+    const body = details.querySelector('.ver-panel-body');
+
+    if (!versions.length) {
+      body.innerHTML = '<div class="ver-empty">No hay versiones disponibles.</div>';
+      return;
+    }
+
+    body.innerHTML = `
+      <div class="ver-panel-toolbar">
+        <input id="mwVersionSearch" class="ver-search-input" placeholder="🔍 Buscar versión..." autocomplete="off" spellcheck="false">
+        <span class="ver-count">${versions.length} versiones</span>
+      </div>
+      <div id="mwVersionPills" class="ver-versions-grid"></div>
+    `;
+
+    const renderVersions = filtered => {
+      const pills = $('mwVersionPills');
+
+      if (!filtered.length) {
+        pills.innerHTML = '<div class="ver-empty">Sin resultados</div>';
+        return;
+      }
+
+      pills.innerHTML = filtered
+        .map(v => `
+          <button class="ver-version-pill" data-version="${escHtml(v)}">${escHtml(v)}</button>
+        `)
+        .join('');
+
+      pills.querySelectorAll('[data-version]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          pills.querySelectorAll('.ver-version-pill').forEach(p => p.classList.remove('active'));
+          btn.classList.add('active');
+          selectVersion(btn.dataset.version);
+        });
+      });
+    };
+
+    renderVersions(versions);
+
+    $('mwVersionSearch')?.addEventListener('input', event => {
+      const q = event.target.value.toLowerCase().trim();
+      renderVersions(q ? versions.filter(v => v.toLowerCase().includes(q)) : versions);
+    });
+  } catch (error) {
+    const body = details.querySelector('.ver-panel-body');
+
+    if (body) {
+      body.innerHTML = `<div class="ver-empty">${escHtml(error.message)}</div>`;
+    }
+  }
 }
 
 async function selectVersion(version) {
   versionState.version = version;
 
-  $('mwBuilds').innerHTML = '<div style="padding:8px">Cargando builds...</div>';
+  const details = $('mwVersionDetails');
 
-  const data = await api(
-    `/api/versions/builds?software=${encodeURIComponent(versionState.software)}&version=${encodeURIComponent(version)}`
-  );
+  if (!details) return;
 
-  if (!data.ok) {
-    $('mwBuilds').innerHTML = `<div class="empty-state">${escHtml(data.error)}</div>`;
-    return;
-  }
+  const swMeta = verMeta(versionState.software);
 
-  versionState.builds = data.builds || [];
+  // Eliminar el panel de builds previo si existe
+  details.querySelector('.ver-builds-section')?.remove();
 
-  $('mwBuilds').innerHTML =
-    versionState.builds
-      .map(
-        (build, index) => `
-        <div class="installed-plugin-row">
-          <div>
-            <strong>
-              ${
-                versionState.software === 'fabric'
-                  ? `Loader ${escHtml(build.loaderVersion)}`
-                  : `Build #${escHtml(build.build)}`
-              }
-            </strong>
-            <div style="font-size:11px;color:var(--muted2)">
-              ${escHtml(build.channel || '')}
-              ${build.time ? ' · ' + new Date(build.time).toLocaleString('es-ES') : ''}
-            </div>
-          </div>
-          <button class="small-btn" data-build="${index}">INSTALAR</button>
-        </div>
-      `
-      )
-      .join('') || `<div class="empty-state">No hay builds disponibles.</div>`;
+  const buildsSection = document.createElement('div');
 
-  $('mwBuilds').querySelectorAll('[data-build]').forEach(button => {
-    button.addEventListener('click', () =>
-      installServerBuild(versionState.builds[Number(button.dataset.build)])
-    );
+  buildsSection.className = 'ver-builds-section';
+
+  buildsSection.innerHTML = `
+    ${renderVersionFlow(3)}
+
+    <div class="ver-panel-header">
+      <button class="ver-back-btn" id="verBackToVersions">
+        <span>←</span> Cambiar versión
+      </button>
+      <div class="ver-panel-title">
+        <span class="ver-panel-icon">${swMeta.icon}</span>
+        <span>${escHtml(versionState.softwareLabel || versionState.software)} · ${escHtml(version)}</span>
+      </div>
+    </div>
+    <div class="ver-panel-body">
+      <div class="ver-loading">
+        <div style="animation:spin 1s linear infinite;font-size:24px">⟳</div>
+        <div>Cargando builds...</div>
+      </div>
+    </div>
+  `;
+
+  details.appendChild(buildsSection);
+  buildsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  $('verBackToVersions')?.addEventListener('click', () => {
+    buildsSection.remove();
   });
+
+  try {
+    const data = await api(
+      `/api/versions/builds?software=${encodeURIComponent(versionState.software)}&version=${encodeURIComponent(version)}`
+    );
+
+    if (!data.ok) {
+      throw new Error(data.error);
+    }
+
+    versionState.builds = data.builds || [];
+    const body = buildsSection.querySelector('.ver-panel-body');
+
+    if (!versionState.builds.length) {
+      body.innerHTML = '<div class="ver-empty">No hay builds disponibles para esta versión.</div>';
+      return;
+    }
+
+    body.innerHTML = `
+      <div class="ver-builds">
+        ${versionState.builds.map((build, index) => {
+          const isLatest = index === 0;
+          const channel = String(build.channel || '').toUpperCase();
+          const channelClass = channel === 'STABLE' ? 'stable' : 'experimental';
+          const time = build.time
+            ? new Date(build.time).toLocaleString('es-ES')
+            : '';
+          const changes = build.changes || '';
+
+          const title = versionState.software === 'fabric'
+            ? `Loader ${escHtml(build.loaderVersion || '—')}`
+            : `Build #${escHtml(build.build)}`;
+
+          return `
+            <div class="ver-build-item ${isLatest ? 'latest' : ''}">
+              <div class="ver-build-main">
+                <div class="ver-build-title">
+                  <span>${title}</span>
+                  ${isLatest ? '<span class="ver-build-latest">ÚLTIMA</span>' : ''}
+                  ${channel ? `<span class="ver-channel ${channelClass}">${escHtml(channel)}</span>` : ''}
+                </div>
+                ${time ? `<div class="ver-build-time">${escHtml(time)}</div>` : ''}
+                ${changes ? `<div class="ver-build-changes">${escHtml(changes)}</div>` : ''}
+              </div>
+              <button class="ver-install-btn" data-build="${index}">INSTALAR</button>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+
+    body.querySelectorAll('[data-build]').forEach(btn => {
+      btn.addEventListener('click', () =>
+        installServerBuild(versionState.builds[Number(btn.dataset.build)], btn)
+      );
+    });
+  } catch (error) {
+    const body = buildsSection.querySelector('.ver-panel-body');
+
+    if (body) {
+      body.innerHTML = `<div class="ver-empty">${escHtml(error.message)}</div>`;
+    }
+  }
 }
 
-async function installServerBuild(build) {
+async function installServerBuild(build, button) {
   if (
     !confirm(
-      `Actualizar server.jar a ${versionState.software} ${versionState.version}?`
+      `Actualizar server.jar a ${versionState.softwareLabel || versionState.software} ${versionState.version}?`
     )
   ) {
     return;
   }
 
-  const data = await postJSON('/api/versions/install', {
-    software: versionState.software,
-    version: versionState.version,
-    build: build.build,
-    url: build.url,
-    loaderVersion: build.loaderVersion,
-  });
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'INSTALANDO...';
+  }
 
-  if (!data.ok) {
-    toast(`❌ ${data.error}`, 'err');
-  } else {
+  try {
+    const data = await postJSON('/api/versions/install', {
+      software: versionState.software,
+      version: versionState.version,
+      build: build.build,
+      url: build.url,
+      loaderVersion: build.loaderVersion,
+    });
+
+    if (!data.ok) {
+      toast(`❌ ${data.error}`, 'err');
+
+      if (button) {
+        button.disabled = false;
+        button.textContent = 'INSTALAR';
+      }
+
+      return;
+    }
+
     toast(`✅ ${data.note || 'server.jar actualizado'}`, 'ok');
+
+    if (button) {
+      button.textContent = '✓ INSTALADO';
+      button.classList.add('done');
+    }
+  } catch (error) {
+    toast(`❌ ${error.message}`, 'err');
+
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'INSTALAR';
+    }
   }
 }
 
@@ -2664,626 +2872,4 @@ function switchView(id) {
       renderUsers();
       break;
 
-    case 'backups':
-      loadBackups();
-      break;
-
-    case 'ports':
-      loadPorts();
-      break;
-
-    case 'startup':
-      loadStartup();
-      break;
-
-    case 'activitylog':
-      renderActivity();
-      break;
-
-    case 'settings':
-      renderSettings();
-      break;
-  }
-}
-
-/* ACTIVITY */
-
-function addActivity(message, level = 'info', icon = '📌') {
-  activities.push({
-    message,
-    level,
-    icon,
-    time: new Date().toLocaleTimeString('es-ES'),
-  });
-
-  if (activities.length > 200) {
-    activities.shift();
-  }
-
-  if ($('view-activitylog')?.classList.contains('active')) {
-    renderActivity();
-  }
-}
-
-function renderActivity() {
-  const element = $('activityList');
-
-  if (!element) return;
-
-  if (!activities.length) {
-    element.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-icon">📭</div>
-        <div class="empty-msg">No hay actividad todavía</div>
-      </div>
-    `;
-    return;
-  }
-
-  const counts = activities.reduce((acc, item) => {
-    const level = item.level || 'info';
-    acc[level] = (acc[level] || 0) + 1;
-    return acc;
-  }, {});
-
-  const toolbar = `
-    <div class="activity-toolbar">
-      <div class="activity-counter">
-        <span class="activity-counter-num">${activities.length}</span>
-        <span class="activity-counter-label">eventos</span>
-      </div>
-      <div class="activity-filters">
-        ${counts.info  ? `<span class="activity-filter info">${counts.info} info</span>` : ''}
-        ${counts.ok    ? `<span class="activity-filter ok">${counts.ok} ok</span>` : ''}
-        ${counts.warn  ? `<span class="activity-filter warn">${counts.warn} aviso</span>` : ''}
-        ${counts.error ? `<span class="activity-filter error">${counts.error} error</span>` : ''}
-      </div>
-    </div>
-  `;
-
-  const items = activities
-    .slice()
-    .reverse()
-    .map(item => {
-      const level = String(item.level || 'info').toLowerCase();
-      const safeLevel = ['info', 'ok', 'warn', 'error'].includes(level) ? level : 'info';
-      const label = { info: 'INFO', ok: 'OK', warn: 'AVISO', error: 'ERROR' }[safeLevel];
-
-      return `
-        <div class="activity-item ${safeLevel}">
-          <div class="activity-icon">${escHtml(item.icon || '📌')}</div>
-          <div class="activity-body">
-            <div class="activity-msg">${escHtml(item.message)}</div>
-            <div class="activity-time">${escHtml(item.time || '--:--:--')}</div>
-          </div>
-          <span class="activity-badge ${safeLevel}">${label}</span>
-        </div>
-      `;
-    })
-    .join('');
-
-  element.innerHTML = toolbar + `<div class="activity-feed">${items}</div>`;
-}
-
-/* USERS */
-
-async function loadShareTokens() {
-  if (panelKind !== 'owner' || panelPermission !== 'admin') return;
-
-  const list = $('shareTokenList');
-  if (!list) return;
-
-  try {
-    const data = await cloudApi('/api/share-tokens');
-    const tokens = Array.isArray(data.tokens) ? data.tokens : [];
-
-    const control = tokens.filter(token => token.permission === 'control').length;
-    const read = tokens.filter(token => token.permission !== 'control').length;
-
-    if ($('userStatTotal')) $('userStatTotal').textContent = tokens.length;
-    if ($('userStatControl')) $('userStatControl').textContent = control;
-    if ($('userStatRead')) $('userStatRead').textContent = read;
-
-    list.innerHTML = tokens.length
-      ? tokens
-          .map(token => {
-            const expiry = token.expiresAt
-              ? new Date(token.expiresAt).toLocaleString('es-ES')
-              : 'Nunca';
-            return `
-            <div class="user-row">
-              <div class="user-avatar">👤</div>
-              <div class="user-row-main">
-                <strong>${escHtml(token.label || 'Usuario')}</strong>
-                <div class="user-row-meta">
-                  <span class="user-permission-pill ${token.permission === 'control' ? 'control' : 'read'}">
-                    ${token.permission === 'control' ? '🎮 Control' : '👁️ Solo lectura'}
-                  </span>
-                  <span>Caduca: ${escHtml(expiry)}</span>
-                </div>
-              </div>
-              <button class="small-btn user-revoke-btn" data-revoke-share="${escHtml(token.id)}">Revocar</button>
-            </div>
-          `;
-          })
-          .join('')
-      : '<div class="empty-state"><div class="empty-icon">👥</div><div class="empty-msg">No hay usuarios con acceso.</div></div>';
-
-    list.querySelectorAll('[data-revoke-share]').forEach(button => {
-      button.addEventListener('click', async () => {
-        button.disabled = true;
-        try {
-          await cloudApi(
-            `/api/share-tokens/${encodeURIComponent(button.dataset.revokeShare)}`,
-            { method: 'DELETE' }
-          );
-          toast('Acceso revocado.', 'ok');
-          await loadShareTokens();
-        } catch (error) {
-          toast(error.message, 'err');
-          button.disabled = false;
-        }
-      });
-    });
-  } catch (error) {
-    list.innerHTML = `<div class="empty-state">${escHtml(error.message)}</div>`;
-  }
-}
-
-function renderUsers() {
-  const element = $('userList');
-  if (!element) return;
-
-  const isOwner = panelKind === 'owner' && panelPermission === 'admin';
-
-  if (!isOwner) {
-    element.innerHTML = `
-      <div class="user-access-grid">
-        <div class="panel user-access-card">
-          <div class="panel-header">
-            <div class="panel-title"><span>👤</span> TU ACCESO</div>
-          </div>
-          <div class="user-access-body">
-            <div class="user-profile-icon">👤</div>
-            <div>
-              <div class="user-profile-title">Acceso compartido</div>
-              <div class="user-profile-sub">Este panel te ha sido compartido por el propietario.</div>
-            </div>
-          </div>
-          <div class="user-permission-row">
-            <span>Permiso</span>
-            <strong>${panelPermission === 'control' ? '🎮 Control' : '👁️ Solo lectura'}</strong>
-          </div>
-          <div class="user-info-note">
-            Tu acceso está limitado a los permisos asignados por el propietario. No puedes crear ni revocar accesos.
-          </div>
-        </div>
-      </div>
-    `;
-    return;
-  }
-
-  element.innerHTML = `
-    <div class="user-stats-grid">
-      <div class="user-stat-card">
-        <span class="user-stat-icon">👥</span>
-        <div><span class="user-stat-label">Accesos activos</span><strong id="userStatTotal">—</strong></div>
-      </div>
-      <div class="user-stat-card">
-        <span class="user-stat-icon">🎮</span>
-        <div><span class="user-stat-label">Con control</span><strong id="userStatControl">—</strong></div>
-      </div>
-      <div class="user-stat-card">
-        <span class="user-stat-icon">👁️</span>
-        <div><span class="user-stat-label">Solo lectura</span><strong id="userStatRead">—</strong></div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-header">
-        <div>
-          <div class="panel-title"><span>➕</span> NUEVO USUARIO</div>
-          <div class="user-panel-subtitle">Crea un acceso independiente sin compartir tu código de propietario.</div>
-        </div>
-      </div>
-      <div class="user-create-form">
-        <input id="shareLabel" class="form-input" placeholder="Nombre (ej. Paco)" maxlength="60">
-        <select id="sharePermission" class="form-input">
-          <option value="read">👁️ Solo lectura</option>
-          <option value="control">🎮 Control</option>
-        </select>
-        <select id="shareExpiry" class="form-input">
-          <option value="never">Sin caducidad</option>
-          <option value="1h">1 hora</option>
-          <option value="1d">1 día</option>
-          <option value="7d">7 días</option>
-          <option value="30d">30 días</option>
-        </select>
-        <button class="small-btn user-create-btn" id="btnCreateShare">Crear acceso</button>
-      </div>
-    </div>
-
-    <div id="shareCreatedBox" class="panel user-token-panel" style="display:none">
-      <div class="user-token-title">🔐 ACCESO CREADO</div>
-      <div class="user-token-sub">Este token se muestra una sola vez. Entrégaselo a la persona que va a usar el panel.</div>
-      <div class="user-token-row">
-        <code id="shareCreatedToken"></code>
-        <button class="small-btn" id="btnCopyShareToken">Copiar</button>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-header">
-        <div>
-          <div class="panel-title"><span>👥</span> USUARIOS CON ACCESO</div>
-          <div class="user-panel-subtitle">Puedes revocar cualquier acceso inmediatamente.</div>
-        </div>
-        <button class="small-btn" id="btnRefreshUsers">↺ Actualizar</button>
-      </div>
-      <div id="shareTokenList"></div>
-    </div>
-  `;
-
-  bindShareSettings();
-  $('btnRefreshUsers')?.addEventListener('click', loadShareTokens);
-}
-
-function bindShareSettings() {
-  if (panelKind !== 'owner' || panelPermission !== 'admin') return;
-
-  $('btnCreateShare')?.addEventListener('click', async () => {
-    const button = $('btnCreateShare');
-    button.disabled = true;
-
-    try {
-      const data = await cloudApi('/api/share-tokens', {
-        method: 'POST',
-        body: JSON.stringify({
-          label: $('shareLabel')?.value || '',
-          permission: $('sharePermission')?.value || 'read',
-          expires: $('shareExpiry')?.value || 'never',
-        }),
-      });
-
-      const token = data.token;
-      let copied = false;
-      try {
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(token);
-          copied = true;
-        }
-      } catch {}
-
-      $('shareCreatedToken').textContent = token;
-      $('shareCreatedBox').style.display = '';
-      $('shareLabel').value = '';
-      toast(
-        copied
-          ? 'Token creado y copiado al portapapeles.'
-          : 'Token creado. Cópialo antes de cerrar esta pantalla.',
-        'ok'
-      );
-      await loadShareTokens();
-    } catch (error) {
-      toast(error.message, 'err');
-    } finally {
-      button.disabled = false;
-    }
-  });
-
-  $('btnCopyShareToken')?.addEventListener('click', async event => {
-    const token = $('shareCreatedToken')?.textContent || '';
-    try {
-      await navigator.clipboard.writeText(token);
-      flashButton(event.currentTarget, 'Copiado');
-    } catch {
-      toast('No se pudo copiar el token.', 'err');
-    }
-  });
-
-  loadShareTokens();
-}
-
-/* SETTINGS */
-
-function renderSettings() {
-  const element = $('settingsList');
-
-  if (!element) return;
-
-  element.innerHTML = `
-    <div class="settings-group">
-      <div class="settings-group-header">
-        <div class="settings-group-icon">☁️</div>
-        <div class="settings-group-info">
-          <div class="settings-group-title">MoonWolf Cloud</div>
-          <div class="settings-group-sub">Conexión WebSocket con el panel remoto</div>
-        </div>
-        <span class="settings-status ${cloudSocket?.connected ? 'online' : 'offline'}">
-          ${cloudSocket?.connected ? '● ONLINE' : '● OFFLINE'}
-        </span>
-      </div>
-    </div>
-
-    <div class="settings-group">
-      <div class="settings-group-header">
-        <div class="settings-group-icon">🛰️</div>
-        <div class="settings-group-info">
-          <div class="settings-group-title">MoonWolf Agent</div>
-          <div class="settings-group-sub">Identificador único de esta instalación</div>
-        </div>
-        <span class="settings-status ${agentOnline ? 'online' : 'offline'}">
-          ${agentOnline ? '● CONECTADO' : '● DESCONECTADO'}
-        </span>
-      </div>
-      <div class="settings-group-body">
-        <div class="settings-field">
-          <code class="settings-field-value" title="${escHtml(agentId || '—')}">${escHtml(agentId || '—')}</code>
-          <button class="small-btn" id="btnCopyAgentId">Copiar</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="settings-danger">
-      <div class="settings-danger-info">
-        <div class="settings-danger-title">⚠️ Desconectar del Cloud</div>
-        <div class="settings-danger-sub">
-          Cerrará la sesión actual del panel. Necesitarás un nuevo código de emparejamiento para reconectar.
-        </div>
-      </div>
-      <button class="settings-danger-btn" id="btnDisconnectCloud">Desconectar</button>
-    </div>
-  `;
-
-  $('btnCopyAgentId')?.addEventListener('click', async event => {
-    if (!agentId) return;
-
-    try {
-      await navigator.clipboard.writeText(agentId);
-      flashButton(event.currentTarget, 'Copiado');
-    } catch {
-      toast('No se pudo copiar.', 'err');
-    }
-  });
-
-  $('btnDisconnectCloud')?.addEventListener('click', () => {
-    cloudSocket?.disconnect();
-    setAgentOnline(false);
-    currentStatus = 'offline';
-    updateStatusUi('offline');
-    clearSession();
-    showLogin('Desconectado.');
-  });
-}
-
-/* TOAST & HELPERS */
-
-function toast(message, type = 'info') {
-  const element = $('toast');
-
-  if (!element) return;
-
-  element.textContent = message;
-  element.className = `toast show ${type}`;
-
-  clearTimeout(toast.timer);
-
-  toast.timer = setTimeout(() => {
-    element.className = 'toast';
-  }, 3000);
-}
-
-function flashButton(button, label, duration = 1200) {
-  if (!button) return;
-
-  const original = button.textContent;
-
-  button.textContent = label;
-  button.disabled = true;
-
-  setTimeout(() => {
-    button.textContent = original;
-    button.disabled = false;
-  }, duration);
-}
-
-/* EVENTS */
-
-function bindEvents() {
-  ensureLoginGate();
-
-  document.querySelectorAll('.sb-item').forEach(item => {
-    item.addEventListener('click', () => switchView(item.dataset.view));
-  });
-
-  $('btnStart')?.addEventListener('click', startServer);
-  $('btnStop')?.addEventListener('click', stopServer);
-  $('btnRestart')?.addEventListener('click', restartServer);
-  $('btnSendCmd')?.addEventListener('click', sendCmd);
-
-  $('cmdInput')?.addEventListener('keydown', event => {
-    if (event.key === 'Enter') {
-      sendCmd();
-    }
-  });
-
-  document.querySelectorAll('.quick-btn').forEach(button => {
-    button.addEventListener('click', () => {
-      const input = $('cmdInput');
-
-      if (!input) return;
-
-      input.value = button.dataset.cmd || '';
-      sendCmd();
-    });
-  });
-
-  $('btnClearConsole')?.addEventListener('click', () => {
-    if ($('console')) {
-      $('console').innerHTML = '';
-    }
-  });
-
-  $('crumbHome')?.addEventListener('click', () => populateFiles(''));
-
-  $('btnUploadFiles')?.addEventListener('click', () => {
-    $('fileUploadInput')?.click();
-  });
-
-  $('btnUploadFolder')?.addEventListener('click', () => {
-    $('folderUploadInput')?.click();
-  });
-
-  $('fileUploadInput')?.addEventListener('change', async event => {
-    await uploadSelectedFiles(event.target.files);
-    event.target.value = '';
-  });
-
-  $('folderUploadInput')?.addEventListener('change', async event => {
-    await uploadSelectedFiles(event.target.files);
-    event.target.value = '';
-  });
-
-  $('btnNewFile')?.addEventListener('click', async () => {
-    const raw = prompt('Nombre del nuevo archivo (termina en "/" para carpeta):');
-    if (!raw) return;
-
-    const trimmed = raw.trim();
-    if (!trimmed) return;
-
-    const isDir = trimmed.endsWith('/');
-    const name = isDir ? trimmed.slice(0, -1) : trimmed;
-    if (!name) return;
-
-    const data = await postJSON('/api/files/create', {
-      path: currentDir,
-      name,
-      isDir,
-    });
-
-    if (!data.ok) {
-      toast(`❌ ${data.error}`, 'err');
-      return;
-    }
-
-    toast('✅ Creado correctamente', 'ok');
-    populateFiles(currentDir);
-  });
-
-  $('btnEditorBack')?.addEventListener('click', () => {
-    if ($('filesEditorPanel')) {
-      $('filesEditorPanel').style.display = 'none';
-    }
-
-    if ($('filesTablePanel')) {
-      $('filesTablePanel').style.display = '';
-    }
-
-    if (editor?.toTextArea) {
-      editor.toTextArea();
-    }
-
-    editor = null;
-    currentFile = null;
-  });
-
-  $('btnSaveFile')?.addEventListener('click', saveCurrentFile);
-
-  document.addEventListener('keydown', event => {
-    if (
-      (event.ctrlKey || event.metaKey) &&
-      event.key.toLowerCase() === 's' &&
-      currentFile
-    ) {
-      event.preventDefault();
-      saveCurrentFile();
-    }
-  });
-
-  document.querySelectorAll('.plg-source').forEach(button => {
-    button.addEventListener('click', () => {
-      pluginSource = button.dataset.source;
-
-      document.querySelectorAll('.plg-source').forEach(item =>
-        item.classList.toggle('active', item === button)
-      );
-    });
-  });
-
-  document.querySelectorAll('.plg-price').forEach(button => {
-    button.addEventListener('click', () => {
-      priceFilter = button.dataset.price;
-
-      document.querySelectorAll('.plg-price').forEach(item =>
-        item.classList.toggle('active', item === button)
-      );
-    });
-  });
-
-  document.querySelectorAll('.plg-tab-btn').forEach(button => {
-    button.addEventListener('click', () => {
-      const tab = button.dataset.tab;
-
-      document.querySelectorAll('.plg-tab-btn').forEach(item =>
-        item.classList.toggle('active', item === button)
-      );
-
-      if ($('plgTabSearch')) {
-        $('plgTabSearch').style.display = tab === 'search' ? '' : 'none';
-      }
-
-      if ($('plgTabInstalled')) {
-        $('plgTabInstalled').style.display = tab === 'installed' ? '' : 'none';
-      }
-
-      if (tab === 'installed') {
-        loadInstalledPlugins();
-      }
-    });
-  });
-
-  $('btnPluginSearch')?.addEventListener('click', pluginSearch);
-
-  $('plgSearchInput')?.addEventListener('keydown', event => {
-    if (event.key === 'Enter') {
-      pluginSearch();
-    }
-  });
-
-  $('btnRefreshInstalled')?.addEventListener('click', loadInstalledPlugins);
-
-  $('btnClosePlgModal')?.addEventListener('click', () => {
-    if ($('plgVersionModal')) {
-      $('plgVersionModal').style.display = 'none';
-    }
-  });
-
-  $('plgVersionModal')?.addEventListener('click', event => {
-    if (event.target === $('plgVersionModal')) {
-      $('plgVersionModal').style.display = 'none';
-    }
-  });
-
-  $('btnNewBackup')?.addEventListener('click', createBackup);
-
-  updateAgentUi(agentOnline);
-  updateStatusUi(currentStatus);
-
-  if (panelSession && agentId) {
-    connectCloud(false).catch(() =>
-      showLogin(
-        'La sesión no es válida. Introduce un nuevo código de emparejamiento.'
-      )
-    );
-  } else {
-    showLogin('');
-  }
-}
-
-/* START */
-
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', bindEvents, { once: true });
-} else {
-  bindEvents();
-}
+    case 'back
