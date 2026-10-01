@@ -564,7 +564,7 @@ body::after {
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: 14px 12px;
+  padding: 14px 12px 14px calc(var(--sidebar-w) + 12px);
   backdrop-filter: blur(6px);
   overflow-y: auto;
 }
