@@ -2538,15 +2538,15 @@ app.delete('/api/plugins/installed/:file', async (req, res) => {
 app.get('/api/versions/software', (_req, res) => {
   ok(res, {
     software: [
-      { id: 'paper', label: 'Paper', category: 'server', color: '#00c8ff', desc: 'Alto rendimiento. El más popular. 1.8.8+' },
-      { id: 'purpur', label: 'Purpur', category: 'server', color: '#aa88ff', desc: 'Fork de Paper con configurabilidad extra. 1.16+' },
-      { id: 'folia', label: 'Folia', category: 'server', color: '#00ff88', desc: 'Paper con multithreading regional. 1.20+' },
-      { id: 'fabric', label: 'Fabric', category: 'server', color: '#d4aa70', desc: 'Ligero, orientado a mods. 1.14+' },
-      { id: 'vanilla', label: 'Vanilla', category: 'server', color: '#c9d8e8', desc: 'Oficial de Mojang. Sin mods ni plugins. 1.0+' },
-      { id: 'forge', label: 'Forge', category: 'server', color: '#c0873f', desc: 'El cargador de mods clásico. Descarga manual.', external: 'https://files.minecraftforge.net/' },
-      { id: 'velocity', label: 'Velocity', category: 'proxy', color: '#ffcc00', desc: 'Proxy moderno. Recomendado.' },
-      { id: 'waterfall', label: 'Waterfall', category: 'proxy', color: '#ff8844', desc: 'Fork de BungeeCord (EOL). Usa Velocity mejor.' },
-      { id: 'bungeecord', label: 'BungeeCord', category: 'proxy', color: '#ff4455', desc: 'Proxy original. Descarga desde SpigotMC.', external: 'https://ci.md-5.net/job/BungeeCord/' },
+      { id: 'paper', label: 'Paper', category: 'plugins', color: '#00c8ff', desc: 'Servidor de alto rendimiento compatible con plugins. 1.8.8+' },
+      { id: 'purpur', label: 'Purpur', category: 'plugins', color: '#aa88ff', desc: 'Fork de Paper con configuración avanzada y soporte de plugins. 1.16+' },
+      { id: 'folia', label: 'Folia', category: 'plugins', color: '#00ff88', desc: 'Fork de Paper con multithreading regional y soporte de plugins. 1.20+' },
+      { id: 'fabric', label: 'Fabric', category: 'mods', color: '#d4aa70', desc: 'Loader ligero y moderno para servidores con mods. 1.14+' },
+      { id: 'forge', label: 'Forge', category: 'mods', color: '#c0873f', desc: 'Loader clásico para servidores con mods.', external: 'https://files.minecraftforge.net/' },
+      { id: 'vanilla', label: 'Vanilla', category: 'vanilla', color: '#c9d8e8', desc: 'Servidor oficial de Mojang sin plugins ni mods. 1.0+' },
+      { id: 'velocity', label: 'Velocity', category: 'proxy', color: '#ffcc00', desc: 'Proxy moderno para conectar múltiples servidores.' },
+      { id: 'waterfall', label: 'Waterfall', category: 'proxy', color: '#ff8844', desc: 'Proxy basado en BungeeCord.', external: 'https://papermc.io/software/waterfall/' },
+      { id: 'bungeecord', label: 'BungeeCord', category: 'proxy', color: '#ff4455', desc: 'Proxy clásico para redes de servidores.', external: 'https://ci.md-5.net/job/BungeeCord/' },
     ],
   });
 });
