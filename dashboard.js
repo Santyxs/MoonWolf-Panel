@@ -743,18 +743,6 @@ function updateStatusUi(status) {
       STATUS_LABELS[status] || String(status).toUpperCase();
   }
 
-  const syncText = $('workspaceSyncText');
-  const syncDot = document.querySelector('.workspace-sync-dot');
-
-  if (syncText) {
-    syncText.textContent = status === 'online'
-      ? 'Servidor operativo'
-      : (STATUS_LABELS[status] || 'Esperando conexión');
-  }
-
-  syncDot?.classList.toggle('online', status === 'online');
-  syncDot?.classList.toggle('busy', ['starting', 'restarting', 'stopping'].includes(status));
-
   const startButton = $('btnStart');
 
   if (startButton) {
@@ -3304,17 +3292,6 @@ function toast(message, type = 'info') {
   }, 3000);
 }
 
-function updateWorkspaceDate() {
-  const element = $('workspaceDate');
-  if (!element) return;
-
-  element.textContent = new Intl.DateTimeFormat('es-ES', {
-    weekday: 'short',
-    day: '2-digit',
-    month: 'short',
-  }).format(new Date()).replace('.', '').toUpperCase();
-}
-
 function flashButton(button, label, duration = 1200) {
   if (!button) return;
 
@@ -3510,7 +3487,6 @@ function bindEvents() {
 
   updateAgentUi(agentOnline);
   updateStatusUi(currentStatus);
-  updateWorkspaceDate();
 
   if (panelSession && agentId) {
     connectCloud(false).catch(() =>
