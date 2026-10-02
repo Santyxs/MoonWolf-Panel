@@ -1720,6 +1720,7 @@ function versionCategoryName(category) {
   if (category === 'mods' || category === 'mod') return 'Versiones de mods';
   if (category === 'proxy') return 'Versiones de proxy';
   if (category === 'vanilla') return 'Versiones de Vanilla';
+  if (category === 'hybrid') return 'Servidores híbridos';
   return 'Servidores de Minecraft';
 }
 
@@ -1759,12 +1760,13 @@ function renderVersionSoftware() {
     (groups[category] ||= []).push(item);
   }
 
-  const categoryOrder = ['plugins', 'mods', 'proxy', 'vanilla'];
+  const categoryOrder = ['plugins', 'mods', 'proxy', 'vanilla', 'hybrid'];
   const categoryIcon = {
     plugins: '🧩',
     mods: '🧵',
     proxy: '🌐',
     vanilla: '🌿',
+    hybrid: '🔀',
   };
 
   const orderedGroups = categoryOrder
@@ -1963,7 +1965,7 @@ async function selectVersionBuilds(software, version, item = versionFindSoftware
               ${b.sha256 ? `<div class="ver-build-sha">SHA-256: ${escHtml(b.sha256)}</div>` : ''}
             </div>
             <button type="button" class="btn btn-primary ver-install-btn" data-build-index="${index}">
-              ${software === 'fabric' ? 'Preparar instalación' : 'Instalar'}
+              ${software === 'fabric' || software === 'forge' || software === 'neoforge' ? 'Preparar instalación' : 'Instalar'}
             </button>
           </div>
         `).join('')}
@@ -2014,8 +2016,15 @@ async function installVersionSelection(software, version, build) {
       throw new Error(data?.error || 'No se pudo instalar la versión.');
     }
 
-    if (data.type === 'fabric-installer' || data.type === 'forge-installer') {
-      const name = data.type === 'forge-installer' ? 'Forge' : 'Fabric';
+    if (
+      data.type === 'fabric-installer' ||
+      data.type === 'forge-installer' ||
+      data.type === 'neoforge-installer'
+    ) {
+      const name =
+        data.type === 'forge-installer' ? 'Forge' :
+        data.type === 'neoforge-installer' ? 'NeoForge' : 'Fabric';
+
       toast(`⚠️ ${name} preparado. Revisa el comando indicado antes de ejecutarlo.`, 'info');
       alert(
         `${name} ${version} preparado.\n\n` +
@@ -2060,12 +2069,19 @@ async function loadVersionState() {
             item.id === 'paper' ? '📄' :
             item.id === 'purpur' ? '🟣' :
             item.id === 'folia' ? '🌱' :
+            item.id === 'leaf' ? '🍃' :
+            item.id === 'spigot' ? '🔧' :
+            item.id === 'bukkit' ? '🔩' :
             item.id === 'fabric' ? '🧵' :
             item.id === 'forge' ? '🔨' :
+            item.id === 'neoforge' ? '⚙️' :
             item.id === 'vanilla' ? '🌿' :
             item.id === 'velocity' ? '⚡' :
             item.id === 'waterfall' ? '🌊' :
-            item.id === 'bungeecord' ? '🔗' : '📦',
+            item.id === 'bungeecord' ? '🔗' :
+            item.id === 'arclight' ? '💡' :
+            item.id === 'magma' ? '🔥' :
+            item.id === 'mohist' ? '🧱' : '📦',
         }))
       : [];
 
