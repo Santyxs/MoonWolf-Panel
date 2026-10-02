@@ -2080,7 +2080,7 @@ async function loadVersionState() {
             item.id === 'vanilla' ? '🌿' :
             item.id === 'velocity' ? '⚡' :
             item.id === 'waterfall' ? '🌊' :
-            item.id === 'bungeecord' ? '🔗',
+            item.id === 'bungeecord' ? '🔗' :,
         }))
       : [];
 
