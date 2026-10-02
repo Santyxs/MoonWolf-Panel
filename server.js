@@ -2571,8 +2571,14 @@ app.get('/api/versions/software', (_req, res) => {
       { id: 'leaves', label: 'Leaves', category: 'plugins', color: '#a5d66a', desc: 'Fork experimental de Paper con mejoras de rendimiento.' },
       { id: 'spigot', label: 'Spigot', category: 'plugins', color: '#f0a24b', desc: 'Servidor compatible con plugins; se compila mediante BuildTools.' },
       { id: 'bukkit', label: 'Bukkit', category: 'plugins', color: '#e2b66d', desc: 'API histórica de plugins. Catálogo de versiones legado, sin JAR ejecutable oficial.' },
-      { id: 'magma', label: 'Magma', category: 'mods', color: '#d66bff', desc: 'Servidor híbrido con soporte para mods NeoForge y plugins.' },
-      { id: 'arclight', label: 'Arclight', category: 'mods', color: '#ff8f70', desc: 'Servidor híbrido con loaders Fabric y NeoForge.' },
+      { id: 'magma', label: 'Magma', category: 'hybrid', color: '#d66bff', desc: 'Servidor híbrido con soporte para mods NeoForge y plugins.' },
+      { id: 'arclight', label: 'Arclight', category: 'hybrid', color: '#ff8f70', desc: 'Servidor híbrido con loaders Fabric y NeoForge.' },
+      { id: 'sponge', label: 'Sponge', category: 'hybrid', color: '#8bd3dd', desc: 'Plataforma híbrida para mods y plugins mediante SpongeVanilla.', external: 'https://spongepowered.org/downloads/spongevanilla' },
+      { id: 'mohist', label: 'Mohist', category: 'hybrid', color: '#f08a5d', desc: 'Servidor híbrido con soporte para mods Forge y plugins Bukkit.', external: 'https://mohistmc.com/download' },
+      { id: 'flamecord', label: 'FlameCord', category: 'proxy', color: '#ff7043', desc: 'Proxy optimizado basado en BungeeCord.' , external: 'https://github.com/2lstudios/FlameCord' },
+      { id: 'gale', label: 'Gale', category: 'plugins', color: '#8ecae6', desc: 'Fork de Paper centrado en rendimiento y estabilidad.' },
+      { id: 'pufferfish', label: 'Pufferfish', category: 'plugins', color: '#f6bd60', desc: 'Fork de Paper con optimizaciones adicionales.' },
+      { id: 'quilt', label: 'Quilt', category: 'mods', color: '#d8a7ff', desc: 'Loader moderno y comunitario para mods.' },
       { id: 'neoforge', label: 'NeoForge', category: 'mods', color: '#ff6d5a', desc: 'Loader moderno para servidores con mods.' },
       { id: 'vanilla', label: 'Vanilla', category: 'vanilla', color: '#c9d8e8', desc: 'Servidor oficial de Mojang sin plugins ni mods. 1.0+' },
     ],
@@ -2665,6 +2671,33 @@ app.get('/api/versions/list', async (req, res) => {
         .slice(0, 50)
         .map(b => String(b.number));
       return ok(res, { versions });
+    }
+
+    if (sw === 'gale') {
+      const releases = await apiFetch('https://api.github.com/repos/GaleMC/Gale/releases?per_page=100');
+      return ok(res, { versions: (releases || []).map(r => r.tag_name).filter(Boolean) });
+    }
+
+    if (sw === 'pufferfish') {
+      const releases = await apiFetch('https://api.github.com/repos/pufferfish-gg/Pufferfish/releases?per_page=100');
+      let versions = (releases || []).map(r => r.tag_name).filter(Boolean);
+      if (!versions.length) {
+        const tags = await apiFetch('https://api.github.com/repos/pufferfish-gg/Pufferfish/tags?per_page=100');
+        versions = (tags || []).map(tag => tag.name).filter(Boolean);
+      }
+      if (!versions.length) {
+        const branches = await apiFetch('https://api.github.com/repos/pufferfish-gg/Pufferfish/branches?per_page=100');
+        versions = (branches || [])
+          .map(branch => branch.name)
+          .filter(name => /^ver\/\d+\.\d+$/.test(name))
+          .map(name => name.replace(/^ver\//, ''));
+      }
+      return ok(res, { versions });
+    }
+
+    if (sw === 'quilt') {
+      const data = await apiFetch('https://meta.quiltmc.org/v3/versions/game');
+      return ok(res, { versions: data.filter(v => v.stable).map(v => v.version) });
     }
 
     if (sw === 'vanilla') {
@@ -2833,6 +2866,59 @@ app.get('/api/versions/builds', async (req, res) => {
         }
       }
       return ok(res, { builds });
+    }
+
+    if (sw === 'gale' || sw === 'pufferfish') {
+      const repo = sw === 'gale' ? 'GaleMC/Gale' : 'pufferfish-gg/Pufferfish';
+      const releases = await apiFetch(`https://api.github.com/repos/${repo}/releases?per_page=100`);
+      const release = (releases || []).find(r => r.tag_name === version) || (releases || []).find(r => r.name === version);
+      if (!release) {
+        return ok(res, { builds: [{
+          build: version,
+          channel: 'SOURCE',
+          time: null,
+          url: `https://github.com/${repo}/tree/${encodeURIComponent(version)}`,
+          sha256: null,
+          installable: false,
+          changes: `${sw === 'gale' ? 'Gale' : 'Pufferfish'} publica esta referencia como código fuente; consulta sus instrucciones oficiales de compilación.`,
+        }] });
+      }
+      const builds = (release?.assets || []).filter(asset => /\.jar$/i.test(asset.name)).map(asset => ({
+        build: asset.name,
+        channel: release.prerelease ? 'PRERELEASE' : 'RELEASE',
+        time: release.published_at || release.created_at || null,
+        url: asset.browser_download_url,
+        sha256: asset.digest?.replace(/^sha256:/, '') || null,
+        changes: `${sw === 'gale' ? 'Gale' : 'Pufferfish'} ${version}`,
+      }));
+      return ok(res, { builds });
+    }
+
+    if (sw === 'quilt') {
+      const loaders = await apiFetch(`https://meta.quiltmc.org/v3/versions/loader/${encodeURIComponent(version)}`);
+      const builds = (loaders || []).filter(item => item.loader?.stable).map(item => ({
+        build: item.loader.version,
+        channel: 'STABLE',
+        loaderVersion: item.loader.version,
+        time: null,
+        url: `https://maven.quiltmc.org/repository/release/org/quiltmc/quilt-server-launch/${encodeURIComponent(item.loader.version)}/quilt-server-launch-${encodeURIComponent(item.loader.version)}.jar`,
+        sha256: item.loader?.hashes?.sha256 || null,
+        installable: false,
+        changes: `Quilt Loader ${item.loader.version} · consulta la instalación oficial de Quilt`,
+      }));
+      return ok(res, { builds, isQuilt: true });
+    }
+
+    if (sw === 'sponge') {
+      return ok(res, { builds: [{
+        build: version,
+        channel: 'OFFICIAL',
+        time: null,
+        url: 'https://spongepowered.org/downloads/spongevanilla',
+        sha256: null,
+        installable: false,
+        changes: 'Consulta la descarga oficial de SpongeVanilla para elegir el JAR compatible.',
+      }] });
     }
 
     if (sw === 'bungeecord') {

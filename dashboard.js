@@ -1719,6 +1719,7 @@ function versionCategoryName(category) {
   if (category === 'plugins') return 'Versiones de plugins';
   if (category === 'mods' || category === 'mod') return 'Versiones de mods';
   if (category === 'proxy') return 'Versiones de proxy';
+  if (category === 'hybrid') return 'Versiones de híbridos';
   if (category === 'vanilla') return 'Versiones de Vanilla';
   return 'Servidores de Minecraft';
 }
@@ -1759,11 +1760,12 @@ function renderVersionSoftware() {
     (groups[category] ||= []).push(item);
   }
 
-  const categoryOrder = ['plugins', 'mods', 'proxy', 'vanilla'];
+  const categoryOrder = ['plugins', 'mods', 'proxy', 'hybrid', 'vanilla'];
   const categoryIcon = {
     plugins: '🧩',
     mods: '🧵',
     proxy: '🌐',
+    hybrid: '🔀',
     vanilla: '🌿',
   };
 
@@ -2068,7 +2070,13 @@ async function loadVersionState() {
             item.id === 'spigot' ? '🧱' :
             item.id === 'bukkit' ? '🪣' :
             item.id === 'magma' ? '🌋' :
-            item.id === 'arclight' ? '🌈' :
+            item.id === 'arclight' ? '💡' :
+            item.id === 'sponge' ? '🧽' :
+            item.id === 'mohist' ? '⚗️' :
+            item.id === 'flamecord' ? '🔥' :
+            item.id === 'gale' ? '🌬️' :
+            item.id === 'pufferfish' ? '🐡' :
+            item.id === 'quilt' ? '🧶' :
             item.id === 'neoforge' ? '⚒️' :
             item.id === 'vanilla' ? '🌿' :
             item.id === 'velocity' ? '⚡' :
