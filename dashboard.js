@@ -2065,14 +2065,15 @@ async function loadVersionState() {
             item.id === 'folia' ? '🌱' :
             item.id === 'fabric' ? '🧵' :
             item.id === 'forge' ? '🔨' :
-            item.id === 'leaf' ? '🍁' :
-            item.id === 'leaves' ? '🍂' :
+            item.id === 'leaf' ? '🍃' :
+            item.id === 'leaves' ? '🌿' :
             item.id === 'spigot' ? '🧱' :
-            item.id === 'bukkit' ? '🧺' :
+            item.id === 'bukkit' ? '🪣' :
             item.id === 'magma' ? '🌋' :
             item.id === 'arclight' ? '💡' :
             item.id === 'sponge' ? '🧽' :
             item.id === 'mohist' ? '⚗️' :
+            item.id === 'flamecord' ? '🔥' :
             item.id === 'gale' ? '🌬️' :
             item.id === 'pufferfish' ? '🐡' :
             item.id === 'quilt' ? '🧶' :
@@ -2080,7 +2081,7 @@ async function loadVersionState() {
             item.id === 'vanilla' ? '🌿' :
             item.id === 'velocity' ? '⚡' :
             item.id === 'waterfall' ? '🌊' :
-            item.id === 'bungeecord' ? '🔗' :,
+            item.id === 'bungeecord' ? '🔗' : '📦',
         }))
       : [];
 
@@ -3495,14 +3496,16 @@ function bindEvents() {
   updateAgentUi(agentOnline);
   updateStatusUi(currentStatus);
 
+  // La puerta de acceso debe aparecer de inmediato, incluso si existe una
+  // sesión antigua que todavía está intentando reconectarse.
+  showLogin('');
+
   if (panelSession && agentId) {
     connectCloud(false).catch(() =>
       showLogin(
         'La sesión no es válida. Introduce un nuevo código de emparejamiento.'
       )
     );
-  } else {
-    showLogin('');
   }
 }
 
