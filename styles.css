@@ -2437,3 +2437,116 @@ select:focus:not(:focus-visible) {
   .user-row { align-items:flex-start; flex-wrap:wrap; }
   .user-revoke-btn { margin-left:52px; }
 }
+/* MoonWolf Panel — visual refresh */
+
+/* El layout gana profundidad sin perder la estética técnica original. */
+body {
+  background:
+    radial-gradient(circle at 80% -10%, rgba(0, 200, 255, .11), transparent 30rem),
+    radial-gradient(circle at 10% 100%, rgba(0, 119, 170, .08), transparent 28rem),
+    var(--bg);
+}
+
+.app::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(0, 200, 255, .025) 1px, transparent 1px),
+              linear-gradient(rgba(0, 200, 255, .018) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: linear-gradient(to bottom, rgba(0,0,0,.75), transparent 85%);
+  z-index: 0;
+}
+
+.sidebar {
+  background: linear-gradient(180deg, #0b121a 0%, #080d13 100%);
+  box-shadow: 18px 0 44px rgba(0,0,0,.16);
+}
+
+.sb-logo { padding-top: 24px; }
+.sb-logo-icon { position: relative; overflow: hidden; }
+.sb-logo-icon::after {
+  content: '';
+  position: absolute;
+  width: 80px;
+  height: 2px;
+  top: 4px;
+  left: -18px;
+  background: rgba(255,255,255,.45);
+  transform: rotate(-35deg);
+}
+
+.main { padding-top: 20px; }
+.workspace-bar {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 24px;
+  padding: 12px 16px 12px 18px;
+  border: 1px solid rgba(42, 60, 80, .85);
+  border-radius: var(--r-lg);
+  background: linear-gradient(105deg, rgba(15, 21, 29, .95), rgba(11, 16, 22, .7));
+  box-shadow: var(--shadow-md);
+}
+.workspace-context { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.workspace-kicker {
+  color: var(--accent);
+  font: 700 10px/1 'Orbitron', sans-serif;
+  letter-spacing: 1.7px;
+  white-space: nowrap;
+}
+.workspace-context strong { color: #f2f8ff; font: 600 15px/1.2 'Orbitron', sans-serif; letter-spacing: .7px; }
+.workspace-meta { display: flex; align-items: center; gap: 12px; color: var(--muted2); font-size: var(--fs-xs); white-space: nowrap; }
+.workspace-sync { display: inline-flex; align-items: center; gap: 7px; }
+.workspace-sync-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 3px rgba(90,113,136,.1); }
+.workspace-sync-dot.online { background: var(--green); box-shadow: 0 0 0 3px rgba(0,255,136,.1), 0 0 10px var(--green); }
+.workspace-sync-dot.busy { background: var(--yellow); animation: pulse .8s infinite; }
+.workspace-divider { width: 1px; height: 18px; background: var(--border); }
+.workspace-date { color: var(--muted); font-family: 'Share Tech Mono', monospace; }
+
+.page-header { margin-bottom: 20px; padding-bottom: 18px; }
+.page-title { text-shadow: 0 0 22px rgba(0,200,255,.12); }
+.panel { background: linear-gradient(145deg, rgba(15,21,29,.98), rgba(11,16,22,.98)); box-shadow: var(--shadow-md); }
+.panel-header { background: linear-gradient(90deg, rgba(20,28,39,.75), rgba(15,21,29,.5)); }
+.stat-card { background: linear-gradient(145deg, rgba(20,28,39,.92), rgba(11,16,22,.92)); }
+.stat-value { text-shadow: 0 0 16px rgba(0,200,255,.13); }
+
+/* Navegación de iconos usable en móvil: el texto aparece como tooltip. */
+@media (max-width: 768px) {
+  .sb-item { position: relative; justify-content: center; padding: 11px 8px; }
+  .sb-item:hover::after {
+    content: attr(data-label);
+    position: absolute;
+    left: 52px;
+    z-index: 200;
+    padding: 7px 9px;
+    border: 1px solid var(--border2);
+    border-radius: var(--r-sm);
+    background: var(--surface3);
+    color: var(--text);
+    font-size: var(--fs-xs);
+    box-shadow: var(--shadow-md);
+    white-space: nowrap;
+  }
+  .workspace-bar { align-items: flex-start; flex-direction: column; gap: 9px; margin-bottom: 18px; }
+  .workspace-meta { width: 100%; justify-content: space-between; }
+  .workspace-divider { display: none; }
+  .workspace-date { display: none; }
+}
+
+@media (max-width: 480px) {
+  .main { padding: 10px; }
+  .workspace-bar { padding: 13px; }
+  .workspace-context { flex-direction: column; gap: 6px; }
+  .page-header { margin-bottom: 16px; }
+  .page-title { font-size: 15px; letter-spacing: 2px; }
+  .controls { grid-template-columns: 1fr; gap: 8px; }
+  .btn { padding: 13px; }
+  .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .stat-card { padding: 11px; }
+  .stat-value { font-size: 14px; }
+  .toast { right: 10px; bottom: 10px; left: 10px; max-width: none; }
+}

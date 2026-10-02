@@ -18,14 +18,15 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/properties/properties.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/shell/shell.min.js"></script>
 
-<link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css">
 <script src="dashboard.js" defer></script>
 </head>
 
 <body>
+  <div class="app">
 
     <!-- SIDEBAR -->
-    <nav class="sidebar">
+    <nav class="sidebar" aria-label="Navegación principal">
       <div class="sb-logo">
         <div class="sb-logo-icon">🌙</div>
         <div>
@@ -34,32 +35,32 @@
         </div>
       </div>
 
-      <div class="sb-status offline" id="sbStatus">
+      <div class="sb-status offline" id="sbStatus" role="status" aria-live="polite">
         <div class="sb-dot"></div>
         <span id="sbStatusText">OFFLINE</span>
       </div>
 
       <nav class="sb-section">
         <div class="sb-section-label">Servidor</div>
-        <div class="sb-item active" data-view="terminal"><span class="sb-icon">📟</span><span>Terminal</span></div>
-        <div class="sb-item" data-view="files"><span class="sb-icon">📂</span><span>Archivos</span></div>
-        <div class="sb-item" data-view="plugins"><span class="sb-icon">🧩</span><span>Plugins</span></div>
-        <div class="sb-item" data-view="versions"><span class="sb-icon">📦</span><span>Versiones</span></div>
+        <div class="sb-item active" data-view="terminal" data-label="Terminal"><span class="sb-icon">📟</span><span>Terminal</span></div>
+        <div class="sb-item" data-view="files" data-label="Archivos"><span class="sb-icon">📂</span><span>Archivos</span></div>
+        <div class="sb-item" data-view="plugins" data-label="Plugins"><span class="sb-icon">🧩</span><span>Plugins</span></div>
+        <div class="sb-item" data-view="versions" data-label="Versiones"><span class="sb-icon">📦</span><span>Versiones</span></div>
       </nav>
 
       <nav class="sb-section">
         <div class="sb-section-label">Sistema</div>
-        <div class="sb-item" data-view="databases"><span class="sb-icon">🗂️</span><span>Bases de datos</span></div>
-        <div class="sb-item" data-view="users"><span class="sb-icon">👥</span><span>Usuarios</span></div>
-        <div class="sb-item" data-view="backups"><span class="sb-icon">💾</span><span>Backups</span></div>
-        <div class="sb-item" data-view="ports"><span class="sb-icon">🔌</span><span>Puertos</span></div>
+        <div class="sb-item" data-view="databases" data-label="Bases de datos"><span class="sb-icon">🗂️</span><span>Bases de datos</span></div>
+        <div class="sb-item" data-view="users" data-label="Usuarios"><span class="sb-icon">👥</span><span>Usuarios</span></div>
+        <div class="sb-item" data-view="backups" data-label="Backups"><span class="sb-icon">💾</span><span>Backups</span></div>
+        <div class="sb-item" data-view="ports" data-label="Puertos"><span class="sb-icon">🔌</span><span>Puertos</span></div>
       </nav>
 
       <nav class="sb-section">
         <div class="sb-section-label">Configuración</div>
-        <div class="sb-item" data-view="startup"><span class="sb-icon">⚙️</span><span>Startup</span></div>
-        <div class="sb-item" data-view="settings"><span class="sb-icon">🛠️</span><span>Ajustes</span></div>
-        <div class="sb-item" data-view="activitylog"><span class="sb-icon">📑</span><span>Registro</span></div>
+        <div class="sb-item" data-view="startup" data-label="Startup"><span class="sb-icon">⚙️</span><span>Startup</span></div>
+        <div class="sb-item" data-view="settings" data-label="Ajustes"><span class="sb-icon">🛠️</span><span>Ajustes</span></div>
+        <div class="sb-item" data-view="activitylog" data-label="Registro"><span class="sb-icon">📑</span><span>Registro</span></div>
       </nav>
 
       <div class="sb-spacer"></div>
@@ -67,7 +68,18 @@
     </nav>
 
     <!-- MAIN -->
-    <div class="main">
+    <main class="main">
+      <div class="workspace-bar">
+        <div class="workspace-context">
+          <span class="workspace-kicker">CENTRO DE CONTROL</span>
+          <strong>MoonWolf Cloud</strong>
+        </div>
+        <div class="workspace-meta">
+          <span class="workspace-sync"><span class="workspace-sync-dot"></span><span id="workspaceSyncText">Esperando conexión</span></span>
+          <span class="workspace-divider" aria-hidden="true"></span>
+          <span class="workspace-date" id="workspaceDate">—</span>
+        </div>
+      </div>
 
       <!-- TERMINAL -->
       <div class="view active" id="view-terminal">
@@ -365,6 +377,7 @@
       </div>
 
       <div id="toast" class="toast"></div>
-    </div>
+    </main>
+  </div>
 </body>
 </html>

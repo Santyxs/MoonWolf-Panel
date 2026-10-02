@@ -478,7 +478,11 @@ io.use((socket, next) => {
   return next(new Error('Rol no válido.'));
 });
 
-const PUBLIC_ASSETS = ['index.html', 'dashboard.js', 'styles.css'];
+const PUBLIC_ASSETS = [
+  'index.html',
+  'dashboard.js',
+  'styles.css',
+];
 
 app.get('/', (_req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
@@ -1402,6 +1406,23 @@ async function apiFetch(url) {
   }
 
   return res.json();
+}
+
+async function apiFetchText(url) {
+  const { default: fetch } = await import('node-fetch');
+  const res = await fetch(url, { headers: { 'User-Agent': PAPER_UA } });
+
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} -> ${url}`);
+  }
+
+  return res.text();
+}
+
+function xmlValues(xml, tag) {
+  return [...String(xml).matchAll(new RegExp(`<${tag}>([^<]+)</${tag}>`, 'g'))]
+    .map(match => match[1].trim())
+    .filter(Boolean);
 }
 
 async function downloadFile(url, dest) {
@@ -2546,6 +2567,13 @@ app.get('/api/versions/software', (_req, res) => {
       { id: 'waterfall', label: 'Waterfall', category: 'proxy', color: '#ff8844', desc: 'Proxy basado en BungeeCord.' },
       { id: 'bungeecord', label: 'BungeeCord', category: 'proxy', color: '#ff4455', desc: 'Proxy clásico para redes de servidores.' },
       { id: 'forge', label: 'Forge', category: 'mods', color: '#c0873f', desc: 'Loader clásico para servidores con mods. 1.1+' },
+      { id: 'leaf', label: 'Leaf', category: 'plugins', color: '#7bd88f', desc: 'Fork de Paper orientado a rendimiento y estabilidad.' },
+      { id: 'leaves', label: 'Leaves', category: 'plugins', color: '#a5d66a', desc: 'Fork experimental de Paper con mejoras de rendimiento.' },
+      { id: 'spigot', label: 'Spigot', category: 'plugins', color: '#f0a24b', desc: 'Servidor compatible con plugins; se compila mediante BuildTools.' },
+      { id: 'bukkit', label: 'Bukkit', category: 'plugins', color: '#e2b66d', desc: 'API histórica de plugins. Catálogo de versiones legado, sin JAR ejecutable oficial.' },
+      { id: 'magma', label: 'Magma', category: 'mods', color: '#d66bff', desc: 'Servidor híbrido con soporte para mods NeoForge y plugins.' },
+      { id: 'arclight', label: 'Arclight', category: 'mods', color: '#ff8f70', desc: 'Servidor híbrido con loaders Fabric y NeoForge.' },
+      { id: 'neoforge', label: 'NeoForge', category: 'mods', color: '#ff6d5a', desc: 'Loader moderno para servidores con mods.' },
       { id: 'vanilla', label: 'Vanilla', category: 'vanilla', color: '#c9d8e8', desc: 'Servidor oficial de Mojang sin plugins ni mods. 1.0+' },
     ],
   });
@@ -2584,6 +2612,48 @@ app.get('/api/versions/list', async (req, res) => {
       const data = await apiFetch('https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json');
       const versions = Object.keys(data || {}).sort((a, b) => semverCmp(b, a));
       return ok(res, { versions });
+    }
+
+    if (sw === 'leaf' || sw === 'leaves') {
+      const project = sw === 'leaf' ? 'leaf' : 'leaves';
+      const data = await apiFetch(`https://api.${sw === 'leaf' ? 'leafmc.one' : 'leavesmc.org'}/v2/projects/${project}`);
+      return ok(res, { versions: Object.keys(data.versions || {}).flatMap(key => data.versions[key]).sort((a, b) => semverCmp(b, a)) });
+    }
+
+    if (sw === 'magma') {
+      const data = await apiFetch('https://magmafoundation.org/api/versions?limit=0');
+      return ok(res, { versions: (data.versions || data || []).map(item => item.version || item).filter(Boolean) });
+    }
+
+    if (sw === 'neoforge') {
+      const xml = await apiFetchText('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml');
+      return ok(res, { versions: xmlValues(xml, 'version').reverse() });
+    }
+
+    if (sw === 'spigot') {
+      const html = await apiFetchText('https://hub.spigotmc.org/versions/');
+      const versions = [...html.matchAll(/href=\"(1\.\d+(?:\.\d+)?\.json)\"/g)]
+        .map(match => match[1].replace(/\.json$/, ''))
+        .filter((value, index, values) => values.indexOf(value) === index)
+        .sort((a, b) => semverCmp(b, a));
+      return ok(res, { versions });
+    }
+
+    if (sw === 'bukkit') {
+      const tags = await apiFetch('https://api.github.com/repos/Bukkit/Bukkit/tags?per_page=100');
+      return ok(res, { versions: (tags || []).map(tag => tag.name).filter(Boolean) });
+    }
+
+    if (sw === 'arclight') {
+      const releases = await apiFetch('https://api.github.com/repos/IzzelAliz/Arclight/releases?per_page=100');
+      const versions = new Set();
+      for (const release of releases || []) {
+        for (const asset of release.assets || []) {
+          const match = String(asset.name || '').match(/^arclight-[^-]+-(1\.\d+(?:\.\d+)*?)-.+\.jar$/);
+          if (match) versions.add(match[1]);
+        }
+      }
+      return ok(res, { versions: [...versions].sort((a, b) => semverCmp(b, a)) });
     }
 
     if (sw === 'bungeecord') {
@@ -2675,6 +2745,96 @@ app.get('/api/versions/builds', async (req, res) => {
       return ok(res, { builds, isForge: true });
     }
 
+    if (sw === 'leaf' || sw === 'leaves') {
+      const project = sw === 'leaf' ? 'leaf' : 'leaves';
+      const host = sw === 'leaf' ? 'api.leafmc.one' : 'api.leavesmc.org';
+      const data = await apiFetch(`https://${host}/v2/projects/${project}/versions/${encodeURIComponent(version)}/builds`);
+      const builds = (data.builds || data || []).map(item => {
+        const artifact = item.downloads?.primary || item.downloads?.application;
+        return {
+          build: item.build,
+          channel: item.channel || (item.promoted ? 'STABLE' : 'EXPERIMENTAL'),
+          time: item.time,
+          url: artifact?.name ? `https://${host}/v2/projects/${project}/versions/${encodeURIComponent(version)}/builds/${encodeURIComponent(item.build)}/downloads/${encodeURIComponent(artifact.name)}` : null,
+          sha256: artifact?.sha256 || null,
+          changes: (item.changes || []).map(change => change.summary || change.message || '').filter(Boolean).slice(0, 3).join(' · '),
+        };
+      }).sort((a, b) => Number(b.build) - Number(a.build));
+      return ok(res, { builds });
+    }
+
+    if (sw === 'magma') {
+      const data = await apiFetch(`https://magmafoundation.org/api/versions/${encodeURIComponent(version)}`);
+      const item = data.version ? data : (data.versions || []).find(entry => entry.version === version);
+      if (!item) return fail(res, `Build de Magma no encontrada: ${version}`);
+      return ok(res, { builds: [{
+        build: version,
+        channel: item.isStable ? 'STABLE' : 'BETA',
+        time: item.createdAt || item.date || null,
+        url: item.launcherUrl || item.installerUrl || `https://magmafoundation.org/api/versions/${encodeURIComponent(version)}/download?type=launcher`,
+        sha256: null,
+        changes: `Magma para Minecraft ${item.minecraftVersion || version}`,
+      }] });
+    }
+
+    if (sw === 'neoforge') {
+      const build = version;
+      return ok(res, { builds: [{
+        build,
+        channel: /-(alpha|beta|rc)/i.test(build) ? 'PRERELEASE' : 'RELEASE',
+        time: null,
+        url: `https://maven.neoforged.net/releases/net/neoforged/neoforge/${encodeURIComponent(build)}/neoforge-${encodeURIComponent(build)}-installer.jar`,
+        sha256: null,
+        changes: `NeoForge ${build} · instalador oficial`,
+      }] });
+    }
+
+    if (sw === 'spigot') {
+      const data = await apiFetch(`https://hub.spigotmc.org/versions/${encodeURIComponent(version)}.json`);
+      return ok(res, { builds: [{
+        build: data.name || 'BuildTools',
+        channel: 'BUILDTOOLS',
+        time: null,
+        url: null,
+        sha256: data.hashes?.spigot || null,
+        installable: false,
+        changes: 'Spigot se compila localmente con BuildTools; no existe un JAR de servidor oficial descargable directamente.',
+      }] });
+    }
+
+    if (sw === 'bukkit') {
+      return ok(res, { builds: [{
+        build: version,
+        channel: 'LEGACY',
+        time: null,
+        url: null,
+        sha256: null,
+        installable: false,
+        changes: 'Bukkit es una API histórica y no publica un JAR de servidor ejecutable oficial.',
+      }] });
+    }
+
+    if (sw === 'arclight') {
+      const releases = await apiFetch('https://api.github.com/repos/IzzelAliz/Arclight/releases?per_page=100');
+      const builds = [];
+      for (const release of releases || []) {
+        for (const asset of release.assets || []) {
+          const name = String(asset.name || '');
+          const match = name.match(/^arclight-([^-]+)-(1\.\d+(?:\.\d+)*?)-(.+)\.jar$/);
+          if (!match || match[2] !== version) continue;
+          builds.push({
+            build: match[3],
+            channel: release.prerelease ? 'PRERELEASE' : 'RELEASE',
+            time: release.published_at || release.created_at || null,
+            url: asset.browser_download_url,
+            sha256: asset.digest?.replace(/^sha256:/, '') || null,
+            changes: `Arclight ${match[1]} · ${release.name || release.tag_name || ''}`,
+          });
+        }
+      }
+      return ok(res, { builds });
+    }
+
     if (sw === 'bungeecord') {
       const buildNumber = Number(version);
       if (!Number.isInteger(buildNumber) || buildNumber <= 0) {
@@ -2739,6 +2899,26 @@ app.post('/api/versions/install', async (req, res) => {
   }
 
   try {
+    if (sw === 'neoforge') {
+      if (!build) {
+        return fail(res, 'versión de NeoForge requerida');
+      }
+
+      const javaBin = await resolveJavaForServer(version);
+      const instFile = path.join(BASE_DIR, `neoforge-installer-${build}.jar`);
+      if (!fsSync.existsSync(instFile)) {
+        const neoforgeUrl = url || `https://maven.neoforged.net/releases/net/neoforged/neoforge/${encodeURIComponent(build)}/neoforge-${encodeURIComponent(build)}-installer.jar`;
+        await downloadFile(neoforgeUrl, instFile);
+      }
+
+      return ok(res, {
+        type: 'neoforge-installer',
+        installCmd: `"${javaBin}" -jar "neoforge-installer-${build}.jar" --installServer`,
+        jarName: 'run.bat',
+        note: `NeoForge ${build} descargado. Ejecuta el comando desde la carpeta del servidor para completar la instalación; después selecciona el archivo de arranque generado en Startup.`,
+      });
+    }
+
     if (sw === 'forge') {
       if (!build) {
         return fail(res, 'versión de Forge requerida');

@@ -743,6 +743,18 @@ function updateStatusUi(status) {
       STATUS_LABELS[status] || String(status).toUpperCase();
   }
 
+  const syncText = $('workspaceSyncText');
+  const syncDot = document.querySelector('.workspace-sync-dot');
+
+  if (syncText) {
+    syncText.textContent = status === 'online'
+      ? 'Servidor operativo'
+      : (STATUS_LABELS[status] || 'Esperando conexión');
+  }
+
+  syncDot?.classList.toggle('online', status === 'online');
+  syncDot?.classList.toggle('busy', ['starting', 'restarting', 'stopping'].includes(status));
+
   const startButton = $('btnStart');
 
   if (startButton) {
@@ -1962,8 +1974,8 @@ async function selectVersionBuilds(software, version, item = versionFindSoftware
               ${b.changes ? `<div class="ver-build-changes">${escHtml(b.changes)}</div>` : ''}
               ${b.sha256 ? `<div class="ver-build-sha">SHA-256: ${escHtml(b.sha256)}</div>` : ''}
             </div>
-            <button type="button" class="btn btn-primary ver-install-btn" data-build-index="${index}">
-              ${software === 'fabric' ? 'Preparar instalación' : 'Instalar'}
+            <button type="button" class="btn ${b.installable === false ? '' : 'btn-primary'} ver-install-btn" data-build-index="${index}" ${b.installable === false ? 'disabled' : ''}>
+              ${b.installable === false ? 'Solo información' : (software === 'fabric' || software === 'neoforge' ? 'Preparar instalación' : 'Instalar')}
             </button>
           </div>
         `).join('')}
@@ -1975,6 +1987,7 @@ async function selectVersionBuilds(software, version, item = versionFindSoftware
     container.querySelectorAll('[data-build-index]').forEach(button => {
       button.addEventListener('click', () => {
         const build = builds[Number(button.dataset.buildIndex)];
+        if (build?.installable === false) return;
         installVersionSelection(software, version, build);
       });
     });
@@ -2014,8 +2027,8 @@ async function installVersionSelection(software, version, build) {
       throw new Error(data?.error || 'No se pudo instalar la versión.');
     }
 
-    if (data.type === 'fabric-installer' || data.type === 'forge-installer') {
-      const name = data.type === 'forge-installer' ? 'Forge' : 'Fabric';
+    if (data.type === 'fabric-installer' || data.type === 'forge-installer' || data.type === 'neoforge-installer') {
+      const name = data.type === 'forge-installer' ? 'Forge' : (data.type === 'neoforge-installer' ? 'NeoForge' : 'Fabric');
       toast(`⚠️ ${name} preparado. Revisa el comando indicado antes de ejecutarlo.`, 'info');
       alert(
         `${name} ${version} preparado.\n\n` +
@@ -2062,6 +2075,13 @@ async function loadVersionState() {
             item.id === 'folia' ? '🌱' :
             item.id === 'fabric' ? '🧵' :
             item.id === 'forge' ? '🔨' :
+            item.id === 'leaf' ? '🍃' :
+            item.id === 'leaves' ? '🌿' :
+            item.id === 'spigot' ? '🧱' :
+            item.id === 'bukkit' ? '🪣' :
+            item.id === 'magma' ? '🌋' :
+            item.id === 'arclight' ? '🌈' :
+            item.id === 'neoforge' ? '⚒️' :
             item.id === 'vanilla' ? '🌿' :
             item.id === 'velocity' ? '⚡' :
             item.id === 'waterfall' ? '🌊' :
@@ -3284,6 +3304,17 @@ function toast(message, type = 'info') {
   }, 3000);
 }
 
+function updateWorkspaceDate() {
+  const element = $('workspaceDate');
+  if (!element) return;
+
+  element.textContent = new Intl.DateTimeFormat('es-ES', {
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short',
+  }).format(new Date()).replace('.', '').toUpperCase();
+}
+
 function flashButton(button, label, duration = 1200) {
   if (!button) return;
 
@@ -3479,6 +3510,7 @@ function bindEvents() {
 
   updateAgentUi(agentOnline);
   updateStatusUi(currentStatus);
+  updateWorkspaceDate();
 
   if (panelSession && agentId) {
     connectCloud(false).catch(() =>
