@@ -2542,11 +2542,11 @@ app.get('/api/versions/software', (_req, res) => {
       { id: 'purpur', label: 'Purpur', category: 'plugins', color: '#aa88ff', desc: 'Fork de Paper con configuración avanzada y soporte de plugins. 1.16+' },
       { id: 'folia', label: 'Folia', category: 'plugins', color: '#00ff88', desc: 'Fork de Paper con multithreading regional y soporte de plugins. 1.20+' },
       { id: 'fabric', label: 'Fabric', category: 'mods', color: '#d4aa70', desc: 'Loader ligero y moderno para servidores con mods. 1.14+' },
-      { id: 'forge', label: 'Forge', category: 'mods', color: '#c0873f', desc: 'Loader clásico para servidores con mods.', external: 'https://files.minecraftforge.net/' },
-      { id: 'vanilla', label: 'Vanilla', category: 'vanilla', color: '#c9d8e8', desc: 'Servidor oficial de Mojang sin plugins ni mods. 1.0+' },
       { id: 'velocity', label: 'Velocity', category: 'proxy', color: '#ffcc00', desc: 'Proxy moderno para conectar múltiples servidores.' },
-      { id: 'waterfall', label: 'Waterfall', category: 'proxy', color: '#ff8844', desc: 'Proxy basado en BungeeCord.', external: 'https://papermc.io/software/waterfall/' },
-      { id: 'bungeecord', label: 'BungeeCord', category: 'proxy', color: '#ff4455', desc: 'Proxy clásico para redes de servidores.', external: 'https://ci.md-5.net/job/BungeeCord/' },
+      { id: 'waterfall', label: 'Waterfall', category: 'proxy', color: '#ff8844', desc: 'Proxy basado en BungeeCord.' },
+      { id: 'bungeecord', label: 'BungeeCord', category: 'proxy', color: '#ff4455', desc: 'Proxy clásico para redes de servidores.' },
+      { id: 'forge', label: 'Forge', category: 'mods', color: '#c0873f', desc: 'Loader clásico para servidores con mods. 1.1+' },
+      { id: 'vanilla', label: 'Vanilla', category: 'vanilla', color: '#c9d8e8', desc: 'Servidor oficial de Mojang sin plugins ni mods. 1.0+' },
     ],
   });
 });
@@ -2578,6 +2578,23 @@ app.get('/api/versions/list', async (req, res) => {
     if (sw === 'fabric') {
       const data = await apiFetch('https://meta.fabricmc.net/v2/versions/game');
       return ok(res, { versions: data.filter(v => v.stable).map(v => v.version) });
+    }
+
+    if (sw === 'forge') {
+      const data = await apiFetch('https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json');
+      const versions = Object.keys(data || {}).sort((a, b) => semverCmp(b, a));
+      return ok(res, { versions });
+    }
+
+    if (sw === 'bungeecord') {
+      const data = await apiFetch(
+        'https://hub.spigotmc.org/jenkins/job/BungeeCord/api/json?tree=builds[number,result,timestamp]&pretty=false'
+      );
+      const versions = (data.builds || [])
+        .filter(b => b.result === 'SUCCESS' && Number.isFinite(Number(b.number)))
+        .slice(0, 50)
+        .map(b => String(b.number));
+      return ok(res, { versions });
     }
 
     if (sw === 'vanilla') {
@@ -2643,6 +2660,52 @@ app.get('/api/versions/builds', async (req, res) => {
       return ok(res, { builds, isFabric: true });
     }
 
+    if (sw === 'forge') {
+      const data = await apiFetch('https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json');
+      const forgeVersions = Array.isArray(data?.[version]) ? data[version].slice().reverse() : [];
+      const builds = forgeVersions.map(forgeVersion => ({
+        build: forgeVersion,
+        channel: 'RELEASE',
+        time: null,
+        loaderVersion: forgeVersion,
+        url: `https://maven.minecraftforge.net/net/minecraftforge/forge/${encodeURIComponent(forgeVersion)}/forge-${encodeURIComponent(forgeVersion)}-installer.jar`,
+        sha256: null,
+        changes: `Forge ${forgeVersion} para Minecraft ${version}`,
+      }));
+      return ok(res, { builds, isForge: true });
+    }
+
+    if (sw === 'bungeecord') {
+      const buildNumber = Number(version);
+      if (!Number.isInteger(buildNumber) || buildNumber <= 0) {
+        return fail(res, `Build de BungeeCord no válida: ${version}`);
+      }
+
+      const data = await apiFetch(
+        `https://hub.spigotmc.org/jenkins/job/BungeeCord/${buildNumber}/api/json?tree=number,result,timestamp,artifacts[fileName,relativePath]&pretty=false`
+      );
+
+      if (data.result !== 'SUCCESS') {
+        return fail(res, `BungeeCord #${version} no terminó correctamente`);
+      }
+
+      const artifact = (data.artifacts || []).find(a => a.fileName === 'BungeeCord.jar');
+      if (!artifact?.relativePath) {
+        return fail(res, `No se encontró BungeeCord.jar en el build #${version}`);
+      }
+
+      return ok(res, {
+        builds: [{
+          build: String(data.number),
+          channel: 'STABLE',
+          time: data.timestamp ? new Date(data.timestamp).toISOString() : null,
+          url: `https://hub.spigotmc.org/jenkins/job/BungeeCord/${buildNumber}/artifact/${artifact.relativePath}`,
+          sha256: null,
+          changes: `BungeeCord build #${data.number}`,
+        }],
+      });
+    }
+
     if (sw === 'vanilla') {
       const manifest = await apiFetch('https://launchermeta.mojang.com/mc/game/version_manifest_v2.json');
       const entry = manifest.versions.find(v => v.id === version && v.type === 'release');
@@ -2676,6 +2739,26 @@ app.post('/api/versions/install', async (req, res) => {
   }
 
   try {
+    if (sw === 'forge') {
+      if (!build) {
+        return fail(res, 'versión de Forge requerida');
+      }
+
+      const javaBin = await resolveJavaForServer(version);
+      const instFile = path.join(BASE_DIR, `forge-installer-${build}.jar`);
+      if (!fsSync.existsSync(instFile)) {
+        const forgeUrl = url || `https://maven.minecraftforge.net/net/minecraftforge/forge/${encodeURIComponent(build)}/forge-${encodeURIComponent(build)}-installer.jar`;
+        await downloadFile(forgeUrl, instFile);
+      }
+
+      return ok(res, {
+        type: 'forge-installer',
+        installCmd: `"${javaBin}" -jar "forge-installer-${build}.jar" --installServer`,
+        jarName: 'run.bat',
+        note: `Forge ${build} descargado. Ejecuta el comando desde la carpeta del servidor para completar la instalación; Forge generará los archivos de arranque necesarios.`,
+      });
+    }
+
     if (sw === 'fabric') {
       if (!loaderVersion) {
         return fail(res, 'loaderVersion requerido para Fabric');
@@ -2717,7 +2800,14 @@ app.post('/api/versions/install', async (req, res) => {
     await downloadFile(url, currentJar);
     const stats = await fs.stat(currentJar);
 
-    saveStartupConfig({ jar: 'server.jar', minecraftVersion: String(version) });
+    const isProxy = ['velocity', 'waterfall', 'bungeecord'].includes(sw);
+    const startupUpdate = {
+      jar: 'server.jar',
+      software: sw,
+      ...(isProxy ? {} : { minecraftVersion: String(version) }),
+    };
+
+    saveStartupConfig(startupUpdate);
 
     ok(res, {
       type: 'direct',
