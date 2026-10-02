@@ -2559,28 +2559,27 @@ app.delete('/api/plugins/installed/:file', async (req, res) => {
 app.get('/api/versions/software', (_req, res) => {
   ok(res, {
     software: [
-      { id: 'paper', label: 'Paper', category: 'plugins', color: '#00c8ff', desc: 'Servidor de alto rendimiento compatible con plugins. 1.8.8+' },
+      { id: 'paper', label: 'Paper', category: 'plugins', color: '#00c8ff', desc: 'Servidor de alto rendimiento compatible con plugins.' },
       { id: 'purpur', label: 'Purpur', category: 'plugins', color: '#aa88ff', desc: 'Fork de Paper con configuración avanzada y soporte de plugins. 1.16+' },
       { id: 'folia', label: 'Folia', category: 'plugins', color: '#00ff88', desc: 'Fork de Paper con multithreading regional y soporte de plugins. 1.20+' },
       { id: 'fabric', label: 'Fabric', category: 'mods', color: '#d4aa70', desc: 'Loader ligero y moderno para servidores con mods. 1.14+' },
       { id: 'velocity', label: 'Velocity', category: 'proxy', color: '#ffcc00', desc: 'Proxy moderno para conectar múltiples servidores.' },
       { id: 'waterfall', label: 'Waterfall', category: 'proxy', color: '#ff8844', desc: 'Proxy basado en BungeeCord.' },
       { id: 'bungeecord', label: 'BungeeCord', category: 'proxy', color: '#ff4455', desc: 'Proxy clásico para redes de servidores.' },
-      { id: 'forge', label: 'Forge', category: 'mods', color: '#c0873f', desc: 'Loader clásico para servidores con mods. 1.1+' },
+      { id: 'forge', label: 'Forge', category: 'mods', color: '#c0873f', desc: 'Loader clásico para servidores con mods.' },
       { id: 'leaf', label: 'Leaf', category: 'plugins', color: '#7bd88f', desc: 'Fork de Paper orientado a rendimiento y estabilidad.' },
       { id: 'leaves', label: 'Leaves', category: 'plugins', color: '#a5d66a', desc: 'Fork experimental de Paper con mejoras de rendimiento.' },
       { id: 'spigot', label: 'Spigot', category: 'plugins', color: '#f0a24b', desc: 'Servidor compatible con plugins; se compila mediante BuildTools.' },
-      { id: 'bukkit', label: 'Bukkit', category: 'plugins', color: '#e2b66d', desc: 'API histórica de plugins. Catálogo de versiones legado, sin JAR ejecutable oficial.' },
+      { id: 'bukkit', label: 'Bukkit', category: 'plugins', color: '#e2b66d', desc: 'La API histórica de plugins.' },
       { id: 'magma', label: 'Magma', category: 'hybrid', color: '#d66bff', desc: 'Servidor híbrido con soporte para mods NeoForge y plugins.' },
       { id: 'arclight', label: 'Arclight', category: 'hybrid', color: '#ff8f70', desc: 'Servidor híbrido con loaders Fabric y NeoForge.' },
       { id: 'sponge', label: 'Sponge', category: 'hybrid', color: '#8bd3dd', desc: 'Plataforma híbrida para mods y plugins mediante SpongeVanilla.', external: 'https://spongepowered.org/downloads/spongevanilla' },
       { id: 'mohist', label: 'Mohist', category: 'hybrid', color: '#f08a5d', desc: 'Servidor híbrido con soporte para mods Forge y plugins Bukkit.', external: 'https://mohistmc.com/download' },
-      { id: 'flamecord', label: 'FlameCord', category: 'proxy', color: '#ff7043', desc: 'Proxy optimizado basado en BungeeCord.' , external: 'https://github.com/2lstudios/FlameCord' },
       { id: 'gale', label: 'Gale', category: 'plugins', color: '#8ecae6', desc: 'Fork de Paper centrado en rendimiento y estabilidad.' },
       { id: 'pufferfish', label: 'Pufferfish', category: 'plugins', color: '#f6bd60', desc: 'Fork de Paper con optimizaciones adicionales.' },
       { id: 'quilt', label: 'Quilt', category: 'mods', color: '#d8a7ff', desc: 'Loader moderno y comunitario para mods.' },
       { id: 'neoforge', label: 'NeoForge', category: 'mods', color: '#ff6d5a', desc: 'Loader moderno para servidores con mods.' },
-      { id: 'vanilla', label: 'Vanilla', category: 'vanilla', color: '#c9d8e8', desc: 'Servidor oficial de Mojang sin plugins ni mods. 1.0+' },
+      { id: 'vanilla', label: 'Vanilla', category: 'vanilla', color: '#c9d8e8', desc: 'Servidor oficial de Mojang sin plugins ni mods.' },
     ],
   });
 });
