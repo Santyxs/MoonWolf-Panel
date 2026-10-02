@@ -1854,6 +1854,7 @@ async function selectVersionSoftware(software) {
       </div>
 
       <div class="ver-version-header">
+        <div style="padding-left:28px">
         <div>
           <div class="ver-section-title">Versiones disponibles</div>
           <div class="ver-section-subtitle">${versions.length} versiones encontradas</div>
