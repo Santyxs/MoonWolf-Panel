@@ -375,6 +375,11 @@ function apiRateLimited(ip) {
   return rec.count > API_RATE_LIMIT;
 }
 
+/* Limpieza periódica de todos los Maps en memoria:
+   - apiHits: rate-limit global de /api
+   - loginAttempts: rate-limit de /api/pair
+   - pairingCodes: códigos de emparejamiento caducados
+   Un solo timer cada 10 min, sin bloquear el cierre del proceso (.unref). */
 setInterval(() => {
   const now = Date.now();
 
@@ -489,7 +494,7 @@ app.use(express.json({ limit: '50mb' }));
 
 /* ══════════════════════════════════════════════
    RATE LIMIT CENTRALIZADO
-   ══════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════ */   
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'moonwolf-local' });
 });
@@ -512,6 +517,7 @@ const CLOUD_ONLY_ROUTE = /^\/(pair|share-tokens)(\/|$)/;
 
 app.use('/api', (req, res, next) => {
   if (LOCAL_AGENT_TOKEN) {
+    // Modo Agent local: solo el propio Agent (con su token) puede llamar a la API
     if (CLOUD_ONLY_ROUTE.test(req.path)) return res.status(404).json({ ok: false, error: 'No encontrado.' });
 
     if (!timingSafeEqualStr(req.get('x-moonwolf-token'), LOCAL_AGENT_TOKEN)) {
@@ -685,8 +691,8 @@ app.delete('/api/share-tokens/:id', (req, res) => {
 });
 
 /* ══════════════════════════════════════════════
-   SERVIDOR MINECRAFT
-   ══════════════════════════════════════════════ */
+    SERVIDOR MINECRAFT
+    ══════════════════════════════════════════════ */
 const BASE_DIR = RUNTIME_DIR;
 
 if (!fsSync.existsSync(BASE_DIR)) {
@@ -741,7 +747,9 @@ function requiredJavaForMinecraft(version) {
     if (parsed.minor === 16) return parsed.patch >= 5 ? 16 : 11;
     if (parsed.minor === 17) return 17;
     if (parsed.minor === 18 || parsed.minor === 19) return 17;
+    // 1.20.0 – 1.20.4 → Java 17 | 1.20.5+ → Java 21
     if (parsed.minor === 20) return parsed.patch >= 5 ? 21 : 17;
+    // 1.21.x → Java 21
     if (parsed.minor === 21) return 21;
   }
 
@@ -914,6 +922,7 @@ async function ensureJavaRuntime(javaMajor) {
       await fs.mkdir(staging, { recursive: true });
 
       await new Promise((resolve, reject) => {
+        // Escapado para PowerShell: comillas simples, duplicando las internas
         const psQuote = value => `'${String(value).replace(/'/g, "''")}'`;
 
         const psCommand =
@@ -1010,6 +1019,7 @@ async function resolveJavaForServer(minecraftVersion) {
 
   return ensureJavaRuntime(javaMajor);
 }
+
 
 const PORT = Number(process.env.MOONWOLF_PORT || process.env.PORT || 3000);
 const PAPER_UA = 'MoonWolfPanel/2.0 (contact@moonwolf.local)';
@@ -1394,17 +1404,6 @@ async function apiFetch(url) {
   return res.json();
 }
 
-async function apiFetchText(url) {
-  const { default: fetch } = await import('node-fetch');
-  const res = await fetch(url, { headers: { 'User-Agent': PAPER_UA } });
-
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} -> ${url}`);
-  }
-
-  return res.text();
-}
-
 async function downloadFile(url, dest) {
   const { default: fetch } = await import('node-fetch');
   const response = await fetch(url, {
@@ -1447,8 +1446,8 @@ function semverCmp(a, b) {
 }
 
 /* ══════════════════════════════════════════════
-   CLOUD / AGENT
-   ══════════════════════════════════════════════ */
+    CLOUD / AGENT
+    ══════════════════════════════════════════════ */
 const agentSockets = new Map();
 const panelSockets = new Set();
 const agentCache = new Map();
@@ -1663,8 +1662,8 @@ io.on('connection', socket => {
 });
 
 /* ══════════════════════════════════════════════
-   ARCHIVOS
-   ══════════════════════════════════════════════ */
+    ARCHIVOS
+    ══════════════════════════════════════════════ */
 app.get('/api/files', async (req, res) => {
   const fullPath = safePath(req.query.dir || '');
 
@@ -1730,8 +1729,8 @@ app.post('/api/files/content', async (req, res) => {
 });
 
 /* ══════════════════════════════════════════════
-   STARTUP
-   ══════════════════════════════════════════════ */
+    STARTUP (jar, java, memoria, argumentos, comportamiento)
+    ══════════════════════════════════════════════ */
 app.get('/api/startup', async (_req, res) => {
   try {
     const entries = await fs.readdir(BASE_DIR, { withFileTypes: true });
@@ -1829,8 +1828,8 @@ app.post('/api/startup', (req, res) => {
 });
 
 /* ══════════════════════════════════════════════
-   BASES DE DATOS (MySQL / MariaDB)
-   ══════════════════════════════════════════════ */
+    BASES DE DATOS (MySQL / MariaDB)
+    ══════════════════════════════════════════════ */
 const mysql = require('mysql2/promise');
 
 const MYSQL_HOST = process.env.MOONWOLF_MYSQL_HOST || 'localhost';
@@ -2030,8 +2029,8 @@ app.delete('/api/databases/:name', async (req, res) => {
 });
 
 /* ══════════════════════════════════════════════
-   MINECRAFT PROCESS
-   ══════════════════════════════════════════════ */
+    MINECRAFT PROCESS
+    ══════════════════════════════════════════════ */
 const DONE_RE = /Done \([\d.,]+s\)!|Listening on /;
 let mcProcess = null;
 let startTime = null;
@@ -2271,8 +2270,8 @@ app.post('/api/command', (req, res) => {
 });
 
 /* ══════════════════════════════════════════════
-   PLUGINS
-   ══════════════════════════════════════════════ */
+    PLUGINS
+    ══════════════════════════════════════════════ */
 app.get('/api/plugins/search', async (req, res) => {
   const q = (req.query.q || '').trim();
   const source = req.query.source || 'all';
@@ -2534,27 +2533,20 @@ app.delete('/api/plugins/installed/:file', async (req, res) => {
 });
 
 /* ══════════════════════════════════════════════
-   VERSIONES DE SOFTWARE
-   ══════════════════════════════════════════════ */
+    VERSIONES DE SOFTWARE
+    ══════════════════════════════════════════════ */
 app.get('/api/versions/software', (_req, res) => {
   ok(res, {
     software: [
       { id: 'paper', label: 'Paper', category: 'plugins', color: '#00c8ff', desc: 'Servidor de alto rendimiento compatible con plugins. 1.8.8+' },
       { id: 'purpur', label: 'Purpur', category: 'plugins', color: '#aa88ff', desc: 'Fork de Paper con configuración avanzada y soporte de plugins. 1.16+' },
       { id: 'folia', label: 'Folia', category: 'plugins', color: '#00ff88', desc: 'Fork de Paper con multithreading regional y soporte de plugins. 1.20+' },
-      { id: 'leaf', label: 'Leaf', category: 'plugins', color: '#66cc66', desc: 'Fork de Paper orientado a rendimiento y estabilidad. 1.20+' },
-      { id: 'spigot', label: 'Spigot', category: 'plugins', color: '#f7a300', desc: 'Servidor clásico compatible con plugins Bukkit/Spigot.' },
-      { id: 'bukkit', label: 'Bukkit', category: 'plugins', color: '#ffaa00', desc: 'Servidor histórico compatible con plugins Bukkit (descontinuado).' },
       { id: 'fabric', label: 'Fabric', category: 'mods', color: '#d4aa70', desc: 'Loader ligero y moderno para servidores con mods. 1.14+' },
-      { id: 'forge', label: 'Forge', category: 'mods', color: '#c0873f', desc: 'Loader clásico para servidores con mods. 1.1+' },
-      { id: 'neoforge', label: 'NeoForge', category: 'mods', color: '#e8a84c', desc: 'Fork moderno de Forge para Minecraft 1.20.2+.' },
       { id: 'velocity', label: 'Velocity', category: 'proxy', color: '#ffcc00', desc: 'Proxy moderno para conectar múltiples servidores.' },
       { id: 'waterfall', label: 'Waterfall', category: 'proxy', color: '#ff8844', desc: 'Proxy basado en BungeeCord.' },
       { id: 'bungeecord', label: 'BungeeCord', category: 'proxy', color: '#ff4455', desc: 'Proxy clásico para redes de servidores.' },
+      { id: 'forge', label: 'Forge', category: 'mods', color: '#c0873f', desc: 'Loader clásico para servidores con mods. 1.1+' },
       { id: 'vanilla', label: 'Vanilla', category: 'vanilla', color: '#c9d8e8', desc: 'Servidor oficial de Mojang sin plugins ni mods. 1.0+' },
-      { id: 'arclight', label: 'Arclight', category: 'hybrid', color: '#8b5cf6', desc: 'Servidor híbrido Bukkit + Forge/NeoForge/Fabric. 1.20+' },
-      { id: 'magma', label: 'Magma', category: 'hybrid', color: '#ff5500', desc: 'Servidor híbrido Forge + Bukkit/Spigot. 1.12.2+' },
-      { id: 'mohist', label: 'Mohist', category: 'hybrid', color: '#00b8d4', desc: 'Servidor híbrido Forge + Bukkit/Spigot/Paper. 1.12.2+' },
     ],
   });
 });
@@ -2608,54 +2600,6 @@ app.get('/api/versions/list', async (req, res) => {
     if (sw === 'vanilla') {
       const manifest = await apiFetch('https://launchermeta.mojang.com/mc/game/version_manifest_v2.json');
       return ok(res, { versions: manifest.versions.filter(v => v.type === 'release').map(v => v.id) });
-    }
-
-    if (sw === 'neoforge') {
-      const xml = await apiFetchText('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml');
-      const versions = [...xml.matchAll(/<version>([^<]+)<\/version>/g)]
-        .map(m => m[1])
-        .filter(v => /^\d+\.\d+/.test(v))
-        .sort((a, b) => semverCmp(b, a));
-      return ok(res, { versions });
-    }
-
-    if (sw === 'spigot' || sw === 'bukkit') {
-      const html = await apiFetchText('https://hub.spigotmc.org/versions/');
-      const versions = [...html.matchAll(/href="([^"]+)\/"/g)]
-        .map(m => decodeURIComponent(m[1]))
-        .filter(v => /^\d+\.\d+/.test(v))
-        .sort((a, b) => semverCmp(b, a));
-      return ok(res, { versions });
-    }
-
-    if (sw === 'leaf') {
-      const data = await apiFetch('https://api.leafmc.one/v2/projects/leaf');
-      const all = [];
-      for (const group of Object.values(data.versions || {})) all.push(...group);
-      all.sort((a, b) => semverCmp(b, a));
-      return ok(res, { versions: all });
-    }
-
-    if (sw === 'arclight') {
-      const releases = await apiFetch('https://api.github.com/repos/IzzelAliz/Arclight/releases?per_page=100');
-      const versions = (Array.isArray(releases) ? releases : [])
-        .map(r => r.tag_name)
-        .filter(Boolean)
-        .sort((a, b) => semverCmp(b, a));
-      return ok(res, { versions });
-    }
-
-    if (sw === 'magma') {
-      const data = await apiFetch('https://magmafoundation.org/api/v2/versions');
-      const versions = (data.versions || []).map(v => v.minecraft || v.version || v);
-      return ok(res, { versions });
-    }
-
-    if (sw === 'mohist') {
-      const data = await apiFetch('https://api.mohistmc.cn/projects');
-      const project = (data.projects || []).find(p => /mohist/i.test(p.name || p.slug)) || {};
-      const versions = (project.versions || []).map(v => v.name || v.version || v);
-      return ok(res, { versions });
     }
 
     fail(res, `Software sin API pública: ${sw}`);
@@ -2780,106 +2724,6 @@ app.get('/api/versions/builds', async (req, res) => {
       return ok(res, { builds: [{ build: 1, channel: 'STABLE', time: entry.releaseTime, url: serverUrl, sha256: vdata.downloads?.server?.sha1, changes: `Minecraft ${version} — oficial de Mojang` }] });
     }
 
-    if (sw === 'neoforge') {
-      const xml = await apiFetchText('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml');
-      const all = [...xml.matchAll(/<version>([^<]+)<\/version>/g)].map(m => m[1]);
-      const matching = all
-        .filter(v => v.startsWith(`${version}.`))
-        .sort((a, b) => semverCmp(b, a));
-
-      const builds = matching.map(v => ({
-        build: v,
-        channel: 'RELEASE',
-        time: null,
-        loaderVersion: v,
-        url: `https://maven.neoforged.net/releases/net/neoforged/neoforge/${encodeURIComponent(v)}/neoforge-${encodeURIComponent(v)}-installer.jar`,
-        sha256: null,
-        changes: `NeoForge ${v}`,
-      }));
-
-      return ok(res, { builds, isNeoForge: true });
-    }
-
-    if (sw === 'spigot' || sw === 'bukkit') {
-      const html = await apiFetchText(`https://hub.spigotmc.org/versions/${encodeURIComponent(version)}.json`);
-      let data;
-      try { data = JSON.parse(html); } catch { data = null; }
-
-      const build = data?.build || data?.version || 1;
-      return ok(res, {
-        builds: [{
-          build: 1,
-          channel: 'STABLE',
-          time: data?.release || null,
-          url: `https://download.getbukkit.org/spigot/spigot-${version}.jar`,
-          sha256: null,
-          changes: data ? `Spigot ${version} build ${build}` : `Spigot ${version}`,
-        }],
-      });
-    }
-
-    if (sw === 'leaf') {
-      const data = await apiFetch(`https://api.leafmc.one/v2/projects/leaf/versions/${encodeURIComponent(version)}/builds`);
-      const builds = (Array.isArray(data) ? data : []).map(b => ({
-        build: b.build || b.id || 1,
-        channel: b.channel || 'STABLE',
-        time: b.time || b.timestamp || null,
-        url: b.downloads?.['server:default']?.url || b.downloadUrl || null,
-        sha256: b.downloads?.['server:default']?.sha256 || null,
-        changes: (b.changes || []).map(c => c.summary || c).slice(0, 3).join(' · '),
-      })).sort((a, b) => b.build - a.build);
-
-      return ok(res, { builds });
-    }
-
-    if (sw === 'arclight') {
-      const releases = await apiFetch('https://api.github.com/repos/IzzelAliz/Arclight/releases?per_page=100');
-      const release = (Array.isArray(releases) ? releases : []).find(r => r.tag_name === version);
-      if (!release) return fail(res, `Versión ${version} no encontrada`);
-
-      const asset = (release.assets || []).find(a => /arclight.*\.jar$/i.test(a.name));
-      if (!asset) return fail(res, 'No hay descarga disponible para esta versión');
-
-      return ok(res, {
-        builds: [{
-          build: 1,
-          channel: release.prerelease ? 'BETA' : 'STABLE',
-          time: release.published_at || null,
-          url: asset.browser_download_url,
-          sha256: null,
-          changes: release.body ? release.body.slice(0, 200) : '',
-        }],
-      });
-    }
-
-    if (sw === 'magma') {
-      const data = await apiFetch(`https://magmafoundation.org/api/v2/versions/${encodeURIComponent(version)}`);
-      const builds = (data.builds || []).map(b => ({
-        build: b.build || b.id || 1,
-        channel: 'STABLE',
-        time: b.time || null,
-        url: b.download || b.url || null,
-        sha256: null,
-        changes: `Magma ${version} build ${b.build || b.id}`,
-      })).sort((a, b) => b.build - a.build);
-
-      return ok(res, { builds });
-    }
-
-    if (sw === 'mohist') {
-      const data = await apiFetch(`https://api.mohistmc.cn/project/mohist/${encodeURIComponent(version)}/builds`);
-      const builds = (Array.isArray(data) ? data : []).map(b => ({
-        build: b.build || b.id || 1,
-        channel: b.channel || 'STABLE',
-        time: b.time || null,
-        url: b.download || b.url || null,
-        sha256: null,
-        changes: `Mohist ${version} build ${b.build || b.id}`,
-      })).sort((a, b) => b.build - a.build);
-
-      return ok(res, { builds });
-    }
-
     fail(res, `Software sin API: ${sw}`);
   } catch (e) {
     console.error('[versions/builds]', e.message);
@@ -2895,26 +2739,6 @@ app.post('/api/versions/install', async (req, res) => {
   }
 
   try {
-    if (sw === 'neoforge') {
-      if (!build) {
-        return fail(res, 'versión de NeoForge requerida');
-      }
-
-      const javaBin = await resolveJavaForServer(version);
-      const instFile = path.join(BASE_DIR, `neoforge-installer-${build}.jar`);
-      if (!fsSync.existsSync(instFile)) {
-        const neoUrl = url || `https://maven.neoforged.net/releases/net/neoforged/neoforge/${encodeURIComponent(build)}/neoforge-${encodeURIComponent(build)}-installer.jar`;
-        await downloadFile(neoUrl, instFile);
-      }
-
-      return ok(res, {
-        type: 'neoforge-installer',
-        installCmd: `"${javaBin}" -jar "neoforge-installer-${build}.jar" --installServer`,
-        jarName: 'run.bat',
-        note: `NeoForge ${build} descargado. Ejecuta el comando desde la carpeta del servidor para completar la instalación.`,
-      });
-    }
-
     if (sw === 'forge') {
       if (!build) {
         return fail(res, 'versión de Forge requerida');
@@ -3016,8 +2840,8 @@ app.get('/api/versions/current', async (_req, res) => {
 });
 
 /* ══════════════════════════════════════════════
-   OPERACIONES DE ARCHIVOS
-   ══════════════════════════════════════════════ */
+    OPERACIONES DE ARCHIVOS
+    ══════════════════════════════════════════════ */
 const archiver = require('archiver');
 
 const FILE_UPLOAD_MAX_CHUNK_BYTES = 2 * 1024 * 1024;
@@ -3335,8 +3159,8 @@ app.post('/api/files/delete', async (req, res) => {
 });
 
 /* ══════════════════════════════════════════════
-   BACKUPS
-   ══════════════════════════════════════════════ */
+    BACKUPS
+    ══════════════════════════════════════════════ */
 const BACKUPS_DIR = path.join(STARTUP_DIR, 'backups');
 const BACKUP_NAME_RE = /^[A-Za-z0-9 _.-]{1,80}$/;
 const BACKUP_FILE_RE = /^[A-Za-z0-9_.-]{1,120}\.zip$/;
@@ -3463,8 +3287,8 @@ app.delete('/api/backups/:name', async (req, res) => {
 });
 
 /* ══════════════════════════════════════════════
-   DEBUG
-   ══════════════════════════════════════════════ */
+    DEBUG
+    ══════════════════════════════════════════════ */
 app.get('/api/debug/start', async (_req, res) => {
   const cfg = loadStartupConfig();
   const jarPath = path.join(BASE_DIR, cfg.jar);
@@ -3509,8 +3333,8 @@ app.get('/api/debug/start', async (_req, res) => {
 });
 
 /* ══════════════════════════════════════════════
-   INICIO
-   ══════════════════════════════════════════════ */
+    INICIO
+    ══════════════════════════════════════════════ */
 function stopMinecraft(timeoutMs = 30000) {
   return new Promise(resolve => {
     if (!mcProcess || mcProcess.exitCode !== null) return resolve();
