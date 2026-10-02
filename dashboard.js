@@ -1,3023 +1,3500 @@
 'use strict';
 
-const express = require('express');
-const http = require('http');
-const crypto = require('crypto');
-const { Server } = require('socket.io');
-const fs = require('fs').promises;
-const fsSync = require('fs');
-const path = require('path');
-const net = require('net');
-const { spawn } = require('child_process');
+const CLOUD_URL = location.origin;
+const CLOUD_PATH = '/socket.io';
 
-/* ══════════════════════════════════════════════
-   Environments
-   ══════════════════════════════════════════════ */
-const ENV_PATH = path.join(__dirname, '.env');
-(function loadDotEnv() {
-  if (!fsSync.existsSync(ENV_PATH)) return;
+const PAIRING_CODE_RE = /^MW-P[A-Z2-9]{3}-[A-Z2-9]{4}$/;
+const SHARE_TOKEN_RE = /^MW-SHARE-[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/;
+const SESSION_KEY = 'moonwolf_panel_session';
+const AGENT_KEY = 'moonwolf_agent_id';
+const PERMISSION_KEY = 'moonwolf_panel_permission';
+const SESSION_KIND_KEY = 'moonwolf_panel_kind';
 
-  for (const line of fsSync.readFileSync(ENV_PATH, 'utf8').split(/\r?\n/)) {
-    const m = line.match(/^\s*([\w.-]+)\s*=\s*(.*)\s*$/);
-    if (!m) continue;
+const $ = id => document.getElementById(id);
 
-    let val = m[2] || '';
+const escHtml = value => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;');
+
+const AIKAR_FLAGS = '-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch -XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 -XX:G1HeapRegionSize=8M -XX:G1ReservePercent=20 -XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1RSetUpdatingPauseTimePercent=5 -XX:SurvivorRatio=32 -XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1';
+
+const STATUS_LABELS = {
+  online: 'ONLINE',
+  offline: 'OFFLINE',
+  starting: 'STARTING...',
+  restarting: 'RESTARTING...',
+  stopping: 'STOPPING...',
+};
+
+const STATUS_ICONS = {
+  online: '🟢',
+  offline: '🔴',
+  starting: '🟡',
+  restarting: '🟡',
+  stopping: '🟠',
+};
+
+const STATUS_LEVELS = {
+  online: 'ok',
+  offline: 'info',
+  starting: 'info',
+  restarting: 'warn',
+  stopping: 'warn',
+};
+
+/* STATE */
+
+let cloudSocket = null;
+let panelSession = sessionStorage.getItem(SESSION_KEY) || '';
+let agentId = sessionStorage.getItem(AGENT_KEY) || '';
+let panelPermission = sessionStorage.getItem(PERMISSION_KEY) || 'admin';
+let panelKind = sessionStorage.getItem(SESSION_KIND_KEY) || 'owner';
+let pairingCode = '';
+
+let requestSequence = 0;
+let connectTimer = null;
+let reconnectDelay = 1000;
+
+let currentStatus = 'offline';
+let agentOnline = false;
+
+let editor = null;
+let currentFile = null;
+let currentDir = '';
+
+let currentPlugin = null;
+let pluginSource = 'all';
+let priceFilter = 'all';
+
+let versionState = {
+  software: null,
+  softwareLabel: null,
+  version: null,
+  builds: [],
+};
+
+const pending = new Map();
+const activities = [];
+
+let lastAgentActivityState = null;
+let lastStatusActivity = null;
+
+/* SOCKET.IO */
+
+function ensureSocketIo() {
+  if (typeof window.io === 'function') {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-moonwolf-socketio]');
+
+    if (existing) {
+      existing.addEventListener('load', resolve, { once: true });
+      existing.addEventListener('error', () => reject(new Error('No se pudo cargar Socket.IO.')),
+        { once: true }
+      );
+      return;
+    }
+
+    const script = document.createElement('script');
+
+    script.src = '/socket.io/socket.io.js';
+    script.async = true;
+    script.dataset.moonwolfSocketio = '1';
+
+    script.onload = resolve;
+    script.onerror = () => reject(new Error('No se pudo cargar Socket.IO.'));
+
+    document.head.appendChild(script);
+  });
+}
+
+/* LOGIN */
+
+function ensureLoginGate() {
+  if ($('loginGate')) return;
+
+  const style = document.createElement('style');
+
+  style.id = 'mw-cloud-login-style';
+
+  style.textContent = `
+    #loginGate{
+      position:fixed;
+      inset:0;
+      z-index:99999;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      background:#0d0f14;
+      font-family:inherit
+    }
+
+    #loginGate.hidden{
+      display:none
+    }
+
+    .mw-cloud-card{
+      width:360px;
+      max-width:90vw;
+      padding:32px 28px;
+      background:#171a21;
+      border:1px solid #2a2e38;
+      border-radius:14px;
+      box-shadow:0 18px 60px rgba(0,0,0,.45);
+      text-align:center
+    }
+
+    .mw-cloud-card h1{
+      font-size:18px;
+      color:#eee;
+      margin:0 0 6px;
+      letter-spacing:.05em
+    }
+
+    .mw-cloud-card p{
+      margin:0 0 18px;
+      color:#888;
+      font-size:12px;
+      line-height:1.5
+    }
+
+    .mw-cloud-card input{
+      width:100%;
+      box-sizing:border-box;
+      padding:12px;
+      background:#0d0f14;
+      border:1px solid #2a2e38;
+      border-radius:9px;
+      color:#eee;
+      font:600 14px/1.2 ui-monospace,monospace;
+      text-align:center;
+      letter-spacing:.12em
+    }
+
+    .mw-cloud-card button{
+      width:100%;
+      margin-top:12px;
+      padding:11px;
+      border:0;
+      border-radius:9px;
+      background:#6c5ce7;
+      color:#fff;
+      font-weight:700;
+      cursor:pointer
+    }
+
+    .mw-cloud-card button:disabled{
+      opacity:.55;
+      cursor:default
+    }
+
+    #mwCloudError{
+      min-height:18px;
+      margin-top:12px;
+      font-size:12px;
+      color:#ff6b6b
+    }
+
+    .mw-cloud-help{
+      margin-top:16px;
+      color:#666;
+      font-size:11px
+    }
+
+    .mw-cloud-help b{
+      color:#aaa
+    }
+  `;
+
+  document.head.appendChild(style);
+
+  const gate = document.createElement('div');
+
+  gate.id = 'loginGate';
+
+  gate.innerHTML = `
+    <div class="mw-cloud-card">
+      <h1>🌙 MOONWOLF CLOUD</h1>
+
+      <p>
+        Introduce el código de emparejamiento que muestra MoonWolf Agent
+        o un token de acceso compartido.
+      </p>
+
+      <input
+        id="loginPassword"
+        type="text"
+        maxlength="28"
+        spellcheck="false"
+        autocomplete="off"
+        placeholder="MW-PXXX-XXXX / MW-SHARE-XXXX-XXXX-XXXX-XXXX"
+      >
+
+      <button id="btnLogin">CONECTAR SERVIDOR</button>
+
+      <div id="mwCloudError"></div>
+
+      <div class="mw-cloud-help">
+        El código de emparejamiento se usa una sola vez. Los tokens compartidos
+        pueden reutilizarse hasta que caduquen o sean revocados.
+      </div>
+    </div>
+  `;
+
+  document.body.prepend(gate);
+
+  $('loginPassword').addEventListener('input', event => {
+    let raw = event.target.value.toUpperCase();
+
+    if (raw.startsWith('MW-SHARE')) {
+      const value = raw
+        .replace(/^MW-SHARE-?/, '')
+        .replace(/[^A-Z2-9]/g, '')
+        .slice(0, 16);
+      const groups = value.match(/.{1,4}/g) || [];
+      event.target.value = `MW-SHARE-${groups.join('-')}`.replace(/-$/, '');
+      return;
+    }
+
+    let value = raw.replace(/[^A-Z2-9]/g, '');
+
+    if (value === 'M') {
+      event.target.value = 'M';
+      return;
+    }
+
+    if (value === 'MW') {
+      event.target.value = 'MW-';
+      return;
+    }
+
+    if (value.startsWith('MW')) value = value.slice(2);
+    if (value.startsWith('P')) value = value.slice(1);
+
+    const first = value.slice(0, 3);
+    const second = value.slice(3, 7);
+
+    event.target.value = `MW-P${first}${second ? `-${second}` : ''}`;
+  });
+
+  $('btnLogin').addEventListener('click', attemptLogin);
+
+  $('loginPassword').addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      attemptLogin();
+    }
+  });
+}
+
+function showApp() {
+  ensureLoginGate();
+
+  $('loginGate')?.classList.add('hidden');
+  document.querySelector('.app')?.classList.remove('locked');
+}
+
+function showLogin(message = '') {
+  ensureLoginGate();
+
+  $('loginGate')?.classList.remove('hidden');
+  document.querySelector('.app')?.classList.add('locked');
+
+  if ($('mwCloudError')) {
+    $('mwCloudError').textContent = message;
+  }
+
+  if ($('loginPassword')) {
+    $('loginPassword').value = pairingCode;
+  }
+}
+
+function setSession(session, id, permission = 'admin', kind = 'owner') {
+  panelSession = String(session || '');
+  agentId = String(id || '');
+  panelPermission = String(permission || 'admin');
+  panelKind = String(kind || 'owner');
+
+  if (panelSession) {
+    sessionStorage.setItem(SESSION_KEY, panelSession);
+    sessionStorage.setItem(PERMISSION_KEY, panelPermission);
+    sessionStorage.setItem(SESSION_KIND_KEY, panelKind);
+  } else {
+    sessionStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem(PERMISSION_KEY);
+    sessionStorage.removeItem(SESSION_KIND_KEY);
+  }
+
+  if (agentId) {
+    sessionStorage.setItem(AGENT_KEY, agentId);
+  } else {
+    sessionStorage.removeItem(AGENT_KEY);
+  }
+}
+
+function clearSession() {
+  setSession('', '', 'admin', 'owner');
+  pairingCode = '';
+}
+
+const PERMISSION_RANK = { read: 1, control: 2, admin: 3 };
+function hasPermission(required) {
+  return (PERMISSION_RANK[panelPermission] || 0) >= (PERMISSION_RANK[required] || 99);
+}
+
+async function attemptLogin() {
+  const input = $('loginPassword');
+  const button = $('btnLogin');
+
+  const code = String(input?.value || '')
+    .trim()
+    .toUpperCase();
+
+  if (!PAIRING_CODE_RE.test(code) && !SHARE_TOKEN_RE.test(code)) {
+    if ($('mwCloudError')) {
+      $('mwCloudError').textContent =
+        'Código inválido. Usa MW-PXXX-XXXX o un token MW-SHARE-...';
+    }
+
+    return;
+  }
+
+  button.disabled = true;
+  button.textContent = 'Emparejando...';
+
+  if ($('mwCloudError')) {
+    $('mwCloudError').textContent = '';
+  }
+
+  pairingCode = code;
+
+  try {
+    const response = await fetch('/api/pair', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || !data.ok || !data.session || !data.agent?.id) {
+      throw new Error(data.error || 'No se pudo emparejar el panel.');
+    }
+
+    setSession(
+      data.session,
+      data.agent.id,
+      data.permission || 'admin',
+      data.kind || 'owner'
+    );
+    pairingCode = '';
+
+    await connectCloud(true);
+
+    if ($('mwCloudError')) {
+      $('mwCloudError').textContent = '';
+    }
+  } catch (error) {
+    pairingCode = '';
+
+    if ($('mwCloudError')) {
+      $('mwCloudError').textContent = error.message;
+    }
+
+    button.textContent = 'CONECTAR SERVIDOR';
+    button.disabled = false;
+  }
+}
+
+/* CLOUD CONNECTION */
+
+function clearPending(errorMessage) {
+  for (const [, resolve] of pending) {
+    resolve({
+      id: null,
+      ok: false,
+      status: 503,
+      data: {
+        ok: false,
+        error: errorMessage,
+      },
+    });
+  }
+
+  pending.clear();
+}
+
+async function connectCloud(manual = false) {
+  clearTimeout(connectTimer);
+
+  if (!panelSession || !agentId) {
+    showLogin('Empareja este panel con MoonWolf Agent.');
+
+    return Promise.reject(new Error('Código de conexión inválido.'));
+  }
+
+  if (cloudSocket?.connected) {
+    showApp();
+    return;
+  }
+
+  await ensureSocketIo();
+
+  if (cloudSocket) {
+    try {
+      cloudSocket.disconnect();
+    } catch {}
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+
+    const finish = (fn, value) => {
+      if (settled) return;
+
+      settled = true;
+      fn(value);
+    };
+
+    cloudSocket = io(CLOUD_URL, {
+      autoConnect: false,
+      path: CLOUD_PATH,
+      transports: ['websocket'],
+      reconnection: false,
+
+      auth: callback => {
+        callback({
+          role: 'panel',
+          session: panelSession,
+        });
+      },
+    });
+
+    cloudSocket.once('connect', () => {
+      reconnectDelay = 1000;
+
+      showApp();
+
+      addActivity('Conectado a MoonWolf Cloud', 'ok', '☁️');
+
+      finish(resolve);
+    });
+
+    cloudSocket.once('connect_error', error => {
+      const message =
+        error?.message || 'No se pudo conectar con MoonWolf Cloud.';
+
+      addActivity(message, 'warn', '⚠️');
+
+      if (/unauthorized/i.test(message)) {
+        clearSession();
+        showLogin('La sesión del panel ha caducado. Introduce un nuevo código.');
+      }
+
+      finish(reject, new Error(message));
+    });
+
+    cloudSocket.on('cloud_ready', data => {
+      setAgentOnline(Boolean(data?.agentOnline));
+    });
+
+    cloudSocket.on('agent_status', data => {
+      setAgentOnline(Boolean(data?.online));
+    });
+
+    cloudSocket.on('session_info', data => {
+      panelPermission = String(data?.permission || panelPermission || 'admin');
+      panelKind = String(data?.kind || panelKind || 'owner');
+      sessionStorage.setItem(PERMISSION_KEY, panelPermission);
+      sessionStorage.setItem(SESSION_KIND_KEY, panelKind);
+      renderSettings();
+    });
+
+    cloudSocket.on('share_revoked', () => {
+      clearSession();
+      showLogin('Este acceso compartido ha sido revocado.');
+    });
+
+    cloudSocket.on('status', setStatus);
+    cloudSocket.on('log', appendLog);
+
+    cloudSocket.on('history', logs => {
+      const consoleEl = $('console');
+
+      if (!consoleEl) return;
+
+      consoleEl.innerHTML = '';
+
+      (Array.isArray(logs) ? logs : []).forEach(appendLog);
+    });
+
+    cloudSocket.on('stats', updateStats);
+
+    cloudSocket.on('rpc_result', result => {
+      const resolveRequest = pending.get(result?.id);
+
+      if (!resolveRequest) return;
+
+      pending.delete(result.id);
+      resolveRequest(result);
+    });
+
+    cloudSocket.on('disconnect', reason => {
+      setAgentOnline(false);
+
+      currentStatus = 'offline';
+      updateStatusUi('offline');
+
+      clearPending('Conexión con MoonWolf Cloud perdida.');
+
+      addActivity(`Cloud desconectado (${reason})`, 'warn', '⚠️');
+
+      if (manual) {
+        showLogin(
+          'La conexión se cerró. Comprueba que el Agent esté ejecutándose.'
+        );
+      }
+
+      clearTimeout(connectTimer);
+
+      connectTimer = setTimeout(() => {
+        connectCloud(false).catch(() => {});
+      }, reconnectDelay);
+
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+    });
+
+    cloudSocket.connect();
+  });
+}
+
+/* RPC / API */
+
+async function cloudApi(pathname, init = {}) {
+  const headers = new Headers(init.headers || {});
+  headers.set('Authorization', `Bearer ${panelSession}`);
+  if (init.body !== undefined && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
+  const response = await fetch(pathname, { ...init, headers });
+  let data = null;
+
+  try {
+    data = await response.json();
+  } catch {}
+
+  if (!response.ok || !data?.ok) {
+    throw new Error(data?.error || `Error HTTP ${response.status}`);
+  }
+
+  return data;
+}
+
+function rpcHttp(pathname, init = {}) {
+  if (!cloudSocket?.connected) {
+    return Promise.reject(new Error('MoonWolf Cloud no está conectado.'));
+  }
+
+  const id = `${Date.now()}-${++requestSequence}`;
+
+  const request = {
+    id,
+    method: String(init.method || 'GET').toUpperCase(),
+    path: pathname,
+    body: init.body ?? undefined,
+  };
+
+  return new Promise(resolve => {
+    pending.set(id, resolve);
+    cloudSocket.emit('rpc', request);
+  });
+}
+
+function decodeResultBody(result) {
+  if (result?.bodyBase64 === undefined) {
+    return null;
+  }
+
+  const binary = atob(result.bodyBase64);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  return bytes;
+}
+
+async function api(pathname, init = {}) {
+  const result = await rpcHttp(pathname, init);
+
+  const status = result?.status || 500;
+  const contentType = result?.contentType || 'application/json';
+
+  if (result?.bodyBase64 !== undefined) {
+    const bytes = decodeResultBody(result);
+    const text = new TextDecoder().decode(bytes);
 
     if (
-      (val.startsWith('"') && val.endsWith('"')) ||
-      (val.startsWith("'") && val.endsWith("'"))
+      contentType.includes('application/json') ||
+      contentType.includes('text/')
     ) {
-      val = val.slice(1, -1);
-    }
-
-    if (!(m[1] in process.env)) {
-      process.env[m[1]] = val;
-    }
-  }
-})();
-
-/* ══════════════════════════════════════════════
-   AUTENTICACIÓN / SESIONES
-   ══════════════════════════════════════════════ */
-const LOCAL_AGENT_TOKEN = process.env.MOONWOLF_LOCAL_AUTH_TOKEN || '';
-
-const SESSION_SECRET = (() => {
-  const envSecret = process.env.MOONWOLF_SESSION_SECRET;
-  if (envSecret && envSecret.length >= 32) return envSecret;
-
-  const appDir = path.join(
-    process.env.APPDATA || path.join(require('os').homedir(), 'AppData', 'Roaming'),
-    'MoonWolf'
-  );
-  const secretPath = path.join(appDir, 'session-secret');
-
-  try {
-    const saved = fsSync.readFileSync(secretPath, 'utf8').trim();
-    if (saved.length >= 32) return saved;
-  } catch {}
-
-  const secret = crypto.randomBytes(32).toString('hex');
-
-  try {
-    fsSync.mkdirSync(appDir, { recursive: true });
-    fsSync.writeFileSync(secretPath, secret, { encoding: 'utf8', mode: 0o600 });
-  } catch (error) {
-    console.warn('[session] No se pudo persistir SESSION_SECRET:', error.message);
-  }
-
-  return secret;
-})();
-
-const PANEL_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
-const PAIRING_TTL_MS = 5 * 60 * 1000;
-
-function timingSafeEqualStr(a, b) {
-  const bufA = Buffer.from(String(a ?? ''));
-  const bufB = Buffer.from(String(b ?? ''));
-
-  if (bufA.length !== bufB.length) return false;
-
-  return crypto.timingSafeEqual(bufA, bufB);
-}
-
-function signValue(value) {
-  return crypto
-    .createHmac('sha256', SESSION_SECRET)
-    .update(value)
-    .digest('base64url');
-}
-
-const SHARE_TOKEN_STORE_PATH =
-  process.env.MOONWOLF_SHARE_STORE ||
-  path.join(__dirname, '.moonwolf-share-tokens.json');
-
-const PERMISSION_RANK = {
-  read: 1,
-  control: 2,
-  admin: 3,
-};
-
-function permissionAllows(actual, required) {
-  return (PERMISSION_RANK[String(actual || '')] || 0) >= (PERMISSION_RANK[String(required || '')] || 99);
-}
-
-function requiredPermission(method, pathname) {
-  const verb = String(method || 'GET').toUpperCase();
-  const route = String(pathname || '').split('?')[0];
-
-  if (/^\/api\/(files|backups|databases|debug)(\/|$)/.test(route)) return 'admin';
-  if (verb !== 'GET' && verb !== 'HEAD' && /^\/api\/(startup|ports|versions\/install|plugins\/install|plugins\/installed)/.test(route)) return 'admin';
-  if (verb === 'GET' || verb === 'HEAD') return 'read';
-
-  return 'control';
-}
-
-function loadShareTokens() {
-  try {
-    const data = JSON.parse(fsSync.readFileSync(SHARE_TOKEN_STORE_PATH, 'utf8'));
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveShareTokens(tokens) {
-  const dir = path.dirname(SHARE_TOKEN_STORE_PATH);
-
-  if (!fsSync.existsSync(dir)) {
-    fsSync.mkdirSync(dir, { recursive: true });
-  }
-
-  const tmp = `${SHARE_TOKEN_STORE_PATH}.tmp`;
-  fsSync.writeFileSync(tmp, JSON.stringify(tokens, null, 2), 'utf8');
-  fsSync.renameSync(tmp, SHARE_TOKEN_STORE_PATH);
-}
-
-function hashShareToken(token) {
-  return crypto.createHash('sha256').update(String(token || '')).digest('hex');
-}
-
-function makeShareToken() {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let raw = '';
-
-  while (raw.length < 16) {
-    for (const byte of crypto.randomBytes(16)) {
-      raw += alphabet[byte % alphabet.length];
-      if (raw.length >= 16) break;
+      try {
+        return JSON.parse(text);
+      } catch {
+        return {
+          ok: status >= 200 && status < 300,
+          status,
+          content: text,
+        };
+      }
     }
   }
 
-  return `MW-SHARE-${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}`;
-}
-
-function createShareToken(agentId, permission, expiresAt, label) {
-  const token = makeShareToken();
-  const record = {
-    id: crypto.randomUUID(),
-    agentId: String(agentId),
-    tokenHash: hashShareToken(token),
-    label: String(label || '').trim().slice(0, 60) || 'Acceso compartido',
-    permission,
-    createdAt: Date.now(),
-    expiresAt: expiresAt || null,
-    revokedAt: null,
-  };
-
-  const tokens = loadShareTokens();
-  tokens.push(record);
-  saveShareTokens(tokens);
-
-  return { record, token };
-}
-
-function findShareToken(token) {
-  const hash = hashShareToken(token);
-  const record = loadShareTokens().find(item => {
-    const stored = String(item?.tokenHash || '');
-    return stored.length === hash.length && timingSafeEqualStr(stored, hash);
-  });
-
-  if (!record || record.revokedAt) return null;
-  if (record.expiresAt && Number(record.expiresAt) <= Date.now()) return null;
-
-  return record;
-}
-
-function publicShareToken(record) {
-  return {
-    id: record.id,
-    agentId: record.agentId,
-    label: record.label,
-    permission: record.permission,
-    createdAt: record.createdAt,
-    expiresAt: record.expiresAt || null,
-    revokedAt: record.revokedAt || null,
+  return result?.data || {
+    ok: Boolean(result?.ok),
+    status,
+    error: 'Respuesta vacía.',
   };
 }
 
-function getSessionFromRequest(req) {
-  const auth = String(req.headers.authorization || '');
-
-  if (!auth.startsWith('Bearer ')) return null;
-
-  return verifyPanelSession(auth.slice(7).trim());
+function postJSON(pathname, body) {
+  return api(pathname, { method: 'POST', body });
 }
 
-function createPanelSession(agentId, options = {}) {
-  const permission = options.permission || 'admin';
-  const kind = options.kind || 'owner';
-  const shareTokenId = options.shareTokenId || null;
-  const requestedExp = Number(options.expiresAt) || 0;
-  const sessionExp = requestedExp > 0
-    ? Math.min(Date.now() + PANEL_SESSION_TTL_MS, requestedExp)
-    : Date.now() + PANEL_SESSION_TTL_MS;
+/* AGENT STATUS */
 
-  const payload = Buffer.from(JSON.stringify({
-    agentId,
-    permission,
-    kind,
-    shareTokenId,
-    iat: Date.now(),
-    exp: sessionExp,
-    nonce: crypto.randomBytes(16).toString('hex'),
-  })).toString('base64url');
+function setAgentOnline(online) {
+  const nextState = Boolean(online);
 
-  return `${payload}.${signValue(payload)}`;
-}
-
-function verifyPanelSession(token) {
-  const [payload, signature] = String(token || '').split('.');
-
-  if (!payload || !signature || !timingSafeEqualStr(signature, signValue(payload))) {
-    return null;
+  if (agentOnline === nextState) {
+    updateAgentUi(nextState);
+    updateStatusUi(currentStatus);
+    return;
   }
 
-  try {
-    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+  agentOnline = nextState;
+  updateAgentUi(nextState);
+  updateStatusUi(currentStatus);
 
-    if (!data?.agentId || !Number.isFinite(data.exp) || data.exp <= Date.now()) {
-      return null;
+  if (nextState) {
+    if (lastAgentActivityState !== true) {
+      addActivity('MoonWolf Agent conectado', 'ok', '🟢');
     }
 
-    data.permission = data.permission || 'admin';
-    data.kind = data.kind || 'owner';
-    data.shareTokenId = data.shareTokenId || null;
-
-    return data;
-  } catch {
-    return null;
-  }
-}
-
-const AGENT_STORE_PATH =
-  process.env.MOONWOLF_AGENT_STORE ||
-  path.join(__dirname, '.moonwolf-agents.json');
-
-function verifyOrRegisterAgent(agentId, token) {
-  if (!/^[A-Za-z0-9-]{16,64}$/.test(agentId)) return false;
-
-  let db = {};
-
-  try {
-    db = JSON.parse(fsSync.readFileSync(AGENT_STORE_PATH, 'utf8')) || {};
-  } catch {}
-
-  const hash = hashShareToken(token);
-
-  if (!Object.prototype.hasOwnProperty.call(db, agentId)) {
-    db[agentId] = hash;
-
-    try {
-      fsSync.writeFileSync(AGENT_STORE_PATH, JSON.stringify(db), { encoding: 'utf8', mode: 0o600 });
-    } catch (error) {
-      console.warn('[agents] No se pudo persistir el registro:', error.message);
-    }
-
-    return true;
-  }
-
-  return timingSafeEqualStr(db[agentId], hash);
-}
-
-const pairingCodes = new Map();
-
-function makePairingCode() {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let raw = '';
-
-  for (const byte of crypto.randomBytes(7)) {
-    raw += alphabet[byte % alphabet.length];
-  }
-
-  return `MW-P${raw.slice(0, 3)}-${raw.slice(3, 7)}`;
-}
-
-function createPairingCode(agentId) {
-  for (const [code, pairing] of pairingCodes) {
-    if (pairing.agentId === agentId) {
-      pairingCodes.delete(code);
-    }
-  }
-
-  let code;
-
-  do {
-    code = makePairingCode();
-  } while (pairingCodes.has(code));
-
-  const expiresAt = Date.now() + PAIRING_TTL_MS;
-
-  pairingCodes.set(code, { agentId, expiresAt });
-
-  return { code, expiresAt };
-}
-
-function consumePairingCode(code) {
-  const normalized = String(code || '').trim().toUpperCase();
-  const pairing = pairingCodes.get(normalized);
-
-  if (!pairing) return null;
-
-  pairingCodes.delete(normalized);
-
-  if (pairing.expiresAt <= Date.now()) {
-    return null;
-  }
-
-  return pairing;
-}
-
-const RUNTIME_DIR =
-  process.env.MOONWOLF_SERVER_DIR ||
-  process.env.BASE_DIR ||
-  process.env.MOONWOLF_BASE_DIR ||
-  path.join(process.cwd(), 'mc-server');
-
-const loginAttempts = new Map();
-const apiHits = new Map();
-const API_RATE_LIMIT = 120;
-const API_RATE_WINDOW_MS = 60_000;
-
-function loginRateLimited(ip) {
-  const now = Date.now();
-  const rec = loginAttempts.get(ip);
-
-  if (!rec || now > rec.resetAt) {
-    loginAttempts.set(ip, {
-      count: 1,
-      resetAt: now + 5 * 60 * 1000,
-    });
-
-    return false;
-  }
-
-  rec.count++;
-
-  return rec.count > 10;
-}
-
-function apiRateLimited(ip) {
-  const now = Date.now();
-  const rec = apiHits.get(ip);
-
-  if (!rec || now > rec.resetAt) {
-    apiHits.set(ip, {
-      count: 1,
-      resetAt: now + API_RATE_WINDOW_MS,
-    });
-
-    return false;
-  }
-
-  rec.count++;
-
-  return rec.count > API_RATE_LIMIT;
-}
-
-/* Limpieza periódica de todos los Maps en memoria:
-   - apiHits: rate-limit global de /api
-   - loginAttempts: rate-limit de /api/pair
-   - pairingCodes: códigos de emparejamiento caducados
-   Un solo timer cada 10 min, sin bloquear el cierre del proceso (.unref). */
-setInterval(() => {
-  const now = Date.now();
-
-  for (const [ip, rec] of apiHits) {
-    if (now > rec.resetAt) apiHits.delete(ip);
-  }
-
-  for (const [ip, rec] of loginAttempts) {
-    if (now > rec.resetAt) loginAttempts.delete(ip);
-  }
-
-  for (const [code, pairing] of pairingCodes) {
-    if (pairing.expiresAt <= now) pairingCodes.delete(code);
-  }
-}, 10 * 60 * 1000).unref();
-
-/* ══════════════════════════════════════════════
-   EXPRESS / SOCKET.IO
-   ══════════════════════════════════════════════ */
-const app = express();
-app.set('trust proxy', 1);
-const server = http.createServer(app);
-
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
-
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Vary', 'Origin');
-
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(204);
-  }
-
-  next();
-});
-
-const io = new Server(server, {
-  maxHttpBufferSize: 64e6,
-  cors: {
-    origin: ALLOWED_ORIGIN,
-    methods: ['GET', 'POST'],
-  },
-});
-
-io.use((socket, next) => {
-  const auth = socket.handshake.auth || {};
-  const role = auth.role;
-
-  if (role === 'local-agent') {
-    const token = String(auth.token || '');
-
-    if (!LOCAL_AGENT_TOKEN || !timingSafeEqualStr(token, LOCAL_AGENT_TOKEN)) {
-      return next(new Error('unauthorized'));
-    }
-
-    socket.data.role = 'local-agent';
-    return next();
-  }
-
-  if (role === 'agent') {
-    const agentId = String(auth.agentId || '');
-    const token = String(auth.token || '');
-
-    if (!agentId || !token) {
-      return next(new Error('unauthorized'));
-    }
-
-    if (agentId.length < 16 || token.length < 32 || !verifyOrRegisterAgent(agentId, token)) {
-      return next(new Error('unauthorized'));
-    }
-
-    socket.data.role = 'agent';
-    socket.data.agentId = agentId;
-    socket.data.agentToken = token;
-    return next();
-  }
-
-  if (role === 'panel') {
-    const session = verifyPanelSession(auth.session);
-
-    if (!session) {
-      return next(new Error('unauthorized'));
-    }
-
-    socket.data.role = 'panel';
-    socket.data.agentId = session.agentId;
-    socket.data.sessionExp = session.exp;
-    socket.data.permission = session.permission || 'admin';
-    socket.data.kind = session.kind || 'owner';
-    socket.data.shareTokenId = session.shareTokenId || null;
-    return next();
-  }
-
-  return next(new Error('Rol no válido.'));
-});
-
-const PUBLIC_ASSETS = ['index.html', 'dashboard.js', 'styles.css'];
-
-app.get('/', (_req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
-});
-
-for (const asset of PUBLIC_ASSETS) {
-  app.get('/' + asset, (_req, res) => {
-    res.sendFile(path.join(__dirname, asset));
-  });
-}
-
-app.use(express.json({ limit: '50mb' }));
-
-/* ══════════════════════════════════════════════
-   RATE LIMIT CENTRALIZADO
-/* ══════════════════════════════════════════════ */   
-app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, service: 'moonwolf-local' });
-});
-
-app.use('/api', (req, res, next) => {
-  if (apiRateLimited(req.ip)) {
-    return res.status(429).json({
-      ok: false,
-      error: 'Demasiadas peticiones, espera un momento.',
-    });
-  }
-
-  next();
-});
-
-/* ══════════════════════════════════════════════
-   EMPAREJAMIENTO / SESIONES
-   ══════════════════════════════════════════════ */
-const CLOUD_ONLY_ROUTE = /^\/(pair|share-tokens)(\/|$)/;
-
-app.use('/api', (req, res, next) => {
-  if (LOCAL_AGENT_TOKEN) {
-    // Modo Agent local: solo el propio Agent (con su token) puede llamar a la API
-    if (CLOUD_ONLY_ROUTE.test(req.path)) return res.status(404).json({ ok: false, error: 'No encontrado.' });
-
-    if (!timingSafeEqualStr(req.get('x-moonwolf-token'), LOCAL_AGENT_TOKEN)) {
-      return res.status(401).json({ ok: false, error: 'No autorizado.' });
-    }
-
-    return next();
-  }
-
-  if (!CLOUD_ONLY_ROUTE.test(req.path)) {
-    return res.status(404).json({ ok: false, error: 'No encontrado.' });
-  }
-
-  next();
-});
-
-app.post('/api/pair', (req, res) => {
-  if (loginRateLimited(req.ip)) {
-    return res.status(429).json({ ok: false, error: 'Demasiados intentos, espera unos minutos.' });
-  }
-
-  const code = String(req.body?.code || '').trim().toUpperCase();
-  let pairing = null;
-  let share = null;
-  let sessionOptions = { permission: 'admin', kind: 'owner' };
-
-  if (/^MW-SHARE-[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/.test(code)) {
-    share = findShareToken(code);
-
-    if (!share) {
-      return res.status(401).json({
-        ok: false,
-        error: 'Token compartido inválido, revocado o caducado.',
-      });
-    }
-
-    pairing = { agentId: share.agentId };
-    sessionOptions = {
-      permission: share.permission,
-      kind: 'share',
-      shareTokenId: share.id,
-      expiresAt: share.expiresAt,
-    };
+    lastAgentActivityState = true;
   } else {
-    pairing = consumePairingCode(code);
+    if (lastAgentActivityState !== false) {
+      addActivity('MoonWolf Agent desconectado', 'warn', '🔴');
+    }
 
-    if (!pairing) {
-      return res.status(401).json({
-        ok: false,
-        error: 'Código de emparejamiento inválido o caducado.',
-      });
+    lastAgentActivityState = false;
+  }
+}
+
+function updateAgentUi(online) {
+  const elements = [
+    $('agentStatus'),
+    $('sbAgentStatus'),
+    $('agentConnectionStatus'),
+  ];
+
+  for (const element of elements) {
+    if (!element) continue;
+
+    element.classList.toggle('online', Boolean(online));
+    element.classList.toggle('offline', !online);
+
+    if (element.dataset && element.dataset.agentStatus !== undefined) {
+      element.dataset.agentStatus = online ? 'online' : 'offline';
     }
   }
 
-  const agentSocket = agentSockets.get(pairing.agentId);
+  const textElements = [$('agentStatusText'), $('sbAgentStatusText')];
 
-  if (!agentSocket?.connected) {
-    return res.status(409).json({
-      ok: false,
-      error: 'El MoonWolf Agent ya no está conectado.',
-    });
+  for (const element of textElements) {
+    if (!element) continue;
+
+    element.textContent = online ? 'AGENT ONLINE' : 'AGENT OFFLINE';
+  }
+}
+
+/* SERVER / TERMINAL */
+
+function updateStatusUi(status) {
+  status = STATUS_LABELS[status] ? status : 'offline';
+
+  currentStatus = status;
+
+  const statusEl = $('sbStatus');
+
+  if (statusEl) {
+    statusEl.className = `sb-status ${status}`;
   }
 
-  const session = createPanelSession(pairing.agentId, sessionOptions);
+  const statusText = $('sbStatusText');
 
-  if (!share) {
-    agentSocket.emit('pairing_consumed');
+  if (statusText) {
+    statusText.textContent =
+      STATUS_LABELS[status] || String(status).toUpperCase();
   }
 
-  return res.json({
-    ok: true,
-    session,
-    permission: sessionOptions.permission,
-    kind: sessionOptions.kind,
-    agent: {
-      id: pairing.agentId,
-      online: true,
-    },
-  });
-});
+  const startButton = $('btnStart');
+
+  if (startButton) {
+    startButton.disabled = status !== 'offline' || !agentOnline;
+  }
+
+  const stopButton = $('btnStop');
+
+  if (stopButton) {
+    stopButton.disabled = status !== 'online' || !agentOnline;
+  }
+
+  const restartButton = $('btnRestart');
+
+  if (restartButton) {
+    restartButton.disabled = status !== 'online' || !agentOnline;
+  }
+
+  const stats = $('statsGrid');
+
+  if (stats) {
+    stats.classList.toggle('hidden', status === 'offline');
+    stats.classList.toggle('visible', status !== 'offline');
+  }
+}
+
+function setStatus(status) {
+  updateStatusUi(status);
+
+  const normalized = STATUS_LABELS[status] ? status : 'offline';
+
+  if (lastStatusActivity === normalized) {
+    return;
+  }
+
+  lastStatusActivity = normalized;
+
+  addActivity(
+    STATUS_LABELS[normalized] || normalized,
+    STATUS_LEVELS[normalized] || 'info',
+    STATUS_ICONS[normalized] || '📌'
+  );
+}
+
+function updateStats(stats = {}) {
+  const players = Number(stats.players);
+  const maxPlayers = Number(stats.maxPlayers);
+  const tps = Number(stats.tps);
+  const processMemory = Number(stats.processMemory);
+  const cpuUsage = Number(stats.cpuUsage);
+
+  const safePlayers = Number.isFinite(players) ? players : 0;
+  const safeMaxPlayers = Number.isFinite(maxPlayers) ? maxPlayers : 0;
+  const safeTps = Number.isFinite(tps) ? tps : 20;
+  const safeProcessMemory = Number.isFinite(processMemory) ? processMemory : 0;
+  const safeCpu = Number.isFinite(cpuUsage) ? cpuUsage : 0;
+
+  if ($('statPlayers')) {
+    $('statPlayers').innerHTML = `${safePlayers}<span class="stat-unit">/${safeMaxPlayers}</span>`;
+  }
+
+  const tpsEl = $('statTps');
+
+  if (tpsEl) {
+    tpsEl.className = `stat-value ${
+      safeTps < 15 ? 'tps-bad' : safeTps < 18 ? 'tps-warn' : 'tps-good'
+    }`;
+
+    tpsEl.innerHTML = `${safeTps}<span class="stat-unit"> tps</span>`;
+  }
+
+  if ($('statUptime')) {
+    $('statUptime').textContent = stats.uptime || '0h 0m';
+  }
+
+  if ($('statMemProc')) {
+    $('statMemProc').innerHTML = `${safeProcessMemory}<span class="stat-unit"> MB</span>`;
+  }
+
+  const sys = stats.sysMemory || { used: 0, total: 0 };
+
+  const used = Number(sys.used);
+  const total = Number(sys.total);
+
+  const safeUsed = Number.isFinite(used) ? used : 0;
+  const safeTotal = Number.isFinite(total) ? total : 0;
+
+  if ($('statMemSys')) {
+    $('statMemSys').innerHTML = `${safeUsed}/${safeTotal}<span class="stat-unit"> GB</span>`;
+  }
+
+  if ($('statCpu')) {
+    $('statCpu').innerHTML = `${safeCpu}<span class="stat-unit"> %</span>`;
+  }
+}
 
 /* ══════════════════════════════════════════════
-   SHARE TOKENS (propietario)
+   FILTRO DE LOGS
    ══════════════════════════════════════════════ */
-app.get('/api/share-tokens', (req, res) => {
-  const session = getSessionFromRequest(req);
+const LOG_IGNORE_PATTERNS = [
+  /Thread RCON Client \/127\.0\.0\.1 (started|shutting down)/i,
+];
 
-  if (!session || session.kind !== 'owner' || session.permission !== 'admin') {
-    return res.status(403).json({ ok: false, error: 'Solo el propietario puede gestionar accesos compartidos.' });
-  }
+function shouldIgnoreLog(line) {
+  const text = String(line || '');
 
-  const tokens = loadShareTokens()
-    .filter(item => item.agentId === session.agentId && !item.revokedAt)
-    .filter(item => !item.expiresAt || Number(item.expiresAt) > Date.now())
-    .map(publicShareToken);
-
-  return res.json({ ok: true, tokens });
-});
-
-app.post('/api/share-tokens', (req, res) => {
-  const session = getSessionFromRequest(req);
-
-  if (!session || session.kind !== 'owner' || session.permission !== 'admin') {
-    return res.status(403).json({ ok: false, error: 'Solo el propietario puede crear accesos compartidos.' });
-  }
-
-  const permission = String(req.body?.permission || '').toLowerCase();
-
-  if (!['read', 'control'].includes(permission)) {
-    return res.status(400).json({ ok: false, error: 'Permiso no válido.' });
-  }
-
-  const expires = String(req.body?.expires || 'never').toLowerCase();
-  const expiryMap = {
-    '1h': 60 * 60 * 1000,
-    '1d': 24 * 60 * 60 * 1000,
-    '7d': 7 * 24 * 60 * 60 * 1000,
-    '30d': 30 * 24 * 60 * 60 * 1000,
-  };
-
-  if (expires !== 'never' && !expiryMap[expires]) {
-    return res.status(400).json({ ok: false, error: 'Caducidad no válida.' });
-  }
-
-  const expiresAt = expires === 'never' ? null : Date.now() + expiryMap[expires];
-
-  try {
-    const created = createShareToken(
-      session.agentId,
-      permission,
-      expiresAt,
-      req.body?.label
-    );
-
-    return res.json({
-      ok: true,
-      token: created.token,
-      access: publicShareToken(created.record),
-    });
-  } catch (error) {
-    console.error('[share-tokens] create:', error.message);
-    return res.status(500).json({ ok: false, error: 'No se pudo guardar el acceso compartido.' });
-  }
-});
-
-app.delete('/api/share-tokens/:id', (req, res) => {
-  const session = getSessionFromRequest(req);
-
-  if (!session || session.kind !== 'owner' || session.permission !== 'admin') {
-    return res.status(403).json({ ok: false, error: 'Solo el propietario puede revocar accesos compartidos.' });
-  }
-
-  const tokens = loadShareTokens();
-  const record = tokens.find(item => item.id === req.params.id && item.agentId === session.agentId);
-
-  if (!record || record.revokedAt) {
-    return res.status(404).json({ ok: false, error: 'Acceso compartido no encontrado.' });
-  }
-
-  record.revokedAt = Date.now();
-  saveShareTokens(tokens);
-
-  for (const panel of panelSockets) {
-    if (panel.data.shareTokenId === record.id) {
-      panel.emit('share_revoked');
-      panel.disconnect(true);
-    }
-  }
-
-  return res.json({ ok: true });
-});
-
-/* ══════════════════════════════════════════════
-    SERVIDOR MINECRAFT
-    ══════════════════════════════════════════════ */
-const BASE_DIR = RUNTIME_DIR;
-
-if (!fsSync.existsSync(BASE_DIR)) {
-  fsSync.mkdirSync(BASE_DIR, { recursive: true });
+  return LOG_IGNORE_PATTERNS.some(re => re.test(text));
 }
 
-const PLUGINS_DIR = path.join(BASE_DIR, 'plugins');
+function appendLog(entry) {
+  const consoleEl = $('console');
 
-/* ══════════════════════════════════════════════
-   JAVA RUNTIMES
-   ══════════════════════════════════════════════ */
-const MOONWOLF_APP_DIR = path.join(
-  process.env.APPDATA || path.join(require('os').homedir(), 'AppData', 'Roaming'),
-  'MoonWolf'
-);
-const JAVA_RUNTIMES_DIR = process.env.MOONWOLF_RUNTIME_DIR || path.join(MOONWOLF_APP_DIR, 'runtimes');
-const JAVA_RUNTIME_VERSIONS = [8, 11, 16, 17, 21, 25];
-const JAVA_DOWNLOAD_API = 'https://api.adoptium.net/v3/assets/latest';
-const javaInstallPromises = new Map();
+  if (!consoleEl) return;
 
-function parseMinecraftVersion(version) {
-  const match = String(version || '').trim().match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
-  if (!match) return null;
+  const line = String(entry?.line || '');
+
+  if (shouldIgnoreLog(line)) {
+    return;
+  }
+
+  const div = document.createElement('div');
+
+  div.className = `log-line ${entry?.type || 'info'}`;
+
+  div.innerHTML =
+    `<span class="log-time">${escHtml(entry?.time || '--:--:--')}</span>` +
+    `<span class="log-text">${escHtml(line)}</span>`;
+
+  consoleEl.appendChild(div);
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+}
+
+async function startServer() {
+  if (!agentOnline) {
+    toast('MoonWolf Agent no está conectado.', 'err');
+    return;
+  }
+
+  const data = await api('/api/start', { method: 'POST' });
+
+  if (!data.ok) {
+    toast(data.error || 'Error al arrancar', 'err');
+  }
+}
+
+async function stopServer() {
+  if (!agentOnline) {
+    toast('MoonWolf Agent no está conectado.', 'err');
+    return;
+  }
+
+  const data = await api('/api/stop', { method: 'POST' });
+
+  if (!data.ok) {
+    toast(data.error || 'Error al detener', 'err');
+  }
+}
+
+async function restartServer() {
+  if (currentStatus === 'restarting' || currentStatus === 'stopping') {
+    return;
+  }
+
+  if (!agentOnline) {
+    toast('MoonWolf Agent no está conectado.', 'err');
+    return;
+  }
+
+  const data = await api('/api/restart', { method: 'POST' });
+
+  if (!data.ok) {
+    toast(data.error || 'Error al reiniciar', 'err');
+  }
+}
+
+async function sendCmd() {
+  const input = $('cmdInput');
+  const cmd = input?.value.trim();
+
+  if (!cmd) return;
+
+  if (!agentOnline) {
+    toast('MoonWolf Agent no está conectado.', 'err');
+    return;
+  }
+
+  input.value = '';
+
+  const data = await postJSON('/api/command', { cmd });
+
+  if (!data.ok) {
+    toast(data.error || 'Error al enviar comando', 'err');
+  }
+}
+
+/* FILE MANAGER */
+
+function fileIcon(type) {
   return {
-    major: Number(match[1]),
-    minor: Number(match[2] || 0),
-    patch: Number(match[3] || 0),
-  };
+    dir: '📁',
+    jar: '☕',
+    log: '📋',
+    file: '📄',
+  }[type] || '📄';
 }
 
-function compareMinecraftVersions(a, b) {
-  const pa = parseMinecraftVersion(a);
-  const pb = parseMinecraftVersion(b);
-  if (!pa || !pb) return null;
+function populateFiles(dir = '') {
+  currentDir = dir;
 
-  for (const key of ['major', 'minor', 'patch']) {
-    if (pa[key] !== pb[key]) return pa[key] - pb[key];
-  }
+  const list = $('fileList');
 
-  return 0;
-}
+  if (!list) return;
 
-function requiredJavaForMinecraft(version) {
-  const parsed = parseMinecraftVersion(version);
-  if (!parsed) return null;
+  list.innerHTML = `
+    <div class="empty-state">
+      <div class="empty-icon" style="display:inline-block;animation:spin 1s linear infinite">⟳</div>
+      <div class="empty-msg">Cargando...</div>
+    </div>
+  `;
 
-  if (parsed.major >= 26) return 25;
+  renderBreadcrumb(dir);
 
-  if (parsed.major === 1) {
-    if (parsed.minor <= 11) return 8;
-    if (parsed.minor === 12 || parsed.minor === 13 || parsed.minor === 14 || parsed.minor === 15) return 11;
-    if (parsed.minor === 16) return parsed.patch >= 5 ? 16 : 11;
-    if (parsed.minor === 17) return 17;
-    if (parsed.minor === 18 || parsed.minor === 19) return 17;
-    if (parsed.minor === 20) return parsed.patch >= 5 ? 21 : 17;
-    if (parsed.minor === 21) return 21;
-  }
-
-  return null;
-}
-
-function javaRuntimeDir(javaMajor) {
-  return path.join(JAVA_RUNTIMES_DIR, `java${javaMajor}`);
-}
-
-function javaExecutablePath(javaMajor) {
-  return path.join(javaRuntimeDir(javaMajor), 'bin', 'java.exe');
-}
-
-function detectMinecraftVersionFromJarName(jarName) {
-  const name = String(jarName || '');
-  const matches = name.match(/(?:^|[-_.])((?:1\.\d+(?:\.\d+)?|2[0-9]+(?:\.\d+){0,2}))(?:[-_.]|$)/gi);
-  if (!matches?.length) return null;
-
-  for (const raw of matches) {
-    const value = raw.replace(/^[-_.]/, '').replace(/[-_.]$/, '');
-    if (/^(?:1\.\d+(?:\.\d+)?|2[0-9]+(?:\.\d+){0,2})$/.test(value)) return value;
-  }
-
-  return null;
-}
-
-function getJavaRuntimeInfo(minecraftVersion) {
-  const javaMajor = requiredJavaForMinecraft(minecraftVersion);
-  if (!javaMajor) {
-    return {
-      minecraftVersion: minecraftVersion || null,
-      javaMajor: null,
-      installed: false,
-      executable: null,
-      supported: false,
-    };
-  }
-
-  const executable = javaExecutablePath(javaMajor);
-
-  return {
-    minecraftVersion: minecraftVersion || null,
-    javaMajor,
-    installed: fsSync.existsSync(executable),
-    executable,
-    supported: true,
-  };
-}
-
-async function fetchJson(url) {
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'MoonWolf-Agent',
-      Accept: 'application/json',
-    },
-    signal: AbortSignal.timeout(30_000),
-  });
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status} al consultar ${url}`);
-  }
-
-  return response.json();
-}
-
-async function downloadToFile(url, destination) {
-  const response = await fetch(url, {
-    headers: { 'User-Agent': 'MoonWolf-Agent' },
-    redirect: 'follow',
-    signal: AbortSignal.timeout(10 * 60 * 1000),
-  });
-
-  if (!response.ok || !response.body) {
-    throw new Error(`Descarga de Java fallida (HTTP ${response.status})`);
-  }
-
-  await fs.mkdir(path.dirname(destination), { recursive: true });
-  const file = fsSync.createWriteStream(destination);
-  const reader = response.body.getReader();
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!file.write(Buffer.from(value))) {
-        await new Promise(resolve => file.once('drain', resolve));
+  api(`/api/files?dir=${encodeURIComponent(dir)}`)
+    .then(data => {
+      if (!data.ok) {
+        throw new Error(data.error || 'No se pudo leer la carpeta.');
       }
-    }
-  } finally {
-    file.end();
-    await new Promise(resolve => file.once('close', resolve));
-  }
+
+      const items = Array.isArray(data.items) ? data.items.slice() : [];
+
+      items.sort(
+        (a, b) =>
+          (a.type === 'dir' ? -1 : 1) - (b.type === 'dir' ? -1 : 1) ||
+          a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+      );
+
+      if (!items.length) {
+        list.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-icon">📂</div>
+            <div class="empty-msg">Carpeta vacía</div>
+          </div>
+        `;
+
+        return;
+      }
+
+      list.innerHTML = items
+        .map(
+          item => `
+          <div class="file-row" data-name="${escHtml(item.name)}" data-type="${escHtml(item.type)}">
+            <span class="file-name" style="flex:1">
+              ${fileIcon(item.type)}
+              <span>${escHtml(item.name)}</span>
+            </span>
+            <span style="width:90px;text-align:right;color:var(--muted2)">${escHtml(item.size)}</span>
+            <span style="width:140px;text-align:right;color:var(--muted2)">${escHtml(item.date)}</span>
+          </div>
+        `
+        )
+        .join('');
+
+      list.querySelectorAll('.file-row').forEach(row => {
+        row.addEventListener('dblclick', () => {
+          const name = row.dataset.name;
+          const type = row.dataset.type;
+
+          const rel = currentDir ? `${currentDir}/${name}` : name;
+
+          if (type === 'dir') {
+            populateFiles(rel);
+          } else if (type !== 'jar') {
+            openFile(rel);
+          }
+        });
+
+        row.addEventListener('contextmenu', event =>
+          openFileContext(event, row.dataset.name, row.dataset.type)
+        );
+      });
+    })
+    .catch(error => {
+      list.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon" style="color:var(--red)">⚠</div>
+          <div class="empty-msg">${escHtml(error.message)}</div>
+        </div>
+      `;
+    });
 }
 
-async function verifySha256(filePath, expected) {
-  if (!expected) return true;
+function renderBreadcrumb(dir) {
+  const trail = $('crumbTrail');
 
-  const hash = crypto.createHash('sha256');
-  const stream = fsSync.createReadStream(filePath);
+  if (!trail) return;
 
-  for await (const chunk of stream) {
-    hash.update(chunk);
-  }
+  const parts = dir ? dir.split('/').filter(Boolean) : [];
 
-  return hash.digest('hex').toLowerCase() === String(expected).toLowerCase();
+  let acc = '';
+
+  trail.innerHTML = parts
+    .map((part, index) => {
+      acc += (index ? '/' : '') + part;
+
+      return `
+        /
+        <span class="crumb" data-path="${escHtml(acc)}">${escHtml(part)}</span>
+      `;
+    })
+    .join('');
+
+  trail.querySelectorAll('.crumb').forEach(crumb => {
+    crumb.addEventListener('click', () => populateFiles(crumb.dataset.path));
+  });
 }
 
-async function findJavaExecutable(rootDir) {
-  const direct = path.join(rootDir, 'bin', 'java.exe');
-  if (fsSync.existsSync(direct)) return direct;
+function openFileContext(event, name, type) {
+  event.preventDefault();
 
-  const entries = await fs.readdir(rootDir, { withFileTypes: true });
+  document.querySelector('.file-ctx-menu')?.remove();
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+  const rel = currentDir ? `${currentDir}/${name}` : name;
 
-    const candidate = path.join(rootDir, entry.name, 'bin', 'java.exe');
-    if (fsSync.existsSync(candidate)) return candidate;
-  }
+  const menu = document.createElement('div');
 
-  return null;
-}
+  menu.className = 'file-ctx-menu';
+  menu.style.left = `${event.clientX}px`;
+  menu.style.top = `${event.clientY}px`;
 
-async function ensureJavaRuntime(javaMajor) {
-  if (!JAVA_RUNTIME_VERSIONS.includes(Number(javaMajor))) {
-    throw new Error(`Java ${javaMajor} no está soportado por el gestor de MoonWolf.`);
-  }
+  menu.innerHTML = `
+    ${type !== 'dir' ? '<div class="ctx-item" data-action="open">📂 Abrir</div>' : ''}
+    <div class="ctx-item" data-action="rename">✏️ Renombrar</div>
+    <div class="ctx-item" data-action="copy">📋 Copiar</div>
+    <div class="ctx-item" data-action="move">🔀 Mover</div>
+    ${type !== 'dir' ? '<div class="ctx-item" data-action="download">⬇️ Descargar</div>' : ''}
+    <div class="ctx-item" data-action="compress">🗜️ Comprimir</div>
+    <div class="ctx-sep"></div>
+    <div class="ctx-item danger" data-action="delete">🗑️ Eliminar</div>
+  `;
 
-  const targetDir = javaRuntimeDir(javaMajor);
-  const executable = javaExecutablePath(javaMajor);
+  document.body.appendChild(menu);
 
-  if (fsSync.existsSync(executable)) return executable;
+  menu.addEventListener('click', async click => {
+    const action = click.target.closest('.ctx-item')?.dataset.action;
 
-  if (javaInstallPromises.has(javaMajor)) {
-    return javaInstallPromises.get(javaMajor);
-  }
+    if (!action) return;
 
-  const promise = (async () => {
-    await fs.mkdir(JAVA_RUNTIMES_DIR, { recursive: true });
-
-    const metadataUrl =
-      `${JAVA_DOWNLOAD_API}/${javaMajor}/hotspot` +
-      '?architecture=x64&image_type=jdk&os=windows&vendor=eclipse' +
-      '&heap_size=normal&project=jdk&release_type=ga';
-
-    broadcastLog(`☕ Java ${javaMajor} no está instalado. Descargando runtime de MoonWolf...`, 'system');
-
-    const assets = await fetchJson(metadataUrl);
-    const asset = Array.isArray(assets)
-      ? assets.find(item => item?.binary?.package?.link && item?.binary?.package?.checksum)
-      : null;
-
-    if (!asset) {
-      throw new Error(`No se encontró un JDK Temurin ${javaMajor} compatible para Windows x64.`);
-    }
-
-    const archive = path.join(JAVA_RUNTIMES_DIR, `.java${javaMajor}-${Date.now()}.zip`);
-    const staging = path.join(JAVA_RUNTIMES_DIR, `.install-java${javaMajor}-${Date.now()}`);
+    menu.remove();
 
     try {
-      await downloadToFile(asset.binary.package.link, archive);
-      broadcastLog(`☕ Java ${javaMajor} descargado. Verificando integridad...`, 'system');
-
-      if (!(await verifySha256(archive, asset.binary.package.checksum))) {
-        throw new Error(`La verificación SHA-256 de Java ${javaMajor} ha fallado.`);
+      if (action === 'open') {
+        return openFile(rel);
       }
 
-      await fs.rm(staging, { recursive: true, force: true });
-      await fs.mkdir(staging, { recursive: true });
+      if (action === 'rename') {
+        const newName = prompt(`Nuevo nombre para "${name}":`, name);
 
-      await new Promise((resolve, reject) => {
-        const psQuote = value => `'${String(value).replace(/'/g, "''")}'`;
+        if (!newName || newName === name) {
+          return;
+        }
 
-        const psCommand =
-          `$ErrorActionPreference='Stop'; ` +
-          `Expand-Archive -LiteralPath ${psQuote(archive)} ` +
-          `-DestinationPath ${psQuote(staging)} -Force`;
+        const data = await postJSON('/api/files/rename', {
+          path: rel,
+          newName,
+        });
 
-        console.log('[java] Expand-Archive →', psCommand);
+        if (!data.ok) throw new Error(data.error);
+      }
 
-        const child = spawn(
-          'powershell.exe',
-          [
-            '-NoProfile',
-            '-NonInteractive',
-            '-ExecutionPolicy', 'Bypass',
-            '-Command',
-            psCommand,
-          ],
-          {
-            windowsHide: true,
-            stdio: ['ignore', 'pipe', 'pipe'],
-          }
+      if (action === 'copy') {
+        const dest = prompt(
+          `Ruta relativa de destino para "${name}":`,
+          currentDir || ''
         );
 
-        let stderr = '';
-        let stdout = '';
-        child.stderr.on('data', data => { stderr += String(data); });
-        child.stdout.on('data', data => { stdout += String(data); });
-        child.on('error', reject);
-        child.on('close', code => {
-          if (code === 0) return resolve();
-          const detail = (stderr || stdout).trim();
-          console.warn('[java] PowerShell falló:', detail);
-          reject(new Error(detail || `PowerShell terminó con código ${code}`));
+        if (dest === null) return;
+
+        const target = dest
+          ? `${dest.replace(/\\/g, '/').replace(/\/$/, '')}/${name}`
+          : name;
+
+        const data = await postJSON('/api/files/copy', {
+          path: rel,
+          dest: target,
         });
-      });
 
-      const extractedJava = await findJavaExecutable(staging);
-      if (!extractedJava) {
-        throw new Error(`El archivo de Java ${javaMajor} no contiene un bin/java.exe válido.`);
+        if (!data.ok) throw new Error(data.error);
       }
 
-      await fs.rm(targetDir, { recursive: true, force: true });
-      await fs.mkdir(targetDir, { recursive: true });
+      if (action === 'move') {
+        const dest = prompt(
+          `Carpeta relativa de destino para "${name}":`,
+          currentDir || ''
+        );
 
-      await fs.cp(path.dirname(path.dirname(extractedJava)), targetDir, {
-        recursive: true,
-        force: true,
-      });
+        if (dest === null) return;
 
-      if (!fsSync.existsSync(executable)) {
-        const nested = await findJavaExecutable(targetDir);
-        if (!nested) {
-          throw new Error(`No se pudo preparar correctamente Java ${javaMajor}.`);
+        const target = dest
+          ? `${dest.replace(/\\/g, '/').replace(/\/$/, '')}/${name}`
+          : name;
+
+        const data = await postJSON('/api/files/move', {
+          path: rel,
+          dest: target,
+        });
+
+        if (!data.ok) throw new Error(data.error);
+      }
+
+      if (action === 'download') {
+        return downloadFile(rel, name);
+      }
+
+      if (action === 'compress') {
+        const data = await postJSON('/api/files/compress', {
+          path: rel,
+          name,
+        });
+
+        if (!data.ok) throw new Error(data.error);
+      }
+
+      if (action === 'delete') {
+        if (!confirm(`¿Eliminar "${name}"?`)) {
+          return;
         }
 
-        if (nested !== executable) {
-          const nestedRoot = path.dirname(path.dirname(nested));
-          await fs.rm(targetDir, { recursive: true, force: true });
-          await fs.cp(nestedRoot, targetDir, { recursive: true, force: true });
-        }
+        const data = await postJSON('/api/files/delete', {
+          path: rel,
+          isDir: type === 'dir',
+        });
+
+        if (!data.ok) throw new Error(data.error);
       }
 
-      if (!fsSync.existsSync(executable)) {
-        throw new Error(`No se encontró java.exe después de instalar Java ${javaMajor}.`);
-      }
+      toast('✅ Operación completada', 'ok');
 
-      broadcastLog(`☕ Java ${javaMajor} listo: ${executable}`, 'success');
-      return executable;
-    } finally {
-      await fs.rm(archive, { force: true }).catch(() => {});
-      await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+      populateFiles(currentDir);
+    } catch (error) {
+      toast(`❌ ${error.message}`, 'err');
     }
-  })();
+  });
 
-  javaInstallPromises.set(javaMajor, promise);
+  setTimeout(() => {
+    document.addEventListener('click', () => menu.remove(), { once: true });
+  }, 0);
+}
+
+const FILE_UPLOAD_CHUNK_SIZE = 1024 * 1024;
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  const step = 0x8000;
+
+  for (let i = 0; i < bytes.length; i += step) {
+    binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + step, bytes.length)));
+  }
+
+  return btoa(binary);
+}
+
+function normalizeUploadRelativePath(value) {
+  return String(value || '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .split('/')
+    .filter(part => part && part !== '.' && part !== '..')
+    .join('/');
+}
+
+async function uploadOneFile(file, relativePath, progressState) {
+  const relPath = normalizeUploadRelativePath(relativePath || file.name);
+
+  if (!relPath) {
+    throw new Error(`Nombre de archivo no válido: ${file.name}`);
+  }
+
+  const target = currentDir
+    ? `${currentDir.replace(/\\/g, '/').replace(/\/$/, '')}/${relPath}`
+    : relPath;
+
+  const uploadId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${progressState.index}`;
+  let offset = 0;
+
+  while (offset < file.size || (file.size === 0 && offset === 0)) {
+    const end = file.size === 0 ? 0 : Math.min(offset + FILE_UPLOAD_CHUNK_SIZE, file.size);
+    const buffer = await file.slice(offset, end).arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+
+    const data = await postJSON('/api/files/upload-chunk', {
+      uploadId,
+      path: target,
+      offset,
+      totalSize: file.size,
+      chunkBase64: bytesToBase64(bytes),
+      final: end >= file.size,
+      overwrite: true,
+    });
+
+    if (!data.ok) {
+      throw new Error(data.error || `No se pudo subir ${file.name}`);
+    }
+
+    if (file.size === 0) {
+      offset = 1;
+      break;
+    }
+
+    offset = end;
+    progressState.doneBytes += bytes.length;
+    const percent = progressState.totalBytes > 0
+      ? Math.round((progressState.doneBytes / progressState.totalBytes) * 100)
+      : 100;
+
+    toast(`⬆️ Subiendo ${progressState.index + 1}/${progressState.totalFiles}: ${percent}%`, 'info');
+  }
+
+  progressState.index += 1;
+}
+
+async function uploadSelectedFiles(fileList) {
+  const files = Array.from(fileList || {}).filter(file => file && typeof file.size === 'number');
+
+  if (!files.length) return;
+
+  const progressState = {
+    index: 0,
+    totalFiles: files.length,
+    totalBytes: files.reduce((sum, file) => sum + file.size, 0),
+    doneBytes: 0,
+  };
 
   try {
-    return await promise;
-  } finally {
-    javaInstallPromises.delete(javaMajor);
+    for (const file of files) {
+      const relative = file.webkitRelativePath || file.name;
+      await uploadOneFile(file, relative, progressState);
+    }
+
+    toast(`✅ ${files.length} ${files.length === 1 ? 'archivo subido' : 'archivos subidos'} correctamente`, 'ok');
+    populateFiles(currentDir);
+  } catch (error) {
+    toast(`❌ ${error.message}`, 'err');
   }
 }
 
-async function resolveJavaForServer(minecraftVersion) {
-  const javaMajor = requiredJavaForMinecraft(minecraftVersion);
+async function downloadFile(rel, filename) {
+  const result = await rpcHttp(
+    `/api/files/download?path=${encodeURIComponent(rel)}`
+  );
 
-  if (!javaMajor) {
-    throw new Error(
-      `No se puede determinar automáticamente el Java necesario para Minecraft "${minecraftVersion || 'desconocido'}". ` +
-      'Indica una versión de Minecraft válida en Startup.'
+  if (!result?.bodyBase64) {
+    toast(result?.data?.error || 'No se pudo descargar el archivo.', 'err');
+    return;
+  }
+
+  const bytes = decodeResultBody(result);
+
+  const blob = new Blob([bytes], {
+    type: result.contentType || 'application/octet-stream',
+  });
+
+  const url = URL.createObjectURL(blob);
+
+  const anchor = document.createElement('a');
+
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function openFile(rel) {
+  try {
+    const data = await api(
+      `/api/files/content?path=${encodeURIComponent(rel)}`
     );
-  }
 
-  return ensureJavaRuntime(javaMajor);
+    if (!data.ok) {
+      throw new Error(data.error);
+    }
+
+    currentFile = rel;
+
+    if ($('filesTablePanel')) {
+      $('filesTablePanel').style.display = 'none';
+    }
+
+    if ($('filesEditorPanel')) {
+      $('filesEditorPanel').style.display = '';
+    }
+
+    if ($('editorFileName')) {
+      $('editorFileName').innerHTML = `📄 ${escHtml(
+        data.filename || rel.split('/').pop()
+      )}`;
+    }
+
+    if ($('edSaveMsg')) {
+      $('edSaveMsg').textContent = '';
+    }
+
+    if (editor) {
+      editor.toTextArea?.();
+    }
+
+    $('editorContainer').innerHTML = '<textarea id="mwEditorArea"></textarea>';
+
+    const ext = String(rel.split('.').pop() || '').toLowerCase();
+
+    const mode = {
+      yml: 'yaml',
+      yaml: 'yaml',
+      json: 'javascript',
+      js: 'javascript',
+      xml: 'xml',
+      properties: 'properties',
+      conf: 'properties',
+      cfg: 'properties',
+      sh: 'shell',
+      bat: 'shell',
+      cmd: 'shell',
+    }[ext] || 'text/plain';
+
+    if (window.CodeMirror) {
+      editor = CodeMirror.fromTextArea($('mwEditorArea'), {
+        lineNumbers: true,
+        mode,
+        theme: 'dracula',
+        lineWrapping: false,
+        viewportMargin: Infinity,
+      });
+
+      editor.setValue(data.content || '');
+
+      editor.on('cursorActivity', updateEditorStatus);
+
+      updateEditorStatus();
+    } else {
+      $('mwEditorArea').value = data.content || '';
+    }
+  } catch (error) {
+    toast(`❌ ${error.message}`, 'err');
+  }
 }
 
+function updateEditorStatus() {
+  if (!editor) return;
 
-const PORT = Number(process.env.MOONWOLF_PORT || process.env.PORT || 3000);
-const PAPER_UA = 'MoonWolfPanel/2.0 (contact@moonwolf.local)';
+  const cursor = editor.getCursor();
 
-const STARTUP_DIR = path.join(BASE_DIR, '.moonwolf');
-const STARTUP_CONFIG_PATH = path.join(STARTUP_DIR, 'startup.json');
-const SERVER_PROPERTIES_PATH = path.join(BASE_DIR, 'server.properties');
+  if ($('edLine')) $('edLine').textContent = cursor.line + 1;
+  if ($('edCol')) $('edCol').textContent = cursor.ch + 1;
+  if ($('edLines')) $('edLines').textContent = editor.lineCount();
+}
 
-const DEFAULT_STARTUP_CONFIG = {
-  jar: 'server.jar',
-  javaPath: 'java',
-  javaMode: 'managed',
-  javaOverridePath: '',
-  minecraftVersion: '',
-  minMemoryMb: 1024,
-  maxMemoryMb: 2048,
-  extraArgs: '',
-  programArgs: '',
-  stopCommand: 'stop',
-  autoRestartOnCrash: false,
-  autoStartOnBoot: false,
-};
+async function saveCurrentFile() {
+  if (!currentFile) return;
 
-function loadStartupConfig() {
+  const content = editor ? editor.getValue() : $('mwEditorArea')?.value || '';
+
+  const data = await postJSON('/api/files/content', {
+    path: currentFile,
+    content,
+  });
+
+  if (!data.ok) {
+    toast(`❌ ${data.error}`, 'err');
+    return;
+  }
+
+  if ($('edSaveMsg')) {
+    $('edSaveMsg').textContent = 'Guardado';
+  }
+
+  toast('💾 Archivo guardado', 'ok');
+}
+
+/* PLUGINS */
+
+async function pluginSearch() {
+  const query = $('plgSearchInput')?.value.trim();
+
+  if (!query) return;
+
+  $('plgResults').innerHTML = `
+    <div class="empty-state">
+      <div style="font-size:32px;animation:spin 1s linear infinite">⟳</div>
+      <div class="empty-msg">Buscando...</div>
+    </div>
+  `;
+
   try {
-    const raw = JSON.parse(fsSync.readFileSync(STARTUP_CONFIG_PATH, 'utf8'));
-    return { ...DEFAULT_STARTUP_CONFIG, ...raw };
-  } catch {
-    return { ...DEFAULT_STARTUP_CONFIG };
+    const data = await api(
+      `/api/plugins/search?q=${encodeURIComponent(query)}&source=${encodeURIComponent(pluginSource)}`
+    );
+
+    if (!data.ok) {
+      throw new Error(data.error);
+    }
+
+    let results = data.results || [];
+
+    if (priceFilter === 'free') {
+      results = results.filter(plugin => !plugin.premium);
+    } else if (priceFilter === 'premium') {
+      results = results.filter(plugin => plugin.premium);
+    }
+
+    renderPluginResults(results, data.errors || []);
+  } catch (error) {
+    $('plgResults').innerHTML = `
+      <div class="empty-state">
+        <div class="empty-msg">${escHtml(error.message)}</div>
+      </div>
+    `;
   }
 }
 
-function saveStartupConfig(partial) {
-  const next = { ...loadStartupConfig(), ...partial };
+function renderPluginResults(results, errors) {
+  const formatDownloads = value => {
+    const n = Number(value) || 0;
 
-  if (!fsSync.existsSync(STARTUP_DIR)) {
-    fsSync.mkdirSync(STARTUP_DIR, { recursive: true });
-  }
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1000) return `${Math.round(n / 1000)}k`;
 
-  fsSync.writeFileSync(STARTUP_CONFIG_PATH, JSON.stringify(next, null, 2), 'utf8');
-  return next;
+    return String(n);
+  };
+
+  const warning = errors.length
+    ? `<div class="plg-warn-bar">⚠ ${errors.map(escHtml).join(' · ')}</div>`
+    : '';
+
+  const cards = results
+    .map((plugin, index) => {
+      const tag = ({ modrinth: 'MODRINTH', spigot: 'SPIGOT', hangar: 'HANGAR' })[plugin.source] || String(plugin.source || '').toUpperCase();
+      const external = plugin.external
+        ? '<span class="plg-src-badge">🔗 EXTERNO</span>'
+        : '';
+      const premium = plugin.premium
+        ? '<span class="plg-src-badge">💰 PREMIUM</span>'
+        : '';
+
+      return `
+        <div class="plg-card" data-index="${index}">
+          <div class="plg-card-top">
+            ${
+              plugin.icon
+                ? `<img class="plg-card-icon" src="${escHtml(plugin.icon)}" width="42" height="42" loading="lazy">`
+                : `<div class="plg-card-icon-placeholder">🧩</div>`
+            }
+            <div class="plg-card-info">
+              <div class="plg-card-name">${escHtml(plugin.name)}</div>
+              <div class="plg-card-tags">
+                <span class="plg-src-badge ${escHtml(plugin.source)}">${tag}</span>
+                ${premium}
+                ${external}
+                <span class="plg-src-badge dl">⬇ ${formatDownloads(plugin.downloads)}</span>
+              </div>
+            </div>
+          </div>
+          <div class="plg-card-desc">${escHtml(plugin.description || '')}</div>
+          <div class="plg-card-footer">
+            <span></span>
+            <button class="plg-versions-btn">Ver versiones →</button>
+          </div>
+        </div>
+      `;
+    })
+    .join('');
+
+  $('plgResults').innerHTML =
+    warning +
+    (cards
+      ? `<div class="plg-grid">${cards}</div>`
+      : `<div class="empty-state"><div class="empty-msg">Sin resultados</div></div>`);
+
+  $('plgResults')
+    .querySelectorAll('.plg-card')
+    .forEach(card => {
+      card.addEventListener('click', () =>
+        openPluginVersions(results[Number(card.dataset.index)])
+      );
+    });
 }
 
-function safeJarName(name) {
-  const value = String(name || '').trim();
+async function openPluginVersions(plugin) {
+  currentPlugin = plugin;
 
-  if (
-    !value ||
-    value.includes('/') ||
-    value.includes('\\') ||
-    value.includes('..') ||
-    !value.toLowerCase().endsWith('.jar')
-  ) {
-    return null;
-  }
+  $('plgVersionModal').style.display = '';
+  $('plgModalIcon').src = plugin.icon || '';
+  $('plgModalName').textContent = plugin.name;
+  $('plgModalMeta').textContent = `${plugin.source.toUpperCase()} · ${plugin.downloads || 0} descargas`;
 
-  return value;
-}
+  $('plgModalBody').innerHTML = `
+    <div class="empty-state">
+      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
+      <div class="empty-msg">Cargando versiones...</div>
+    </div>
+  `;
 
-function readServerPort() {
   try {
-    const content = fsSync.readFileSync(SERVER_PROPERTIES_PATH, 'utf8');
-    const match = content.match(/^\s*server-port\s*=\s*(\d+)/m);
-    return match ? Number(match[1]) : null;
-  } catch {
-    return null;
+    const data = await api(
+      `/api/plugins/versions?id=${encodeURIComponent(plugin.id)}&source=${encodeURIComponent(plugin.source)}`
+    );
+
+    if (!data.ok) {
+      throw new Error(data.error);
+    }
+
+    const versions = data.versions || [];
+
+    if (!versions.length) {
+      $('plgModalBody').innerHTML = '<div class="empty-state"><div class="empty-msg">No hay versiones.</div></div>';
+      return;
+    }
+
+    $('plgModalBody').innerHTML = versions
+      .map((version, index) => {
+        const published = version.published
+          ? new Date(version.published).toLocaleString('es-ES')
+          : '';
+
+        const changelog = version.changelog
+          ? `<div class="plg-ver-changelog">${version.changelogIsHtml
+              ? version.changelog
+              : escHtml(version.changelog)}</div>`
+          : '';
+
+        const action = version.isExternal
+          ? `<a class="plg-dl-btn external" href="${escHtml(version.externalUrl)}" target="_blank" rel="noopener">ABRIR</a>`
+          : `<button class="plg-dl-btn" data-version="${index}">INSTALAR</button>`;
+
+        return `
+          <div class="plg-ver-row">
+            <div class="plg-ver-left">
+              <div class="plg-ver-number">${escHtml(version.versionNumber || version.name || 'Versión')}</div>
+              ${published ? `<div class="plg-ver-meta"><span class="plg-vm">${escHtml(published)}</span></div>` : ''}
+              ${changelog}
+            </div>
+            <div class="plg-ver-right">
+              ${action}
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+
+    $('plgModalBody')
+      .querySelectorAll('[data-version]')
+      .forEach(button => {
+        button.addEventListener('click', () =>
+          installPlugin(versions[Number(button.dataset.version)])
+        );
+      });
+  } catch (error) {
+    $('plgModalBody').innerHTML = `
+      <div class="empty-state">
+        <div class="empty-msg">${escHtml(error.message)}</div>
+      </div>
+    `;
   }
 }
 
-function writeServerPort(port) {
-  let content = '';
+async function installPlugin(version) {
+  const file = (version.files || []).find(item => item.primary) || version.files?.[0];
 
-  try {
-    content = fsSync.readFileSync(SERVER_PROPERTIES_PATH, 'utf8');
-  } catch {}
-
-  if (/^\s*server-port\s*=.*$/m.test(content)) {
-    content = content.replace(/^\s*server-port\s*=.*$/m, `server-port=${port}`);
-  } else {
-    content = (content.length && !content.endsWith('\n') ? content + '\n' : content) + `server-port=${port}\n`;
+  if (!file?.url) {
+    toast('Esta versión requiere instalación externa.', 'err');
+    return;
   }
 
-  fsSync.writeFileSync(SERVER_PROPERTIES_PATH, content, 'utf8');
+  const filename =
+    file.filename ||
+    `${String(currentPlugin?.name || 'plugin').replace(/[^a-zA-Z0-9._-]/g, '_')}.jar`;
+
+  $('plgModalBody').insertAdjacentHTML(
+    'afterbegin',
+    '<div class="plg-warn-bar">📥 Instalando...</div>'
+  );
+
+  const data = await postJSON('/api/plugins/install', {
+    url: file.url,
+    filename,
+  });
+
+  if (!data.ok) {
+    toast(`❌ ${data.error}`, 'err');
+    return;
+  }
+
+  toast(`✅ ${filename} instalado`, 'ok');
+
+  loadInstalledPlugins();
+}
+
+async function loadInstalledPlugins() {
+  const element = $('plgInstalledList');
+
+  if (!element) return;
+
+  element.innerHTML = `
+    <div class="empty-state">
+      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
+      <div class="empty-msg">Cargando...</div>
+    </div>
+  `;
+
+  const data = await api('/api/plugins/installed');
+
+  if (!data.ok) {
+    element.innerHTML = `<div class="empty-state">${escHtml(data.error)}</div>`;
+    return;
+  }
+
+  element.innerHTML =
+    (data.plugins || [])
+      .map(
+        plugin => `
+        <div class="installed-plugin-row">
+          <div>
+            <strong>☕ ${escHtml(plugin.filename)}</strong>
+            <div style="font-size:11px;color:var(--muted2)">${escHtml(plugin.size)} · ${escHtml(plugin.modified)}</div>
+          </div>
+          <button class="small-btn danger" data-delete-plugin="${escHtml(plugin.filename)}">Eliminar</button>
+        </div>
+      `
+      )
+      .join('') ||
+    `<div class="empty-state">No hay plugins .jar instalados.</div>`;
+
+  element.querySelectorAll('[data-delete-plugin]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const filename = button.dataset.deletePlugin;
+
+      if (!confirm(`¿Eliminar ${filename}?`)) {
+        return;
+      }
+
+      const data = await api(
+        `/api/plugins/installed/${encodeURIComponent(filename)}`,
+        { method: 'DELETE' }
+      );
+
+      if (!data.ok) {
+        toast(`❌ ${data.error}`, 'err');
+      } else {
+        loadInstalledPlugins();
+      }
+    });
+  });
 }
 
 /* ══════════════════════════════════════════════
-   PUERTOS
+   VERSIONS & SOFTWARE
    ══════════════════════════════════════════════ */
-function readServerProperties() {
+
+let versionCatalog = [];
+let versionCurrent = {
+  software: '',
+  version: '',
+  build: '',
+};
+
+function versionFindSoftware(id) {
+  return versionCatalog.find(item => item.id === id) || {
+    id,
+    label: id,
+    desc: '',
+  };
+}
+
+function versionCategoryName(category) {
+  if (category === 'plugins') return 'Versiones de plugins';
+  if (category === 'mods' || category === 'mod') return 'Versiones de mods';
+  if (category === 'proxy') return 'Versiones de proxy';
+  if (category === 'vanilla') return 'Versiones de Vanilla';
+  return 'Servidores de Minecraft';
+}
+
+function renderVersionSoftwareCard(software) {
+  return `
+    <button type="button" class="ver-software-card" data-software="${escHtml(software.id)}">
+      <div class="ver-software-icon">${software.icon || '📦'}</div>
+      <div class="ver-software-content">
+        <div class="ver-software-name">${escHtml(software.label || software.name || software.id)}</div>
+        <div class="ver-software-desc">${escHtml(software.desc || software.description || '')}</div>
+      </div>
+      <div class="ver-software-arrow">›</div>
+    </button>
+  `;
+}
+
+function renderVersionSoftware() {
+  const container = $('versionList');
+  if (!container) return;
+
+  if (!versionCatalog.length) {
+    container.innerHTML = `
+      <div class="ver-empty">
+        <div class="ver-empty-icon">📦</div>
+        <div class="ver-empty-title">No se han podido cargar los servidores</div>
+        <div class="ver-empty-text">Comprueba que el Agent esté conectado y vuelve a intentarlo.</div>
+        <button type="button" class="btn btn-primary ver-retry-btn" id="verRetry">Reintentar</button>
+      </div>
+    `;
+    $('verRetry')?.addEventListener('click', () => loadVersionState());
+    return;
+  }
+
+  const groups = {};
+  for (const item of versionCatalog) {
+    const category = item.category || 'plugins';
+    (groups[category] ||= []).push(item);
+  }
+
+  const categoryOrder = ['plugins', 'mods', 'proxy', 'vanilla'];
+  const categoryIcon = {
+    plugins: '🧩',
+    mods: '🧵',
+    proxy: '🌐',
+    vanilla: '🌿',
+  };
+
+  const orderedGroups = categoryOrder
+    .filter(category => groups[category]?.length)
+    .map(category => [category, groups[category]]);
+
+  container.innerHTML = `
+    <div class="ver-hero">
+      <div class="ver-hero-icon">📦</div>
+      <div>
+        <div class="ver-hero-title">Versiones de Minecraft</div>
+        <div class="ver-hero-description">Selecciona una categoría, el software y después la versión que quieres instalar.</div>
+      </div>
+    </div>
+
+    ${orderedGroups.map(([category, items]) => `
+      <section class="ver-category">
+        <div class="ver-category-header">
+          <div class="ver-category-icon">${categoryIcon[category] || '📦'}</div>
+          <div class="ver-category-name">${escHtml(versionCategoryName(category))}</div>
+          <div class="ver-category-count">${items.length} disponibles</div>
+        </div>
+        <div class="ver-software-grid">
+          ${items.map(renderVersionSoftwareCard).join('')}
+        </div>
+      </section>
+    `).join('')}
+  `;
+
+  container.querySelectorAll('[data-software]').forEach(card => {
+    card.addEventListener('click', () => selectVersionSoftware(card.dataset.software));
+  });
+}
+
+async function selectVersionSoftware(software) {
+  const item = versionFindSoftware(software);
+  const container = $('versionList');
+  if (!container) return;
+
+  container.innerHTML = `
+    <div class="ver-panel-head">
+      <button type="button" class="btn ver-back-btn" id="verBack">← Volver</button>
+      <div>
+        <div class="ver-panel-title">${item.icon || '📦'} ${escHtml(item.label || software)}</div>
+        <div class="ver-panel-subtitle">${escHtml(item.desc || '')}</div>
+      </div>
+    </div>
+    <div class="ver-loading">Cargando versiones de ${escHtml(item.label || software)}…</div>
+  `;
+
+  $('verBack')?.addEventListener('click', renderVersionSoftware);
+
+  if (item.external && !['paper', 'purpur', 'folia', 'fabric', 'vanilla'].includes(software)) {
+    container.querySelector('.ver-loading').outerHTML = `
+      <div class="ver-empty">
+        <div class="ver-empty-icon">🌐</div>
+        <div class="ver-empty-title">Descarga externa</div>
+        <div class="ver-empty-text">MoonWolf no dispone de una API de versiones para este software.</div>
+        <a class="btn btn-primary" href="${escHtml(item.external)}" target="_blank" rel="noopener noreferrer">Abrir web oficial ↗</a>
+      </div>
+    `;
+    return;
+  }
+
   try {
-    const content = fsSync.readFileSync(SERVER_PROPERTIES_PATH, 'utf8');
-    const values = {};
-    for (const line of content.split(/\r?\n/)) {
-      if (!line || line.trim().startsWith('#')) continue;
-      const match = line.match(/^\s*([^=:#]+)\s*=\s*(.*?)\s*$/);
-      if (match) values[match[1].trim()] = match[2];
+    const data = await api(`/api/versions/list?software=${encodeURIComponent(software)}`);
+
+    if (!data?.ok) {
+      throw new Error(data?.error || 'No se pudieron cargar las versiones.');
     }
-    return values;
-  } catch {
-    return {};
+
+    const versions = Array.isArray(data.versions) ? data.versions : [];
+
+    if (!versions.length) {
+      throw new Error('La API no devolvió ninguna versión disponible.');
+    }
+
+    versionCurrent.software = software;
+
+    container.innerHTML = `
+      <div class="ver-panel-head">
+        <button type="button" class="btn ver-back-btn" id="verBack">← Volver</button>
+        <div>
+          <div class="ver-panel-title">${item.icon || '📦'} ${escHtml(item.label || software)}</div>
+          <div class="ver-panel-subtitle">${escHtml(item.desc || '')}</div>
+        </div>
+      </div>
+
+      <div class="ver-version-header">
+        <div style="padding-left:28px">
+          <div class="ver-section-title">Versiones disponibles</div>
+          <div class="ver-section-subtitle">${versions.length} versiones encontradas</div>
+        </div>
+        <input id="verVersionSearch" class="ver-search" type="search" placeholder="Buscar versión…">
+      </div>
+
+      <div class="ver-version-grid" id="verVersionGrid"></div>
+    `;
+
+    $('verBack')?.addEventListener('click', renderVersionSoftware);
+
+    const grid = $('verVersionGrid');
+
+    const drawVersions = (filter = '') => {
+      const q = filter.trim().toLowerCase();
+      const filtered = versions.filter(v => String(v).toLowerCase().includes(q));
+
+      grid.innerHTML = filtered.map(v => `
+        <button type="button" class="ver-version-card ${String(v) === String(versionCurrent.version) && software === versionCurrent.software ? 'current' : ''}" data-version="${escHtml(v)}">
+          <span>${escHtml(v)}</span>
+          ${String(v) === String(versionCurrent.version) && software === versionCurrent.software ? '<small>ACTUAL</small>' : ''}
+        </button>
+      `).join('') || `<div class="ver-no-results">No hay versiones que coincidan.</div>`;
+
+      grid.querySelectorAll('[data-version]').forEach(btn => {
+        btn.addEventListener('click', () => selectVersionBuilds(software, btn.dataset.version, item));
+      });
+    };
+
+    $('verVersionSearch')?.addEventListener('input', e => drawVersions(e.target.value));
+    drawVersions();
+
+  } catch (error) {
+    const box = container.querySelector('.ver-loading');
+    if (box) {
+      box.className = 'ver-empty';
+      box.innerHTML = `
+        <div class="ver-empty-icon">⚠️</div>
+        <div class="ver-empty-title">No se pudieron cargar las versiones</div>
+        <div class="ver-empty-text">${escHtml(error.message || 'Error desconocido')}</div>
+        <button type="button" class="btn btn-primary" id="verRetrySoftware">Reintentar</button>
+      `;
+      $('verRetrySoftware')?.addEventListener('click', () => selectVersionSoftware(software));
+    }
   }
 }
 
-function writeServerProperties(values) {
-  let content = '';
-  try { content = fsSync.readFileSync(SERVER_PROPERTIES_PATH, 'utf8'); } catch {}
+async function selectVersionBuilds(software, version, item = versionFindSoftware(software)) {
+  const container = $('versionList');
+  if (!container) return;
 
-  const lines = content.split(/\r?\n/);
-  const updated = new Set();
-  const output = lines.map(line => {
-    const match = line.match(/^\s*([^=:#]+)\s*=\s*(.*?)\s*$/);
-    if (!match) return line;
-    const key = match[1].trim();
-    if (!(key in values)) return line;
-    updated.add(key);
-    return `${key}=${values[key]}`;
-  });
+  versionCurrent.software = software;
+  versionCurrent.version = version;
+  versionCurrent.build = '';
 
-  for (const [key, value] of Object.entries(values)) {
-    if (!updated.has(key)) {
-      if (output.length && output[output.length - 1] !== '') output.push('');
-      output.push(`${key}=${value}`);
+  container.innerHTML = `
+    <div class="ver-panel-head">
+      <button type="button" class="btn ver-back-btn" id="verBackVersions">← Versiones</button>
+      <div>
+        <div class="ver-panel-title">${item.icon || '📦'} ${escHtml(item.label || software)} ${escHtml(version)}</div>
+        <div class="ver-panel-subtitle">${escHtml(item.desc || '')}</div>
+      </div>
+    </div>
+    <div class="ver-loading">Cargando builds de ${escHtml(version)}…</div>
+  `;
+
+  $('verBackVersions')?.addEventListener('click', () => selectVersionSoftware(software));
+
+  try {
+    const data = await api(
+      `/api/versions/builds?software=${encodeURIComponent(software)}&version=${encodeURIComponent(version)}`
+    );
+
+    if (!data?.ok) {
+      throw new Error(data?.error || 'No se pudieron cargar los builds.');
+    }
+
+    const builds = Array.isArray(data.builds) ? data.builds : [];
+
+    if (!builds.length) {
+      throw new Error('No hay builds disponibles para esta versión.');
+    }
+
+    versionCurrent.build = builds[0]?.build ?? '';
+
+    container.innerHTML = `
+      <div class="ver-panel-head">
+        <button type="button" class="btn ver-back-btn" id="verBackVersions">← Versiones</button>
+        <div>
+          <div class="ver-panel-title">${item.icon || '📦'} ${escHtml(item.label || software)} ${escHtml(version)}</div>
+          <div class="ver-panel-subtitle">${builds.length} builds disponibles</div>
+        </div>
+      </div>
+
+      <div class="ver-build-list">
+        ${builds.map((b, index) => `
+          <div class="ver-build-item ${index === 0 ? 'selected' : ''}" data-build="${escHtml(b.build)}">
+            <div class="ver-build-main">
+              <div class="ver-build-title">Build ${escHtml(b.build)}</div>
+              <div class="ver-build-meta">
+                <span>${escHtml(b.channel || 'STABLE')}</span>
+                ${b.loaderVersion ? `<span>Loader ${escHtml(b.loaderVersion)}</span>` : ''}
+                ${b.time ? `<span>${escHtml(new Date(b.time).toLocaleString('es-ES'))}</span>` : ''}
+              </div>
+              ${b.changes ? `<div class="ver-build-changes">${escHtml(b.changes)}</div>` : ''}
+              ${b.sha256 ? `<div class="ver-build-sha">SHA-256: ${escHtml(b.sha256)}</div>` : ''}
+            </div>
+            <button type="button" class="btn btn-primary ver-install-btn" data-build-index="${index}">
+              ${software === 'fabric' ? 'Preparar instalación' : 'Instalar'}
+            </button>
+          </div>
+        `).join('')}
+      </div>
+    `;
+
+    $('verBackVersions')?.addEventListener('click', () => selectVersionSoftware(software));
+
+    container.querySelectorAll('[data-build-index]').forEach(button => {
+      button.addEventListener('click', () => {
+        const build = builds[Number(button.dataset.buildIndex)];
+        installVersionSelection(software, version, build);
+      });
+    });
+  } catch (error) {
+    const box = container.querySelector('.ver-loading');
+    if (box) {
+      box.className = 'ver-empty';
+      box.innerHTML = `
+        <div class="ver-empty-icon">⚠️</div>
+        <div class="ver-empty-title">No se pudieron cargar los builds</div>
+        <div class="ver-empty-text">${escHtml(error.message || 'Error desconocido')}</div>
+        <button type="button" class="btn btn-primary" id="verRetryBuilds">Reintentar</button>
+      `;
+      $('verRetryBuilds')?.addEventListener('click', () => selectVersionBuilds(software, version, item));
     }
   }
+}
 
-  fsSync.writeFileSync(
-    SERVER_PROPERTIES_PATH,
-    output.join('\n').replace(/\n+$/, '') + '\n',
-    'utf8'
+async function installVersionSelection(software, version, build) {
+  const label = versionFindSoftware(software).label || software;
+  const buildLabel = build?.build !== undefined ? `Build ${build.build}` : 'versión seleccionada';
+
+  if (!confirm(`¿Quieres instalar ${label} ${version} (${buildLabel})?`)) return;
+
+  try {
+    toast('⏳ Descargando e instalando...', 'info');
+
+    const data = await postJSON('/api/versions/install', {
+      software,
+      version,
+      build: build?.build ?? '',
+      url: build?.url || '',
+      loaderVersion: build?.loaderVersion || '',
+    });
+
+    if (!data?.ok) {
+      throw new Error(data?.error || 'No se pudo instalar la versión.');
+    }
+
+    if (data.type === 'fabric-installer' || data.type === 'forge-installer') {
+      const name = data.type === 'forge-installer' ? 'Forge' : 'Fabric';
+      toast(`⚠️ ${name} preparado. Revisa el comando indicado antes de ejecutarlo.`, 'info');
+      alert(
+        `${name} ${version} preparado.\n\n` +
+        `${data.note || ''}\n\n` +
+        `Comando:\n${data.installCmd || 'No disponible'}`
+      );
+    } else {
+      toast(`✅ ${label} ${version} instalado correctamente.`, 'ok');
+    }
+
+    await loadVersionState();
+  } catch (error) {
+    toast(`❌ ${error.message}`, 'err');
+  }
+}
+
+async function loadVersionState() {
+  const container = $('versionList');
+  if (container) {
+    container.innerHTML = `
+      <div class="ver-loading-page">
+        <div class="ver-loading-spinner">⟳</div>
+        <div>Cargando catálogo de versiones…</div>
+      </div>
+    `;
+  }
+
+  try {
+    const [softwareData, startupData] = await Promise.all([
+      api('/api/versions/software'),
+      api('/api/startup'),
+    ]);
+
+    if (!softwareData?.ok) {
+      throw new Error(softwareData?.error || 'No se pudo cargar el catálogo de software.');
+    }
+
+    versionCatalog = Array.isArray(softwareData.software)
+      ? softwareData.software.map(item => ({
+          ...item,
+          icon:
+            item.id === 'paper' ? '📄' :
+            item.id === 'purpur' ? '🟣' :
+            item.id === 'folia' ? '🌱' :
+            item.id === 'fabric' ? '🧵' :
+            item.id === 'forge' ? '🔨' :
+            item.id === 'vanilla' ? '🌿' :
+            item.id === 'velocity' ? '⚡' :
+            item.id === 'waterfall' ? '🌊' :
+            item.id === 'bungeecord' ? '🔗' : '📦',
+        }))
+      : [];
+
+    versionCurrent = {
+      software: '',
+      version: startupData?.config?.minecraftVersion || '',
+      build: '',
+    };
+
+    renderVersionSoftware();
+  } catch (error) {
+    versionCatalog = [];
+    renderVersionSoftware();
+    toast(`❌ ${error.message}`, 'err');
+  }
+}
+
+/* Legacy compatibility */
+function renderBuildsSelect() {}
+async function changeSoftwareOrVersion() {}
+async function installSelectedVersion() {
+  if (versionCurrent.software && versionCurrent.version) {
+    await selectVersionBuilds(
+      versionCurrent.software,
+      versionCurrent.version,
+      versionFindSoftware(versionCurrent.software)
+    );
+  } else {
+    toast('Selecciona un servidor y una versión primero.', 'warn');
+  }
+}
+
+/* DATABASES (MySQL / MariaDB) */
+
+function showDbCredentials(creds) {
+  const text =
+    `Host: ${creds.host}:${creds.port}\n` +
+    `Base de datos: ${creds.database}\n` +
+    `Usuario: ${creds.user}\n` +
+    `Contraseña: ${creds.password}`;
+
+  try {
+    navigator.clipboard?.writeText(text);
+  } catch {}
+
+  alert(
+    `Credenciales de la base de datos (copiadas al portapapeles):\n\n${text}\n\n⚠️ Esta contraseña no se volverá a mostrar.`
   );
 }
 
-function checkLocalPort(port, host = '127.0.0.1') {
-  return new Promise(resolve => {
-    const socket = new net.Socket();
-    let settled = false;
-    const finish = open => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      resolve(Boolean(open));
-    };
-    socket.setTimeout(700);
-    socket.once('connect', () => finish(true));
-    socket.once('timeout', () => finish(false));
-    socket.once('error', () => finish(false));
-    socket.connect(port, host);
-  });
-}
+async function createDatabase() {
+  const name = prompt(
+    'Nombre de la nueva base de datos (letras, números y guion bajo, máx. 48 caracteres):'
+  );
 
-function validPort(value) {
-  const port = Number(value);
-  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
-}
+  if (!name) return;
 
-/* ══════════════════════════════════════════════
-   RCON (Minecraft Remote Console)
-   ══════════════════════════════════════════════ */
-function rconExec(port, password, command, timeoutMs = 2000) {
-  return new Promise((resolve, reject) => {
-    const socket = new net.Socket();
-    let buffer = Buffer.alloc(0);
-    let authed = false;
-    let settled = false;
-
-    const finish = (err, result) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      if (err) reject(err);
-      else resolve(result);
-    };
-
-    function writePacket(id, type, body) {
-      const bodyBuf = Buffer.from(body, 'utf8');
-      const packet = Buffer.alloc(12 + bodyBuf.length + 2);
-      packet.writeInt32LE(10 + bodyBuf.length, 0);
-      packet.writeInt32LE(id, 4);
-      packet.writeInt32LE(type, 8);
-      bodyBuf.copy(packet, 12);
-      socket.write(packet);
-    }
-
-    socket.setTimeout(timeoutMs);
-    socket.once('timeout', () => finish(new Error('RCON timeout')));
-    socket.once('error', err => finish(err));
-
-    socket.on('data', chunk => {
-      buffer = Buffer.concat([buffer, chunk]);
-
-      while (buffer.length >= 4) {
-        const size = buffer.readInt32LE(0);
-        if (buffer.length < 4 + size) break;
-
-        const id = buffer.readInt32LE(4);
-        const body = buffer.slice(12, 4 + size - 2).toString('utf8');
-        buffer = buffer.slice(4 + size);
-
-        if (!authed) {
-          if (id === -1) return finish(new Error('RCON auth failed'));
-          authed = true;
-          writePacket(1, 2, command);
-        } else if (body.length > 0) {
-          return finish(null, body);
-        }
-      }
-    });
-
-    socket.connect(port, '127.0.0.1', () => {
-      writePacket(0, 3, password);
-    });
-  });
-}
-
-async function queryRconStats() {
-  const props = readServerProperties();
-
-  if (String(props['enable-rcon'] || 'false').toLowerCase() !== 'true') {
-    return null;
-  }
-
-  const port = validPort(props['rcon.port']) || 25575;
-  const password = String(props['rcon.password'] || '');
-
-  if (!password) return null;
-
-  try {
-    const [listRaw, tpsRaw] = await Promise.all([
-      rconExec(port, password, 'list'),
-      rconExec(port, password, 'tps'),
-    ]);
-
-    const clean = value => String(value || '').replace(/§[0-9a-fk-or]/gi, '').trim();
-
-    const listMatch = clean(listRaw).match(/There are (\d+) of a max of (\d+) players online/i);
-    const tpsMatch = clean(tpsRaw).match(/TPS from last [^:]+:\s*([\d.]+)/i);
-
-    return {
-      players: listMatch ? Number(listMatch[1]) : 0,
-      maxPlayers: listMatch ? Number(listMatch[2]) : 0,
-      tps: tpsMatch ? Number(tpsMatch[1]) : 20,
-    };
-  } catch {
-    return null;
-  }
-}
-
-app.get('/api/ports', async (_req, res) => {
-  try {
-    const props = readServerProperties();
-    const serverPort = validPort(props['server-port']) || readServerPort() || 25565;
-    const queryEnabled = String(props['enable-query'] || 'false').toLowerCase() === 'true';
-    const queryPort = validPort(props['query.port']) || 25565;
-    const rconEnabled = String(props['enable-rcon'] || 'false').toLowerCase() === 'true';
-    const rconPort = validPort(props['rcon.port']) || 25575;
-
-    const definitions = [
-      {
-        id: 'minecraft',
-        name: 'Minecraft',
-        description: 'Puerto principal usado por los jugadores para conectarse al servidor.',
-        protocol: 'TCP',
-        port: serverPort,
-        enabled: true,
-      },
-      {
-        id: 'query',
-        name: 'Query',
-        description: queryEnabled
-          ? 'Game Query de Minecraft habilitado.'
-          : 'Game Query deshabilitado en server.properties.',
-        protocol: 'UDP',
-        port: queryPort,
-        enabled: queryEnabled,
-      },
-      {
-        id: 'rcon',
-        name: 'RCON',
-        description: rconEnabled
-          ? 'Control remoto de consola habilitado.'
-          : 'RCON deshabilitado en server.properties.',
-        protocol: 'TCP',
-        port: rconPort,
-        enabled: rconEnabled,
-      },
-    ];
-
-    const ports = await Promise.all(definitions.map(async item => ({
-      ...item,
-      state: !item.enabled
-        ? 'disabled'
-        : item.protocol === 'TCP'
-          ? (await checkLocalPort(item.port) ? 'open' : 'closed')
-          : 'configured',
-    })));
-
-    ok(res, {
-      ports,
-      properties: {
-        enableQuery: queryEnabled,
-        enableRcon: rconEnabled,
-        serverPort,
-        queryPort,
-        rconPort,
-        hasRconPassword: Boolean(String(props['rcon.password'] || '')),
-      },
-    });
-  } catch (e) {
-    fail(res, e.message);
-  }
-});
-
-app.post('/api/ports', (req, res) => {
-  const body = req.body || {};
-  const serverPort = validPort(body.serverPort);
-  const queryPort = validPort(body.queryPort);
-  const rconPort = validPort(body.rconPort);
-
-  if (!serverPort || !queryPort || !rconPort) {
-    return fail(res, 'Todos los puertos deben estar entre 1 y 65535');
-  }
-
-  const enableQuery = Boolean(body.enableQuery);
-  const enableRcon = Boolean(body.enableRcon);
-  const current = readServerProperties();
-  const newPassword = String(body.rconPassword || '').trim();
-  const rconPassword = newPassword || String(current['rcon.password'] || '');
-
-  if (enableRcon && !rconPassword) {
-    return fail(res, 'Debes indicar una contraseña para activar RCON');
-  }
-
-  try {
-    writeServerProperties({
-      'server-port': serverPort,
-      'query.port': queryPort,
-      'enable-query': enableQuery,
-      'rcon.port': rconPort,
-      'enable-rcon': enableRcon,
-      ...(rconPassword ? { 'rcon.password': rconPassword } : {}),
-    });
-
-    ok(res, {
-      serverPort,
-      queryPort,
-      rconPort,
-      enableQuery,
-      enableRcon,
-      restartRequired: true,
-    });
-  } catch (e) {
-    fail(res, e.message);
-  }
-});
-
-function safePath(rel) {
-  const base = path.resolve(BASE_DIR);
-  const full = path.resolve(path.join(BASE_DIR, rel));
-
-  return full.startsWith(base + path.sep) || full === base ? full : null;
-}
-
-function safePluginPath(filename) {
-  if (filename.includes('/') || filename.includes('\\') || filename.includes('..')) {
-    return null;
-  }
-
-  return path.join(PLUGINS_DIR, filename);
-}
-
-const ok = (res, data = {}) => res.json({ ok: true, ...data });
-const fail = (res, error) => res.json({ ok: false, error });
-
-async function apiFetch(url) {
-  const { default: fetch } = await import('node-fetch');
-  const res = await fetch(url, { headers: { 'User-Agent': PAPER_UA } });
-
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} -> ${url}`);
-  }
-
-  return res.json();
-}
-
-async function apiFetchText(url) {
-  const { default: fetch } = await import('node-fetch');
-  const res = await fetch(url, { headers: { 'User-Agent': PAPER_UA } });
-
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} -> ${url}`);
-  }
-
-  return res.text();
-}
-
-async function downloadFile(url, dest) {
-  const { default: fetch } = await import('node-fetch');
-  const response = await fetch(url, {
-    headers: { 'User-Agent': PAPER_UA },
+  const data = await postJSON('/api/databases', {
+    name: name.trim(),
+    createUser: true,
   });
 
-  if (!response.ok) {
-    throw new Error(`Download failed: ${response.status} ${response.statusText}`);
-  }
-
-  const buffer = Buffer.from(await response.arrayBuffer());
-  const contentType = (response.headers.get('content-type') || '').toLowerCase();
-  const head = buffer.subarray(0, 20).toString('utf8').trim().toLowerCase();
-
-  if (
-    contentType.includes('text/html') ||
-    head.startsWith('<!doctype html') ||
-    head.startsWith('<html')
-  ) {
-    throw new Error('La descarga fue bloqueada por la protección anti-bot de SpigotMC. Instala este plugin manualmente desde su página de recursos.');
-  }
-
-  await fs.writeFile(dest, buffer);
-}
-
-function semverCmp(a, b) {
-  const pa = String(a).split('.').map(n => parseInt(n, 10));
-  const pb = String(b).split('.').map(n => parseInt(n, 10));
-
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const na = Number.isNaN(pa[i]) ? 0 : pa[i] || 0;
-    const nb = Number.isNaN(pb[i]) ? 0 : pb[i] || 0;
-
-    if (na !== nb) {
-      return na - nb;
-    }
-  }
-
-  return 0;
-}
-
-/* ══════════════════════════════════════════════
-    CLOUD / AGENT
-    ══════════════════════════════════════════════ */
-const agentSockets = new Map();
-const panelSockets = new Set();
-const agentCache = new Map();
-const AGENT_EVENTS = new Set(['status', 'log', 'stats']);
-
-const LOCAL_AGENT_ROOM = 'local-agent';
-const agentRoom  = id => `agent:${id}`;
-const panelsRoom = id => `panels:${id}`;
-
-function emitToAgentPanels(agentId, event, payload) {
-  io.to(panelsRoom(agentId)).emit(event, payload);
-}
-
-function agentIsOnline(agentId) {
-  return Boolean(agentSockets.get(agentId)?.connected);
-}
-
-io.on('connection', socket => {
-  console.log('Cliente conectado:', socket.id, socket.data.role, socket.data.agentId || '');
-
-  if (socket.data.role === 'local-agent') {
-    socket.join(LOCAL_AGENT_ROOM);
-    socket.emit('status', lastStatus);
-    console.log('🖥️ Agent local conectado:', socket.id);
+  if (!data.ok) {
+    toast(`❌ ${data.error}`, 'err');
     return;
   }
 
-  if (socket.data.role === 'agent') {
-    const agentId = socket.data.agentId;
-    const previous = agentSockets.get(agentId);
+  toast('✅ Base de datos creada', 'ok');
 
-    if (previous && previous !== socket) {
-      previous.disconnect(true);
-    }
+  if (data.credentials) {
+    showDbCredentials(data.credentials);
+  }
 
-    agentSockets.set(agentId, socket);
-    socket.join(agentRoom(agentId));
-    console.log('🌙 MoonWolf Agent conectado:', agentId, socket.id);
+  loadDatabases();
+}
 
-    socket.on('pairing_create', () => {
-      const pairing = createPairingCode(agentId);
-      socket.emit('pairing_ready', pairing);
-    });
+async function loadDatabases() {
+  const container = $('dbList');
 
-    socket.on('event', event => {
-      if (!event?.name) return;
-      if (!AGENT_EVENTS.has(event.name)) return;
+  if (!container) return;
 
-      const cache = agentCache.get(agentId) || { status: null, stats: null, logs: [] };
+  container.innerHTML = `
+    <div class="empty-state">
+      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
+      <div class="empty-msg">Conectando con MySQL...</div>
+    </div>
+  `;
 
-      if (event.name === 'status') cache.status = event.payload;
-      else if (event.name === 'stats') cache.stats = event.payload;
-      else {
-        cache.logs.push(event.payload);
-        if (cache.logs.length > 300) cache.logs.shift();
-      }
+  let status = { connected: false };
 
-      agentCache.set(agentId, cache);
-      emitToAgentPanels(agentId, event.name, event.payload);
-    });
-
-    socket.on('rpc_result', result => {
-      if (!result?.id) return;
-
-      for (const panel of panelSockets) {
-        if (
-          panel.data.agentId === agentId &&
-          panel.data.pendingRpc?.has(result.id)
-        ) {
-          panel.data.pendingRpc.delete(result.id);
-          panel.emit('rpc_result', result);
-          break;
-        }
-      }
-    });
-
-    const notifyAgentState = online => {
-      emitToAgentPanels(agentId, 'cloud_ready', { agentOnline: online });
-      emitToAgentPanels(agentId, 'agent_status', { online });
-    };
-
-    notifyAgentState(true);
-
-    socket.on('disconnect', () => {
-      if (agentSockets.get(agentId) === socket) {
-        agentSockets.delete(agentId);
-        notifyAgentState(false);
-      }
-
-      console.log('🌙 MoonWolf Agent desconectado:', agentId, socket.id);
-    });
-
+  try {
+    status = await api('/api/databases/status');
+  } catch (error) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-msg">${escHtml(error.message)}</div>
+      </div>
+    `;
     return;
   }
 
-  if (socket.data.role === 'panel') {
-    socket.data.pendingRpc = new Set();
-    panelSockets.add(socket);
-    socket.join(panelsRoom(socket.data.agentId));
+  if (!status.connected) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon" style="color:var(--red)">⚠</div>
+        <div class="empty-msg">
+          No se pudo conectar con MySQL (${escHtml(status.host || '')}:${escHtml(String(status.port || ''))}).<br>
+          <span style="font-size:11px;color:var(--muted)">
+            ${escHtml(status.error || 'Configura MOONWOLF_MYSQL_HOST / MOONWOLF_MYSQL_USER / MOONWOLF_MYSQL_PASSWORD en el .env del servidor.')}
+          </span>
+        </div>
+      </div>
+    `;
+    return;
+  }
 
-    const agentId = socket.data.agentId;
-    const online = agentIsOnline(agentId);
-    const sessionTimer = setTimeout(() => {
-      socket.disconnect(true);
-    }, Math.max(1000, socket.data.sessionExp - Date.now()));
+  const data = await api('/api/databases');
 
-    console.log('🖥️ Panel conectado:', socket.id, '->', agentId);
+  if (!data.ok) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-msg">${escHtml(data.error)}</div>
+      </div>
+    `;
+    return;
+  }
 
-    socket.emit('cloud_ready', { agentOnline: online });
-    socket.emit('agent_status', { online });
+  const databases = data.databases || [];
 
-    const cached = online ? agentCache.get(agentId) : null;
+  container.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 4px 14px">
+      <span style="font-size:11px;color:var(--muted2)">
+        🟢 Conectado a MySQL — ${escHtml(status.host)}:${escHtml(String(status.port))}
+      </span>
+      <button class="small-btn" id="btnNewDatabase">➕ Nueva base de datos</button>
+    </div>
 
-    if (cached) {
-      socket.emit('history', cached.logs);
-      if (cached.status) socket.emit('status', cached.status);
-      if (cached.stats) socket.emit('stats', cached.stats);
+    ${
+      databases.length
+        ? databases
+            .map(
+              db => `
+          <div class="backup-row">
+            <span class="bk-icon">🗄️</span>
+            <span class="bk-name">
+              ${escHtml(db.name)}
+              <small>${escHtml(db.tables)} tablas · ${escHtml(db.user || 'sin usuario dedicado')}</small>
+            </span>
+            <span class="bk-size">${escHtml(db.sizeMb)} MB</span>
+            <span class="bk-actions">
+              ${
+                db.user
+                  ? `<button class="icon-btn edit" data-reset-db="${escHtml(db.name)}" title="Restablecer contraseña">🔑</button>`
+                  : ''
+              }
+              <button class="icon-btn" data-delete-db="${escHtml(db.name)}" title="Eliminar">🗑️</button>
+            </span>
+          </div>
+        `
+            )
+            .join('')
+        : '<div class="empty-state"><div class="empty-msg">No hay bases de datos todavía.</div></div>'
     }
-    socket.emit('session_info', {
-      permission: socket.data.permission || 'admin',
-      kind: socket.data.kind || 'owner',
-      expiresAt: socket.data.sessionExp,
-    });
+  `;
 
-    socket.on('rpc', request => {
-      const rejectRpc = (status, message) => socket.emit('rpc_result', {
-        id: request?.id || null,
-        ok: false,
-        status,
-        contentType: 'application/json',
-        bodyBase64: Buffer.from(JSON.stringify({ ok: false, error: message })).toString('base64'),
+  $('btnNewDatabase')?.addEventListener('click', createDatabase);
+
+  container.querySelectorAll('[data-delete-db]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const name = button.dataset.deleteDb;
+
+      if (
+        !confirm(
+          `¿Eliminar la base de datos "${name}"? Esta acción no se puede deshacer.`
+        )
+      ) {
+        return;
+      }
+
+      const data = await api(`/api/databases/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
       });
 
-      if (!request || typeof request !== 'object') return;
-
-      let rpcUrl;
-
-      try {
-        rpcUrl = new URL(String(request.path || ''), 'http://moonwolf.invalid');
-      } catch {
-        return rejectRpc(400, 'Petición no válida.');
+      if (!data.ok) {
+        toast(`❌ ${data.error}`, 'err');
+        return;
       }
 
-      if (rpcUrl.origin !== 'http://moonwolf.invalid' || !rpcUrl.pathname.startsWith('/api/')) {
-        return rejectRpc(400, 'Ruta no válida.');
-      }
-
-      request.path = rpcUrl.pathname + rpcUrl.search;
-      request.method = String(request.method || 'GET').toUpperCase();
-
-      if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) {
-        return rejectRpc(400, 'Método no válido.');
-      }
-
-      if (socket.data.kind === 'share') {
-        const share = loadShareTokens().find(item => item.id === socket.data.shareTokenId && item.agentId === agentId);
-
-        if (!share || share.revokedAt || (share.expiresAt && Number(share.expiresAt) <= Date.now())) {
-          socket.emit('share_revoked');
-          return socket.disconnect(true);
-        }
-
-        if (!permissionAllows(socket.data.permission, requiredPermission(request?.method, request?.path))) {
-          return socket.emit('rpc_result', {
-            id: request?.id || null,
-            ok: false,
-            status: 403,
-            contentType: 'application/json',
-            bodyBase64: Buffer.from(JSON.stringify({
-              ok: false,
-              error: 'No tienes permisos para realizar esta acción.',
-            })).toString('base64'),
-          });
-        }
-      }
-
-      const agentSocket = agentSockets.get(agentId);
-
-      if (!agentSocket?.connected) {
-        return socket.emit('rpc_result', {
-          id: request?.id || null,
-          ok: false,
-          status: 503,
-          contentType: 'application/json',
-          bodyBase64: Buffer.from(JSON.stringify({
-            ok: false,
-            error: 'MoonWolf Agent no está conectado.',
-          })).toString('base64'),
-        });
-      }
-
-      const id = request?.id;
-      if (!id) return;
-
-      socket.data.pendingRpc.add(id);
-      agentSocket.emit('rpc', request);
+      toast('✅ Base de datos eliminada', 'ok');
+      loadDatabases();
     });
+  });
 
-    socket.on('disconnect', () => {
-      clearTimeout(sessionTimer);
-      panelSockets.delete(socket);
-      socket.data.pendingRpc?.clear();
-      console.log('🖥️ Panel desconectado:', socket.id);
+  container.querySelectorAll('[data-reset-db]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const name = button.dataset.resetDb;
+
+      if (!confirm(`¿Restablecer la contraseña del usuario de "${name}"?`)) {
+        return;
+      }
+
+      const data = await postJSON(
+        `/api/databases/${encodeURIComponent(name)}/reset-password`,
+        {}
+      );
+
+      if (!data.ok) {
+        toast(`❌ ${data.error}`, 'err');
+        return;
+      }
+
+      showDbCredentials(data.credentials);
     });
+  });
+}
+
+/* BACKUPS */
+
+async function loadBackups() {
+  const container = $('backupList');
+
+  if (!container) return;
+
+  container.innerHTML = `
+    <div class="empty-state">
+      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
+      <div class="empty-msg">Cargando copias de seguridad...</div>
+    </div>
+  `;
+
+  const data = await api('/api/backups');
+
+  if (!data.ok) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-msg">${escHtml(data.error)}</div></div>`;
+    return;
+  }
+
+  const backups = data.backups || [];
+
+  container.innerHTML = backups.length
+    ? backups
+        .map(
+          backup => `
+        <div class="backup-row">
+          <span class="bk-icon">🗄️</span>
+          <span class="bk-name">
+            ${escHtml(backup.name)}
+            <small>${escHtml(backup.date)}</small>
+          </span>
+          <span class="bk-size">${escHtml(backup.sizeMb)} MB</span>
+          <span class="bk-actions">
+            <button class="icon-btn edit" data-download-backup="${escHtml(backup.name)}" title="Descargar">⬇️</button>
+            <button class="icon-btn" data-delete-backup="${escHtml(backup.name)}" title="Eliminar">🗑️</button>
+          </span>
+        </div>
+      `
+        )
+        .join('')
+    : '<div class="empty-state"><div class="empty-msg">No hay copias de seguridad todavía.</div></div>';
+
+  container.querySelectorAll('[data-download-backup]').forEach(button => {
+    button.addEventListener('click', () =>
+      downloadBackup(button.dataset.downloadBackup)
+    );
+  });
+
+  container.querySelectorAll('[data-delete-backup]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const name = button.dataset.deleteBackup;
+
+      if (
+        !confirm(
+          `¿Eliminar la copia de seguridad "${name}"? Esta acción no se puede deshacer.`
+        )
+      ) {
+        return;
+      }
+
+      const data = await api(`/api/backups/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
+      });
+
+      if (!data.ok) {
+        toast(`❌ ${data.error}`, 'err');
+        return;
+      }
+
+      toast('✅ Copia de seguridad eliminada', 'ok');
+      loadBackups();
+    });
+  });
+}
+
+async function createBackup() {
+  const name = prompt('Nombre para la copia de seguridad (opcional):', '');
+  if (name === null) return;
+
+  const button = $('btnNewBackup');
+
+  if (button) {
+    button.disabled = true;
+    button.textContent = '⏳ Creando...';
+  }
+
+  try {
+    const data = await postJSON('/api/backups', { name: name.trim() });
+
+    if (!data.ok) {
+      toast(`❌ ${data.error}`, 'err');
+      return;
+    }
+
+    toast(
+      data.warning
+        ? `⚠️ ${data.warning}`
+        : `✅ Copia de seguridad creada (${data.sizeMb} MB)`,
+      data.warning ? 'warn' : 'ok'
+    );
+
+    loadBackups();
+  } catch (error) {
+    toast(`❌ ${error.message}`, 'err');
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '➕ Nueva copia';
+    }
+  }
+}
+
+async function downloadBackup(name) {
+  try {
+    const result = await rpcHttp(
+      `/api/backups/download/${encodeURIComponent(name)}`
+    );
+
+    if (!result?.bodyBase64) {
+      toast(
+        result?.data?.error || 'No se pudo descargar la copia de seguridad.',
+        'err'
+      );
+      return;
+    }
+
+    const bytes = decodeResultBody(result);
+    const blob = new Blob([bytes], {
+      type: result.contentType || 'application/zip',
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+
+    anchor.href = url;
+    anchor.download = name;
+    anchor.click();
+
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) {
+    toast(`❌ ${error.message}`, 'err');
+  }
+}
+
+/* PORTS */
+
+async function loadPorts() {
+  const element = $('portList');
+  if (!element) return;
+
+  element.innerHTML =
+    '<div class="empty-state"><div style="animation:spin 1s linear infinite;font-size:28px">⟳</div><div class="empty-msg">Comprobando puertos...</div></div>';
+
+  try {
+    const data = await api('/api/ports');
+    if (!data.ok) throw new Error(data.error || 'No se pudieron cargar los puertos');
+
+    const props = data.properties || {};
+    const ports = Array.isArray(data.ports) ? data.ports : [];
+
+    element.innerHTML = `
+      <div class="ports-toolbar">
+        <div>
+          <div class="panel-title"><span>🔌</span> PUERTOS DEL SERVIDOR</div>
+          <div class="port-toolbar-sub">Configura los puertos de Minecraft, Query y RCON. Los cambios requieren reiniciar el servidor.</div>
+        </div>
+        <button class="small-btn" id="btnRefreshPorts">↺ Comprobar</button>
+      </div>
+
+      <div class="ports-grid">
+        ${ports
+          .map(
+            port => `
+          <div class="port-row">
+            <div class="port-num">${escHtml(port.port)}</div>
+            <div class="port-info">
+              <div class="port-name">${escHtml(port.name)}</div>
+              <div class="port-desc">${escHtml(port.description)}</div>
+            </div>
+            <span class="port-proto">${escHtml(port.protocol)}</span>
+            <span class="port-state ${escHtml(port.state)}">
+              ${
+                port.state === 'open'
+                  ? '● ABIERTO'
+                  : port.state === 'closed'
+                    ? '● CERRADO'
+                    : port.state === 'disabled'
+                      ? '● DESACTIVADO'
+                      : '● CONFIGURADO'
+              }
+            </span>
+          </div>
+        `
+          )
+          .join('')}
+      </div>
+
+      <div class="panel ports-config-panel">
+        <div class="panel-header">
+          <div>
+            <div class="panel-title"><span>⚙️</span> CONFIGURACIÓN</div>
+            <div class="port-toolbar-sub">Los valores se escriben directamente en server.properties.</div>
+          </div>
+        </div>
+
+        <div class="ports-form">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Puerto de Minecraft</label>
+              <input id="portMinecraft" class="form-input" type="number" min="1" max="65535" value="${escHtml(props.serverPort ?? 25565)}">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Puerto Query</label>
+              <input id="portQuery" class="form-input" type="number" min="1" max="65535" value="${escHtml(props.queryPort ?? 25565)}">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Puerto RCON</label>
+              <input id="portRcon" class="form-input" type="number" min="1" max="65535" value="${escHtml(props.rconPort ?? 25575)}">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Contraseña RCON</label>
+              <input id="portRconPassword" class="form-input" type="password" placeholder="${props.hasRconPassword ? 'Dejar vacío para conservarla' : 'Contraseña nueva'}" autocomplete="new-password">
+            </div>
+          </div>
+
+          <div class="startup-toggles">
+            <label class="startup-toggle" for="portEnableQuery">
+              <div class="startup-toggle-icon">📡</div>
+              <div class="startup-toggle-info">
+                <div class="startup-toggle-title">Game Query</div>
+                <div class="startup-toggle-desc">Permite consultar información del servidor mediante el protocolo Query (jugadores, MOTD...).</div>
+              </div>
+              <span class="toggle">
+                <input type="checkbox" id="portEnableQuery" ${props.enableQuery ? 'checked' : ''}>
+                <span class="toggle-slider"></span>
+              </span>
+            </label>
+
+            <label class="startup-toggle" for="portEnableRcon">
+              <div class="startup-toggle-icon">🎛️</div>
+              <div class="startup-toggle-info">
+                <div class="startup-toggle-title">RCON</div>
+                <div class="startup-toggle-desc">Consola remota. Usa una contraseña fuerte y no expongas este puerto innecesariamente a Internet.</div>
+              </div>
+              <span class="toggle">
+                <input type="checkbox" id="portEnableRcon" ${props.enableRcon ? 'checked' : ''}>
+                <span class="toggle-slider"></span>
+              </span>
+            </label>
+          </div>
+
+          <button class="save-btn" id="btnSavePorts">💾 GUARDAR PUERTOS</button>
+        </div>
+      </div>
+    `;
+
+    $('btnRefreshPorts')?.addEventListener('click', loadPorts);
+    $('btnSavePorts')?.addEventListener('click', savePorts);
+  } catch (error) {
+    element.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-msg">${escHtml(error.message)}</div><button class="small-btn" id="btnRetryPorts">↺ Reintentar</button></div>`;
+    $('btnRetryPorts')?.addEventListener('click', loadPorts);
+  }
+}
+
+async function savePorts() {
+  const body = {
+    serverPort: Number($('portMinecraft')?.value),
+    queryPort: Number($('portQuery')?.value),
+    rconPort: Number($('portRcon')?.value),
+    enableQuery: Boolean($('portEnableQuery')?.checked),
+    enableRcon: Boolean($('portEnableRcon')?.checked),
+    rconPassword: $('portRconPassword')?.value || '',
+  };
+
+  const button = $('btnSavePorts');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'GUARDANDO...';
+  }
+
+  try {
+    const data = await postJSON('/api/ports', body);
+    if (!data.ok) {
+      toast(`❌ ${data.error}`, 'err');
+      return;
+    }
+
+    toast('✅ Puertos guardados. Reinicia el servidor para aplicar los cambios.', 'ok');
+    addActivity('Configuración de puertos actualizada', 'ok', '🔌');
+    await loadPorts();
+  } catch (error) {
+    toast(error.message, 'err');
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '💾 GUARDAR PUERTOS';
+    }
+  }
+}
+
+/* STARTUP */
+
+function requiredJavaLabel(version) {
+  const match = String(version || '').trim().match(/^(\d+)\.(\d+)(?:\.(\d+))?/);
+  if (!match) return 'Java se seleccionará automáticamente';
+
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3] || 0);
+  let java = null;
+
+  if (major >= 26) java = 25;
+  else if (major === 1) {
+    if (minor <= 11) java = 8;
+    else if (minor >= 12 && minor <= 15) java = 11;
+    else if (minor === 16) java = patch >= 5 ? 16 : 11;
+    else if (minor >= 17 && minor <= 19) java = 17;
+    else if (minor >= 20 && minor <= 21) java = 21;
+  }
+
+  return java ? `Java ${java} · gestionado por MoonWolf` : 'Versión no reconocida';
+}
+
+async function loadStartup() {
+  const element = $('startupList');
+
+  if (!element) return;
+
+  element.innerHTML = `
+    <div class="empty-state">
+      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
+      <div class="empty-msg">Cargando configuración...</div>
+    </div>
+  `;
+
+  const data = await api('/api/startup');
+
+  if (!data.ok) {
+    element.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-msg">${escHtml(data.error)}</div>
+      </div>
+    `;
 
     return;
   }
 
-  socket.on('disconnect', () => {
-    console.log('Cliente desconectado:', socket.id);
-  });
-});
+  const cfg = data.config || {};
+  const jars = Array.isArray(data.jars) ? data.jars : [];
+  const hasCurrentJar = jars.includes(cfg.jar);
+  const port = data.serverPort;
 
-/* ══════════════════════════════════════════════
-    ARCHIVOS
-    ══════════════════════════════════════════════ */
-app.get('/api/files', async (req, res) => {
-  const fullPath = safePath(req.query.dir || '');
+  element.innerHTML = `
+    <div class="startup-form">
 
-  if (!fullPath) {
-    return fail(res, 'Ruta no permitida');
-  }
+      <div class="form-group">
+        <label class="form-label">Archivo .jar del servidor</label>
+        ${
+          jars.length
+            ? `
+              <select id="stJar" class="form-select">
+                ${jars
+                  .map(
+                    jar => `
+                  <option value="${escHtml(jar)}" ${jar === cfg.jar ? 'selected' : ''}>${escHtml(jar)}</option>
+                `
+                  )
+                  .join('')}
+              </select>
+              <div class="form-hint">
+                Se lanzará este archivo al pulsar ARRANCAR.
+                ${!hasCurrentJar ? ` El configurado actualmente ("${escHtml(cfg.jar)}") no está en la carpeta — elige uno de la lista y guarda.` : ''}
+              </div>
+            `
+            : `
+              <div class="form-hint" style="color:var(--red)">
+                No se encontró ningún .jar en la carpeta del servidor. Sube uno desde Archivos o instala uno desde Versiones.
+              </div>
+            `
+        }
+      </div>
 
-  try {
-    const entries = await fs.readdir(fullPath, { withFileTypes: true });
-    const items = await Promise.all(
-      entries
-        .filter(entry => !entry.name.startsWith('.'))
-        .map(async entry => {
-          const stats = await fs.stat(path.join(fullPath, entry.name));
+      <div class="form-group">
+        <label class="form-label">Versión de Minecraft</label>
+        <input id="stMinecraftVersion" class="form-input" type="text" placeholder="Ej. 1.21.11" value="${escHtml(cfg.minecraftVersion || '')}">
+        <div class="form-hint">MoonWolf usa esta versión para seleccionar automáticamente el Java compatible. Si instalaste el servidor desde Versiones, se rellena automáticamente.</div>
+      </div>
 
-          return {
-            name: entry.name,
-            type: entry.isDirectory() ? 'dir' : entry.name.endsWith('.jar') ? 'jar' : entry.name.endsWith('.log') ? 'log' : 'file',
-            size: stats.isDirectory() ? '-' : (stats.size / 1024 / 1024).toFixed(2) + ' MB',
-            date: stats.mtime.toLocaleString('es-ES'),
-          };
-        })
-    );
+      <div class="form-group">
+        <label class="form-label">Java</label>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:var(--panel)">
+          <span style="font-size:18px">☕</span>
+          <div style="flex:1;min-width:220px">
+            <div style="font-weight:700" id="stJavaManagedLabel">
+              ${
+                data.javaRuntime?.javaMajor
+                  ? `Java ${escHtml(data.javaRuntime.javaMajor)} ${data.javaRuntime.installed ? '✓ instalado' : '↓ se descargará automáticamente'}`
+                  : 'Java se seleccionará automáticamente'
+              }
+            </div>
+            <div class="form-hint" style="margin-top:3px">
+              ${
+                data.javaRuntime?.javaMajor
+                  ? `Runtime gestionado por MoonWolf · ${data.javaRuntime.installed ? 'listo para usar' : 'se instalará al arrancar'}`
+                  : 'Indica una versión de Minecraft válida para calcular el runtime.'
+              }
+            </div>
+          </div>
+        </div>
 
-    ok(res, { items });
-  } catch {
-    fail(res, 'No se puede acceder a la carpeta');
-  }
-});
+        <div style="margin-top:10px">
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
+            <input id="stJavaOverride" type="checkbox" ${cfg.javaMode === 'override' ? 'checked' : ''}>
+            Usar un Java personalizado (avanzado)
+          </label>
+          <input id="stJavaOverridePath" class="form-input" type="text" style="margin-top:8px;display:${cfg.javaMode === 'override' ? 'block' : 'none'}" placeholder="C:\Program Files\Java\jdk-21\bin\java.exe" value="${escHtml(cfg.javaOverridePath || cfg.javaPath || '')}">
+          <div class="form-hint">Normalmente no necesitas tocar esto. El modo gestionado evita depender de un JDK instalado en Windows.</div>
+        </div>
+      </div>
 
-app.get('/api/files/content', async (req, res) => {
-  const full = safePath(req.query.path || '');
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Memoria mínima (MB)</label>
+          <input id="stMinMem" class="form-input" type="number" min="256" step="256" value="${escHtml(cfg.minMemoryMb ?? 1024)}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Memoria máxima (MB)</label>
+          <input id="stMaxMem" class="form-input" type="number" min="256" step="256" value="${escHtml(cfg.maxMemoryMb ?? 2048)}">
+        </div>
+      </div>
 
-  if (!full) {
-    return fail(res, 'Ruta no permitida');
-  }
+      <div class="form-group">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+          <label class="form-label" style="margin-bottom:0">Argumentos JVM extra (antes de "-jar")</label>
+          <button type="button" class="small-btn" id="btnAikarFlags" style="font-size:10px;padding:4px 9px;flex-shrink:0">⚡ Usar Aikar's Flags</button>
+        </div>
+        <input id="stArgs" class="form-input" type="text" placeholder="-XX:+UseG1GC" value="${escHtml(cfg.extraArgs || '')}">
+        <div class="form-hint">Flags de la JVM (recolector de basura, memoria avanzada...). Se insertan justo antes de "-jar".</div>
+      </div>
 
-  try {
-    ok(res, { content: await fs.readFile(full, 'utf-8'), filename: path.basename(full) });
-  } catch {
-    fail(res, 'No se puede leer el archivo');
-  }
-});
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Puerto del servidor</label>
+          <input id="stPort" class="form-input" type="number" min="1" max="65535" placeholder="25565" value="${port ?? ''}">
+          <div class="form-hint">Se guarda como server-port en server.properties.</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Comando de parada</label>
+          <input id="stStopCmd" class="form-input" type="text" placeholder="stop" value="${escHtml(cfg.stopCommand || 'stop')}">
+        </div>
+      </div>
 
-app.post('/api/files/content', async (req, res) => {
-  const { path: rel, content } = req.body;
+      <div class="startup-toggles">
+        <label class="startup-toggle" for="stAutoRestart">
+          <div class="startup-toggle-icon">🔄</div>
+          <div class="startup-toggle-info">
+            <div class="startup-toggle-title">Reinicio automático si se cae</div>
+            <div class="startup-toggle-desc">Relanza el servidor si el proceso termina de forma inesperada. No cuenta si pulsas DETENER.</div>
+          </div>
+          <span class="toggle">
+            <input type="checkbox" id="stAutoRestart" ${cfg.autoRestartOnCrash ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+          </span>
+        </label>
 
-  if (!rel || content === undefined) {
-    return fail(res, 'Parámetros requeridos');
-  }
+        <label class="startup-toggle" for="stAutoStart">
+          <div class="startup-toggle-icon">🚀</div>
+          <div class="startup-toggle-info">
+            <div class="startup-toggle-title">Arranque automático</div>
+            <div class="startup-toggle-desc">Inicia el servidor en cuanto MoonWolf Panel/Agent se ponga en marcha.</div>
+          </div>
+          <span class="toggle">
+            <input type="checkbox" id="stAutoStart" ${cfg.autoStartOnBoot ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+          </span>
+        </label>
+      </div>
 
-  const full = safePath(rel);
-  if (!full) {
-    return fail(res, 'Ruta no permitida');
-  }
+      <button class="save-btn" id="btnSaveStartup" ${jars.length ? '' : 'disabled'}>💾 GUARDAR</button>
+    </div>
+  `;
 
-  try {
-    await fs.writeFile(full, content, 'utf-8');
-    ok(res);
-  } catch {
-    fail(res, 'No se puede guardar');
-  }
-});
+  $('btnSaveStartup')?.addEventListener('click', saveStartup);
 
-/* ══════════════════════════════════════════════
-    STARTUP (jar, java, memoria, argumentos, comportamiento)
-    ══════════════════════════════════════════════ */
-app.get('/api/startup', async (_req, res) => {
-  try {
-    const entries = await fs.readdir(BASE_DIR, { withFileTypes: true });
-    const jars = entries
-      .filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.jar'))
-      .map(entry => entry.name)
-      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-
-    const config = loadStartupConfig();
-    const detectedVersion =
-      config.minecraftVersion ||
-      detectMinecraftVersionFromJarName(config.jar) ||
-      detectMinecraftVersionFromJarName(jars.find(jar => jar === config.jar));
-
-    const runtime = getJavaRuntimeInfo(detectedVersion);
-
-    ok(res, {
-      config: { ...config, minecraftVersion: detectedVersion || '' },
-      jars,
-      serverPort: readServerPort(),
-      javaRuntime: runtime,
-    });
-  } catch (e) {
-    fail(res, e.message);
-  }
-});
-
-app.post('/api/startup', (req, res) => {
-  const {
-    jar,
-    javaPath,
-    javaMode,
-    javaOverridePath,
-    minecraftVersion,
-    minMemoryMb,
-    maxMemoryMb,
-    extraArgs,
-    programArgs,
-    stopCommand,
-    autoRestartOnCrash,
-    autoStartOnBoot,
-    serverPort,
-  } = req.body || {};
-
-  const safeJar = safeJarName(jar);
-  if (!safeJar) {
-    return fail(res, 'Nombre de archivo .jar no válido');
-  }
-
-  if (!fsSync.existsSync(path.join(BASE_DIR, safeJar))) {
-    return fail(res, `No se encontró "${safeJar}" en la carpeta del servidor`);
-  }
-
-  const min = Number(minMemoryMb);
-  const max = Number(maxMemoryMb);
-
-  if (!Number.isFinite(min) || min < 256 || !Number.isFinite(max) || max < min) {
-    return fail(res, 'Valores de memoria no válidos');
-  }
-
-  let portNum = null;
-
-  if (serverPort !== undefined && serverPort !== null && String(serverPort).trim() !== '') {
-    portNum = Number(serverPort);
-
-    if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
-      return fail(res, 'Puerto del servidor no válido (1-65535)');
+  $('stJavaOverride')?.addEventListener('change', event => {
+    const input = $('stJavaOverridePath');
+    if (input) {
+      input.style.display = event.target.checked ? 'block' : 'none';
     }
-  }
-
-  try {
-    const config = saveStartupConfig({
-      jar: safeJar,
-      javaPath: String(javaPath || '').trim() || 'java',
-      javaMode: String(javaMode || '').trim() === 'override' ? 'override' : 'managed',
-      javaOverridePath: String(javaOverridePath || '').trim(),
-      minecraftVersion: String(minecraftVersion || '').trim(),
-      minMemoryMb: Math.round(min),
-      maxMemoryMb: Math.round(max),
-      extraArgs: String(extraArgs || '').trim(),
-      programArgs: programArgs === undefined ? loadStartupConfig().programArgs : String(programArgs || '').trim(),
-      stopCommand: String(stopCommand || '').trim() || 'stop',
-      autoRestartOnCrash: Boolean(autoRestartOnCrash),
-      autoStartOnBoot: Boolean(autoStartOnBoot),
-    });
-
-    if (portNum !== null) {
-      writeServerPort(portNum);
-    }
-
-    ok(res, { config, serverPort: readServerPort() });
-  } catch (e) {
-    fail(res, e.message);
-  }
-});
-
-/* ══════════════════════════════════════════════
-    BASES DE DATOS (MySQL / MariaDB)
-    ══════════════════════════════════════════════ */
-const mysql = require('mysql2/promise');
-
-const MYSQL_HOST = process.env.MOONWOLF_MYSQL_HOST || 'localhost';
-const MYSQL_PORT = Number(process.env.MOONWOLF_MYSQL_PORT || 3306);
-const MYSQL_ROOT_USER = process.env.MOONWOLF_MYSQL_USER || 'root';
-const MYSQL_ROOT_PASSWORD = process.env.MOONWOLF_MYSQL_PASSWORD || '';
-
-const DATABASES_STORE_PATH = path.join(STARTUP_DIR, 'databases.json');
-const MYSQL_SYSTEM_DBS = new Set(['information_schema', 'mysql', 'performance_schema', 'sys']);
-const DB_NAME_RE = /^[A-Za-z0-9_]{1,48}$/;
-
-let mysqlPool = null;
-
-function getMysqlPool() {
-  if (mysqlPool) return mysqlPool;
-
-  mysqlPool = mysql.createPool({
-    host: MYSQL_HOST,
-    port: MYSQL_PORT,
-    user: MYSQL_ROOT_USER,
-    password: MYSQL_ROOT_PASSWORD,
-    waitForConnections: true,
-    connectionLimit: 5,
   });
 
-  return mysqlPool;
+  $('stMinecraftVersion')?.addEventListener('input', event => {
+    const version = event.target.value.trim();
+    const runtime = requiredJavaLabel(version);
+    const label = $('stJavaManagedLabel');
+    if (label) label.textContent = runtime;
+  });
+
+  $('btnAikarFlags')?.addEventListener('click', () => {
+    const input = $('stArgs');
+
+    if (!input) return;
+
+    input.value = AIKAR_FLAGS;
+    toast('⚡ Flags de Aikar aplicados — recuerda GUARDAR', 'ok');
+  });
 }
 
-function loadDatabasesStore() {
-  try {
-    const raw = JSON.parse(fsSync.readFileSync(DATABASES_STORE_PATH, 'utf8'));
-    return Array.isArray(raw) ? raw : [];
-  } catch {
-    return [];
+async function saveStartup() {
+  const jarSelect = $('stJar');
+
+  if (!jarSelect || !jarSelect.value) {
+    toast('❌ No hay ningún .jar seleccionable', 'err');
+    return;
+  }
+
+  const portValue = $('stPort')?.value.trim();
+
+  const body = {
+    jar: jarSelect.value,
+    javaPath: $('stJavaOverridePath')?.value.trim() || '',
+    javaMode: Boolean($('stJavaOverride')?.checked) ? 'override' : 'managed',
+    javaOverridePath: $('stJavaOverride')?.checked ? ($('stJavaOverridePath')?.value.trim() || '') : '',
+    minecraftVersion: $('stMinecraftVersion')?.value.trim() || '',
+    minMemoryMb: Number($('stMinMem')?.value) || 1024,
+    maxMemoryMb: Number($('stMaxMem')?.value) || 2048,
+    extraArgs: $('stArgs')?.value.trim() || '',
+    stopCommand: $('stStopCmd')?.value.trim() || 'stop',
+    autoRestartOnCrash: Boolean($('stAutoRestart')?.checked),
+    autoStartOnBoot: Boolean($('stAutoStart')?.checked),
+    serverPort: portValue ? Number(portValue) : undefined,
+  };
+
+  const button = $('btnSaveStartup');
+
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'GUARDANDO...';
+  }
+
+  const data = await postJSON('/api/startup', body);
+
+  if (button) {
+    button.disabled = false;
+    button.textContent = '💾 GUARDAR';
+  }
+
+  if (!data.ok) {
+    toast(`❌ ${data.error}`, 'err');
+    return;
+  }
+
+  toast('✅ Configuración de arranque guardada', 'ok');
+  loadStartup();
+}
+
+/* NAVIGATION */
+
+function switchView(id) {
+  document.querySelectorAll('.view').forEach(view => view.classList.remove('active'));
+  document.querySelectorAll('.sb-item').forEach(item => item.classList.remove('active'));
+
+  $(`view-${id}`)?.classList.add('active');
+
+  document
+    .querySelector(`.sb-item[data-view="${id}"]`)
+    ?.classList.add('active');
+
+  switch (id) {
+    case 'files':
+      populateFiles(currentDir);
+      break;
+
+    case 'versions':
+      loadVersionState().catch(error => toast(error.message, 'err'));
+      break;
+
+    case 'plugins':
+      loadInstalledPlugins();
+      break;
+
+    case 'databases':
+      loadDatabases();
+      break;
+
+    case 'users':
+      renderUsers();
+      break;
+
+    case 'backups':
+      loadBackups();
+      break;
+
+    case 'ports':
+      loadPorts();
+      break;
+
+    case 'startup':
+      loadStartup();
+      break;
+
+    case 'activitylog':
+      renderActivity();
+      break;
+
+    case 'settings':
+      renderSettings();
+      break;
   }
 }
 
-function saveDatabasesStore(list) {
-  if (!fsSync.existsSync(STARTUP_DIR)) {
-    fsSync.mkdirSync(STARTUP_DIR, { recursive: true });
-  }
+/* ACTIVITY */
 
-  const tmp = `${DATABASES_STORE_PATH}.tmp`;
-  fsSync.writeFileSync(tmp, JSON.stringify(list, null, 2), 'utf8');
-  fsSync.renameSync(tmp, DATABASES_STORE_PATH);
-}
-
-function generateDbPassword() {
-  return crypto.randomBytes(18).toString('base64').replace(/[+/=]/g, '').slice(0, 20);
-}
-
-app.get('/api/databases/status', async (_req, res) => {
-  try {
-    const pool = getMysqlPool();
-    await pool.query('SELECT 1');
-    ok(res, { connected: true, host: MYSQL_HOST, port: MYSQL_PORT });
-  } catch (e) {
-    ok(res, { connected: false, error: e.message, host: MYSQL_HOST, port: MYSQL_PORT });
-  }
-});
-
-app.get('/api/databases', async (_req, res) => {
-  try {
-    const pool = getMysqlPool();
-    const [rows] = await pool.query(
-      `SELECT
-         s.SCHEMA_NAME AS name,
-         COALESCE(SUM(t.DATA_LENGTH + t.INDEX_LENGTH), 0) AS sizeBytes,
-         COUNT(t.TABLE_NAME) AS tableCount
-       FROM information_schema.SCHEMATA s
-       LEFT JOIN information_schema.TABLES t ON t.TABLE_SCHEMA = s.SCHEMA_NAME
-       GROUP BY s.SCHEMA_NAME
-       ORDER BY s.SCHEMA_NAME`
-    );
-
-    const store = loadDatabasesStore();
-    const databases = rows
-      .filter(row => !MYSQL_SYSTEM_DBS.has(row.name))
-      .map(row => {
-        const meta = store.find(item => item.database === row.name);
-
-        return {
-          name: row.name,
-          sizeMb: (Number(row.sizeBytes) / 1024 / 1024).toFixed(2),
-          tables: Number(row.tableCount),
-          user: meta?.user || null,
-          createdAt: meta?.createdAt || null,
-        };
-      });
-
-    ok(res, { databases });
-  } catch (e) {
-    fail(res, `No se pudo conectar a MySQL: ${e.message}`);
-  }
-});
-
-app.post('/api/databases', async (req, res) => {
-  const name = String(req.body?.name || '').trim();
-  const createUser = req.body?.createUser !== false;
-
-  if (!DB_NAME_RE.test(name)) {
-    return fail(res, 'Nombre no válido. Usa solo letras, números y guion bajo (máx. 48 caracteres).');
-  }
-
-  if (MYSQL_SYSTEM_DBS.has(name.toLowerCase())) {
-    return fail(res, 'Ese nombre está reservado para MySQL.');
-  }
-
-  try {
-    const pool = getMysqlPool();
-    const [existing] = await pool.query('SHOW DATABASES LIKE ?', [name]);
-
-    if (existing.length) {
-      return fail(res, 'Ya existe una base de datos con ese nombre.');
-    }
-
-    await pool.query(`CREATE DATABASE \`${name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
-
-    let credentials = null;
-
-    if (createUser) {
-      const username = name.slice(0, 32);
-      const password = generateDbPassword();
-
-      await pool.query('CREATE USER IF NOT EXISTS ?@\'%\' IDENTIFIED BY ?', [username, password]);
-      await pool.query("ALTER USER ?@'%' IDENTIFIED BY ?", [username, password]);
-      await pool.query(`GRANT ALL PRIVILEGES ON \`${name}\`.* TO ?@'%'`, [username]);
-      await pool.query('FLUSH PRIVILEGES');
-
-      credentials = { user: username, password, host: MYSQL_HOST, port: MYSQL_PORT, database: name };
-
-      const store = loadDatabasesStore();
-      store.push({ database: name, user: username, createdAt: Date.now() });
-      saveDatabasesStore(store);
-    }
-
-    ok(res, { name, credentials });
-  } catch (e) {
-    fail(res, `No se pudo crear la base de datos: ${e.message}`);
-  }
-});
-
-app.post('/api/databases/:name/reset-password', async (req, res) => {
-  const name = String(req.params.name || '').trim();
-
-  if (!DB_NAME_RE.test(name)) {
-    return fail(res, 'Nombre no válido.');
-  }
-
-  const store = loadDatabasesStore();
-  const record = store.find(item => item.database === name);
-
-  if (!record?.user) {
-    return fail(res, 'Esta base de datos no tiene un usuario asociado creado por el panel.');
-  }
-
-  try {
-    const pool = getMysqlPool();
-    const password = generateDbPassword();
-
-    await pool.query('ALTER USER ?@\'%\' IDENTIFIED BY ?', [record.user, password]);
-    await pool.query('FLUSH PRIVILEGES');
-
-    ok(res, { credentials: { user: record.user, password, host: MYSQL_HOST, port: MYSQL_PORT, database: name } });
-  } catch (e) {
-    fail(res, `No se pudo restablecer la contraseña: ${e.message}`);
-  }
-});
-
-app.delete('/api/databases/:name', async (req, res) => {
-  const name = String(req.params.name || '').trim();
-
-  if (!DB_NAME_RE.test(name) || MYSQL_SYSTEM_DBS.has(name.toLowerCase())) {
-    return fail(res, 'Nombre no válido.');
-  }
-
-  try {
-    const pool = getMysqlPool();
-    await pool.query(`DROP DATABASE \`${name}\``);
-
-    const store = loadDatabasesStore();
-    const record = store.find(item => item.database === name);
-
-    if (record?.user) {
-      try {
-        await pool.query('DROP USER IF EXISTS ?@\'%\'', [record.user]);
-        await pool.query('FLUSH PRIVILEGES');
-      } catch {}
-    }
-
-    saveDatabasesStore(store.filter(item => item.database !== name));
-
-    ok(res);
-  } catch (e) {
-    fail(res, `No se pudo eliminar la base de datos: ${e.message}`);
-  }
-});
-
-/* ══════════════════════════════════════════════
-    MINECRAFT PROCESS
-    ══════════════════════════════════════════════ */
-const DONE_RE = /Done \([\d.,]+s\)!|Listening on /;
-let mcProcess = null;
-let startTime = null;
-let statsTimer = null;
-let restarting = false;
-let stopRequested = false;
-let crashCount = 0;
-let lastCrashTime = 0;
-let statsBusy = false;
-
-let lastStatus = 'offline';
-
-function broadcastStatus(s) {
-  lastStatus = s;
-  io.to(LOCAL_AGENT_ROOM).emit('status', s);
-}
-
-function broadcastLog(line, type = 'info') {
-  io.to(LOCAL_AGENT_ROOM).emit('log', {
-    line,
+function addActivity(message, level = 'info', icon = '📌') {
+  activities.push({
+    message,
+    level,
+    icon,
     time: new Date().toLocaleTimeString('es-ES'),
-    type,
   });
-}
 
-function startStatsTimer() {
-  if (statsTimer) {
-    clearInterval(statsTimer);
+  if (activities.length > 200) {
+    activities.shift();
   }
 
-  statsTimer = setInterval(async () => {
-    if (statsBusy) return;
-    if (!mcProcess || mcProcess.exitCode !== null) return;
+  if ($('view-activitylog')?.classList.contains('active')) {
+    renderActivity();
+  }
+}
 
-    statsBusy = true;
+function renderActivity() {
+  const element = $('activityList');
+
+  if (!element) return;
+
+  if (!activities.length) {
+    element.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">📭</div>
+        <div class="empty-msg">No hay actividad todavía</div>
+      </div>
+    `;
+    return;
+  }
+
+  const counts = activities.reduce((acc, item) => {
+    const level = item.level || 'info';
+    acc[level] = (acc[level] || 0) + 1;
+    return acc;
+  }, {});
+
+  const toolbar = `
+    <div class="activity-toolbar">
+      <div class="activity-counter">
+        <span class="activity-counter-num">${activities.length}</span>
+        <span class="activity-counter-label">eventos</span>
+      </div>
+      <div class="activity-filters">
+        ${counts.info  ? `<span class="activity-filter info">${counts.info} info</span>` : ''}
+        ${counts.ok    ? `<span class="activity-filter ok">${counts.ok} ok</span>` : ''}
+        ${counts.warn  ? `<span class="activity-filter warn">${counts.warn} aviso</span>` : ''}
+        ${counts.error ? `<span class="activity-filter error">${counts.error} error</span>` : ''}
+      </div>
+    </div>
+  `;
+
+  const items = activities
+    .slice()
+    .reverse()
+    .map(item => {
+      const level = String(item.level || 'info').toLowerCase();
+      const safeLevel = ['info', 'ok', 'warn', 'error'].includes(level) ? level : 'info';
+      const label = { info: 'INFO', ok: 'OK', warn: 'AVISO', error: 'ERROR' }[safeLevel];
+
+      return `
+        <div class="activity-item ${safeLevel}">
+          <div class="activity-icon">${escHtml(item.icon || '📌')}</div>
+          <div class="activity-body">
+            <div class="activity-msg">${escHtml(item.message)}</div>
+            <div class="activity-time">${escHtml(item.time || '--:--:--')}</div>
+          </div>
+          <span class="activity-badge ${safeLevel}">${label}</span>
+        </div>
+      `;
+    })
+    .join('');
+
+  element.innerHTML = toolbar + `<div class="activity-feed">${items}</div>`;
+}
+
+/* USERS */
+
+async function loadShareTokens() {
+  if (panelKind !== 'owner' || panelPermission !== 'admin') return;
+
+  const list = $('shareTokenList');
+  if (!list) return;
+
+  try {
+    const data = await cloudApi('/api/share-tokens');
+    const tokens = Array.isArray(data.tokens) ? data.tokens : [];
+
+    const control = tokens.filter(token => token.permission === 'control').length;
+    const read = tokens.filter(token => token.permission !== 'control').length;
+
+    if ($('userStatTotal')) $('userStatTotal').textContent = tokens.length;
+    if ($('userStatControl')) $('userStatControl').textContent = control;
+    if ($('userStatRead')) $('userStatRead').textContent = read;
+
+    list.innerHTML = tokens.length
+      ? tokens
+          .map(token => {
+            const expiry = token.expiresAt
+              ? new Date(token.expiresAt).toLocaleString('es-ES')
+              : 'Nunca';
+            return `
+            <div class="user-row">
+              <div class="user-avatar">👤</div>
+              <div class="user-row-main">
+                <strong>${escHtml(token.label || 'Usuario')}</strong>
+                <div class="user-row-meta">
+                  <span class="user-permission-pill ${token.permission === 'control' ? 'control' : 'read'}">
+                    ${token.permission === 'control' ? '🎮 Control' : '👁️ Solo lectura'}
+                  </span>
+                  <span>Caduca: ${escHtml(expiry)}</span>
+                </div>
+              </div>
+              <button class="small-btn user-revoke-btn" data-revoke-share="${escHtml(token.id)}">Revocar</button>
+            </div>
+          `;
+          })
+          .join('')
+      : '<div class="empty-state"><div class="empty-icon">👥</div><div class="empty-msg">No hay usuarios con acceso.</div></div>';
+
+    list.querySelectorAll('[data-revoke-share]').forEach(button => {
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+          await cloudApi(
+            `/api/share-tokens/${encodeURIComponent(button.dataset.revokeShare)}`,
+            { method: 'DELETE' }
+          );
+          toast('Acceso revocado.', 'ok');
+          await loadShareTokens();
+        } catch (error) {
+          toast(error.message, 'err');
+          button.disabled = false;
+        }
+      });
+    });
+  } catch (error) {
+    list.innerHTML = `<div class="empty-state">${escHtml(error.message)}</div>`;
+  }
+}
+
+function renderUsers() {
+  const element = $('userList');
+  if (!element) return;
+
+  const isOwner = panelKind === 'owner' && panelPermission === 'admin';
+
+  if (!isOwner) {
+    element.innerHTML = `
+      <div class="user-access-grid">
+        <div class="panel user-access-card">
+          <div class="panel-header">
+            <div class="panel-title"><span>👤</span> TU ACCESO</div>
+          </div>
+          <div class="user-access-body">
+            <div class="user-profile-icon">👤</div>
+            <div>
+              <div class="user-profile-title">Acceso compartido</div>
+              <div class="user-profile-sub">Este panel te ha sido compartido por el propietario.</div>
+            </div>
+          </div>
+          <div class="user-permission-row">
+            <span>Permiso</span>
+            <strong>${panelPermission === 'control' ? '🎮 Control' : '👁️ Solo lectura'}</strong>
+          </div>
+          <div class="user-info-note">
+            Tu acceso está limitado a los permisos asignados por el propietario. No puedes crear ni revocar accesos.
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  element.innerHTML = `
+    <div class="user-stats-grid">
+      <div class="user-stat-card">
+        <span class="user-stat-icon">👥</span>
+        <div><span class="user-stat-label">Accesos activos</span><strong id="userStatTotal">—</strong></div>
+      </div>
+      <div class="user-stat-card">
+        <span class="user-stat-icon">🎮</span>
+        <div><span class="user-stat-label">Con control</span><strong id="userStatControl">—</strong></div>
+      </div>
+      <div class="user-stat-card">
+        <span class="user-stat-icon">👁️</span>
+        <div><span class="user-stat-label">Solo lectura</span><strong id="userStatRead">—</strong></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title"><span>➕</span> NUEVO USUARIO</div>
+          <div class="user-panel-subtitle">Crea un acceso independiente sin compartir tu código de propietario.</div>
+        </div>
+      </div>
+      <div class="user-create-form">
+        <input id="shareLabel" class="form-input" placeholder="Nombre (ej. Paco)" maxlength="60">
+        <select id="sharePermission" class="form-input">
+          <option value="read">👁️ Solo lectura</option>
+          <option value="control">🎮 Control</option>
+        </select>
+        <select id="shareExpiry" class="form-input">
+          <option value="never">Sin caducidad</option>
+          <option value="1h">1 hora</option>
+          <option value="1d">1 día</option>
+          <option value="7d">7 días</option>
+          <option value="30d">30 días</option>
+        </select>
+        <button class="small-btn user-create-btn" id="btnCreateShare">Crear acceso</button>
+      </div>
+    </div>
+
+    <div id="shareCreatedBox" class="panel user-token-panel" style="display:none">
+      <div class="user-token-title">🔐 ACCESO CREADO</div>
+      <div class="user-token-sub">Este token se muestra una sola vez. Entrégaselo a la persona que va a usar el panel.</div>
+      <div class="user-token-row">
+        <code id="shareCreatedToken"></code>
+        <button class="small-btn" id="btnCopyShareToken">Copiar</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title"><span>👥</span> USUARIOS CON ACCESO</div>
+          <div class="user-panel-subtitle">Puedes revocar cualquier acceso inmediatamente.</div>
+        </div>
+        <button class="small-btn" id="btnRefreshUsers">↺ Actualizar</button>
+      </div>
+      <div id="shareTokenList"></div>
+    </div>
+  `;
+
+  bindShareSettings();
+  $('btnRefreshUsers')?.addEventListener('click', loadShareTokens);
+}
+
+function bindShareSettings() {
+  if (panelKind !== 'owner' || panelPermission !== 'admin') return;
+
+  $('btnCreateShare')?.addEventListener('click', async () => {
+    const button = $('btnCreateShare');
+    button.disabled = true;
 
     try {
-      const uptimeSec = Math.floor((Date.now() - startTime) / 1000);
-      const mem = process.memoryUsage();
-      const rcon = await queryRconStats();
-
-      io.to(LOCAL_AGENT_ROOM).emit('stats', {
-        players: rcon?.players ?? 0,
-        maxPlayers: rcon?.maxPlayers ?? 0,
-        tps: rcon?.tps ?? 0,
-        rconAvailable: Boolean(rcon),
-        uptime: `${Math.floor(uptimeSec / 3600)}h ${Math.floor((uptimeSec % 3600) / 60)}m`,
-        processMemory: Math.round(mem.rss / 1024 / 1024),
-        sysMemory: {
-          used: (mem.rss / 1024 / 1024 / 1024).toFixed(2),
-          total: '16.00',
-        },
-        cpuUsage: 0,
+      const data = await cloudApi('/api/share-tokens', {
+        method: 'POST',
+        body: JSON.stringify({
+          label: $('shareLabel')?.value || '',
+          permission: $('sharePermission')?.value || 'read',
+          expires: $('shareExpiry')?.value || 'never',
+        }),
       });
+
+      const token = data.token;
+      let copied = false;
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(token);
+          copied = true;
+        }
+      } catch {}
+
+      $('shareCreatedToken').textContent = token;
+      $('shareCreatedBox').style.display = '';
+      $('shareLabel').value = '';
+      toast(
+        copied
+          ? 'Token creado y copiado al portapapeles.'
+          : 'Token creado. Cópialo antes de cerrar esta pantalla.',
+        'ok'
+      );
+      await loadShareTokens();
+    } catch (error) {
+      toast(error.message, 'err');
     } finally {
-      statsBusy = false;
+      button.disabled = false;
     }
+  });
+
+  $('btnCopyShareToken')?.addEventListener('click', async event => {
+    const token = $('shareCreatedToken')?.textContent || '';
+    try {
+      await navigator.clipboard.writeText(token);
+      flashButton(event.currentTarget, 'Copiado');
+    } catch {
+      toast('No se pudo copiar el token.', 'err');
+    }
+  });
+
+  loadShareTokens();
+}
+
+/* SETTINGS */
+
+function renderSettings() {
+  const element = $('settingsList');
+
+  if (!element) return;
+
+  element.innerHTML = `
+    <div class="settings-group">
+      <div class="settings-group-header">
+        <div class="settings-group-icon">☁️</div>
+        <div class="settings-group-info">
+          <div class="settings-group-title">MoonWolf Cloud</div>
+          <div class="settings-group-sub">Conexión WebSocket con el panel remoto</div>
+        </div>
+        <span class="settings-status ${cloudSocket?.connected ? 'online' : 'offline'}">
+          ${cloudSocket?.connected ? '● ONLINE' : '● OFFLINE'}
+        </span>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <div class="settings-group-header">
+        <div class="settings-group-icon">🛰️</div>
+        <div class="settings-group-info">
+          <div class="settings-group-title">MoonWolf Agent</div>
+          <div class="settings-group-sub">Identificador único de esta instalación</div>
+        </div>
+        <span class="settings-status ${agentOnline ? 'online' : 'offline'}">
+          ${agentOnline ? '● CONECTADO' : '● DESCONECTADO'}
+        </span>
+      </div>
+      <div class="settings-group-body">
+        <div class="settings-field">
+          <code class="settings-field-value" title="${escHtml(agentId || '—')}">${escHtml(agentId || '—')}</code>
+          <button class="small-btn" id="btnCopyAgentId">Copiar</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-danger">
+      <div class="settings-danger-info">
+        <div class="settings-danger-title">⚠️ Desconectar del Cloud</div>
+        <div class="settings-danger-sub">
+          Cerrará la sesión actual del panel. Necesitarás un nuevo código de emparejamiento para reconectar.
+        </div>
+      </div>
+      <button class="settings-danger-btn" id="btnDisconnectCloud">Desconectar</button>
+    </div>
+  `;
+
+  $('btnCopyAgentId')?.addEventListener('click', async event => {
+    if (!agentId) return;
+
+    try {
+      await navigator.clipboard.writeText(agentId);
+      flashButton(event.currentTarget, 'Copiado');
+    } catch {
+      toast('No se pudo copiar.', 'err');
+    }
+  });
+
+  $('btnDisconnectCloud')?.addEventListener('click', () => {
+    cloudSocket?.disconnect();
+    setAgentOnline(false);
+    currentStatus = 'offline';
+    updateStatusUi('offline');
+    clearSession();
+    showLogin('Desconectado.');
+  });
+}
+
+/* TOAST & HELPERS */
+
+function toast(message, type = 'info') {
+  const element = $('toast');
+
+  if (!element) return;
+
+  element.textContent = message;
+  element.className = `toast show ${type}`;
+
+  clearTimeout(toast.timer);
+
+  toast.timer = setTimeout(() => {
+    element.className = 'toast';
   }, 3000);
 }
 
-async function launchServer() {
-  const cfg = loadStartupConfig();
-  const jarPath = path.join(BASE_DIR, cfg.jar);
+function flashButton(button, label, duration = 1200) {
+  if (!button) return;
 
-  if (!fsSync.existsSync(jarPath)) {
-    broadcastLog(`❌ No se encontró "${cfg.jar}" en: ${BASE_DIR}. Configúralo en Startup.`, 'error');
-    broadcastStatus('offline');
-    return false;
-  }
-   
-  const minecraftVersion =
-    String(cfg.minecraftVersion || '').trim() ||
-    detectMinecraftVersionFromJarName(cfg.jar);
+  const original = button.textContent;
 
-  let javaBin;
+  button.textContent = label;
+  button.disabled = true;
 
-  try {
-    if (cfg.javaMode === 'override' && String(cfg.javaOverridePath || '').trim()) {
-      javaBin = String(cfg.javaOverridePath).trim();
-    } else {
-      javaBin = await resolveJavaForServer(minecraftVersion);
-    }
-  } catch (error) {
-    broadcastLog(`❌ No se pudo preparar Java: ${error.message}`, 'error');
-    broadcastStatus('offline');
-    return false;
-  }
-
-  const args = [
-    `-Xms${cfg.minMemoryMb}M`,
-    `-Xmx${cfg.maxMemoryMb}M`,
-    '-Djava.awt.headless=true',
-    ...(cfg.extraArgs ? cfg.extraArgs.split(/\s+/).filter(Boolean) : []),
-    '-jar', cfg.jar,
-    ...(cfg.programArgs ? cfg.programArgs.split(/\s+/).filter(Boolean) : []),
-  ];
-
-  stopRequested = false;
-   
-   broadcastLog(`▶ Lanzando: ${javaBin}`, 'system');
-  
-   mcProcess = spawn(javaBin, args, {
-    cwd: BASE_DIR,
-    windowsHide: true,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-
-  startTime = Date.now();
-
-  mcProcess.stdin.on('error', () => {});
-
-  mcProcess.stdout.on('data', data => {
-    String(data).split(/\r?\n/).filter(Boolean).forEach(line => {
-      const type = /WARN/i.test(line) ? 'warn' : /ERROR/i.test(line) ? 'error' : DONE_RE.test(line) ? 'success' : 'info';
-      broadcastLog(line, type);
-
-      if (DONE_RE.test(line)) {
-        broadcastStatus('online');
-        startStatsTimer();
-      }
-    });
-  });
-
-  mcProcess.stderr.on('data', data => {
-    String(data).split(/\r?\n/).filter(Boolean).forEach(line => broadcastLog(line, 'warn'));
-  });
-
-  mcProcess.on('error', err => {
-    broadcastLog(`❌ Error al lanzar "${javaBin}": ` + err.message, 'error');
-    broadcastStatus('offline');
-    mcProcess = null;
-  });
-
-  mcProcess.on('close', code => {
-    broadcastLog(`⏹ Servidor detenido (código ${code})`, 'system');
-
-    if (statsTimer) {
-      clearInterval(statsTimer);
-      statsTimer = null;
-    }
-
-    mcProcess = null;
-
-    if (restarting) {
-      restarting = false;
-      broadcastLog('↺ Relanzando servidor...', 'system');
-      setTimeout(() => {
-        broadcastStatus('starting');
-        launchServer().catch(error => broadcastLog(`❌ Error relanzando servidor: ${error.message}`, 'error'));
-      }, 2000);
-      return;
-    }
-
-    const liveCfg = loadStartupConfig();
-
-    if (!stopRequested && liveCfg.autoRestartOnCrash) {
-      const now = Date.now();
-
-      if (now - lastCrashTime < 60_000) {
-        crashCount++;
-      } else {
-        crashCount = 1;
-      }
-
-      lastCrashTime = now;
-
-      if (crashCount > 3) {
-        broadcastLog('❌ El servidor se ha caído varias veces en poco tiempo. Reinicio automático desactivado temporalmente.', 'error');
-        broadcastStatus('offline');
-      } else {
-        broadcastLog('⚠️ El servidor se cerró inesperadamente. Reiniciando automáticamente en 5s...', 'warn');
-        broadcastStatus('starting');
-        setTimeout(() => launchServer().catch(error => broadcastLog(`❌ Error en reinicio automático: ${error.message}`, 'error')), 5000);
-      }
-
-      return;
-    }
-
-    broadcastStatus('offline');
-  });
-
-  return true;
+  setTimeout(() => {
+    button.textContent = original;
+    button.disabled = false;
+  }, duration);
 }
 
-app.post('/api/start', (_req, res) => {
-  if (mcProcess && mcProcess.exitCode === null) {
-    return fail(res, 'El servidor ya está en marcha');
-  }
+/* EVENTS */
 
-  broadcastStatus('starting');
-  broadcastLog('🌙 Arrancando servidor...', 'system');
+function bindEvents() {
+  ensureLoginGate();
 
-  launchServer().catch(error => {
-    broadcastLog(`❌ Error al arrancar: ${error.message}`, 'error');
+  document.querySelectorAll('.sb-item').forEach(item => {
+    item.addEventListener('click', () => switchView(item.dataset.view));
   });
 
-  ok(res);
-});
+  $('btnStart')?.addEventListener('click', startServer);
+  $('btnStop')?.addEventListener('click', stopServer);
+  $('btnRestart')?.addEventListener('click', restartServer);
+  $('btnSendCmd')?.addEventListener('click', sendCmd);
 
-app.post('/api/stop', (_req, res) => {
-  if (!mcProcess || mcProcess.exitCode !== null) {
-    return fail(res, 'El servidor no está corriendo');
-  }
-
-  stopRequested = true;
-  broadcastStatus('stopping');
-  broadcastLog('⏹ Enviando comando de parada...', 'system');
-  mcProcess.stdin.write(`${loadStartupConfig().stopCommand || 'stop'}\n`);
-  ok(res);
-});
-
-app.post('/api/restart', (_req, res) => {
-  if (!mcProcess || mcProcess.exitCode !== null) {
-    return fail(res, 'El servidor no está corriendo');
-  }
-
-  stopRequested = true;
-  restarting = true;
-  broadcastStatus('restarting');
-  broadcastLog('↺ Reiniciando servidor...', 'system');
-  mcProcess.stdin.write(`${loadStartupConfig().stopCommand || 'stop'}\n`);
-  ok(res);
-});
-
-app.post('/api/command', (req, res) => {
-  if (!req.body?.cmd) {
-    return fail(res, 'Comando vacío');
-  }
-
-  if (!mcProcess || mcProcess.exitCode !== null) {
-    return fail(res, 'El servidor no está corriendo');
-  }
-
-  mcProcess.stdin.write(req.body.cmd + '\n');
-  broadcastLog('/ ' + req.body.cmd, 'cmd');
-  ok(res);
-});
-
-/* ══════════════════════════════════════════════
-    PLUGINS
-    ══════════════════════════════════════════════ */
-app.get('/api/plugins/search', async (req, res) => {
-  const q = (req.query.q || '').trim();
-  const source = req.query.source || 'all';
-
-  if (!q) {
-    return fail(res, 'Query vacía');
-  }
-
-  const results = [];
-  const errors = [];
-
-  if (source === 'all' || source === 'modrinth') {
-    try {
-      const { default: fetch } = await import('node-fetch');
-      const r = await fetch(`https://api.modrinth.com/v2/search?query=${encodeURIComponent(q)}&limit=10`);
-      const d = await r.json();
-
-      results.push(...d.hits.map(p => ({
-        id: p.project_id,
-        name: p.title,
-        description: p.description,
-        icon: p.icon_url,
-        downloads: p.downloads,
-        source: 'modrinth',
-        gameVersions: p.game_versions || [],
-        categories: p.categories || [],
-      })));
-    } catch {
-      errors.push('Modrinth no disponible');
+  $('cmdInput')?.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      sendCmd();
     }
-  }
-
-  if (source === 'all' || source === 'spigot') {
-    try {
-      const list = await apiFetch(`https://api.spiget.org/v2/search/resources/${encodeURIComponent(q)}?size=10&field=name`);
-      (Array.isArray(list) ? list : []).forEach(p => {
-        results.push({
-          id: String(p.id),
-          name: p.name,
-          description: p.tag || 'Plugin desde SpigotMC.',
-          icon: `https://api.spiget.org/v2/resources/${p.id}/icon`,
-          downloads: p.downloads || 0,
-          source: 'spigot',
-          external: !!p.external,
-          premium: !!p.premium,
-          gameVersions: [],
-          categories: [],
-        });
-      });
-    } catch {
-      errors.push('SpigotMC (Spiget) no disponible');
-    }
-  }
-
-  if (source === 'all' || source === 'hangar') {
-    try {
-      const d = await apiFetch(`https://hangar.papermc.io/api/v1/projects?limit=10&offset=0&q=${encodeURIComponent(q)}&sort=-stars`);
-      (d.result || []).forEach(p => {
-        results.push({
-          id: `${p.namespace.owner}/${p.namespace.slug}`,
-          name: p.name,
-          description: p.description || '',
-          icon: p.avatarUrl,
-          downloads: p.stats?.downloads || 0,
-          source: 'hangar',
-          gameVersions: [],
-          categories: p.category ? [p.category] : [],
-        });
-      });
-    } catch {
-      errors.push('Hangar no disponible');
-    }
-  }
-
-  ok(res, { results, errors });
-});
-
-app.get('/api/plugins/versions', async (req, res) => {
-  const { id, source } = req.query;
-
-  if (!id || !source) {
-    return fail(res, 'Parámetros requeridos');
-  }
-
-  try {
-    if (source === 'modrinth') {
-      const { default: fetch } = await import('node-fetch');
-      const r = await fetch(`https://api.modrinth.com/v2/project/${id}/version`);
-      const versions = await r.json();
-
-      return ok(res, { versions: versions.map(v => ({ versionId: v.id, versionNumber: v.version_number, name: v.name, downloads: v.downloads, published: v.date_published, gameVersions: v.game_versions, loaders: v.loaders, changelog: v.changelog, files: v.files })) });
-    }
-
-    if (source === 'spigot') {
-      const resource = await apiFetch(`https://api.spiget.org/v2/resources/${encodeURIComponent(id)}`);
-      const canDownload = !resource.premium && !resource.external;
-      const resourcePage = `https://www.spigotmc.org/resources/${encodeURIComponent(id)}/`;
-      const rawVersions = await apiFetch(`https://api.spiget.org/v2/resources/${encodeURIComponent(id)}/versions?size=20&sort=-releaseDate`);
-      const safeName = (resource.name || 'plugin').replace(/[^a-zA-Z0-9._-]/g, '_');
-      let updates = [];
-
-      try {
-        updates = await apiFetch(`https://api.spiget.org/v2/resources/${encodeURIComponent(id)}/updates?size=20&sort=-date`);
-        if (!Array.isArray(updates)) updates = [];
-      } catch {}
-
-      const findChangelog = releaseDateSec => {
-        if (!releaseDateSec || !updates.length) return null;
-
-        let best = null;
-        let bestDiff = Infinity;
-
-        for (const u of updates) {
-          if (!u.date) continue;
-          const diff = Math.abs(u.date - releaseDateSec);
-          if (diff < bestDiff) {
-            bestDiff = diff;
-            best = u;
-          }
-        }
-
-        return best && bestDiff <= 7 * 86400 ? best.description : null;
-      };
-
-      const versions = (Array.isArray(rawVersions) ? rawVersions : []).map(v => {
-        const versionLabel = v.name || `#${v.id}`;
-
-        return {
-          versionId: v.id,
-          versionNumber: versionLabel,
-          published: v.releaseDate ? v.releaseDate * 1000 : null,
-          downloads: v.downloads,
-          isExternal: !canDownload,
-          externalUrl: !canDownload ? resourcePage : undefined,
-          changelog: findChangelog(v.releaseDate),
-          changelogIsHtml: true,
-          files: canDownload ? [{ primary: true, url: `https://api.spiget.org/v2/resources/${encodeURIComponent(id)}/versions/${v.id}/download`, filename: `${safeName}-${String(versionLabel).replace(/[^a-zA-Z0-9._-]/g, '_')}.jar` }] : [],
-        };
-      });
-
-      if (!versions.length) {
-        versions.push({ versionId: 'external', versionNumber: 'Ver en SpigotMC', isExternal: true, externalUrl: resourcePage });
-      }
-
-      return ok(res, { versions, isExternal: !canDownload });
-    }
-
-    if (source === 'hangar') {
-      const [owner, slug] = String(id).split('/');
-      if (!owner || !slug) {
-        return fail(res, 'ID de Hangar inválido');
-      }
-
-      const projectPage = `https://hangar.papermc.io/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}`;
-      const rawVersions = await apiFetch(`https://hangar.papermc.io/api/v1/projects/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}/versions?limit=20&offset=0`);
-      const list = Array.isArray(rawVersions.result) ? rawVersions.result : [];
-
-      const versions = list.map(v => {
-        const platforms = Object.keys(v.downloads || {});
-        const platform = platforms.includes('PAPER') ? 'PAPER' : platforms[0];
-        const platDL = platform ? v.downloads[platform] : null;
-        const totalDownloads = Object.values(v.downloads || {}).reduce((a, p) => a + (p?.downloads || 0), 0);
-        const isExternal = !platform || !!platDL?.externalUrl;
-
-        return {
-          versionId: v.name,
-          versionNumber: v.name,
-          published: v.createdAt ? new Date(v.createdAt).getTime() : null,
-          downloads: totalDownloads,
-          isExternal,
-          externalUrl: isExternal ? (platDL?.externalUrl || `${projectPage}/versions/${encodeURIComponent(v.name)}`) : undefined,
-          changelog: v.description || null,
-          changelogIsHtml: false,
-          files: !isExternal && platform ? [{ primary: true, url: `https://hangar.papermc.io/api/v1/projects/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(v.name)}/${platform}/download`, filename: `${slug}-${v.name}.jar` }] : [],
-        };
-      });
-
-      if (!versions.length) {
-        versions.push({ versionId: 'external', versionNumber: 'Ver en Hangar', isExternal: true, externalUrl: projectPage });
-      }
-
-      return ok(res, { versions });
-    }
-
-    ok(res, { versions: [], isExternal: true });
-  } catch (e) {
-    console.error('[plugins/versions]', e.message);
-    fail(res, e.message);
-  }
-});
-
-app.post('/api/plugins/install', async (req, res) => {
-  const { url, filename } = req.body;
-
-  if (!url || !filename) {
-    return fail(res, 'Parámetros requeridos');
-  }
-
-  const dest = safePluginPath(filename);
-  if (!dest) {
-    return fail(res, 'Nombre no válido');
-  }
-
-  try {
-    if (!fsSync.existsSync(PLUGINS_DIR)) {
-      fsSync.mkdirSync(PLUGINS_DIR, { recursive: true });
-    }
-
-    await downloadFile(url, dest);
-    const stats = await fs.stat(dest);
-
-    ok(res, { filename, size: (stats.size / 1024 / 1024).toFixed(2) + ' MB' });
-  } catch (e) {
-    fail(res, e.message);
-  }
-});
-
-app.get('/api/plugins/installed', async (_req, res) => {
-  try {
-    if (!fsSync.existsSync(PLUGINS_DIR)) {
-      return ok(res, { plugins: [] });
-    }
-
-    const entries = await fs.readdir(PLUGINS_DIR, { withFileTypes: true });
-    const jarFiles = entries.filter(e => e.isFile() && e.name.toLowerCase().endsWith('.jar'));
-    const plugins = await Promise.all(jarFiles.map(async e => {
-      const s = await fs.stat(path.join(PLUGINS_DIR, e.name));
-      return {
-        filename: e.name,
-        size: (s.size / 1024 / 1024).toFixed(2) + ' MB',
-        modified: s.mtime.toLocaleString('es-ES'),
-      };
-    }));
-
-    ok(res, { plugins });
-  } catch (e) {
-    fail(res, e.message);
-  }
-});
-
-app.delete('/api/plugins/installed/:file', async (req, res) => {
-  const dest = safePluginPath(req.params.file);
-
-  if (!dest) {
-    return fail(res, 'Nombre no válido');
-  }
-
-  try {
-    const stat = await fs.stat(dest);
-    if (!stat.isFile()) {
-      return fail(res, 'Solo se pueden eliminar archivos de plugin (.jar)');
-    }
-
-    await fs.unlink(dest);
-    ok(res);
-  } catch (e) {
-    fail(res, e.message);
-  }
-});
-
-/* ══════════════════════════════════════════════
-    VERSIONES DE SOFTWARE
-    ══════════════════════════════════════════════ */
-app.get('/api/versions/software', (_req, res) => {
-  ok(res, {
-    software: [
-      { id: 'paper', label: 'Paper', category: 'plugins', color: '#00c8ff', desc: 'Servidor de alto rendimiento compatible con plugins. 1.8.8+' },
-      { id: 'purpur', label: 'Purpur', category: 'plugins', color: '#aa88ff', desc: 'Fork de Paper con configuración avanzada y soporte de plugins. 1.16+' },
-      { id: 'folia', label: 'Folia', category: 'plugins', color: '#00ff88', desc: 'Fork de Paper con multithreading regional y soporte de plugins. 1.20+' },
-      { id: 'leaf', label: 'Leaf', category: 'plugins', color: '#66cc66', desc: 'Fork de Paper orientado a rendimiento y estabilidad. 1.20+' },
-      { id: 'spigot', label: 'Spigot', category: 'plugins', color: '#f7a300', desc: 'Servidor clásico compatible con plugins Bukkit/Spigot.' },
-      { id: 'bukkit', label: 'Bukkit', category: 'plugins', color: '#ffaa00', desc: 'Servidor histórico compatible con plugins Bukkit (descontinuado).' },
-      { id: 'fabric', label: 'Fabric', category: 'mods', color: '#d4aa70', desc: 'Loader ligero y moderno para servidores con mods. 1.14+' },
-      { id: 'forge', label: 'Forge', category: 'mods', color: '#c0873f', desc: 'Loader clásico para servidores con mods. 1.1+' },
-      { id: 'neoforge', label: 'NeoForge', category: 'mods', color: '#e8a84c', desc: 'Fork moderno de Forge para Minecraft 1.20.2+.' },
-      { id: 'velocity', label: 'Velocity', category: 'proxy', color: '#ffcc00', desc: 'Proxy moderno para conectar múltiples servidores.' },
-      { id: 'waterfall', label: 'Waterfall', category: 'proxy', color: '#ff8844', desc: 'Proxy basado en BungeeCord.' },
-      { id: 'bungeecord', label: 'BungeeCord', category: 'proxy', color: '#ff4455', desc: 'Proxy clásico para redes de servidores.' },
-      { id: 'vanilla', label: 'Vanilla', category: 'vanilla', color: '#c9d8e8', desc: 'Servidor oficial de Mojang sin plugins ni mods. 1.0+' },
-      { id: 'arclight', label: 'Arclight', category: 'hybrid', color: '#8b5cf6', desc: 'Servidor híbrido Bukkit + Forge/NeoForge/Fabric. 1.20+' },
-      { id: 'magma', label: 'Magma', category: 'hybrid', color: '#ff5500', desc: 'Servidor híbrido Forge + Bukkit/Spigot. 1.12.2+' },
-      { id: 'mohist', label: 'Mohist', category: 'hybrid', color: '#00b8d4', desc: 'Servidor híbrido Forge + Bukkit/Spigot/Paper. 1.12.2+' },
-    ],
   });
-});
 
-app.get('/api/versions/list', async (req, res) => {
-  const sw = req.query.software || '';
-  if (!sw) {
-    return fail(res, 'software requerido');
-  }
+  document.querySelectorAll('.quick-btn').forEach(button => {
+    button.addEventListener('click', () => {
+      const input = $('cmdInput');
 
-  try {
-    if (['paper', 'folia', 'velocity', 'waterfall'].includes(sw)) {
-      const data = await apiFetch(`https://fill.papermc.io/v3/projects/${sw}`);
-      const all = [];
+      if (!input) return;
 
-      for (const group of Object.values(data.versions || {})) {
-        all.push(...group);
-      }
+      input.value = button.dataset.cmd || '';
+      sendCmd();
+    });
+  });
 
-      all.sort((a, b) => semverCmp(b, a));
-      return ok(res, { versions: all });
+  $('btnClearConsole')?.addEventListener('click', () => {
+    if ($('console')) {
+      $('console').innerHTML = '';
+    }
+  });
+
+  $('crumbHome')?.addEventListener('click', () => populateFiles(''));
+
+  $('btnUploadFiles')?.addEventListener('click', () => {
+    $('fileUploadInput')?.click();
+  });
+
+  $('btnUploadFolder')?.addEventListener('click', () => {
+    $('folderUploadInput')?.click();
+  });
+
+  $('fileUploadInput')?.addEventListener('change', async event => {
+    await uploadSelectedFiles(event.target.files);
+    event.target.value = '';
+  });
+
+  $('folderUploadInput')?.addEventListener('change', async event => {
+    await uploadSelectedFiles(event.target.files);
+    event.target.value = '';
+  });
+
+  $('btnNewFile')?.addEventListener('click', async () => {
+    const raw = prompt('Nombre del nuevo archivo (termina en "/" para carpeta):');
+    if (!raw) return;
+
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+
+    const isDir = trimmed.endsWith('/');
+    const name = isDir ? trimmed.slice(0, -1) : trimmed;
+    if (!name) return;
+
+    const data = await postJSON('/api/files/create', {
+      path: currentDir,
+      name,
+      isDir,
+    });
+
+    if (!data.ok) {
+      toast(`❌ ${data.error}`, 'err');
+      return;
     }
 
-    if (sw === 'purpur') {
-      const data = await apiFetch('https://api.purpurmc.org/v2/purpur');
-      return ok(res, { versions: (data.versions || []).slice().reverse() });
+    toast('✅ Creado correctamente', 'ok');
+    populateFiles(currentDir);
+  });
+
+  $('btnEditorBack')?.addEventListener('click', () => {
+    if ($('filesEditorPanel')) {
+      $('filesEditorPanel').style.display = 'none';
     }
 
-    if (sw === 'fabric') {
-      const data = await apiFetch('https://meta.fabricmc.net/v2/versions/game');
-      return ok(res, { versions: data.filter(v => v.stable).map(v => v.version) });
+    if ($('filesTablePanel')) {
+      $('filesTablePanel').style.display = '';
     }
 
-    if (sw === 'forge') {
-      const data = await apiFetch('https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json');
-      const versions = Object.keys(data || {}).sort((a, b) => semverCmp(b, a));
-      return ok(res, { versions });
+    if (editor?.toTextArea) {
+      editor.toTextArea();
     }
 
-    if (sw === 'bungeecord') {
-      const data = await apiFetch(
-        'https://hub.spigotmc.org/jenkins/job/BungeeCord/api/json?tree=builds[number,result,timestamp]&pretty=false'
+    editor = null;
+    currentFile = null;
+  });
+
+  $('btnSaveFile')?.addEventListener('click', saveCurrentFile);
+
+  document.addEventListener('keydown', event => {
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      event.key.toLowerCase() === 's' &&
+      currentFile
+    ) {
+      event.preventDefault();
+      saveCurrentFile();
+    }
+  });
+
+  document.querySelectorAll('.plg-source').forEach(button => {
+    button.addEventListener('click', () => {
+      pluginSource = button.dataset.source;
+
+      document.querySelectorAll('.plg-source').forEach(item =>
+        item.classList.toggle('active', item === button)
       );
-      const versions = (data.builds || [])
-        .filter(b => b.result === 'SUCCESS' && Number.isFinite(Number(b.number)))
-        .slice(0, 50)
-        .map(b => String(b.number));
-      return ok(res, { versions });
-    }
+    });
+  });
 
-    if (sw === 'vanilla') {
-      const manifest = await apiFetch('https://launchermeta.mojang.com/mc/game/version_manifest_v2.json');
-      return ok(res, { versions: manifest.versions.filter(v => v.type === 'release').map(v => v.id) });
-    }
+  document.querySelectorAll('.plg-price').forEach(button => {
+    button.addEventListener('click', () => {
+      priceFilter = button.dataset.price;
 
-    if (sw === 'neoforge') {
-      const xml = await apiFetchText('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml');
-      const versions = [...xml.matchAll(/<version>([^<]+)<\/version>/g)]
-        .map(m => m[1])
-        .filter(v => /^\d+\.\d+/.test(v))
-        .sort((a, b) => semverCmp(b, a));
-      return ok(res, { versions });
-    }
+      document.querySelectorAll('.plg-price').forEach(item =>
+        item.classList.toggle('active', item === button)
+      );
+    });
+  });
 
-    if (sw === 'spigot' || sw === 'bukkit') {
-      const html = await apiFetchText('https://hub.spigotmc.org/versions/');
-      const versions = [...html.matchAll(/href="([^"]+)\/"/g)]
-        .map(m => decodeURIComponent(m[1]))
-        .filter(v => /^\d+\.\d+/.test(v))
-        .sort((a, b) => semverCmp(b, a));
-      return ok(res, { versions });
-    }
+  document.querySelectorAll('.plg-tab-btn').forEach(button => {
+    button.addEventListener('click', () => {
+      const tab = button.dataset.tab;
 
-    if (sw === 'leaf') {
-      const data = await apiFetch('https://api.leafmc.one/v2/projects/leaf');
-      const all = [];
-      for (const group of Object.values(data.versions || {})) all.push(...group);
-      all.sort((a, b) => semverCmp(b, a));
-      return ok(res, { versions: all });
-    }
-
-    if (sw === 'arclight') {
-      const releases = await apiFetch('https://api.github.com/repos/IzzelAliz/Arclight/releases?per_page=100');
-      const versions = (Array.isArray(releases) ? releases : [])
-        .map(r => r.tag_name)
-        .filter(Boolean)
-        .sort((a, b) => semverCmp(b, a));
-      return ok(res, { versions });
-    }
-
-    if (sw === 'magma') {
-      const data = await apiFetch('https://magmafoundation.org/api/v2/versions');
-      const versions = (data.versions || []).map(v => v.minecraft || v.version || v);
-      return ok(res, { versions });
-    }
-
-    if (sw === 'mohist') {
-      const data = await apiFetch('https://api.mohistmc.cn/projects');
-      const project = (data.projects || []).find(p => /mohist/i.test(p.name || p.slug)) || {};
-      const versions = (project.versions || []).map(v => v.name || v.version || v);
-      return ok(res, { versions });
-    }
-
-    fail(res, `Software sin API pública: ${sw}`);
-  } catch (e) {
-    console.error('[versions/list]', e.message);
-    fail(res, e.message);
-  }
-});
-
-app.get('/api/versions/builds', async (req, res) => {
-  const { software: sw, version } = req.query;
-
-  if (!sw || !version) {
-    return fail(res, 'software y version requeridos');
-  }
-
-  try {
-    if (['paper', 'folia', 'velocity', 'waterfall'].includes(sw)) {
-      const data = await apiFetch(`https://fill.papermc.io/v3/projects/${sw}/versions/${encodeURIComponent(version)}/builds`);
-      const builds = (Array.isArray(data) ? data : []).map(b => ({
-        build: b.build,
-        channel: b.channel,
-        time: b.time,
-        url: b.downloads?.['server:default']?.url || null,
-        sha256: b.downloads?.['server:default']?.sha256 || null,
-        changes: (b.changes || []).map(c => c.summary).slice(0, 3).join(' · '),
-      })).sort((a, b) => b.build - a.build);
-
-      return ok(res, { builds });
-    }
-
-    if (sw === 'purpur') {
-      const data = await apiFetch(`https://api.purpurmc.org/v2/purpur/${encodeURIComponent(version)}`);
-      const builds = (data.builds?.all || []).slice().reverse().map(b => ({
-        build: b,
-        channel: 'STABLE',
-        time: null,
-        url: `https://api.purpurmc.org/v2/purpur/${version}/${b}/download`,
-        sha256: null,
-        changes: '',
-      }));
-
-      return ok(res, { builds });
-    }
-
-    if (sw === 'fabric') {
-      const loaders = await apiFetch(`https://meta.fabricmc.net/v2/versions/loader/${encodeURIComponent(version)}`);
-      const builds = loaders.filter(l => l.loader?.stable).map(l => ({
-        build: l.loader.build,
-        channel: 'STABLE',
-        loaderVersion: l.loader.version,
-        time: null,
-        url: null,
-        sha256: null,
-        changes: `Fabric Loader ${l.loader.version}`,
-      }));
-
-      return ok(res, { builds, isFabric: true });
-    }
-
-    if (sw === 'forge') {
-      const data = await apiFetch('https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json');
-      const forgeVersions = Array.isArray(data?.[version]) ? data[version].slice().reverse() : [];
-      const builds = forgeVersions.map(forgeVersion => ({
-        build: forgeVersion,
-        channel: 'RELEASE',
-        time: null,
-        loaderVersion: forgeVersion,
-        url: `https://maven.minecraftforge.net/net/minecraftforge/forge/${encodeURIComponent(forgeVersion)}/forge-${encodeURIComponent(forgeVersion)}-installer.jar`,
-        sha256: null,
-        changes: `Forge ${forgeVersion} para Minecraft ${version}`,
-      }));
-      return ok(res, { builds, isForge: true });
-    }
-
-    if (sw === 'bungeecord') {
-      const buildNumber = Number(version);
-      if (!Number.isInteger(buildNumber) || buildNumber <= 0) {
-        return fail(res, `Build de BungeeCord no válida: ${version}`);
-      }
-
-      const data = await apiFetch(
-        `https://hub.spigotmc.org/jenkins/job/BungeeCord/${buildNumber}/api/json?tree=number,result,timestamp,artifacts[fileName,relativePath]&pretty=false`
+      document.querySelectorAll('.plg-tab-btn').forEach(item =>
+        item.classList.toggle('active', item === button)
       );
 
-      if (data.result !== 'SUCCESS') {
-        return fail(res, `BungeeCord #${version} no terminó correctamente`);
+      if ($('plgTabSearch')) {
+        $('plgTabSearch').style.display = tab === 'search' ? '' : 'none';
       }
 
-      const artifact = (data.artifacts || []).find(a => a.fileName === 'BungeeCord.jar');
-      if (!artifact?.relativePath) {
-        return fail(res, `No se encontró BungeeCord.jar en el build #${version}`);
+      if ($('plgTabInstalled')) {
+        $('plgTabInstalled').style.display = tab === 'installed' ? '' : 'none';
       }
 
-      return ok(res, {
-        builds: [{
-          build: String(data.number),
-          channel: 'STABLE',
-          time: data.timestamp ? new Date(data.timestamp).toISOString() : null,
-          url: `https://hub.spigotmc.org/jenkins/job/BungeeCord/${buildNumber}/artifact/${artifact.relativePath}`,
-          sha256: null,
-          changes: `BungeeCord build #${data.number}`,
-        }],
-      });
-    }
-
-    if (sw === 'vanilla') {
-      const manifest = await apiFetch('https://launchermeta.mojang.com/mc/game/version_manifest_v2.json');
-      const entry = manifest.versions.find(v => v.id === version && v.type === 'release');
-
-      if (!entry) {
-        return fail(res, `Versión ${version} no encontrada`);
+      if (tab === 'installed') {
+        loadInstalledPlugins();
       }
-
-      const vdata = await apiFetch(entry.url);
-      const serverUrl = vdata.downloads?.server?.url;
-
-      if (!serverUrl) {
-        return fail(res, 'No hay descarga de servidor para esta versión');
-      }
-
-      return ok(res, { builds: [{ build: 1, channel: 'STABLE', time: entry.releaseTime, url: serverUrl, sha256: vdata.downloads?.server?.sha1, changes: `Minecraft ${version} — oficial de Mojang` }] });
-    }
-
-    if (sw === 'neoforge') {
-      const xml = await apiFetchText('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml');
-      const all = [...xml.matchAll(/<version>([^<]+)<\/version>/g)].map(m => m[1]);
-      const matching = all
-        .filter(v => v.startsWith(`${version}.`))
-        .sort((a, b) => semverCmp(b, a));
-
-      const builds = matching.map(v => ({
-        build: v,
-        channel: 'RELEASE',
-        time: null,
-        loaderVersion: v,
-        url: `https://maven.neoforged.net/releases/net/neoforged/neoforge/${encodeURIComponent(v)}/neoforge-${encodeURIComponent(v)}-installer.jar`,
-        sha256: null,
-        changes: `NeoForge ${v}`,
-      }));
-
-      return ok(res, { builds, isNeoForge: true });
-    }
-
-    if (sw === 'spigot' || sw === 'bukkit') {
-      const html = await apiFetchText(`https://hub.spigotmc.org/versions/${encodeURIComponent(version)}.json`);
-      let data;
-      try { data = JSON.parse(html); } catch { data = null; }
-
-      const build = data?.build || data?.version || 1;
-      return ok(res, {
-        builds: [{
-          build: 1,
-          channel: 'STABLE',
-          time: data?.release || null,
-          url: `https://download.getbukkit.org/spigot/spigot-${version}.jar`,
-          sha256: null,
-          changes: data ? `Spigot ${version} build ${build}` : `Spigot ${version}`,
-        }],
-      });
-    }
-
-    if (sw === 'leaf') {
-      const data = await apiFetch(`https://api.leafmc.one/v2/projects/leaf/versions/${encodeURIComponent(version)}/builds`);
-      const builds = (Array.isArray(data) ? data : []).map(b => ({
-        build: b.build || b.id || 1,
-        channel: b.channel || 'STABLE',
-        time: b.time || b.timestamp || null,
-        url: b.downloads?.['server:default']?.url || b.downloadUrl || null,
-        sha256: b.downloads?.['server:default']?.sha256 || null,
-        changes: (b.changes || []).map(c => c.summary || c).slice(0, 3).join(' · '),
-      })).sort((a, b) => b.build - a.build);
-
-      return ok(res, { builds });
-    }
-
-    if (sw === 'arclight') {
-      const releases = await apiFetch('https://api.github.com/repos/IzzelAliz/Arclight/releases?per_page=100');
-      const release = (Array.isArray(releases) ? releases : []).find(r => r.tag_name === version);
-      if (!release) return fail(res, `Versión ${version} no encontrada`);
-
-      const asset = (release.assets || []).find(a => /arclight.*\.jar$/i.test(a.name));
-      if (!asset) return fail(res, 'No hay descarga disponible para esta versión');
-
-      return ok(res, {
-        builds: [{
-          build: 1,
-          channel: release.prerelease ? 'BETA' : 'STABLE',
-          time: release.published_at || null,
-          url: asset.browser_download_url,
-          sha256: null,
-          changes: release.body ? release.body.slice(0, 200) : '',
-        }],
-      });
-    }
-
-    if (sw === 'magma') {
-      const data = await apiFetch(`https://magmafoundation.org/api/v2/versions/${encodeURIComponent(version)}`);
-      const builds = (data.builds || []).map(b => ({
-        build: b.build || b.id || 1,
-        channel: 'STABLE',
-        time: b.time || null,
-        url: b.download || b.url || null,
-        sha256: null,
-        changes: `Magma ${version} build ${b.build || b.id}`,
-      })).sort((a, b) => b.build - a.build);
-
-      return ok(res, { builds });
-    }
-
-    if (sw === 'mohist') {
-      const data = await apiFetch(`https://api.mohistmc.cn/project/mohist/${encodeURIComponent(version)}/builds`);
-      const builds = (Array.isArray(data) ? data : []).map(b => ({
-        build: b.build || b.id || 1,
-        channel: b.channel || 'STABLE',
-        time: b.time || null,
-        url: b.download || b.url || null,
-        sha256: null,
-        changes: `Mohist ${version} build ${b.build || b.id}`,
-      })).sort((a, b) => b.build - a.build);
-
-      return ok(res, { builds });
-    }
-
-    fail(res, `Software sin API: ${sw}`);
-  } catch (e) {
-    console.error('[versions/builds]', e.message);
-    fail(res, e.message);
-  }
-});
-
-app.post('/api/versions/install', async (req, res) => {
-  const { software: sw, version, build, url, loaderVersion } = req.body;
-
-  if (!sw || !version) {
-    return fail(res, 'software y version requeridos');
-  }
-
-  try {
-    if (sw === 'neoforge') {
-      if (!build) {
-        return fail(res, 'versión de NeoForge requerida');
-      }
-
-      const javaBin = await resolveJavaForServer(version);
-      const instFile = path.join(BASE_DIR, `neoforge-installer-${build}.jar`);
-      if (!fsSync.existsSync(instFile)) {
-        const neoUrl = url || `https://maven.neoforged.net/releases/net/neoforged/neoforge/${encodeURIComponent(build)}/neoforge-${encodeURIComponent(build)}-installer.jar`;
-        await downloadFile(neoUrl, instFile);
-      }
-
-      return ok(res, {
-        type: 'neoforge-installer',
-        installCmd: `"${javaBin}" -jar "neoforge-installer-${build}.jar" --installServer`,
-        jarName: 'run.bat',
-        note: `NeoForge ${build} descargado. Ejecuta el comando desde la carpeta del servidor para completar la instalación.`,
-      });
-    }
-
-    if (sw === 'forge') {
-      if (!build) {
-        return fail(res, 'versión de Forge requerida');
-      }
-
-      const javaBin = await resolveJavaForServer(version);
-      const instFile = path.join(BASE_DIR, `forge-installer-${build}.jar`);
-      if (!fsSync.existsSync(instFile)) {
-        const forgeUrl = url || `https://maven.minecraftforge.net/net/minecraftforge/forge/${encodeURIComponent(build)}/forge-${encodeURIComponent(build)}-installer.jar`;
-        await downloadFile(forgeUrl, instFile);
-      }
-
-      return ok(res, {
-        type: 'forge-installer',
-        installCmd: `"${javaBin}" -jar "forge-installer-${build}.jar" --installServer`,
-        jarName: 'run.bat',
-        note: `Forge ${build} descargado. Ejecuta el comando desde la carpeta del servidor para completar la instalación; Forge generará los archivos de arranque necesarios.`,
-      });
-    }
-
-    if (sw === 'fabric') {
-      if (!loaderVersion) {
-        return fail(res, 'loaderVersion requerido para Fabric');
-      }
-
-      const installers = await apiFetch('https://meta.fabricmc.net/v2/versions/installer');
-      const inst = installers.find(i => i.stable) || installers[0];
-
-      if (!inst) {
-        return fail(res, 'No se encontró installer de Fabric');
-      }
-
-      const javaBin = await resolveJavaForServer(version);
-
-      const instFile = path.join(BASE_DIR, `fabric-installer-${inst.version}.jar`);
-      if (!fsSync.existsSync(instFile)) {
-        await downloadFile(inst.url, instFile);
-      }
-
-      return ok(res, {
-        type: 'fabric-installer',
-        installCmd: `"${javaBin}" -jar "fabric-installer-${inst.version}.jar" server -mcversion ${version} -loader ${loaderVersion} -downloadMinecraft`,
-        jarName: 'fabric-server-launch.jar',
-        note: `Java ${requiredJavaForMinecraft(version)} gestionado por MoonWolf. Ejecuta el comando generado en tu carpeta de servidor y luego selecciona fabric-server-launch.jar en Startup.`,
-      });
-    }
-
-    if (!url) {
-      return fail(res, 'URL de descarga requerida');
-    }
-
-    const currentJar = path.join(BASE_DIR, 'server.jar');
-    if (fsSync.existsSync(currentJar)) {
-      const bakName = `server.bak_${Date.now()}.jar`;
-      await fs.rename(currentJar, path.join(BASE_DIR, bakName));
-      console.log(`[versions] Backup creado: ${bakName}`);
-    }
-
-    await downloadFile(url, currentJar);
-    const stats = await fs.stat(currentJar);
-
-    const isProxy = ['velocity', 'waterfall', 'bungeecord'].includes(sw);
-    const startupUpdate = {
-      jar: 'server.jar',
-      software: sw,
-      ...(isProxy ? {} : { minecraftVersion: String(version) }),
-    };
-
-    saveStartupConfig(startupUpdate);
-
-    ok(res, {
-      type: 'direct',
-      filename: 'server.jar',
-      size: (stats.size / 1024 / 1024).toFixed(2) + ' MB',
-      software: sw,
-      version,
-      build,
-      note: 'server.jar actualizado correctamente. Reinicia el servidor para aplicar los cambios.',
     });
-  } catch (e) {
-    console.error('[versions/install]', e.message);
-    fail(res, e.message);
-  }
-});
+  });
 
-app.get('/api/versions/current', async (_req, res) => {
-  const jarPath = path.join(BASE_DIR, 'server.jar');
+  $('btnPluginSearch')?.addEventListener('click', pluginSearch);
 
-  try {
-    const stats = await fs.stat(jarPath);
-    ok(res, {
-      exists: true,
-      size: (stats.size / 1024 / 1024).toFixed(2) + ' MB',
-      modified: stats.mtime.toLocaleString('es-ES'),
-    });
-  } catch {
-    ok(res, { exists: false });
+  $('plgSearchInput')?.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      pluginSearch();
+    }
+  });
+
+  $('btnRefreshInstalled')?.addEventListener('click', loadInstalledPlugins);
+
+  $('btnClosePlgModal')?.addEventListener('click', () => {
+    if ($('plgVersionModal')) {
+      $('plgVersionModal').style.display = 'none';
+    }
+  });
+
+  $('plgVersionModal')?.addEventListener('click', event => {
+    if (event.target === $('plgVersionModal')) {
+      $('plgVersionModal').style.display = 'none';
+    }
+  });
+
+  $('btnNewBackup')?.addEventListener('click', createBackup);
+
+  updateAgentUi(agentOnline);
+  updateStatusUi(currentStatus);
+
+  if (panelSession && agentId) {
+    connectCloud(false).catch(() =>
+      showLogin(
+        'La sesión no es válida. Introduce un nuevo código de emparejamiento.'
+      )
+    );
+  } else {
+    showLogin('');
   }
-});
+}
+
+/* START */
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', bindEvents, { once: true });
+} else {
+  bindEvents();
+}
