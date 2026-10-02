@@ -1716,23 +1716,20 @@ function versionFindSoftware(id) {
 }
 
 function versionCategoryName(category) {
-  if (category === 'proxy') return 'Proxies';
-  if (category === 'mod') return 'Servidores de mods';
+  if (category === 'plugins') return 'Versiones de plugins';
+  if (category === 'mods' || category === 'mod') return 'Versiones de mods';
+  if (category === 'proxy') return 'Versiones de proxy';
+  if (category === 'vanilla') return 'Versiones de Vanilla';
   return 'Servidores de Minecraft';
 }
 
 function renderVersionSoftwareCard(software) {
-  const external = software.external
-    ? `<a class="ver-software-external" href="${escHtml(software.external)}" target="_blank" rel="noopener noreferrer">Web oficial ↗</a>`
-    : '';
-
   return `
     <button type="button" class="ver-software-card" data-software="${escHtml(software.id)}">
       <div class="ver-software-icon">${software.icon || '📦'}</div>
       <div class="ver-software-content">
         <div class="ver-software-name">${escHtml(software.label || software.name || software.id)}</div>
         <div class="ver-software-desc">${escHtml(software.desc || software.description || '')}</div>
-        ${external}
       </div>
       <div class="ver-software-arrow">›</div>
     </button>
@@ -1758,23 +1755,35 @@ function renderVersionSoftware() {
 
   const groups = {};
   for (const item of versionCatalog) {
-    const category = item.category || 'server';
+    const category = item.category || 'plugins';
     (groups[category] ||= []).push(item);
   }
+
+  const categoryOrder = ['plugins', 'mods', 'proxy', 'vanilla'];
+  const categoryIcon = {
+    plugins: '🧩',
+    mods: '🧵',
+    proxy: '🌐',
+    vanilla: '🌿',
+  };
+
+  const orderedGroups = categoryOrder
+    .filter(category => groups[category]?.length)
+    .map(category => [category, groups[category]]);
 
   container.innerHTML = `
     <div class="ver-hero">
       <div class="ver-hero-icon">📦</div>
       <div>
-        <div class="ver-hero-title">Servidores de Minecraft</div>
-        <div class="ver-hero-description">Elige el software y después la versión que quieres instalar.</div>
+        <div class="ver-hero-title">Versiones de Minecraft</div>
+        <div class="ver-hero-description">Selecciona una categoría, el software y después la versión que quieres instalar.</div>
       </div>
     </div>
 
-    ${Object.entries(groups).map(([category, items]) => `
+    ${orderedGroups.map(([category, items]) => `
       <section class="ver-category">
         <div class="ver-category-header">
-          <div class="ver-category-icon">${category === 'proxy' ? '🌐' : '🧩'}</div>
+          <div class="ver-category-icon">${categoryIcon[category] || '📦'}</div>
           <div class="ver-category-name">${escHtml(versionCategoryName(category))}</div>
           <div class="ver-category-count">${items.length} disponibles</div>
         </div>
@@ -2005,10 +2014,11 @@ async function installVersionSelection(software, version, build) {
       throw new Error(data?.error || 'No se pudo instalar la versión.');
     }
 
-    if (data.type === 'fabric-installer') {
-      toast('⚠️ Fabric preparado. Ejecuta el comando indicado y selecciona fabric-server-launch.jar en Startup.', 'info');
+    if (data.type === 'fabric-installer' || data.type === 'forge-installer') {
+      const name = data.type === 'forge-installer' ? 'Forge' : 'Fabric';
+      toast(`⚠️ ${name} preparado. Revisa el comando indicado antes de ejecutarlo.`, 'info');
       alert(
-        `Fabric ${version} preparado.\n\n` +
+        `${name} ${version} preparado.\n\n` +
         `${data.note || ''}\n\n` +
         `Comando:\n${data.installCmd || 'No disponible'}`
       );
