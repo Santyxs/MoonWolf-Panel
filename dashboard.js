@@ -114,6 +114,41 @@ function ensureSocketIo() {
 
 /* LOGIN */
 
+// Formatea el código mientras se teclea (o se pega).
+// - El prefijo "MW" es opcional.
+// - "S..." => token compartido MW-SHARE-XXXX-XXXX-XXXX-XXXX
+// - "P..." o cualquier otro => código de emparejamiento MW-PXXX-XXXX
+// - No fuerza el prefijo al borrar, así que Backspace vacía el campo.
+function formatLoginCode(raw) {
+  const clean = String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+  if (!clean) return '';
+  if (clean === 'M' || clean === 'MW') return clean;
+
+  const body = clean.startsWith('MW') ? clean.slice(2) : clean;
+
+  // Token compartido: MW-SHARE-XXXX-XXXX-XXXX-XXXX
+  if (body.startsWith('S')) {
+    const head = body.slice(0, 5);
+    if (body.length <= 5) return `MW-${head}`;
+
+    const rest = body.slice(5).replace(/[^A-Z2-9]/g, '').slice(0, 16);
+    const groups = rest.match(/.{1,4}/g) || [];
+
+    return `MW-${head}${groups.length ? `-${groups.join('-')}` : ''}`;
+  }
+
+  // Código de emparejamiento: MW-PXXX-XXXX
+  const rest = (body.startsWith('P') ? body.slice(1) : body)
+    .replace(/[^A-Z2-9]/g, '')
+    .slice(0, 7);
+
+  const first = rest.slice(0, 3);
+  const second = rest.slice(3, 7);
+
+  return `MW-P${first}${second ? `-${second}` : ''}`;
+}
+
 function ensureLoginGate() {
   if ($('loginGate')) return;
 
@@ -248,37 +283,7 @@ function ensureLoginGate() {
   document.body.prepend(gate);
 
   $('loginPassword').addEventListener('input', event => {
-    let raw = event.target.value.toUpperCase();
-
-    if (raw.startsWith('MW-SHARE')) {
-      const value = raw
-        .replace(/^MW-SHARE-?/, '')
-        .replace(/[^A-Z2-9]/g, '')
-        .slice(0, 16);
-      const groups = value.match(/.{1,4}/g) || [];
-      event.target.value = `MW-SHARE-${groups.join('-')}`.replace(/-$/, '');
-      return;
-    }
-
-    let value = raw.replace(/[^A-Z2-9]/g, '');
-
-    if (value === 'M') {
-      event.target.value = 'M';
-      return;
-    }
-
-    if (value === 'MW') {
-      event.target.value = 'MW-';
-      return;
-    }
-
-    if (value.startsWith('MW')) value = value.slice(2);
-    if (value.startsWith('P')) value = value.slice(1);
-
-    const first = value.slice(0, 3);
-    const second = value.slice(3, 7);
-
-    event.target.value = `MW-P${first}${second ? `-${second}` : ''}`;
+    event.target.value = formatLoginCode(event.target.value);
   });
 
   $('btnLogin').addEventListener('click', attemptLogin);
@@ -2098,7 +2103,6 @@ async function loadVersionState() {
   }
 }
 
-/* Legacy compatibility */
 function renderBuildsSelect() {}
 async function changeSoftwareOrVersion() {}
 async function installSelectedVersion() {
@@ -2254,7 +2258,7 @@ async function loadDatabases() {
 
       if (
         !confirm(
-          `¿Eliminar la base de datos "${name}"? Esta acción no se puede deshacer.`
+          `Eliminar la base de datos "${name}"? Esta acción no se puede deshacer.`
         )
       ) {
         return;
@@ -2278,7 +2282,7 @@ async function loadDatabases() {
     button.addEventListener('click', async () => {
       const name = button.dataset.resetDb;
 
-      if (!confirm(`¿Restablecer la contraseña del usuario de "${name}"?`)) {
+      if (!confirm(`Restablecer la contraseña del usuario de "${name}"?`)) {
         return;
       }
 
@@ -3495,8 +3499,6 @@ function bindEvents() {
   updateAgentUi(agentOnline);
   updateStatusUi(currentStatus);
 
-  // La puerta de acceso debe aparecer de inmediato, incluso si existe una
-  // sesión antigua que todavía está intentando reconectarse.
   showLogin('');
 
   if (panelSession && agentId) {
