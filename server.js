@@ -37,7 +37,7 @@ const ENV_PATH = path.join(__dirname, '.env');
 })();
 
 /* ══════════════════════════════════════════════
-   AUTENTICACIÓN / SESIONES
+   AUTHENTICATION / SESSIONS
    ══════════════════════════════════════════════ */
 const LOCAL_AGENT_TOKEN = process.env.MOONWOLF_LOCAL_AUTH_TOKEN || '';
 
@@ -375,11 +375,6 @@ function apiRateLimited(ip) {
   return rec.count > API_RATE_LIMIT;
 }
 
-/* Limpieza periódica de todos los Maps en memoria:
-   - apiHits: rate-limit global de /api
-   - loginAttempts: rate-limit de /api/pair
-   - pairingCodes: códigos de emparejamiento caducados
-   Un solo timer cada 10 min, sin bloquear el cierre del proceso (.unref). */
 setInterval(() => {
   const now = Date.now();
 
@@ -497,7 +492,7 @@ for (const asset of PUBLIC_ASSETS) {
 app.use(express.json({ limit: '50mb' }));
 
 /* ══════════════════════════════════════════════
-   RATE LIMIT CENTRALIZADO
+   RATE LIMIT
 /* ══════════════════════════════════════════════ */   
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'moonwolf-local' });
@@ -515,13 +510,12 @@ app.use('/api', (req, res, next) => {
 });
 
 /* ══════════════════════════════════════════════
-   EMPAREJAMIENTO / SESIONES
+   PAIRING
    ══════════════════════════════════════════════ */
 const CLOUD_ONLY_ROUTE = /^\/(pair|share-tokens)(\/|$)/;
 
 app.use('/api', (req, res, next) => {
   if (LOCAL_AGENT_TOKEN) {
-    // Modo Agent local: solo el propio Agent (con su token) puede llamar a la API
     if (CLOUD_ONLY_ROUTE.test(req.path)) return res.status(404).json({ ok: false, error: 'No encontrado.' });
 
     if (!timingSafeEqualStr(req.get('x-moonwolf-token'), LOCAL_AGENT_TOKEN)) {
@@ -604,7 +598,7 @@ app.post('/api/pair', (req, res) => {
 });
 
 /* ══════════════════════════════════════════════
-   SHARE TOKENS (propietario)
+   SHARE TOKENS
    ══════════════════════════════════════════════ */
 app.get('/api/share-tokens', (req, res) => {
   const session = getSessionFromRequest(req);
@@ -695,7 +689,7 @@ app.delete('/api/share-tokens/:id', (req, res) => {
 });
 
 /* ══════════════════════════════════════════════
-    SERVIDOR MINECRAFT
+    SERVER
     ══════════════════════════════════════════════ */
 const BASE_DIR = RUNTIME_DIR;
 
@@ -1110,7 +1104,7 @@ function writeServerPort(port) {
 }
 
 /* ══════════════════════════════════════════════
-   PUERTOS
+   PORTS
    ══════════════════════════════════════════════ */
 function readServerProperties() {
   try {
@@ -1384,9 +1378,6 @@ function safePath(rel) {
   const full = path.resolve(path.join(BASE_DIR, rel));
   if (!(full.startsWith(base + path.sep) || full === base)) return null;
 
-  // La comprobación lexical no detecta symlinks: un directorio válido puede
-  // apuntar fuera de BASE_DIR. Rechazamos enlaces simbólicos en los
-  // componentes existentes, incluso al crear o renombrar bajo un padre.
   let current = base;
   const relative = path.relative(base, full);
   for (const part of relative ? relative.split(path.sep) : []) {
@@ -1698,7 +1689,7 @@ io.on('connection', socket => {
 });
 
 /* ══════════════════════════════════════════════
-    ARCHIVOS
+    FILES
     ══════════════════════════════════════════════ */
 app.get('/api/files', async (req, res) => {
   const fullPath = safePath(req.query.dir || '');
@@ -1764,9 +1755,9 @@ app.post('/api/files/content', async (req, res) => {
   }
 });
 
-/* ══════════════════════════════════════════════
-    STARTUP (jar, java, memoria, argumentos, comportamiento)
-    ══════════════════════════════════════════════ */
+/* ═════════════
+    STARTUP
+    ════════════ */
 app.get('/api/startup', async (_req, res) => {
   try {
     const entries = await fs.readdir(BASE_DIR, { withFileTypes: true });
@@ -1863,9 +1854,9 @@ app.post('/api/startup', (req, res) => {
   }
 });
 
-/* ══════════════════════════════════════════════
-    BASES DE DATOS (MySQL / MariaDB)
-    ══════════════════════════════════════════════ */
+/* ═════════════════════════════════════
+    DATABASE (MySQL / MariaDB)
+    ════════════════════════════════════ */
 const mysql = require('mysql2/promise');
 
 const MYSQL_HOST = process.env.MOONWOLF_MYSQL_HOST || 'localhost';
@@ -2569,7 +2560,7 @@ app.delete('/api/plugins/installed/:file', async (req, res) => {
 });
 
 /* ══════════════════════════════════════════════
-    VERSIONES DE SOFTWARE
+    SOFTWARE
     ══════════════════════════════════════════════ */
 app.get('/api/versions/software', (_req, res) => {
   ok(res, {
@@ -3077,8 +3068,6 @@ app.post('/api/versions/install', async (req, res) => {
     );
     let backupJar = null;
     try {
-      // Descargar primero a un temporal: un error de red no debe retirar el
-      // JAR que está funcionando actualmente.
       await downloadFile(url, tempJar);
       if (fsSync.existsSync(currentJar)) {
         const bakName = `server.bak_${Date.now()}.jar`;
@@ -3137,7 +3126,7 @@ app.get('/api/versions/current', async (_req, res) => {
 });
 
 /* ══════════════════════════════════════════════
-    OPERACIONES DE ARCHIVOS
+    FILE OPERATIONS
     ══════════════════════════════════════════════ */
 const archiver = require('archiver');
 
@@ -3630,7 +3619,7 @@ app.get('/api/debug/start', async (_req, res) => {
 });
 
 /* ══════════════════════════════════════════════
-    INICIO
+    START
     ══════════════════════════════════════════════ */
 function stopMinecraft(timeoutMs = 30000) {
   return new Promise(resolve => {
