@@ -2073,7 +2073,6 @@ async function loadVersionState() {
             item.id === 'arclight' ? '💡' :
             item.id === 'sponge' ? '🧽' :
             item.id === 'mohist' ? '⚗️' :
-            item.id === 'flamecord' ? '🔥' :
             item.id === 'gale' ? '🌬️' :
             item.id === 'pufferfish' ? '🐡' :
             item.id === 'quilt' ? '🧶' :

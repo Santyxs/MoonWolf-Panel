@@ -2575,7 +2575,6 @@ app.get('/api/versions/software', (_req, res) => {
       { id: 'arclight', label: 'Arclight', category: 'hybrid', color: '#ff8f70', desc: 'Servidor híbrido con loaders Fabric y NeoForge.' },
       { id: 'sponge', label: 'Sponge', category: 'hybrid', color: '#8bd3dd', desc: 'Plataforma híbrida para mods y plugins mediante SpongeVanilla.', external: 'https://spongepowered.org/downloads/spongevanilla' },
       { id: 'mohist', label: 'Mohist', category: 'hybrid', color: '#f08a5d', desc: 'Servidor híbrido con soporte para mods Forge y plugins Bukkit.', external: 'https://mohistmc.com/download' },
-      { id: 'flamecord', label: 'FlameCord', category: 'proxy', color: '#ff7043', desc: 'Proxy optimizado basado en BungeeCord.' , external: 'https://github.com/2lstudios/FlameCord' },
       { id: 'gale', label: 'Gale', category: 'plugins', color: '#8ecae6', desc: 'Fork de Paper centrado en rendimiento y estabilidad.' },
       { id: 'pufferfish', label: 'Pufferfish', category: 'plugins', color: '#f6bd60', desc: 'Fork de Paper con optimizaciones adicionales.' },
       { id: 'quilt', label: 'Quilt', category: 'mods', color: '#d8a7ff', desc: 'Loader moderno y comunitario para mods.' },
