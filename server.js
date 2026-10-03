@@ -1382,8 +1382,23 @@ app.post('/api/ports', (req, res) => {
 function safePath(rel) {
   const base = path.resolve(BASE_DIR);
   const full = path.resolve(path.join(BASE_DIR, rel));
+  if (!(full.startsWith(base + path.sep) || full === base)) return null;
 
-  return full.startsWith(base + path.sep) || full === base ? full : null;
+  // La comprobación lexical no detecta symlinks: un directorio válido puede
+  // apuntar fuera de BASE_DIR. Rechazamos enlaces simbólicos en los
+  // componentes existentes, incluso al crear o renombrar bajo un padre.
+  let current = base;
+  const relative = path.relative(base, full);
+  for (const part of relative ? relative.split(path.sep) : []) {
+    current = path.join(current, part);
+    try {
+      if (fsSync.lstatSync(current).isSymbolicLink()) return null;
+    } catch (error) {
+      if (error?.code === 'ENOENT') break;
+      return null;
+    }
+  }
+  return full;
 }
 
 function safePluginPath(filename) {
