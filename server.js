@@ -3071,13 +3071,30 @@ app.post('/api/versions/install', async (req, res) => {
     }
 
     const currentJar = path.join(BASE_DIR, 'server.jar');
-    if (fsSync.existsSync(currentJar)) {
-      const bakName = `server.bak_${Date.now()}.jar`;
-      await fs.rename(currentJar, path.join(BASE_DIR, bakName));
-      console.log(`[versions] Backup creado: ${bakName}`);
+    const tempJar = path.join(
+      BASE_DIR,
+      `.moonwolf-server-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.download`
+    );
+    let backupJar = null;
+    try {
+      // Descargar primero a un temporal: un error de red no debe retirar el
+      // JAR que está funcionando actualmente.
+      await downloadFile(url, tempJar);
+      if (fsSync.existsSync(currentJar)) {
+        const bakName = `server.bak_${Date.now()}.jar`;
+        backupJar = path.join(BASE_DIR, bakName);
+        await fs.rename(currentJar, backupJar);
+        console.log(`[versions] Backup creado: ${bakName}`);
+      }
+      await fs.rename(tempJar, currentJar);
+    } catch (error) {
+      if (backupJar && !fsSync.existsSync(currentJar) && fsSync.existsSync(backupJar)) {
+        await fs.rename(backupJar, currentJar).catch(() => {});
+      }
+      throw error;
+    } finally {
+      await fs.rm(tempJar, { force: true }).catch(() => {});
     }
-
-    await downloadFile(url, currentJar);
     const stats = await fs.stat(currentJar);
 
     const isProxy = ['velocity', 'waterfall', 'bungeecord'].includes(sw);
