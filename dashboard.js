@@ -2062,13 +2062,13 @@ async function loadVersionState() {
           icon:
             item.id === 'paper' ? '📄' :
             item.id === 'purpur' ? '🟣' :
-            item.id === 'folia' ? '🌱' :
+            item.id === 'folia' ? '🌲' :
             item.id === 'fabric' ? '🧵' :
             item.id === 'forge' ? '🔨' :
-            item.id === 'leaf' ? '🍃' :
-            item.id === 'leaves' ? '🌿' :
+            item.id === 'leaf' ? '🍁' :
+            item.id === 'leaves' ? '🍃' :
             item.id === 'spigot' ? '🧱' :
-            item.id === 'bukkit' ? '🪣' :
+            item.id === 'bukkit' ? '🧺' :
             item.id === 'magma' ? '🌋' :
             item.id === 'arclight' ? '💡' :
             item.id === 'sponge' ? '🧽' :
