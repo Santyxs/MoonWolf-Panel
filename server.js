@@ -2,6 +2,7 @@
 
 const express = require('express');
 const compression = require('compression');
+const helmet = require('helmet');
 const http = require('http');
 const crypto = require('crypto');
 const { Server } = require('socket.io');
@@ -363,6 +364,11 @@ const loginAttempts = new Map();
 const apiHits = new Map();
 const API_RATE_LIMIT = 120;
 const API_RATE_WINDOW_MS = 60_000;
+const SOCKET_CONNECTION_LIMIT = 20;
+const SOCKET_CONNECTION_WINDOW_MS = 60_000;
+const SOCKET_CONNECTION_ATTEMPTS = 40;
+const socketConnectionAttempts = new Map();
+const socketConnections = new Map();
 
 function loginRateLimited(ip) {
   const now = Date.now();
@@ -400,11 +406,68 @@ function apiRateLimited(ip) {
   return rec.count > API_RATE_LIMIT;
 }
 
+function socketClientIp(socket) {
+  const forwarded = String(socket.handshake.headers['x-forwarded-for'] || '')
+    .split(',')[0]
+    .trim();
+  return forwarded || String(socket.handshake.address || 'unknown');
+}
+
+function socketConnectionAllowed(socket) {
+  const ip = socketClientIp(socket);
+  const now = Date.now();
+  const attempts = socketConnectionAttempts.get(ip);
+
+  if (!attempts || now > attempts.resetAt) {
+    socketConnectionAttempts.set(ip, {
+      count: 1,
+      resetAt: now + SOCKET_CONNECTION_WINDOW_MS,
+    });
+  } else {
+    attempts.count++;
+    if (attempts.count > SOCKET_CONNECTION_ATTEMPTS) return false;
+  }
+
+  if ((socketConnections.get(ip) || 0) >= SOCKET_CONNECTION_LIMIT) return false;
+
+  socket.data.connectionIp = ip;
+  socketConnections.set(ip, (socketConnections.get(ip) || 0) + 1);
+  return true;
+}
+
+function releaseSocketConnection(socket) {
+  const ip = socket.data.connectionIp;
+  if (!ip) return;
+
+  const count = (socketConnections.get(ip) || 1) - 1;
+  if (count > 0) socketConnections.set(ip, count);
+  else socketConnections.delete(ip);
+  socket.data.connectionIp = null;
+}
+
+function socketEventAllowed(socket, event, limit, windowMs = 60_000) {
+  const now = Date.now();
+  const current = socket.data.eventLimits?.[event];
+
+  if (!current || now > current.resetAt) {
+    socket.data.eventLimits = socket.data.eventLimits || {};
+    socket.data.eventLimits[event] = { count: 1, resetAt: now + windowMs };
+    return true;
+  }
+
+  current.count++;
+  return current.count <= limit;
+}
+
 setInterval(() => {
   const now = Date.now();
 
   for (const [ip, rec] of apiHits) {
     if (now > rec.resetAt) apiHits.delete(ip);
+  }
+
+  for (const [ip, rec] of socketConnectionAttempts) {
+    if (now > rec.resetAt) socketConnectionAttempts.delete(ip);
   }
 
   for (const [ip, rec] of loginAttempts) {
@@ -421,6 +484,21 @@ setInterval(() => {
    ══════════════════════════════════════════════ */
 const app = express();
 app.set('trust proxy', 1);
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", 'https://cdnjs.cloudflare.com'],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com', 'https://cdnjs.cloudflare.com'],
+      fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+      imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
+      connectSrc: ["'self'", 'https:', 'wss:'],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      frameAncestors: ["'none'"],
+    },
+  },
+}));
 app.use(compression({ threshold: 1024 }));
 const server = http.createServer(app);
 
@@ -440,7 +518,7 @@ app.use((req, res, next) => {
 });
 
 const io = new Server(server, {
-  maxHttpBufferSize: 64e6,
+  maxHttpBufferSize: 4e6,
   cors: {
     origin: ALLOWED_ORIGIN,
     methods: ['GET', 'POST'],
@@ -448,6 +526,10 @@ const io = new Server(server, {
 });
 
 io.use((socket, next) => {
+  if (!socketConnectionAllowed(socket)) {
+    return next(new Error('rate_limited'));
+  }
+
   const auth = socket.handshake.auth || {};
   const role = auth.role;
 
@@ -455,6 +537,7 @@ io.use((socket, next) => {
     const token = String(auth.token || '');
 
     if (!LOCAL_AGENT_TOKEN || !timingSafeEqualStr(token, LOCAL_AGENT_TOKEN)) {
+      releaseSocketConnection(socket);
       return next(new Error('unauthorized'));
     }
 
@@ -467,10 +550,12 @@ io.use((socket, next) => {
     const token = String(auth.token || '');
 
     if (!agentId || !token) {
+      releaseSocketConnection(socket);
       return next(new Error('unauthorized'));
     }
 
     if (agentId.length < 16 || token.length < 32 || !verifyOrRegisterAgent(agentId, token)) {
+      releaseSocketConnection(socket);
       return next(new Error('unauthorized'));
     }
 
@@ -484,6 +569,7 @@ io.use((socket, next) => {
     const session = verifyPanelSession(auth.session);
 
     if (!session) {
+      releaseSocketConnection(socket);
       return next(new Error('unauthorized'));
     }
 
@@ -496,6 +582,7 @@ io.use((socket, next) => {
     return next();
   }
 
+  releaseSocketConnection(socket);
   return next(new Error('Rol no válido.'));
 });
 
@@ -1647,6 +1734,7 @@ io.on('connection', socket => {
   if (socket.data.role === 'local-agent') {
     socket.join(LOCAL_AGENT_ROOM);
     socket.emit('status', lastStatus);
+    socket.once('disconnect', () => releaseSocketConnection(socket));
     console.log('🖥️ Agent local conectado:', socket.id);
     return;
   }
@@ -1664,11 +1752,13 @@ io.on('connection', socket => {
     console.log('🌙 MoonWolf Agent conectado:', agentId, socket.id);
 
     socket.on('pairing_create', () => {
+      if (!socketEventAllowed(socket, 'pairing_create', 6)) return;
       const pairing = createPairingCode(agentId);
       socket.emit('pairing_ready', pairing);
     });
 
     socket.on('event', event => {
+      if (!socketEventAllowed(socket, 'event', 240)) return;
       if (!event?.name) return;
       if (!AGENT_EVENTS.has(event.name)) return;
 
@@ -1689,6 +1779,7 @@ io.on('connection', socket => {
     });
 
     socket.on('rpc_result', result => {
+      if (!socketEventAllowed(socket, 'rpc_result', 240)) return;
       if (!result?.id) return;
 
       for (const panel of panelSockets) {
@@ -1711,6 +1802,7 @@ io.on('connection', socket => {
     notifyAgentState(true);
 
     socket.on('disconnect', () => {
+      releaseSocketConnection(socket);
       if (agentSockets.get(agentId) === socket) {
         agentSockets.delete(agentId);
         notifyAgentState(false);
@@ -1752,6 +1844,19 @@ io.on('connection', socket => {
     });
 
     socket.on('rpc', request => {
+      if (!socketEventAllowed(socket, 'rpc', 120)) {
+        return socket.emit('rpc_result', {
+          id: request?.id || null,
+          ok: false,
+          status: 429,
+          contentType: 'application/json',
+          bodyBase64: Buffer.from(JSON.stringify({
+            ok: false,
+            error: 'Demasiadas solicitudes en tiempo real. Espera un momento.',
+          })).toString('base64'),
+        });
+      }
+
       const rejectRpc = (status, message) => socket.emit('rpc_result', {
         id: request?.id || null,
         ok: false,
@@ -1821,12 +1926,16 @@ io.on('connection', socket => {
 
       const id = request?.id;
       if (!id) return;
+      if (socket.data.pendingRpc.size >= 100) {
+        return rejectRpc(429, 'Demasiadas solicitudes pendientes. Espera a que terminen algunas operaciones.');
+      }
 
       socket.data.pendingRpc.add(id);
       agentSocket.emit('rpc', request);
     });
 
     socket.on('disconnect', () => {
+      releaseSocketConnection(socket);
       clearTimeout(sessionTimer);
       panelSockets.delete(socket);
       socket.data.pendingRpc?.clear();
@@ -1837,6 +1946,7 @@ io.on('connection', socket => {
   }
 
   socket.on('disconnect', () => {
+    releaseSocketConnection(socket);
     console.log('Cliente desconectado:', socket.id);
   });
 });
