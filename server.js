@@ -527,6 +527,7 @@ const io = new Server(server, {
 
 io.use((socket, next) => {
   if (!socketConnectionAllowed(socket)) {
+    console.warn('[socket] Conexión rechazada por rate limit:', socket.handshake.address);
     return next(new Error('rate_limited'));
   }
 
@@ -537,6 +538,7 @@ io.use((socket, next) => {
     const token = String(auth.token || '');
 
     if (!LOCAL_AGENT_TOKEN || !timingSafeEqualStr(token, LOCAL_AGENT_TOKEN)) {
+      console.warn('[socket] local-agent rechazado: token inválido o no configurado');
       releaseSocketConnection(socket);
       return next(new Error('unauthorized'));
     }
@@ -550,11 +552,13 @@ io.use((socket, next) => {
     const token = String(auth.token || '');
 
     if (!agentId || !token) {
+      console.warn('[socket] agent rechazado: faltan agentId o token');
       releaseSocketConnection(socket);
       return next(new Error('unauthorized'));
     }
 
     if (agentId.length < 16 || token.length < 32 || !verifyOrRegisterAgent(agentId, token)) {
+      console.warn('[socket] agent rechazado: credenciales inválidas para agentId:', agentId || '(vacío)');
       releaseSocketConnection(socket);
       return next(new Error('unauthorized'));
     }
@@ -1744,6 +1748,12 @@ io.on('connection', socket => {
     const previous = agentSockets.get(agentId);
 
     if (previous && previous !== socket) {
+      console.warn(
+        '[socket] Colisión de agentId: expulsando conexión anterior',
+        agentId,
+        'anterior=', previous.id,
+        'nueva=', socket.id
+      );
       previous.disconnect(true);
     }
 
@@ -1754,6 +1764,12 @@ io.on('connection', socket => {
     socket.on('pairing_create', () => {
       if (!socketEventAllowed(socket, 'pairing_create', 6)) return;
       const pairing = createPairingCode(agentId);
+      console.log(
+        '[pairing] Código creado:',
+        agentId,
+        'socket=', socket.id,
+        'expira=', new Date(pairing.expiresAt).toISOString()
+      );
       socket.emit('pairing_ready', pairing);
     });
 
@@ -1801,14 +1817,14 @@ io.on('connection', socket => {
 
     notifyAgentState(true);
 
-    socket.on('disconnect', () => {
+    socket.on('disconnect', reason => {
       releaseSocketConnection(socket);
       if (agentSockets.get(agentId) === socket) {
         agentSockets.delete(agentId);
         notifyAgentState(false);
       }
 
-      console.log('🌙 MoonWolf Agent desconectado:', agentId, socket.id);
+      console.log('🌙 MoonWolf Agent desconectado:', agentId, socket.id, 'motivo=', reason || 'sin-motivo');
     });
 
     return;

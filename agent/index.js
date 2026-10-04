@@ -417,6 +417,8 @@ async function main() {
   let pairingExpiresAt = 0;
   let pairingRenewTimer = null;
   let pendingRestart = false;
+  let cloudConnectionAttempt = 0;
+  let pairingRequestCount = 0;
 
   let updateAvailable = null;
   let updateStatus = 'idle';
@@ -843,6 +845,11 @@ async function main() {
   function requestPairingCode() {
     if (!cloudSocket?.connected) return;
 
+    pairingRequestCount++;
+    addLog(
+      `[diagnóstico] Solicitud de pairing #${pairingRequestCount} ` +
+      `(socket=${cloudSocket.id || 'sin-id'}, pid=${process.pid})`
+    );
     clearPairing();
     addLog('Solicitando código de emparejamiento...');
     cloudSocket.emit('pairing_create');
@@ -852,6 +859,11 @@ async function main() {
     if (shuttingDown) return;
 
     clearTimeout(reconnectTimer);
+    addLog(
+      `[diagnóstico] Reconexión programada en ${reconnectDelay}ms ` +
+      `(pid=${process.pid}, agentId=${config.agentId})`,
+      'warn'
+    );
     reconnectTimer = setTimeout(connectCloud, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 30000);
   }
@@ -862,6 +874,11 @@ async function main() {
     cloudSocket?.disconnect();
     cloudConnected = false;
     clearPairing();
+    cloudConnectionAttempt++;
+    addLog(
+      `[diagnóstico] Conectando con MoonWolf Cloud (intento #${cloudConnectionAttempt}, ` +
+      `pid=${process.pid}, agentId=${config.agentId}, version=${VERSION})...`
+    );
     addLog('Conectando con MoonWolf Cloud...');
     gui.update();
 
@@ -879,6 +896,10 @@ async function main() {
     cloudSocket.on('connect', () => {
       reconnectDelay = 1000;
       cloudConnected = true;
+      addLog(
+        `[diagnóstico] Socket Cloud conectado: socket=${cloudSocket.id}, ` +
+        `transport=${cloudSocket.io?.engine?.transport?.name || 'desconocido'}`
+      );
       addLog('Conectado a MoonWolf Cloud.');
       connectLocalSocket();
       requestPairingCode();
@@ -898,6 +919,11 @@ async function main() {
       pairingCode = code;
       pairingExpiresAt = Number(data?.expiresAt || 0);
 
+      addLog(
+        `[diagnóstico] Pairing recibido: socket=${cloudSocket.id || 'sin-id'}, ` +
+        `expira=${pairingExpiresAt ? new Date(pairingExpiresAt).toISOString() : 'desconocido'}`
+      );
+
       clearTimeout(pairingRenewTimer);
       pairingRenewTimer = setTimeout(
         requestPairingCode,
@@ -908,6 +934,7 @@ async function main() {
     });
 
     cloudSocket.on('pairing_consumed', () => {
+      addLog(`[diagnóstico] Pairing consumido por el panel (socket=${cloudSocket.id || 'sin-id'}).`);
       clearPairing();
       addLog('Código de emparejamiento utilizado. Generando uno nuevo.');
       requestPairingCode();
@@ -921,6 +948,11 @@ async function main() {
     cloudSocket.on('connect_error', error => {
       cloudConnected = false;
       clearPairing();
+      addLog(
+        `[diagnóstico] connect_error: name=${error?.name || 'n/a'}, ` +
+        `message=${error?.message || error}, description=${error?.description || 'n/a'}`,
+        'error'
+      );
       addLog(`Error de conexión con Cloud: ${error?.message || error}`, 'error');
       gui.update();
     });
@@ -928,6 +960,11 @@ async function main() {
     cloudSocket.on('disconnect', reason => {
       cloudConnected = false;
       clearPairing();
+      addLog(
+        `[diagnóstico] Socket Cloud desconectado: reason=${reason || 'sin-motivo'}, ` +
+        `socket=${cloudSocket?.id || 'sin-id'}, active=${!shuttingDown}`,
+        'warn'
+      );
       addLog(`Desconectado de MoonWolf Cloud${reason ? `: ${reason}` : '.'}`, 'warn');
       gui.update();
       scheduleReconnect();
