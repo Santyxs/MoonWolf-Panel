@@ -533,6 +533,7 @@ async function connectCloud(manual = false) {
       if (!consoleEl) return;
 
       consoleEl.innerHTML = '';
+      pendingConsoleLogs.length = 0;
 
       (Array.isArray(logs) ? logs : []).forEach(appendLog);
     });
@@ -858,6 +859,83 @@ function shouldIgnoreLog(line) {
   return LOG_IGNORE_PATTERNS.some(re => re.test(text));
 }
 
+const ANSI_RE = /\x1b\[([0-9;]*)m|§([0-9a-fk-or])/gi;
+const ANSI_COLORS = {
+  30: 'black', 31: 'red', 32: 'green', 33: 'yellow',
+  34: 'blue', 35: 'magenta', 36: 'cyan', 37: 'white',
+  90: 'bright-black', 91: 'bright-red', 92: 'bright-green',
+  93: 'bright-yellow', 94: 'bright-blue', 95: 'bright-magenta',
+  96: 'bright-cyan', 97: 'bright-white',
+};
+const MINECRAFT_COLORS = {
+  0: 'black', 1: 'dark-blue', 2: 'dark-green', 3: 'dark-aqua',
+  4: 'dark-red', 5: 'dark-purple', 6: 'gold', 7: 'gray',
+  8: 'dark-gray', 9: 'blue', a: 'green', b: 'aqua',
+  c: 'red', d: 'light-purple', e: 'yellow', f: 'white',
+};
+
+function renderConsoleText(value) {
+  const text = String(value || '');
+  let html = '';
+  let cursor = 0;
+  let color = '';
+  let bold = false;
+  let match;
+
+  const append = chunk => {
+    if (!chunk) return;
+    const classes = [color && `ansi-${color}`, bold && 'ansi-bold'].filter(Boolean).join(' ');
+    html += classes ? `<span class="${classes}">${escHtml(chunk)}</span>` : escHtml(chunk);
+  };
+
+  while ((match = ANSI_RE.exec(text))) {
+    append(text.slice(cursor, match.index));
+    cursor = match.index + match[0].length;
+
+    if (match[2]) {
+      const code = match[2].toLowerCase();
+      if (MINECRAFT_COLORS[code]) color = MINECRAFT_COLORS[code];
+      else if (code === 'r' || code === 'o') { color = ''; bold = false; }
+      else if (code === 'l') bold = true;
+      continue;
+    }
+
+    const codes = (match[1] || '0').split(';').map(Number);
+    for (const code of codes) {
+      if (code === 0) { color = ''; bold = false; }
+      else if (code === 1) bold = true;
+      else if (ANSI_COLORS[code]) color = ANSI_COLORS[code];
+      else if (code === 39) color = '';
+    }
+  }
+
+  append(text.slice(cursor));
+  ANSI_RE.lastIndex = 0;
+  return html;
+}
+
+const pendingConsoleLogs = [];
+let consoleFlushScheduled = false;
+
+function flushConsoleLogs() {
+  consoleFlushScheduled = false;
+  const consoleEl = $('console');
+  if (!consoleEl || !pendingConsoleLogs.length) return;
+
+  const fragment = document.createDocumentFragment();
+  for (const entry of pendingConsoleLogs.splice(0)) {
+    const div = document.createElement('div');
+    div.className = `log-line ${entry.type || 'info'}`;
+    div.innerHTML =
+      `<span class="log-time">${escHtml(entry.time || '--:--:--')}</span>` +
+      `<span class="log-text">${renderConsoleText(entry.line)}</span>`;
+    fragment.appendChild(div);
+  }
+
+  consoleEl.appendChild(fragment);
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+}
+
 function appendLog(entry) {
   const consoleEl = $('console');
 
@@ -869,16 +947,16 @@ function appendLog(entry) {
     return;
   }
 
-  const div = document.createElement('div');
+  pendingConsoleLogs.push({
+    line,
+    time: entry?.time || '--:--:--',
+    type: entry?.type || 'info',
+  });
 
-  div.className = `log-line ${entry?.type || 'info'}`;
-
-  div.innerHTML =
-    `<span class="log-time">${escHtml(entry?.time || '--:--:--')}</span>` +
-    `<span class="log-text">${escHtml(line)}</span>`;
-
-  consoleEl.appendChild(div);
-  consoleEl.scrollTop = consoleEl.scrollHeight;
+  if (!consoleFlushScheduled) {
+    consoleFlushScheduled = true;
+    requestAnimationFrame(flushConsoleLogs);
+  }
 }
 
 async function startServer() {
@@ -3388,6 +3466,7 @@ function bindEvents() {
   $('btnClearConsole')?.addEventListener('click', () => {
     if ($('console')) {
       $('console').innerHTML = '';
+      pendingConsoleLogs.length = 0;
     }
   });
 

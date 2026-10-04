@@ -524,6 +524,26 @@ select:focus:not(:focus-visible) {
 .log-line.system  .log-text { color: var(--accent); }
 .log-line.cmd     .log-text { color: var(--purple); }
 
+/* Colores ANSI y códigos § de Minecraft emitidos por servidores modernos. */
+.ansi-bold { font-weight: 700; }
+.ansi-black { color: #111827; }
+.ansi-red, .ansi-dark-red { color: #ff5c70; }
+.ansi-green, .ansi-dark-green { color: #39e58c; }
+.ansi-yellow, .ansi-gold { color: #ffd166; }
+.ansi-blue, .ansi-dark-blue { color: #63b3ff; }
+.ansi-magenta, .ansi-dark-purple, .ansi-light-purple { color: #d69cff; }
+.ansi-cyan, .ansi-dark-aqua, .ansi-aqua { color: #4de4ff; }
+.ansi-white { color: #e7edf5; }
+.ansi-gray { color: #a8b4c4; }
+.ansi-dark-gray, .ansi-bright-black { color: #718096; }
+.ansi-bright-red { color: #ff7890; }
+.ansi-bright-green { color: #63ffad; }
+.ansi-bright-yellow { color: #ffe08a; }
+.ansi-bright-blue { color: #8bc8ff; }
+.ansi-bright-magenta { color: #e8baff; }
+.ansi-bright-cyan { color: #83efff; }
+.ansi-bright-white { color: #ffffff; }
+
 .cmd-row    { display: flex; border-top: 1px solid var(--border); }
 .cmd-prefix {
   padding: var(--sp-md) 14px;

@@ -769,6 +769,7 @@ const JAVA_RUNTIMES_DIR = process.env.MOONWOLF_RUNTIME_DIR || path.join(MOONWOLF
 const JAVA_RUNTIME_VERSIONS = [8, 11, 16, 17, 21, 25];
 const JAVA_DOWNLOAD_API = 'https://api.adoptium.net/v3/assets/latest';
 const javaInstallPromises = new Map();
+const javaPathCache = new Map();
 
 function parseMinecraftVersion(version) {
   const match = String(version || '').trim().match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
@@ -1074,7 +1075,12 @@ async function resolveJavaForServer(minecraftVersion) {
     );
   }
 
-  return ensureJavaRuntime(javaMajor);
+  const cached = javaPathCache.get(javaMajor);
+  if (cached && fsSync.existsSync(cached)) return cached;
+
+  const executable = await ensureJavaRuntime(javaMajor);
+  javaPathCache.set(javaMajor, executable);
+  return executable;
 }
 
 
@@ -1917,7 +1923,13 @@ app.post('/api/startup', (req, res) => {
 /* ═════════════════════════════════════
     DATABASE (MySQL / MariaDB)
     ════════════════════════════════════ */
-const mysql = require('mysql2/promise');
+let mysql = null;
+
+function getMysql() {
+  // MySQL no participa en el arranque normal del panel. Cargarlo bajo demanda
+  // evita inicializar el driver si el usuario nunca abre Bases de datos.
+  return mysql || (mysql = require('mysql2/promise'));
+}
 
 const MYSQL_HOST = process.env.MOONWOLF_MYSQL_HOST || 'localhost';
 const MYSQL_PORT = Number(process.env.MOONWOLF_MYSQL_PORT || 3306);
@@ -1933,7 +1945,7 @@ let mysqlPool = null;
 function getMysqlPool() {
   if (mysqlPool) return mysqlPool;
 
-  mysqlPool = mysql.createPool({
+  mysqlPool = getMysql().createPool({
     host: MYSQL_HOST,
     port: MYSQL_PORT,
     user: MYSQL_ROOT_USER,
@@ -3188,7 +3200,13 @@ app.get('/api/versions/current', async (_req, res) => {
 /* ══════════════════════════════════════════════
     FILE OPERATIONS
     ══════════════════════════════════════════════ */
-const archiver = require('archiver');
+let archiver = null;
+
+function getArchiver() {
+  // Crear backups es una operación puntual; no bloqueemos el arranque
+  // cargando el compresor en cada ejecución del Agent.
+  return archiver || (archiver = require('archiver'));
+}
 
 const FILE_UPLOAD_MAX_CHUNK_BYTES = 2 * 1024 * 1024;
 const FILE_UPLOAD_ID_RE = /^[a-zA-Z0-9_-]{8,120}$/;
@@ -3453,7 +3471,7 @@ app.post('/api/files/compress', async (req, res) => {
   try {
     await new Promise((resolve, reject) => {
       const output = fsSync.createWriteStream(zipDest);
-      const archive = archiver('zip', { zlib: { level: 6 } });
+      const archive = getArchiver()('zip', { zlib: { level: 6 } });
 
       output.on('close', resolve);
       archive.on('error', reject);
@@ -3571,7 +3589,7 @@ app.post('/api/backups', async (req, res) => {
 
     await new Promise((resolve, reject) => {
       const output = fsSync.createWriteStream(zipPath);
-      const archive = archiver('zip', { zlib: { level: 6 } });
+      const archive = getArchiver()('zip', { zlib: { level: 6 } });
 
       output.on('close', resolve);
       archive.on('error', reject);
