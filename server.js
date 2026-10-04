@@ -1,6 +1,7 @@
 'use strict';
 
 const express = require('express');
+const compression = require('compression');
 const http = require('http');
 const crypto = require('crypto');
 const { Server } = require('socket.io');
@@ -420,6 +421,7 @@ setInterval(() => {
    ══════════════════════════════════════════════ */
 const app = express();
 app.set('trust proxy', 1);
+app.use(compression({ threshold: 1024 }));
 const server = http.createServer(app);
 
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
@@ -509,6 +511,7 @@ app.get('/', (_req, res) => {
 
 for (const asset of PUBLIC_ASSETS) {
   app.get('/' + asset, (_req, res) => {
+    res.setHeader('Cache-Control', asset === 'index.html' ? 'no-cache' : 'public, max-age=300');
     res.sendFile(path.join(__dirname, asset));
   });
 }
@@ -1171,8 +1174,15 @@ function writeServerPort(port) {
 /* ══════════════════════════════════════════════
    PORTS
    ══════════════════════════════════════════════ */
+let serverPropertiesCache = null;
+
 function readServerProperties() {
   try {
+    const stat = fsSync.statSync(SERVER_PROPERTIES_PATH);
+    if (serverPropertiesCache && serverPropertiesCache.mtimeMs === stat.mtimeMs && serverPropertiesCache.size === stat.size) {
+      return serverPropertiesCache.values;
+    }
+
     const content = fsSync.readFileSync(SERVER_PROPERTIES_PATH, 'utf8');
     const values = {};
     for (const line of content.split(/\r?\n/)) {
@@ -1180,8 +1190,10 @@ function readServerProperties() {
       const match = line.match(/^\s*([^=:#]+)\s*=\s*(.*?)\s*$/);
       if (match) values[match[1].trim()] = match[2];
     }
+    serverPropertiesCache = { mtimeMs: stat.mtimeMs, size: stat.size, values };
     return values;
   } catch {
+    serverPropertiesCache = null;
     return {};
   }
 }
@@ -1213,6 +1225,7 @@ function writeServerProperties(values) {
     output.join('\n').replace(/\n+$/, '') + '\n',
     'utf8'
   );
+  serverPropertiesCache = null;
 }
 
 function checkLocalPort(port, host = '127.0.0.1') {
@@ -1241,61 +1254,119 @@ function validPort(value) {
 /* ══════════════════════════════════════════════
    RCON (Minecraft Remote Console)
    ══════════════════════════════════════════════ */
-function rconExec(port, password, command, timeoutMs = 2000) {
-  return new Promise((resolve, reject) => {
-    const socket = new net.Socket();
-    let buffer = Buffer.alloc(0);
-    let authed = false;
-    let settled = false;
+class RconClient {
+  constructor() {
+    this.socket = null;
+    this.buffer = Buffer.alloc(0);
+    this.authenticated = false;
+    this.nextId = 1;
+    this.queue = Promise.resolve();
+    this.configKey = '';
+  }
 
-    const finish = (err, result) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      if (err) reject(err);
-      else resolve(result);
-    };
+  close() {
+    this.authenticated = false;
+    this.buffer = Buffer.alloc(0);
+    this.socket?.destroy();
+    this.socket = null;
+  }
 
-    function writePacket(id, type, body) {
-      const bodyBuf = Buffer.from(body, 'utf8');
-      const packet = Buffer.alloc(12 + bodyBuf.length + 2);
-      packet.writeInt32LE(10 + bodyBuf.length, 0);
-      packet.writeInt32LE(id, 4);
-      packet.writeInt32LE(type, 8);
-      bodyBuf.copy(packet, 12);
-      socket.write(packet);
-    }
+  packet(id, type, body) {
+    const bodyBuf = Buffer.from(body, 'utf8');
+    const packet = Buffer.alloc(12 + bodyBuf.length + 2);
+    packet.writeInt32LE(10 + bodyBuf.length, 0);
+    packet.writeInt32LE(id, 4);
+    packet.writeInt32LE(type, 8);
+    bodyBuf.copy(packet, 12);
+    return packet;
+  }
 
-    socket.setTimeout(timeoutMs);
-    socket.once('timeout', () => finish(new Error('RCON timeout')));
-    socket.once('error', err => finish(err));
+  async connect(port, password) {
+    const key = `${port}:${password}`;
+    if (this.socket && this.authenticated && this.configKey === key) return;
 
-    socket.on('data', chunk => {
-      buffer = Buffer.concat([buffer, chunk]);
+    this.close();
+    this.configKey = key;
 
-      while (buffer.length >= 4) {
-        const size = buffer.readInt32LE(0);
-        if (buffer.length < 4 + size) break;
-
-        const id = buffer.readInt32LE(4);
-        const body = buffer.slice(12, 4 + size - 2).toString('utf8');
-        buffer = buffer.slice(4 + size);
-
-        if (!authed) {
-          if (id === -1) return finish(new Error('RCON auth failed'));
-          authed = true;
-          writePacket(1, 2, command);
-        } else if (body.length > 0) {
-          return finish(null, body);
+    await new Promise((resolve, reject) => {
+      const socket = new net.Socket();
+      let settled = false;
+      let authBuffer = Buffer.alloc(0);
+      const finish = error => {
+        if (settled) return;
+        settled = true;
+        if (error) {
+          socket.destroy();
+          reject(error);
+        } else {
+          resolve();
         }
-      }
-    });
+      };
 
-    socket.connect(port, '127.0.0.1', () => {
-      writePacket(0, 3, password);
+      socket.setTimeout(2000);
+      socket.once('timeout', () => finish(new Error('RCON timeout')));
+      socket.once('error', finish);
+      const onAuthData = chunk => {
+        authBuffer = Buffer.concat([authBuffer, chunk]);
+        if (authBuffer.length < 4) return;
+        const size = authBuffer.readInt32LE(0);
+        if (authBuffer.length < 4 + size) return;
+        const id = authBuffer.readInt32LE(4);
+        if (id === -1) return finish(new Error('RCON auth failed'));
+        this.socket = socket;
+        this.authenticated = true;
+        socket.off('data', onAuthData);
+        socket.removeAllListeners('timeout');
+        socket.setTimeout(0);
+        finish();
+      };
+      socket.on('data', onAuthData);
+      socket.connect(port, '127.0.0.1', () => socket.write(this.packet(0, 3, password)));
     });
-  });
+  }
+
+  exec(port, password, command) {
+    const run = this.queue.then(async () => {
+      await this.connect(port, password);
+      const id = this.nextId++;
+      return new Promise((resolve, reject) => {
+        let buffer = Buffer.alloc(0);
+        const socket = this.socket;
+        const timer = setTimeout(() => {
+          this.close();
+          reject(new Error('RCON timeout'));
+        }, 2000);
+        const onData = chunk => {
+          buffer = Buffer.concat([buffer, chunk]);
+          while (buffer.length >= 4) {
+            const size = buffer.readInt32LE(0);
+            if (buffer.length < 4 + size) return;
+            const packetId = buffer.readInt32LE(4);
+            const body = buffer.slice(12, 4 + size - 2).toString('utf8');
+            buffer = buffer.slice(4 + size);
+            if (packetId !== id) continue;
+            clearTimeout(timer);
+            socket.off('data', onData);
+            resolve(body);
+            return;
+          }
+        };
+        socket.once('error', error => {
+          clearTimeout(timer);
+          socket.off('data', onData);
+          this.close();
+          reject(error);
+        });
+        socket.on('data', onData);
+        socket.write(this.packet(id, 2, command));
+      });
+    });
+    this.queue = run.catch(() => {});
+    return run;
+  }
 }
+
+const rconClient = new RconClient();
 
 async function queryRconStats() {
   const props = readServerProperties();
@@ -1311,8 +1382,8 @@ async function queryRconStats() {
 
   try {
     const [listRaw, tpsRaw] = await Promise.all([
-      rconExec(port, password, 'list'),
-      rconExec(port, password, 'tps'),
+      rconClient.exec(port, password, 'list'),
+      rconClient.exec(port, password, 'tps'),
     ]);
 
     const clean = value => String(value || '').replace(/§[0-9a-fk-or]/gi, '').trim();
@@ -1330,7 +1401,13 @@ async function queryRconStats() {
   }
 }
 
+let portsCache = null;
+
 app.get('/api/ports', async (_req, res) => {
+  if (portsCache && Date.now() - portsCache.createdAt < 5000) {
+    return res.json(portsCache.payload);
+  }
+
   try {
     const props = readServerProperties();
     const serverPort = validPort(props['server-port']) || readServerPort() || 25565;
@@ -1379,7 +1456,8 @@ app.get('/api/ports', async (_req, res) => {
           : 'configured',
     })));
 
-    ok(res, {
+    const payload = {
+      ok: true,
       ports,
       properties: {
         enableQuery: queryEnabled,
@@ -1389,13 +1467,16 @@ app.get('/api/ports', async (_req, res) => {
         rconPort,
         hasRconPassword: Boolean(String(props['rcon.password'] || '')),
       },
-    });
+    };
+    portsCache = { createdAt: Date.now(), payload };
+    res.json(payload);
   } catch (e) {
     fail(res, e.message);
   }
 });
 
 app.post('/api/ports', (req, res) => {
+  portsCache = null;
   const body = req.body || {};
   const serverPort = validPort(body.serverPort);
   const queryPort = validPort(body.queryPort);
@@ -1543,9 +1624,12 @@ function semverCmp(a, b) {
 const agentSockets = new Map();
 const panelSockets = new Set();
 const agentCache = new Map();
-const AGENT_EVENTS = new Set(['status', 'log', 'stats']);
+const AGENT_EVENTS = new Set(['status', 'log', 'log_batch', 'stats']);
 
 const LOCAL_AGENT_ROOM = 'local-agent';
+const LOG_BATCH_DELAY_MS = 50;
+let pendingLogBatch = [];
+let logBatchTimer = null;
 const agentRoom  = id => `agent:${id}`;
 const panelsRoom = id => `panels:${id}`;
 
@@ -1593,8 +1677,11 @@ io.on('connection', socket => {
       if (event.name === 'status') cache.status = event.payload;
       else if (event.name === 'stats') cache.stats = event.payload;
       else {
-        cache.logs.push(event.payload);
-        if (cache.logs.length > 300) cache.logs.shift();
+        const entries = event.name === 'log_batch' && Array.isArray(event.payload)
+          ? event.payload
+          : [event.payload];
+        cache.logs.push(...entries);
+        if (cache.logs.length > 300) cache.logs.splice(0, cache.logs.length - 300);
       }
 
       agentCache.set(agentId, cache);
@@ -2148,11 +2235,20 @@ function broadcastStatus(s) {
 }
 
 function broadcastLog(line, type = 'info') {
-  io.to(LOCAL_AGENT_ROOM).emit('log', {
+  pendingLogBatch.push({
     line,
     time: new Date().toLocaleTimeString('es-ES'),
     type,
   });
+
+  if (logBatchTimer) return;
+  logBatchTimer = setTimeout(() => {
+    const batch = pendingLogBatch;
+    pendingLogBatch = [];
+    logBatchTimer = null;
+    if (batch.length === 1) io.to(LOCAL_AGENT_ROOM).emit('log', batch[0]);
+    else if (batch.length) io.to(LOCAL_AGENT_ROOM).emit('log_batch', batch);
+  }, LOG_BATCH_DELAY_MS);
 }
 
 function startStatsTimer() {
@@ -2187,7 +2283,7 @@ function startStatsTimer() {
     } finally {
       statsBusy = false;
     }
-  }, 3000);
+  }, 5000);
 }
 
 async function launchServer() {
@@ -2265,6 +2361,7 @@ async function launchServer() {
 
   mcProcess.on('close', code => {
     broadcastLog(`⏹ Servidor detenido (código ${code})`, 'system');
+    rconClient.close();
 
     if (statsTimer) {
       clearInterval(statsTimer);

@@ -816,7 +816,7 @@ async function main() {
       reconnectionDelayMax: 10000,
     });
 
-    for (const event of ['status', 'log', 'history', 'stats']) {
+    for (const event of ['status', 'log', 'log_batch', 'history', 'stats']) {
       localSocket.on(event, payload => {
         if (cloudSocket?.connected) {
           cloudSocket.emit('event', {

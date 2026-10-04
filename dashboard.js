@@ -112,6 +112,57 @@ function ensureSocketIo() {
   });
 }
 
+let codeMirrorPromise = null;
+
+function loadExternalScript(src) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = src;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error(`No se pudo cargar ${src}`));
+    document.head.appendChild(script);
+  });
+}
+
+async function ensureCodeMirror(mode) {
+  if (window.CodeMirror) return true;
+  if (!codeMirrorPromise) {
+    const base = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2';
+    const css = document.createElement('link');
+    css.rel = 'stylesheet';
+    css.href = `${base}/codemirror.min.css`;
+    document.head.appendChild(css);
+    const theme = document.createElement('link');
+    theme.rel = 'stylesheet';
+    theme.href = `${base}/theme/dracula.min.css`;
+    document.head.appendChild(theme);
+    codeMirrorPromise = loadExternalScript(`${base}/codemirror.min.js`);
+  }
+
+  try {
+    await codeMirrorPromise;
+    const base = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2';
+    const modeUrl = {
+      javascript: `${base}/mode/javascript/javascript.min.js`,
+      yaml: `${base}/mode/yaml/yaml.min.js`,
+      xml: `${base}/mode/xml/xml.min.js`,
+      properties: `${base}/mode/properties/properties.min.js`,
+      shell: `${base}/mode/shell/shell.min.js`,
+      toml: `${base}/mode/toml/toml.min.js`,
+      nginx: `${base}/mode/nginx/nginx.min.js`,
+    }[mode];
+    if (modeUrl && !document.querySelector(`script[data-codemirror-mode="${mode}"]`)) {
+      await loadExternalScript(modeUrl);
+      document.querySelectorAll('script').forEach(script => {
+        if (script.src === modeUrl) script.dataset.codemirrorMode = mode;
+      });
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /* LOGIN */
 
 // Formatea el código mientras se teclea (o se pega).
@@ -526,6 +577,9 @@ async function connectCloud(manual = false) {
 
     cloudSocket.on('status', setStatus);
     cloudSocket.on('log', appendLog);
+    cloudSocket.on('log_batch', entries => {
+      if (Array.isArray(entries)) entries.forEach(appendLog);
+    });
 
     cloudSocket.on('history', logs => {
       const consoleEl = $('console');
@@ -1450,6 +1504,8 @@ async function openFile(rel) {
       bat: 'shell',
       cmd: 'shell',
     }[ext] || 'text/plain';
+
+    await ensureCodeMirror(mode);
 
     if (window.CodeMirror) {
       editor = CodeMirror.fromTextArea($('mwEditorArea'), {
