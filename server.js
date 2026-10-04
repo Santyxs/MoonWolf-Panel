@@ -424,7 +424,7 @@ app.set('trust proxy', 1);
 app.use(compression({ threshold: 1024 }));
 const server = http.createServer(app);
 
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
+const ALLOWED_ORIGIN = 'https://moonwolf-panel.onrender.com';
 
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
