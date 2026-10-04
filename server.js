@@ -96,9 +96,19 @@ const PERMISSION_RANK = {
   control: 2,
   admin: 3,
 };
+const SHARE_PERMISSIONS = new Set(Object.keys(PERMISSION_RANK));
 
 function permissionAllows(actual, required) {
   return (PERMISSION_RANK[String(actual || '')] || 0) >= (PERMISSION_RANK[String(required || '')] || 99);
+}
+
+function normalizeSharePermission(permission) {
+  const value = String(permission || '').toLowerCase();
+  return SHARE_PERMISSIONS.has(value) ? value : null;
+}
+
+function canManageShareTokens(session) {
+  return Boolean(session && permissionAllows(session.permission, 'admin'));
 }
 
 function requiredPermission(method, pathname) {
@@ -201,7 +211,21 @@ function getSessionFromRequest(req) {
 
   if (!auth.startsWith('Bearer ')) return null;
 
-  return verifyPanelSession(auth.slice(7).trim());
+  const session = verifyPanelSession(auth.slice(7).trim());
+  if (!session) return null;
+
+  // Los cambios de permiso se aplican también a las sesiones ya abiertas.
+  if (session.kind === 'share') {
+    const share = loadShareTokens().find(
+      item => item.id === session.shareTokenId && item.agentId === session.agentId
+    );
+    if (!share || share.revokedAt || (share.expiresAt && Number(share.expiresAt) <= Date.now())) {
+      return null;
+    }
+    session.permission = normalizeSharePermission(share.permission) || 'read';
+  }
+
+  return session;
 }
 
 function createPanelSession(agentId, options = {}) {
@@ -603,8 +627,8 @@ app.post('/api/pair', (req, res) => {
 app.get('/api/share-tokens', (req, res) => {
   const session = getSessionFromRequest(req);
 
-  if (!session || session.kind !== 'owner' || session.permission !== 'admin') {
-    return res.status(403).json({ ok: false, error: 'Solo el propietario puede gestionar accesos compartidos.' });
+  if (!canManageShareTokens(session)) {
+    return res.status(403).json({ ok: false, error: 'Necesitas el permiso Administrador para gestionar accesos compartidos.' });
   }
 
   const tokens = loadShareTokens()
@@ -618,13 +642,13 @@ app.get('/api/share-tokens', (req, res) => {
 app.post('/api/share-tokens', (req, res) => {
   const session = getSessionFromRequest(req);
 
-  if (!session || session.kind !== 'owner' || session.permission !== 'admin') {
-    return res.status(403).json({ ok: false, error: 'Solo el propietario puede crear accesos compartidos.' });
+  if (!canManageShareTokens(session)) {
+    return res.status(403).json({ ok: false, error: 'Necesitas el permiso Administrador para crear accesos compartidos.' });
   }
 
-  const permission = String(req.body?.permission || '').toLowerCase();
+  const permission = normalizeSharePermission(req.body?.permission);
 
-  if (!['read', 'control'].includes(permission)) {
+  if (!permission) {
     return res.status(400).json({ ok: false, error: 'Permiso no válido.' });
   }
 
@@ -661,11 +685,46 @@ app.post('/api/share-tokens', (req, res) => {
   }
 });
 
+app.patch('/api/share-tokens/:id', (req, res) => {
+  const session = getSessionFromRequest(req);
+
+  if (!canManageShareTokens(session)) {
+    return res.status(403).json({ ok: false, error: 'Necesitas el permiso Administrador para editar accesos compartidos.' });
+  }
+
+  const permission = normalizeSharePermission(req.body?.permission);
+  if (!permission) {
+    return res.status(400).json({ ok: false, error: 'Permiso no válido.' });
+  }
+
+  const tokens = loadShareTokens();
+  const record = tokens.find(item => item.id === req.params.id && item.agentId === session.agentId);
+  if (!record || record.revokedAt || (record.expiresAt && Number(record.expiresAt) <= Date.now())) {
+    return res.status(404).json({ ok: false, error: 'Acceso compartido no encontrado.' });
+  }
+
+  record.permission = permission;
+  saveShareTokens(tokens);
+
+  for (const panel of panelSockets) {
+    if (panel.data.shareTokenId === record.id) {
+      panel.data.permission = permission;
+      panel.emit('session_info', {
+        permission,
+        kind: panel.data.kind || 'share',
+        expiresAt: panel.data.sessionExp,
+      });
+    }
+  }
+
+  return res.json({ ok: true, access: publicShareToken(record) });
+});
+
 app.delete('/api/share-tokens/:id', (req, res) => {
   const session = getSessionFromRequest(req);
 
-  if (!session || session.kind !== 'owner' || session.permission !== 'admin') {
-    return res.status(403).json({ ok: false, error: 'Solo el propietario puede revocar accesos compartidos.' });
+  if (!canManageShareTokens(session)) {
+    return res.status(403).json({ ok: false, error: 'Necesitas el permiso Administrador para revocar accesos compartidos.' });
   }
 
   const tokens = loadShareTokens();
@@ -1637,6 +1696,7 @@ io.on('connection', socket => {
           return socket.disconnect(true);
         }
 
+        socket.data.permission = normalizeSharePermission(share.permission) || 'read';
         if (!permissionAllows(socket.data.permission, requiredPermission(request?.method, request?.path))) {
           return socket.emit('rpc_result', {
             id: request?.id || null,

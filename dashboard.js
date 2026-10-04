@@ -516,6 +516,7 @@ async function connectCloud(manual = false) {
       sessionStorage.setItem(PERMISSION_KEY, panelPermission);
       sessionStorage.setItem(SESSION_KIND_KEY, panelKind);
       renderSettings();
+      renderUsers();
     });
 
     cloudSocket.on('share_revoked', () => {
@@ -2996,9 +2997,16 @@ function renderActivity() {
 }
 
 /* USERS */
-
+const SHARE_PERMISSION_LABELS = {
+  read: '👁️ Solo lectura',
+  control: '🎮 Control',
+  admin: '🛡️ Administrador',
+};
+function sharePermissionLabel(permission) {
+  return SHARE_PERMISSION_LABELS[String(permission || '').toLowerCase()] || SHARE_PERMISSION_LABELS.read;
+}
 async function loadShareTokens() {
-  if (panelKind !== 'owner' || panelPermission !== 'admin') return;
+  if (panelPermission !== 'admin') return;
 
   const list = $('shareTokenList');
   if (!list) return;
@@ -3008,11 +3016,13 @@ async function loadShareTokens() {
     const tokens = Array.isArray(data.tokens) ? data.tokens : [];
 
     const control = tokens.filter(token => token.permission === 'control').length;
-    const read = tokens.filter(token => token.permission !== 'control').length;
+    const read = tokens.filter(token => token.permission === 'read').length;
+    const admin = tokens.filter(token => token.permission === 'admin').length;
 
     if ($('userStatTotal')) $('userStatTotal').textContent = tokens.length;
     if ($('userStatControl')) $('userStatControl').textContent = control;
     if ($('userStatRead')) $('userStatRead').textContent = read;
+    if ($('userStatAdmin')) $('userStatAdmin').textContent = admin;
 
     list.innerHTML = tokens.length
       ? tokens
@@ -3026,9 +3036,11 @@ async function loadShareTokens() {
               <div class="user-row-main">
                 <strong>${escHtml(token.label || 'Usuario')}</strong>
                 <div class="user-row-meta">
-                  <span class="user-permission-pill ${token.permission === 'control' ? 'control' : 'read'}">
-                    ${token.permission === 'control' ? '🎮 Control' : '👁️ Solo lectura'}
-                  </span>
+                  <select class="form-input user-permission-select ${escHtml(token.permission)}" data-edit-permission="${escHtml(token.id)}">
+                    <option value="read" ${token.permission === 'read' ? 'selected' : ''}>${SHARE_PERMISSION_LABELS.read}</option>
+                    <option value="control" ${token.permission === 'control' ? 'selected' : ''}>${SHARE_PERMISSION_LABELS.control}</option>
+                    <option value="admin" ${token.permission === 'admin' ? 'selected' : ''}>${SHARE_PERMISSION_LABELS.admin}</option>
+                  </select>
                   <span>Caduca: ${escHtml(expiry)}</span>
                 </div>
               </div>
@@ -3055,6 +3067,26 @@ async function loadShareTokens() {
         }
       });
     });
+    list.querySelectorAll('[data-edit-permission]').forEach(select => {
+      select.dataset.previousPermission = select.value;
+      select.addEventListener('change', async () => {
+        const previous = select.dataset.previousPermission;
+        select.disabled = true;
+        try {
+          await cloudApi(`/api/share-tokens/${encodeURIComponent(select.dataset.editPermission)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ permission: select.value }),
+          });
+          select.dataset.previousPermission = select.value;
+          toast(`Permiso actualizado: ${sharePermissionLabel(select.value)}.`, 'ok');
+          await loadShareTokens();
+        } catch (error) {
+          select.value = previous;
+          select.disabled = false;
+          toast(error.message, 'err');
+        }
+      });
+    });
   } catch (error) {
     list.innerHTML = `<div class="empty-state">${escHtml(error.message)}</div>`;
   }
@@ -3064,7 +3096,7 @@ function renderUsers() {
   const element = $('userList');
   if (!element) return;
 
-  const isOwner = panelKind === 'owner' && panelPermission === 'admin';
+  const isOwner = panelPermission === 'admin';
 
   if (!isOwner) {
     element.innerHTML = `
@@ -3082,7 +3114,7 @@ function renderUsers() {
           </div>
           <div class="user-permission-row">
             <span>Permiso</span>
-            <strong>${panelPermission === 'control' ? '🎮 Control' : '👁️ Solo lectura'}</strong>
+            <strong>${escHtml(sharePermissionLabel(panelPermission))}</strong>
           </div>
           <div class="user-info-note">
             Tu acceso está limitado a los permisos asignados por el propietario. No puedes crear ni revocar accesos.
@@ -3107,6 +3139,10 @@ function renderUsers() {
         <span class="user-stat-icon">👁️</span>
         <div><span class="user-stat-label">Solo lectura</span><strong id="userStatRead">—</strong></div>
       </div>
+      <div class="user-stat-card">
+        <span class="user-stat-icon">🛡️</span>
+        <div><span class="user-stat-label">Administradores</span><strong id="userStatAdmin">—</strong></div>
+      </div>
     </div>
 
     <div class="panel">
@@ -3121,6 +3157,7 @@ function renderUsers() {
         <select id="sharePermission" class="form-input">
           <option value="read">👁️ Solo lectura</option>
           <option value="control">🎮 Control</option>
+          <option value="admin">🛡️ Administrador (control total)</option>
         </select>
         <select id="shareExpiry" class="form-input">
           <option value="never">Sin caducidad</option>
@@ -3159,7 +3196,7 @@ function renderUsers() {
 }
 
 function bindShareSettings() {
-  if (panelKind !== 'owner' || panelPermission !== 'admin') return;
+  if (panelPermission !== 'admin') return;
 
   $('btnCreateShare')?.addEventListener('click', async () => {
     const button = $('btnCreateShare');
