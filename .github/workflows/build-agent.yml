@@ -241,17 +241,32 @@ jobs:
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           if (-not (Test-Path -LiteralPath $vswhere)) { throw "No se encontró vswhere.exe" }
 
-          $editbin = & $vswhere `
+          $vsInstallPath = & $vswhere `
             -latest `
             -products * `
             -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-            -find "**/Hostx64/x64/editbin.exe" | Select-Object -First 1
+            -property installationPath
 
-          if ([string]::IsNullOrWhiteSpace($editbin) -or -not (Test-Path -LiteralPath $editbin)) {
+          if ([string]::IsNullOrWhiteSpace($vsInstallPath) -or -not (Test-Path -LiteralPath $vsInstallPath)) {
+            throw "No se encontró la instalación de Visual Studio con herramientas C++."
+          }
+
+          $msvcRoot = Join-Path $vsInstallPath "VC\Tools\MSVC"
+          $msvcVersion = Get-ChildItem -LiteralPath $msvcRoot -Directory |
+            Sort-Object { try { [version]$_.Name } catch { [version]'0.0' } } -Descending |
+            Select-Object -First 1
+
+          if ($null -eq $msvcVersion) {
+            throw "No se encontró ninguna versión de MSVC en $msvcRoot"
+          }
+
+          $editbin = Join-Path $msvcVersion.FullName "bin\Hostx64\x64\editbin.exe"
+
+          if (-not (Test-Path -LiteralPath $editbin)) {
             throw "No se encontró editbin.exe"
           }
 
-          Write-Host "Usando editbin: $editbin"
+          Write-Host "Usando editbin de MSVC $($msvcVersion.Name): $editbin"
           & $editbin /SUBSYSTEM:WINDOWS $exe
           if ($LASTEXITCODE -ne 0) { throw "editbin terminó con código $LASTEXITCODE" }
           Write-Host "Terminal de Windows ocultada correctamente."
