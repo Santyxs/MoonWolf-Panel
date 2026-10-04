@@ -24,22 +24,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: '24'
+          cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Show Node version
         run: node --version
 
       - name: Install root dependencies
-        run: npm install --include=dev
+        run: npm ci --include=dev --no-audit --no-fund
 
       - name: Install Agent dependencies
         working-directory: agent
-        run: npm install --no-package-lock
+        run: npm install --no-package-lock --no-audit --no-fund
 
       - name: Verify WebViewJS
         shell: pwsh
@@ -159,7 +161,7 @@ jobs:
         env:
           AGENT_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          npx esbuild agent/index.js             --bundle             --platform=node             --target=node24             --format=cjs             --alias:@webviewjs/webview-win32-x64-msvc=./webview-native-shim.js             --define:__AGENT_VERSION__="\"${AGENT_TAG#agent-v}\""             --outfile=dist/agent.cjs             --log-level=info
+          npx --no-install esbuild agent/index.js             --bundle             --platform=node             --target=node24             --format=cjs             --alias:@webviewjs/webview-win32-x64-msvc=./webview-native-shim.js             --define:__AGENT_VERSION__="\"${AGENT_TAG#agent-v}\""             --outfile=dist/agent.cjs             --log-level=info
 
       - name: Verify bundle
         shell: pwsh
