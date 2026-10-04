@@ -77,6 +77,7 @@ let window = null;
 let webview = null;
 let tray = null;
 let notifyTimer = null;
+let initialPaintTimer = null;
 let lastStateJson = null;
 let isQuitting = false;
 
@@ -372,6 +373,11 @@ function createWindow() {
     focused: true,
   });
 
+  // WebView2 puede mostrar una superficie negra si la ventana se hace visible
+  // antes de completar su primer pintado. La mostramos después de enviar el
+  // estado inicial y de arrancar el loop nativo.
+  try { window.setVisible(false); } catch {}
+
   applyWindowIcon();
 
   window.registerProtocol('moonwolf', async request => {
@@ -567,13 +573,33 @@ function scheduleStateChanged() {
   notifyTimer = setTimeout(notifyStateChanged, 100);
 }
 
+function revealWindowAfterInitialPaint() {
+  initialPaintTimer = null;
+
+  if (!window || isQuitting) return;
+
+  try { webview?.setWebviewVisibility?.(true); } catch {}
+
+  try {
+    if (typeof window.setVisible === 'function') window.setVisible(true);
+    else window.show();
+    window.setMinimized(false);
+    window.focus();
+  } catch (error) {
+    console.warn('[window] No se pudo mostrar la ventana tras el primer pintado:', error?.message || error);
+  }
+}
+
 function startGui(getState, guiActions = {}) {
   stateProvider = getState;
   actions = guiActions;
 
   createWindow();
 
-  setTimeout(notifyStateChanged, 300);
+  initialPaintTimer = setTimeout(() => {
+    notifyStateChanged();
+    revealWindowAfterInitialPaint();
+  }, 350);
 
   return {
     update: scheduleStateChanged,
