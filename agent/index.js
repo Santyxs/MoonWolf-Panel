@@ -917,17 +917,24 @@ async function main() {
       }
 
       pairingCode = code;
-      pairingExpiresAt = Number(data?.expiresAt || 0);
+      const serverTtlMs = Number(data?.ttlMs || 0);
+      const serverExpiresAt = Number(data?.expiresAt || 0);
+      const ttlMs = Number.isFinite(serverTtlMs) && serverTtlMs > 0
+        ? serverTtlMs
+        : Math.max(0, serverExpiresAt - Date.now());
+      // La expiración local solo sirve para mostrar el estado en la GUI.
+      // La renovación se programa con ttlMs, sin depender del reloj del servidor.
+      pairingExpiresAt = Date.now() + ttlMs;
 
       addLog(
         `[diagnóstico] Pairing recibido: socket=${cloudSocket.id || 'sin-id'}, ` +
-        `expira=${pairingExpiresAt ? new Date(pairingExpiresAt).toISOString() : 'desconocido'}`
+        `ttl=${ttlMs}ms, expira-local=${pairingExpiresAt ? new Date(pairingExpiresAt).toISOString() : 'desconocido'}`
       );
 
       clearTimeout(pairingRenewTimer);
       pairingRenewTimer = setTimeout(
         requestPairingCode,
-        Math.max(5000, pairingExpiresAt - Date.now() - 20_000)
+        Math.max(5000, ttlMs - 20_000)
       );
       addLog(`Código de emparejamiento disponible: ${code}`);
       gui.update();

@@ -1770,7 +1770,11 @@ io.on('connection', socket => {
         'socket=', socket.id,
         'expira=', new Date(pairing.expiresAt).toISOString()
       );
-      socket.emit('pairing_ready', pairing);
+      socket.emit('pairing_ready', {
+        ...pairing,
+        // El Agent debe usar este TTL para renovar; expiresAt es informativo.
+        ttlMs: PAIRING_TTL_MS,
+      });
     });
 
     socket.on('event', event => {
