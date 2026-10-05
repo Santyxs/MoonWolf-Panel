@@ -750,11 +750,11 @@ select:focus:not(:focus-visible) {
 #editorContainer { position: relative; flex: 1 1 0; min-height: 0; min-width: 0; overflow: hidden; }
 #editorContainer .CodeMirror { position: absolute; inset: 0; width: auto; height: auto !important; font-family: 'Share Tech Mono', monospace !important; font-size: var(--fs-base); line-height: 1.75; background: #05080d !important; color: #d3e0ee; }
 #editorContainer .CodeMirror-scroll { height: 100% !important; max-height: none !important; overflow: auto !important; }
-#editorContainer .CodeMirror-lines { padding: 14px 16px 28px !important; }
+#editorContainer .CodeMirror-lines { padding: 14px 16px 28px 0 !important; }
 
 .cm-s-dracula.CodeMirror                      { background: #05080d !important; color: #d3e0ee; }
 .cm-s-dracula .CodeMirror-gutters             { background: #0b1016 !important; border-right: 1px solid #2a3c50 !important; }
-.cm-s-dracula .CodeMirror-linenumber          { color: #5a7188; padding: 0 10px 0 6px; }
+.cm-s-dracula .CodeMirror-linenumber          { color: #5a7188; padding: 0 10px 0 8px; min-width: 28px; text-align: right; }
 .cm-s-dracula .CodeMirror-activeline-background { background: rgba(255,255,255,0.03) !important; }
 .CodeMirror-cursor   { border-left: 2px solid #00c8ff !important; }
 .CodeMirror-selected { background: rgba(0,200,255,0.12) !important; }

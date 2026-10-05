@@ -1511,7 +1511,7 @@ async function openFile(rel) {
 
     if (window.CodeMirror) {
       editor = CodeMirror.fromTextArea($('mwEditorArea'), {
-        lineNumbers: false,
+        lineNumbers: true,
         mode,
         theme: 'dracula',
         lineWrapping: false,
