@@ -10,8 +10,8 @@
 <link rel="preconnect" href="https://cdnjs.cloudflare.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Share+Tech+Mono&display=swap">
 
-  <link rel="stylesheet" href="styles.css?v=20261005-editor-rebuild-6">
-  <script src="dashboard.js?v=20261005-editor-rebuild-6" defer></script>
+  <link rel="stylesheet" href="styles.css?v=20261005-fileops-2">
+  <script src="dashboard.js?v=20261005-fileops-2" defer></script>
 </head>
 
 <body>
@@ -158,8 +158,37 @@
             </div>
           </div>
 
+          <div class="files-dropzone" id="filesDropzone" tabindex="0" role="button" aria-label="Arrastra archivos aquí para subirlos">
+            <span class="dropzone-icon">↥</span>
+            <span><strong>Arrastra archivos o carpetas aquí</strong><small>Las subidas grandes se dividen en bloques y continúan aunque haya varios archivos</small></span>
+          </div>
+          <div class="upload-progress-panel" id="uploadProgressPanel" aria-live="polite" hidden>
+            <div class="upload-progress-head">
+              <div><strong id="uploadProgressTitle">Subiendo archivos</strong><span id="uploadProgressCurrent">Preparando…</span></div>
+              <strong class="upload-progress-percent" id="uploadProgressPercent">0%</strong>
+            </div>
+            <div class="upload-progress-track"><div id="uploadProgressFill"></div></div>
+            <div class="upload-progress-meta">
+              <span id="uploadProgressFiles">0/0 archivos</span>
+              <span id="uploadProgressBytes">0 B de 0 B</span>
+              <span id="uploadProgressSpeed">—</span>
+              <span id="uploadProgressEta">Calculando tiempo…</span>
+            </div>
+            <div class="upload-progress-error-detail" id="uploadProgressError" role="alert"></div>
+            <button class="small-btn upload-retry-btn" id="uploadProgressRetry" type="button" hidden>↻ Reintentar subida</button>
+          </div>
+          <div class="files-bulkbar" id="filesBulkbar" aria-live="polite">
+            <span><strong id="selectedFilesCount">0</strong> seleccionados</span>
+            <div class="bulk-actions">
+              <button class="small-btn" data-bulk-action="move">🔀 Mover</button>
+              <button class="small-btn" data-bulk-action="compress">🗜️ Comprimir</button>
+              <button class="small-btn danger" data-bulk-action="delete">🗑️ Eliminar</button>
+              <button class="small-btn" data-bulk-action="clear">✕ Limpiar</button>
+            </div>
+          </div>
           <div class="panel files-table-panel" id="filesTablePanel">
             <div class="file-table-header">
+              <label class="file-select-all"><input id="selectAllFiles" type="checkbox" aria-label="Seleccionar todos"> <span>Todo</span></label>
               <span style="flex:1">Nombre</span>
               <span style="width:90px;text-align:right">Tamaño</span>
               <span style="width:140px;text-align:right">Modificado</span>

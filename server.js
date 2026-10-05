@@ -3713,6 +3713,61 @@ app.post('/api/files/compress', async (req, res) => {
   }
 });
 
+app.post('/api/files/bulk', async (req, res) => {
+  const { action, items, destination = '' } = req.body || {};
+  const allowed = new Set(['delete', 'move', 'compress']);
+  if (!allowed.has(action) || !Array.isArray(items) || !items.length || items.length > 500) {
+    return fail(res, 'Operación masiva no válida');
+  }
+  if (action === 'move' && typeof destination !== 'string') {
+    return fail(res, 'Destino no válido');
+  }
+  const results = [];
+  for (const item of items) {
+    const rel = typeof item?.path === 'string' ? item.path : '';
+    const full = safePath(rel);
+    if (!full || path.resolve(full) === path.resolve(BASE_DIR)) {
+      results.push({ path: rel, ok: false, error: 'Ruta no permitida' });
+      continue;
+    }
+    try {
+      const stat = await fs.stat(full);
+      if (action === 'delete') {
+        await fs.rm(full, { recursive: stat.isDirectory(), force: true });
+      } else if (action === 'move') {
+        const destinationPath = destination
+          ? `${destination.replace(/[\\/]+$/, '')}/${path.basename(rel)}`
+          : path.basename(rel);
+        const fullDest = safePath(destinationPath);
+        if (!fullDest || path.resolve(fullDest) === path.resolve(full)) throw new Error('Destino no válido');
+        await fs.mkdir(path.dirname(fullDest), { recursive: true });
+        await fs.rename(full, fullDest);
+      } else {
+        const baseName = path.basename(rel).replace(/[^a-zA-Z0-9._-]/g, '_');
+        const zipName = `${baseName}.zip`;
+        const zipDest = path.join(path.dirname(full), zipName);
+        if (!zipDest.startsWith(path.resolve(BASE_DIR) + path.sep)) throw new Error('Destino no válido');
+        await new Promise((resolve, reject) => {
+          const output = fsSync.createWriteStream(zipDest);
+          const archive = getArchiver()('zip', { zlib: { level: 6 } });
+          output.on('close', resolve);
+          output.on('error', reject);
+          archive.on('error', reject);
+          archive.pipe(output);
+          if (stat.isDirectory()) archive.directory(full, baseName);
+          else archive.file(full, { name: path.basename(full) });
+          archive.finalize();
+        });
+      }
+      results.push({ path: rel, ok: true });
+    } catch (error) {
+      results.push({ path: rel, ok: false, error: error.message || 'No se pudo completar la operación' });
+    }
+  }
+  const completed = results.filter(result => result.ok).length;
+  const failed = results.length - completed;
+  return ok(res, { completed, failed, results });
+});
 app.post('/api/files/delete', async (req, res) => {
   const { path: rel, isDir } = req.body;
 

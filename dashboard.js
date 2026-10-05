@@ -1131,7 +1131,8 @@ function populateFiles(dir = '') {
       list.innerHTML = items
         .map(
           item => `
-          <div class="file-row" data-name="${escHtml(item.name)}" data-type="${escHtml(item.type)}">
+          <div class="file-row" data-name="${escHtml(item.name)}" data-type="${escHtml(item.type)}" data-path="${escHtml(currentDir ? `${currentDir}/${item.name}` : item.name)}">
+            <label class="file-select"><input type="checkbox" aria-label="Seleccionar ${escHtml(item.name)}"></label>
             <span class="file-name" style="flex:1">
               ${fileIcon(item.type)}
               <span>${escHtml(item.name)}</span>
@@ -1144,6 +1145,14 @@ function populateFiles(dir = '') {
         .join('');
 
       list.querySelectorAll('.file-row').forEach(row => {
+        const checkbox = row.querySelector('input[type="checkbox"]');
+        if (selectedFilePaths.has(row.dataset.path)) checkbox.checked = true;
+        checkbox?.addEventListener('click', event => event.stopPropagation());
+        checkbox?.addEventListener('change', () => {
+          if (checkbox.checked) selectedFilePaths.add(row.dataset.path);
+          else selectedFilePaths.delete(row.dataset.path);
+          updateBulkBar();
+        });
         row.addEventListener('dblclick', () => {
           const name = row.dataset.name;
           const type = row.dataset.type;
@@ -1164,14 +1173,57 @@ function populateFiles(dir = '') {
     })
     .catch(error => {
       list.innerHTML = `
-        <div class="empty-state">
-          <div class="empty-icon" style="color:var(--red)">⚠</div>
-          <div class="empty-msg">${escHtml(error.message)}</div>
+        <div class="file-load-error" role="alert">
+          <div class="empty-icon">⚠</div>
+          <div class="empty-msg">No se pudo cargar esta carpeta</div>
+          <div class="empty-detail">${escHtml(error.message)}</div>
+          <button class="small-btn" id="btnRetryFiles" type="button">↻ Reintentar</button>
         </div>
       `;
+      $('btnRetryFiles')?.addEventListener('click', () => populateFiles(currentDir));
     });
 }
 
+function updateBulkBar() {
+  const bar = $('filesBulkbar');
+  const count = selectedFilePaths.size;
+  if ($('selectedFilesCount')) $('selectedFilesCount').textContent = count;
+  bar?.classList.toggle('visible', count > 0);
+  const selectAll = $('selectAllFiles');
+  const rows = document.querySelectorAll('#fileList .file-row');
+  if (selectAll) {
+    selectAll.checked = rows.length > 0 && Array.from(rows).every(row => selectedFilePaths.has(row.dataset.path));
+    selectAll.indeterminate = !selectAll.checked && Array.from(rows).some(row => selectedFilePaths.has(row.dataset.path));
+  }
+}
+function clearSelectedFiles() {
+  selectedFilePaths.clear();
+  document.querySelectorAll('#fileList input[type="checkbox"]').forEach(input => { input.checked = false; });
+  updateBulkBar();
+}
+async function runBulkAction(action) {
+  if (action === 'clear') return clearSelectedFiles();
+  const items = Array.from(selectedFilePaths).map(rel => {
+    const row = Array.from(document.querySelectorAll('#fileList .file-row')).find(item => item.dataset.path === rel);
+    return { path: rel, isDir: row?.dataset.type === 'dir' };
+  });
+  if (!items.length) return;
+  let destination;
+  if (action === 'move') {
+    destination = prompt('Carpeta relativa de destino:', currentDir || '');
+    if (destination === null) return;
+    destination = normalizeUploadRelativePath(destination);
+  }
+  if (action === 'delete' && !confirm(`¿Eliminar ${items.length} elemento${items.length === 1 ? '' : 's'} seleccionado${items.length === 1 ? '' : 's'}?`)) return;
+  try {
+    const data = await postJSON('/api/files/bulk', { action, items, destination });
+    if (!data.ok) throw new Error(data.error || 'La operación masiva falló');
+    clearSelectedFiles();
+    toast(`✅ ${data.completed || items.length} operación${items.length === 1 ? '' : 'es'} completada${items.length === 1 ? '' : 's'}`, 'ok');
+    if (data.failed) toast(`⚠️ ${data.failed} elemento${data.failed === 1 ? '' : 's'} no se pudo procesar`, 'warn');
+    populateFiles(currentDir);
+  } catch (error) { toast(`❌ ${error.message}`, 'err'); }
+}
 function renderBreadcrumb(dir) {
   const trail = $('crumbTrail');
 
@@ -1351,7 +1403,64 @@ function normalizeUploadRelativePath(value) {
     .join('/');
 }
 
+function formatUploadBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let amount = bytes;
+  let index = -1;
+  do { amount /= 1024; index += 1; } while (amount >= 1024 && index < units.length - 1);
+  return `${amount >= 100 ? amount.toFixed(0) : amount >= 10 ? amount.toFixed(1) : amount.toFixed(2)} ${units[index]}`;
+}
+function formatUploadEta(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return 'Calculando tiempo…';
+  const total = Math.ceil(seconds);
+  if (total < 60) return `${total}s restantes`;
+  const minutes = Math.floor(total / 60);
+  const secs = total % 60;
+  if (minutes < 60) return `${minutes}m ${secs.toString().padStart(2, '0')}s restantes`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${(minutes % 60).toString().padStart(2, '0')}m restantes`;
+}
+function updateUploadProgress(progressState) {
+  const panel = $('uploadProgressPanel');
+  if (!panel) return;
+  const total = progressState.totalBytes || 0;
+  const done = Math.min(progressState.doneBytes || 0, total);
+  const percent = total ? Math.min(100, Math.round((done / total) * 100)) : 100;
+  const elapsed = Math.max((Date.now() - progressState.startedAt) / 1000, 0.001);
+  const speed = done / elapsed;
+  const eta = speed > 0 ? (total - done) / speed : Infinity;
+  const currentDone = progressState.currentFileDone || 0;
+  const currentTotal = progressState.currentFileSize || 0;
+  panel.hidden = false;
+  panel.classList.remove('upload-progress-error');
+  if ($('uploadProgressError')) $('uploadProgressError').textContent = '';
+  if ($('uploadProgressRetry')) $('uploadProgressRetry').hidden = true;
+  if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = progressState.status || `Subiendo ${progressState.index + 1}/${progressState.totalFiles}`;
+  if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = progressState.currentFile ? `${progressState.currentFile} · ${formatUploadBytes(currentDone)} / ${formatUploadBytes(currentTotal)}` : 'Preparando…';
+  if ($('uploadProgressPercent')) $('uploadProgressPercent').textContent = `${percent}%`;
+  if ($('uploadProgressFill')) $('uploadProgressFill').style.width = `${percent}%`;
+  if ($('uploadProgressFiles')) $('uploadProgressFiles').textContent = `${Math.min(progressState.index, progressState.totalFiles)}/${progressState.totalFiles} archivos`;
+  if ($('uploadProgressBytes')) $('uploadProgressBytes').textContent = `${formatUploadBytes(done)} de ${formatUploadBytes(total)}`;
+  if ($('uploadProgressSpeed')) $('uploadProgressSpeed').textContent = speed > 0 ? `${formatUploadBytes(speed)}/s` : '—';
+  if ($('uploadProgressEta')) $('uploadProgressEta').textContent = percent >= 100 ? 'Completado' : formatUploadEta(eta);
+}
+function finishUploadProgress(message, isError = false, detail = '') {
+  const panel = $('uploadProgressPanel');
+  if (!panel) return;
+  if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = message;
+  if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = isError ? 'La subida se detuvo' : 'Todos los archivos se han procesado';
+  if ($('uploadProgressError')) $('uploadProgressError').textContent = detail;
+  if ($('uploadProgressRetry')) $('uploadProgressRetry').hidden = !isError || !lastUploadFiles.length;
+  panel.classList.toggle('upload-progress-error', isError);
+  if (!isError) setTimeout(() => { panel.hidden = true; }, 3500);
+}
 async function uploadOneFile(file, relativePath, progressState) {
+  progressState.currentFile = file.webkitRelativePath || file.name;
+  progressState.currentFileSize = file.size;
+  progressState.currentFileDone = 0;
+  updateUploadProgress(progressState);
   const relPath = normalizeUploadRelativePath(relativePath || file.name);
 
   if (!relPath) {
@@ -1370,27 +1479,31 @@ async function uploadOneFile(file, relativePath, progressState) {
     const buffer = await file.slice(offset, end).arrayBuffer();
     const bytes = new Uint8Array(buffer);
 
-    const data = await postJSON('/api/files/upload-chunk', {
-      uploadId,
-      path: target,
-      offset,
-      totalSize: file.size,
-      chunkBase64: bytesToBase64(bytes),
-      final: end >= file.size,
-      overwrite: true,
-    });
-
-    if (!data.ok) {
-      throw new Error(data.error || `No se pudo subir ${file.name}`);
+    let data;
+    let lastError;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        data = await postJSON('/api/files/upload-chunk', {
+          uploadId, path: target, offset, totalSize: file.size,
+          chunkBase64: bytesToBase64(bytes), final: end >= file.size, overwrite: true,
+        });
+        if (!data.ok) throw new Error(data.error || `No se pudo subir ${file.name}`);
+        break;
+      } catch (error) {
+        lastError = error;
+        if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+      }
     }
-
+    if (!data?.ok) throw lastError || new Error(`No se pudo subir ${file.name}`);
     if (file.size === 0) {
       offset = 1;
       break;
     }
 
     offset = end;
+    progressState.currentFileDone = offset;
     progressState.doneBytes += bytes.length;
+    updateUploadProgress(progressState);
     const percent = progressState.totalBytes > 0
       ? Math.round((progressState.doneBytes / progressState.totalBytes) * 100)
       : 100;
@@ -1411,17 +1524,26 @@ async function uploadSelectedFiles(fileList) {
     totalFiles: files.length,
     totalBytes: files.reduce((sum, file) => sum + file.size, 0),
     doneBytes: 0,
+    startedAt: Date.now(),
+    status: `Subiendo 1/${files.length}`,
   };
+  updateUploadProgress(progressState);
 
   try {
     for (const file of files) {
+      progressState.status = `Subiendo ${progressState.index + 1}/${progressState.totalFiles}`;
       const relative = file.webkitRelativePath || file.name;
       await uploadOneFile(file, relative, progressState);
     }
 
+    progressState.doneBytes = progressState.totalBytes;
+    progressState.index = progressState.totalFiles;
+    updateUploadProgress(progressState);
+    finishUploadProgress('Subida completada');
     toast(`✅ ${files.length} ${files.length === 1 ? 'archivo subido' : 'archivos subidos'} correctamente`, 'ok');
     populateFiles(currentDir);
   } catch (error) {
+    finishUploadProgress('Subida interrumpida', true, error.message || 'Error desconocido');
     toast(`❌ ${error.message}`, 'err');
   }
 }
@@ -3571,7 +3693,38 @@ function bindEvents() {
     await uploadSelectedFiles(event.target.files);
     event.target.value = '';
   });
+  $('selectAllFiles')?.addEventListener('change', event => {
+    document.querySelectorAll('#fileList .file-row').forEach(row => {
+      const checkbox = row.querySelector('input[type="checkbox"]');
+      checkbox.checked = event.target.checked;
+      if (checkbox.checked) selectedFilePaths.add(row.dataset.path);
+      else selectedFilePaths.delete(row.dataset.path);
+    });
+    updateBulkBar();
+  });
+  document.querySelectorAll('[data-bulk-action]').forEach(button => {
+    button.addEventListener('click', () => runBulkAction(button.dataset.bulkAction));
+  });
+  const dropzone = $('filesDropzone');
+  if (dropzone) {
+    dropzone.addEventListener('click', () => $('fileUploadInput')?.click());
+    ['dragenter', 'dragover'].forEach(type => dropzone.addEventListener(type, event => { event.preventDefault(); dropzone.classList.add('is-dragging'); }));
+    ['dragleave', 'drop'].forEach(type => dropzone.addEventListener(type, event => { event.preventDefault(); dropzone.classList.remove('is-dragging'); }));
+    dropzone.addEventListener('drop', async event => {
+      const files = event.dataTransfer?.files;
+      if (files?.length) await uploadSelectedFiles(files);
+    });
+    dropzone.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') $('fileUploadInput')?.click();
+    });
+  }
 
+  $('uploadProgressRetry')?.addEventListener('click', async () => {
+    const files = lastUploadFiles.slice();
+    if (!files.length) return;
+    $('uploadProgressRetry').hidden = true;
+    await uploadSelectedFiles(files);
+  });
   $('btnNewFile')?.addEventListener('click', async () => {
     const raw = prompt('Nombre del nuevo archivo (termina en "/" para carpeta):');
     if (!raw) return;
