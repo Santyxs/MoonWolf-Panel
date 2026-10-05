@@ -62,6 +62,7 @@ let agentOnline = false;
 
 let editor = null;
 let currentFile = null;
+let originalFileContent = '';
 let currentDir = '';
 
 let currentPlugin = null;
@@ -1456,7 +1457,32 @@ function finishUploadProgress(message, isError = false, detail = '') {
   panel.classList.toggle('upload-progress-error', isError);
   if (!isError) setTimeout(() => { panel.hidden = true; }, 3500);
 }
-async function uploadOneFile(file, relativePath, progressState) {
+function askFileConflict(fileName) {
+  const modal = $('fileConflictModal');
+  if (!modal) return Promise.resolve('cancel');
+  if ($('fileConflictName')) $('fileConflictName').textContent = fileName;
+  if ($('fileConflictMessage')) $('fileConflictMessage').textContent = 'Ya existe un archivo con ese nombre. ¿Qué quieres hacer?';
+  modal.hidden = false;
+  return new Promise(resolve => {
+    const finish = choice => {
+      modal.hidden = true;
+      modal.querySelectorAll('[data-conflict-choice]').forEach(button => {
+        button.removeEventListener('click', button._conflictHandler);
+        delete button._conflictHandler;
+      });
+      resolve(choice);
+    };
+    modal.querySelectorAll('[data-conflict-choice]').forEach(button => {
+      const handler = () => finish(button.dataset.conflictChoice);
+      button._conflictHandler = handler;
+      button.addEventListener('click', handler);
+    });
+  });
+}
+function isFileConflict(error) {
+  return Boolean(error?.isFileConflict || /ya existe un archivo/i.test(error?.message || ''));
+}
+async function uploadOneFile(file, relativePath, progressState, overwrite = true) {
   progressState.currentFile = file.webkitRelativePath || file.name;
   progressState.currentFileSize = file.size;
   progressState.currentFileDone = 0;
@@ -1485,9 +1511,13 @@ async function uploadOneFile(file, relativePath, progressState) {
       try {
         data = await postJSON('/api/files/upload-chunk', {
           uploadId, path: target, offset, totalSize: file.size,
-          chunkBase64: bytesToBase64(bytes), final: end >= file.size, overwrite: true,
+          chunkBase64: bytesToBase64(bytes), final: end >= file.size, overwrite,
         });
-        if (!data.ok) throw new Error(data.error || `No se pudo subir ${file.name}`);
+        if (!data.ok) {
+          const uploadError = new Error(data.error || `No se pudo subir ${file.name}`);
+          if (/ya existe un archivo/i.test(uploadError.message)) uploadError.isFileConflict = true;
+          throw uploadError;
+        }
         break;
       } catch (error) {
         lastError = error;
@@ -1533,7 +1563,24 @@ async function uploadSelectedFiles(fileList) {
     for (const file of files) {
       progressState.status = `Subiendo ${progressState.index + 1}/${progressState.totalFiles}`;
       const relative = file.webkitRelativePath || file.name;
-      await uploadOneFile(file, relative, progressState);
+      try {
+        await uploadOneFile(file, relative, progressState, false);
+      } catch (error) {
+        if (!isFileConflict(error)) throw error;
+        const choice = await askFileConflict(relative);
+        if (choice === 'keep') {
+          progressState.index += 1;
+          progressState.status = `Manteniendo ${progressState.index}/${progressState.totalFiles}`;
+          updateUploadProgress(progressState);
+          continue;
+        }
+        if (choice === 'cancel') {
+          const cancelled = new Error('Subida cancelada por conflicto de archivo');
+          cancelled.isCancelled = true;
+          throw cancelled;
+        }
+        await uploadOneFile(file, relative, progressState, true);
+      }
     }
 
     progressState.doneBytes = progressState.totalBytes;
@@ -1543,7 +1590,7 @@ async function uploadSelectedFiles(fileList) {
     toast(`✅ ${files.length} ${files.length === 1 ? 'archivo subido' : 'archivos subidos'} correctamente`, 'ok');
     populateFiles(currentDir);
   } catch (error) {
-    finishUploadProgress('Subida interrumpida', true, error.message || 'Error desconocido');
+    finishUploadProgress(error.isCancelled ? 'Subida cancelada' : 'Subida interrumpida', true, error.message || 'Error desconocido');
     toast(`❌ ${error.message}`, 'err');
   }
 }
@@ -1575,7 +1622,28 @@ async function downloadFile(rel, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+function getEditorContent() {
+  return editor ? editor.getValue() : $('mwEditorArea')?.value || '';
+}
+function editorHasUnsavedChanges() {
+  return Boolean(currentFile && getEditorContent() !== originalFileContent);
+}
+function confirmEditorExit() {
+  if (!editorHasUnsavedChanges()) return true;
+  return window.confirm(`El archivo "${currentFile.split('/').pop()}" tiene cambios sin guardar. ¿Quieres salir del editor y descartarlos?`);
+}
+function closeFileEditor() {
+  if (!confirmEditorExit()) return false;
+  if ($('filesEditorPanel')) $('filesEditorPanel').style.display = 'none';
+  if ($('filesTablePanel')) $('filesTablePanel').style.display = '';
+  if (editor?.toTextArea) editor.toTextArea();
+  editor = null;
+  currentFile = null;
+  originalFileContent = '';
+  return true;
+}
 async function openFile(rel) {
+  if (currentFile && currentFile !== rel && !confirmEditorExit()) return;
   try {
     const data = await api(
       `/api/files/content?path=${encodeURIComponent(rel)}`
@@ -1586,7 +1654,7 @@ async function openFile(rel) {
     }
 
     currentFile = rel;
-
+    originalFileContent = data.content || '';
     if ($('filesTablePanel')) {
       $('filesTablePanel').style.display = 'none';
     }
@@ -1647,7 +1715,8 @@ async function openFile(rel) {
       editor.setCursor({ line: 0, ch: 0 });
 
       editor.on('cursorActivity', updateEditorStatus);
-
+      editor.on('change', updateEditorDirtyState);
+      updateEditorDirtyState();
       updateEditorStatus();
       // El panel se muestra justo antes de crear CodeMirror; refrescar en el
       // siguiente frame evita que calcule un ancho/alto de 0 y corte el texto.
@@ -1658,6 +1727,8 @@ async function openFile(rel) {
       });
     } else {
       $('mwEditorArea').value = data.content || '';
+      $('mwEditorArea')?.addEventListener('input', updateEditorDirtyState);
+      updateEditorDirtyState();
     }
   } catch (error) {
     toast(`❌ ${error.message}`, 'err');
@@ -1674,6 +1745,11 @@ function updateEditorStatus() {
   if ($('edLines')) $('edLines').textContent = editor.lineCount();
 }
 
+function updateEditorDirtyState() {
+  const dirty = editorHasUnsavedChanges();
+  $('btnSaveFile')?.classList.toggle('has-unsaved-changes', dirty);
+  if ($('edSaveMsg')) $('edSaveMsg').textContent = dirty ? 'Cambios sin guardar' : '';
+}
 function refreshEditorLayout() {
   if (!editor) return;
 
@@ -1690,7 +1766,7 @@ window.visualViewport?.addEventListener('resize', refreshEditorLayout, { passive
 async function saveCurrentFile() {
   if (!currentFile) return;
 
-  const content = editor ? editor.getValue() : $('mwEditorArea')?.value || '';
+  const content = getEditorContent();
 
   const data = await postJSON('/api/files/content', {
     path: currentFile,
@@ -1701,7 +1777,8 @@ async function saveCurrentFile() {
     toast(`❌ ${data.error}`, 'err');
     return;
   }
-
+  originalFileContent = content;
+  updateEditorDirtyState();
   if ($('edSaveMsg')) {
     $('edSaveMsg').textContent = 'Guardado';
   }
@@ -3147,6 +3224,8 @@ async function saveStartup() {
 /* NAVIGATION */
 
 function switchView(id) {
+  const editorOpen = Boolean(currentFile && $('filesEditorPanel')?.style.display !== 'none');
+  if (editorOpen && id !== 'files' && !closeFileEditor()) return;
   document.querySelectorAll('.view').forEach(view => view.classList.remove('active'));
   document.querySelectorAll('.sb-item').forEach(item => item.classList.remove('active'));
 
@@ -3725,6 +3804,9 @@ function bindEvents() {
     $('uploadProgressRetry').hidden = true;
     await uploadSelectedFiles(files);
   });
+  $('fileConflictModal')?.addEventListener('keydown', event => {
+    if (event.key === 'Escape') $('fileConflictModal').querySelector('[data-conflict-choice="cancel"]')?.click();
+  });
   $('btnNewFile')?.addEventListener('click', async () => {
     const raw = prompt('Nombre del nuevo archivo (termina en "/" para carpeta):');
     if (!raw) return;
@@ -3751,23 +3833,7 @@ function bindEvents() {
     populateFiles(currentDir);
   });
 
-  $('btnEditorBack')?.addEventListener('click', () => {
-    if ($('filesEditorPanel')) {
-      $('filesEditorPanel').style.display = 'none';
-    }
-
-    if ($('filesTablePanel')) {
-      $('filesTablePanel').style.display = '';
-    }
-
-    if (editor?.toTextArea) {
-      editor.toTextArea();
-    }
-
-    editor = null;
-    currentFile = null;
-  });
-
+  $('btnEditorBack')?.addEventListener('click', closeFileEditor);
   $('btnSaveFile')?.addEventListener('click', saveCurrentFile);
 
   document.addEventListener('keydown', event => {

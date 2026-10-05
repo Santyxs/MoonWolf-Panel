@@ -177,6 +177,21 @@
             <div class="upload-progress-error-detail" id="uploadProgressError" role="alert"></div>
             <button class="small-btn upload-retry-btn" id="uploadProgressRetry" type="button" hidden>↻ Reintentar subida</button>
           </div>
+          <div class="file-conflict-modal" id="fileConflictModal" hidden role="dialog" aria-modal="true" aria-labelledby="fileConflictTitle">
+            <div class="file-conflict-card">
+              <div class="file-conflict-icon">⚠</div>
+              <div class="file-conflict-copy">
+                <strong id="fileConflictTitle">Conflicto de archivo</strong>
+                <span id="fileConflictMessage">Ya existe un archivo con ese nombre.</span>
+                <code id="fileConflictName"></code>
+              </div>
+              <div class="file-conflict-actions">
+                <button class="small-btn conflict-replace" data-conflict-choice="replace" type="button">Reemplazar</button>
+                <button class="small-btn" data-conflict-choice="keep" type="button">Mantener</button>
+                <button class="small-btn danger" data-conflict-choice="cancel" type="button">Cancelar</button>
+              </div>
+            </div>
+          </div>
           <div class="files-bulkbar" id="filesBulkbar" aria-live="polite">
             <span><strong id="selectedFilesCount">0</strong> seleccionados</span>
             <div class="bulk-actions">
