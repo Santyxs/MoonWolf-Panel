@@ -1552,6 +1552,19 @@ function updateEditorStatus() {
   if ($('edLines')) $('edLines').textContent = editor.lineCount();
 }
 
+function refreshEditorLayout() {
+  if (!editor) return;
+
+  requestAnimationFrame(() => {
+    if (!editor) return;
+    editor.setSize('100%', '100%');
+    editor.refresh();
+  });
+}
+
+window.addEventListener('resize', refreshEditorLayout, { passive: true });
+window.visualViewport?.addEventListener('resize', refreshEditorLayout, { passive: true });
+
 async function saveCurrentFile() {
   if (!currentFile) return;
 
