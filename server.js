@@ -607,6 +607,13 @@ for (const asset of PUBLIC_ASSETS) {
   });
 }
 
+// CodeMirror se sirve desde el propio panel para que el visor mantenga el
+// resaltado incluso cuando el navegador bloquea CDNs o no tiene conexión.
+app.use('/vendor', express.static(path.join(__dirname, 'public/vendor'), {
+  fallthrough: false,
+  maxAge: '1d',
+}));
+
 app.use(express.json({ limit: '50mb' }));
 
 /* ══════════════════════════════════════════════

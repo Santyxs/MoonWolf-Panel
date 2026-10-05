@@ -127,21 +127,21 @@ function loadExternalScript(src) {
 async function ensureCodeMirror(mode) {
   if (window.CodeMirror) return true;
   if (!codeMirrorPromise) {
-    const base = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2';
+    const base = '/vendor/codemirror';
     const css = document.createElement('link');
     css.rel = 'stylesheet';
     css.href = `${base}/codemirror.min.css`;
     document.head.appendChild(css);
     const theme = document.createElement('link');
     theme.rel = 'stylesheet';
-    theme.href = `${base}/theme/dracula.min.css`;
+    theme.href = `${base}/dracula.min.css`;
     document.head.appendChild(theme);
     codeMirrorPromise = loadExternalScript(`${base}/codemirror.min.js`);
   }
 
   try {
     await codeMirrorPromise;
-    const base = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2';
+    const base = '/vendor/codemirror';
     const modeUrl = {
       javascript: `${base}/mode/javascript/javascript.min.js`,
       yaml: `${base}/mode/yaml/yaml.min.js`,
@@ -1503,6 +1503,8 @@ async function openFile(rel) {
       sh: 'shell',
       bat: 'shell',
       cmd: 'shell',
+      toml: 'toml',
+      nginx: 'nginx',
     }[ext] || 'text/plain';
 
     await ensureCodeMirror(mode);
@@ -1521,6 +1523,9 @@ async function openFile(rel) {
       editor.on('cursorActivity', updateEditorStatus);
 
       updateEditorStatus();
+      // El panel se muestra justo antes de crear CodeMirror; refrescar en el
+      // siguiente frame evita que calcule un ancho/alto de 0 y corte el texto.
+      requestAnimationFrame(() => editor?.refresh());
     } else {
       $('mwEditorArea').value = data.content || '';
     }
