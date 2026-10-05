@@ -1519,6 +1519,10 @@ async function openFile(rel) {
       });
 
       editor.setValue(data.content || '');
+      // Cada archivo debe abrirse desde el inicio, sin heredar ningún scroll
+      // horizontal/vertical ni dejar la primera línea bajo el borde superior.
+      editor.scrollTo(0, 0);
+      editor.setCursor({ line: 0, ch: 0 });
 
       editor.on('cursorActivity', updateEditorStatus);
 
