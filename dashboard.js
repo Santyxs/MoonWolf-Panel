@@ -1984,24 +1984,25 @@ async function installPlugin(version) {
     file.filename ||
     `${String(currentPlugin?.name || 'plugin').replace(/[^a-zA-Z0-9._-]/g, '_')}.jar`;
 
-  $('plgModalBody').insertAdjacentHTML(
-    'afterbegin',
-    '<div class="plg-warn-bar">📥 Instalando...</div>'
-  );
-
-  const data = await postJSON('/api/plugins/install', {
-    url: file.url,
-    filename,
-  });
-
-  if (!data.ok) {
-    toast(`❌ ${data.error}`, 'err');
-    return;
+  const installStatus = document.createElement('div');
+  installStatus.className = 'plg-install-status installing';
+  installStatus.innerHTML = '<span class="plg-install-spinner">⟳</span><strong>Instalando...</strong><span>Descargando y copiando el plugin al servidor</span>';
+  $('plgModalBody')?.prepend(installStatus);
+  const installButtons = $('plgModalBody')?.querySelectorAll('.plg-dl-btn:not(.external)') || [];
+  installButtons.forEach(button => { button.disabled = true; button.classList.add('is-installing'); });
+  try {
+    const data = await postJSON('/api/plugins/install', { url: file.url, filename });
+    if (!data.ok) throw new Error(data.error || 'No se pudo instalar el plugin.');
+    installStatus.className = 'plg-install-status installed';
+    installStatus.innerHTML = `<span>✓</span><strong>Instalado correctamente</strong><span>${escHtml(filename)}</span>`;
+    toast(`✅ ${filename} instalado`, 'ok');
+    loadInstalledPlugins();
+  } catch (error) {
+    installStatus.className = 'plg-install-status failed';
+    installStatus.innerHTML = `<span>⚠</span><strong>Instalación fallida</strong><span>${escHtml(error.message)}</span>`;
+    installButtons.forEach(button => { button.disabled = false; button.classList.remove('is-installing'); });
+    toast(`❌ ${error.message}`, 'err');
   }
-
-  toast(`✅ ${filename} instalado`, 'ok');
-
-  loadInstalledPlugins();
 }
 
 async function loadInstalledPlugins() {

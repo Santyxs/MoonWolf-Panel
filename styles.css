@@ -1005,6 +1005,19 @@ select:focus:not(:focus-visible) {
   transform: translateY(-1px);
 }
 
+.plg-install-status {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 10px; padding: 10px 12px;
+  border: 1px solid rgba(0,200,255,.28); border-radius: var(--r-md); background: rgba(0,200,255,.07);
+  color: var(--muted2); font-size: var(--fs-xs);
+}
+.plg-install-status strong { color: var(--accent); }
+.plg-install-status > span:last-child { margin-left: auto; color: var(--muted); }
+.plg-install-spinner { color: var(--accent); font-size: 18px; animation: spin 1s linear infinite; }
+.plg-install-status.installed { border-color: rgba(0,255,136,.35); background: rgba(0,255,136,.07); }
+.plg-install-status.installed strong { color: var(--green); }
+.plg-install-status.failed { border-color: rgba(255,68,85,.4); background: rgba(255,68,85,.08); }
+.plg-install-status.failed strong { color: var(--red); }
+.plg-dl-btn.is-installing { opacity: .55; cursor: wait; }
 .plg-warn-bar {
   background: rgba(255,204,0,0.06);
   border: 1px solid rgba(255,204,0,0.2);
