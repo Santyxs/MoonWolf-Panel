@@ -3445,6 +3445,64 @@ const FILE_UPLOAD_MAX_CHUNK_BYTES = 2 * 1024 * 1024;
 const FILE_UPLOAD_ID_RE = /^[a-zA-Z0-9_-]{8,120}$/;
 const FILE_UPLOAD_DIR = path.join(BASE_DIR, '.moonwolf-uploads');
 
+const FILE_UPLOAD_RETENTION_MS = Math.max(
+  60 * 60 * 1000,
+  Number(process.env.MOONWOLF_UPLOAD_RETENTION_HOURS || 24) * 60 * 60 * 1000
+);
+const FILE_UPLOAD_CLEANUP_INTERVAL_MS = Math.max(
+  15 * 60 * 1000,
+  Number(process.env.MOONWOLF_UPLOAD_CLEANUP_INTERVAL_MINUTES || 60) * 60 * 1000
+);
+const activeFileUploads = new Set();
+
+async function cleanupStaleFileUploads() {
+  let entries;
+
+  try {
+    entries = await fs.readdir(FILE_UPLOAD_DIR, { withFileTypes: true });
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.warn('[uploads] No se pudo revisar la carpeta temporal:', error.message);
+    }
+    return;
+  }
+
+  const cutoff = Date.now() - FILE_UPLOAD_RETENTION_MS;
+  let removed = 0;
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.part')) continue;
+
+    const uploadId = entry.name.slice(0, -'.part'.length);
+    if (activeFileUploads.has(uploadId)) continue;
+
+    const uploadPath = path.join(FILE_UPLOAD_DIR, entry.name);
+
+    try {
+      const stats = await fs.stat(uploadPath);
+      if (stats.mtimeMs > cutoff) continue;
+
+      await fs.rm(uploadPath, { force: true });
+      removed += 1;
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        console.warn(`[uploads] No se pudo eliminar ${entry.name}:`, error.message);
+      }
+    }
+  }
+
+  if (removed) {
+    console.log(`[uploads] Limpieza automática: ${removed} fragmento(s) temporal(es) eliminado(s).`);
+  }
+}
+
+void cleanupStaleFileUploads();
+const fileUploadCleanupTimer = setInterval(
+  cleanupStaleFileUploads,
+  FILE_UPLOAD_CLEANUP_INTERVAL_MS
+);
+fileUploadCleanupTimer.unref?.();
+
 app.post('/api/files/upload-chunk', async (req, res) => {
   const {
     uploadId,
@@ -3504,6 +3562,8 @@ app.post('/api/files/upload-chunk', async (req, res) => {
     return fail(res, 'Ruta temporal no permitida');
   }
 
+  activeFileUploads.add(String(uploadId));
+
   try {
     await fs.mkdir(uploadDir, { recursive: true });
 
@@ -3551,6 +3611,8 @@ app.post('/api/files/upload-chunk', async (req, res) => {
   } catch (e) {
     try { if (Boolean(final)) await fs.rm(uploadPath, { force: true }); } catch {}
     return fail(res, e.message || 'No se pudo guardar el archivo');
+  } finally {
+    activeFileUploads.delete(String(uploadId));
   }
 });
 
