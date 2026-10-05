@@ -1515,7 +1515,7 @@ async function openFile(rel) {
         mode,
         theme: 'dracula',
         lineWrapping: false,
-        viewportMargin: Infinity,
+        viewportMargin: 40,
       });
 
       editor.setValue(data.content || '');
@@ -1525,7 +1525,11 @@ async function openFile(rel) {
       updateEditorStatus();
       // El panel se muestra justo antes de crear CodeMirror; refrescar en el
       // siguiente frame evita que calcule un ancho/alto de 0 y corte el texto.
-      requestAnimationFrame(() => editor?.refresh());
+      requestAnimationFrame(() => {
+        if (!editor) return;
+        editor.setSize('100%', '100%');
+        editor.refresh();
+      });
     } else {
       $('mwEditorArea').value = data.content || '';
     }
