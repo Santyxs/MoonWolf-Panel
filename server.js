@@ -216,7 +216,6 @@ function getSessionFromRequest(req) {
   const session = verifyPanelSession(auth.slice(7).trim());
   if (!session) return null;
 
-  // Los cambios de permiso se aplican también a las sesiones ya abiertas.
   if (session.kind === 'share') {
     const share = loadShareTokens().find(
       item => item.id === session.shareTokenId && item.agentId === session.agentId
@@ -607,14 +606,7 @@ for (const asset of PUBLIC_ASSETS) {
   });
 }
 
-// CodeMirror se sirve desde el propio panel para que el visor mantenga el
-// resaltado incluso cuando el navegador bloquea CDNs o no tiene conexión.
-app.use('/vendor', express.static(path.join(__dirname, 'public/vendor'), {
-  fallthrough: false,
-  maxAge: '1d',
-}));
-
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '10mb' }));
 
 /* ══════════════════════════════════════════════
    RATE LIMIT
@@ -1081,7 +1073,6 @@ async function ensureJavaRuntime(javaMajor) {
       await fs.mkdir(staging, { recursive: true });
 
       await new Promise((resolve, reject) => {
-        // Escapado para PowerShell: comillas simples, duplicando las internas
         const psQuote = value => `'${String(value).replace(/'/g, "''")}'`;
 
         const psCommand =
@@ -1779,7 +1770,6 @@ io.on('connection', socket => {
       );
       socket.emit('pairing_ready', {
         ...pairing,
-        // El Agent debe usar este TTL para renovar; expiresAt es informativo.
         ttlMs: PAIRING_TTL_MS,
       });
     });
@@ -2150,8 +2140,6 @@ app.post('/api/startup', (req, res) => {
 let mysql = null;
 
 function getMysql() {
-  // MySQL no participa en el arranque normal del panel. Cargarlo bajo demanda
-  // evita inicializar el driver si el usuario nunca abre Bases de datos.
   return mysql || (mysql = require('mysql2/promise'));
 }
 
@@ -3437,8 +3425,6 @@ app.get('/api/versions/current', async (_req, res) => {
 let archiver = null;
 
 function getArchiver() {
-  // Crear backups es una operación puntual; no bloqueemos el arranque
-  // cargando el compresor en cada ejecución del Agent.
   return archiver || (archiver = require('archiver'));
 }
 
