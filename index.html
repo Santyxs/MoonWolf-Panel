@@ -10,8 +10,8 @@
 <link rel="preconnect" href="https://cdnjs.cloudflare.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Share+Tech+Mono&display=swap">
 
-  <link rel="stylesheet" href="styles.css?v=20261006-fileops-6">
-  <script src="dashboard.js?v=20261006-fileops-6" defer></script>
+  <link rel="stylesheet" href="styles.css?v=20261006-fileops-7">
+  <script src="dashboard.js?v=20261006-fileops-7" defer></script>
 </head>
 
 <body>
@@ -176,7 +176,11 @@
               <span id="uploadProgressEta">Calculando tiempo…</span>
             </div>
             <div class="upload-progress-error-detail" id="uploadProgressError" role="alert"></div>
-            <button class="small-btn upload-retry-btn" id="uploadProgressRetry" type="button" hidden>↻ Reintentar subida</button>
+            <div class="upload-progress-actions">
+              <button class="small-btn" id="uploadProgressPause" type="button" hidden>Ⅱ Pausar</button>
+              <button class="small-btn danger" id="uploadProgressCancel" type="button" hidden>■ Cancelar</button>
+              <button class="small-btn upload-retry-btn" id="uploadProgressRetry" type="button" hidden>↻ Reintentar subida</button>
+            </div>
           </div>
           <div class="file-conflict-modal" id="fileConflictModal" hidden role="dialog" aria-modal="true" aria-labelledby="fileConflictTitle">
             <div class="file-conflict-card">

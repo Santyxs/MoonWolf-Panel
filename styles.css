@@ -713,7 +713,11 @@ select:focus:not(:focus-visible) {
   color: #ff9ba5; font-size: var(--fs-xs); line-height: 1.45;
 }
 .upload-progress-error .upload-progress-error-detail { display: block; }
-.upload-retry-btn { margin-top: 10px; color: var(--red); border-color: rgba(255,68,85,.4); }
+.upload-progress-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.upload-progress-actions .upload-retry-btn { margin-top: 0; }
+.upload-progress-actions .danger { color: var(--red); border-color: rgba(255,68,85,.4); }
+.upload-progress-actions .danger:hover { background: rgba(255,68,85,.1); }
+.upload-retry-btn { color: var(--red); border-color: rgba(255,68,85,.4); }
 .upload-retry-btn:hover { background: rgba(255,68,85,.1); }
 .file-load-error { margin: 18px; padding: 18px; border: 1px solid rgba(255,68,85,.35); border-radius: var(--r-md); background: rgba(255,68,85,.06); text-align: center; }
 .file-load-error .empty-icon { color: var(--red); font-size: 28px; }

@@ -1442,6 +1442,30 @@ function formatUploadEta(seconds) {
   const hours = Math.floor(minutes / 60);
   return `${hours}h ${(minutes % 60).toString().padStart(2, '0')}m restantes`;
 }
+function uploadCancelledError() {
+  const error = new Error('Subida cancelada');
+  error.isCancelled = true;
+  return error;
+}
+async function waitForUploadResume(progressState) {
+  if (progressState.cancelled) throw uploadCancelledError();
+  if (!progressState.paused) return;
+  progressState.status = 'Subida pausada';
+  updateUploadProgress(progressState);
+  await new Promise(resolve => { progressState.resumeUpload = resolve; });
+  if (progressState.cancelled) throw uploadCancelledError();
+}
+function setUploadControls(visible) {
+  if ($('uploadProgressPause')) {
+    $('uploadProgressPause').hidden = !visible;
+    $('uploadProgressPause').disabled = false;
+    if (visible && activeUploadState) $('uploadProgressPause').textContent = activeUploadState.paused ? '▶ Reanudar' : 'Ⅱ Pausar';
+  }
+  if ($('uploadProgressCancel')) {
+    $('uploadProgressCancel').hidden = !visible;
+    $('uploadProgressCancel').disabled = false;
+  }
+}
 function updateUploadProgress(progressState) {
   const panel = $('uploadProgressPanel');
   if (!panel) return;
@@ -1454,6 +1478,7 @@ function updateUploadProgress(progressState) {
   const currentDone = progressState.currentFileDone || 0;
   const currentTotal = progressState.currentFileSize || 0;
   panel.hidden = false;
+  setUploadControls(Boolean(activeUploadState && !activeUploadState.finished));
   panel.classList.remove('upload-progress-error');
   if ($('uploadProgressError')) $('uploadProgressError').textContent = '';
   if ($('uploadProgressRetry')) $('uploadProgressRetry').hidden = true;
@@ -1473,6 +1498,7 @@ function finishUploadProgress(message, isError = false, detail = '') {
   if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = isError ? 'La subida se detuvo' : 'Todos los archivos se han procesado';
   if ($('uploadProgressError')) $('uploadProgressError').textContent = detail;
   if ($('uploadProgressRetry')) $('uploadProgressRetry').hidden = !isError || !lastUploadFiles.length;
+  setUploadControls(false);
   panel.classList.toggle('upload-progress-error', isError);
   if (!isError) setTimeout(() => { panel.hidden = true; }, 3500);
 }
@@ -1520,6 +1546,7 @@ async function uploadOneFile(file, relativePath, progressState, overwrite = true
   let offset = 0;
 
   while (offset < file.size || (file.size === 0 && offset === 0)) {
+    await waitForUploadResume(progressState);
     const end = file.size === 0 ? 0 : Math.min(offset + FILE_UPLOAD_CHUNK_SIZE, file.size);
     const buffer = await file.slice(offset, end).arrayBuffer();
     const bytes = new Uint8Array(buffer);
@@ -1527,6 +1554,7 @@ async function uploadOneFile(file, relativePath, progressState, overwrite = true
     let data;
     let lastError;
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      await waitForUploadResume(progressState);
       try {
         data = await postJSON('/api/files/upload-chunk', {
           uploadId, path: target, offset, totalSize: file.size,
@@ -1575,7 +1603,9 @@ async function uploadSelectedFiles(fileList) {
     doneBytes: 0,
     startedAt: Date.now(),
     status: `Subiendo 1/${files.length}`,
+    paused: false, cancelled: false, finished: false, resumeUpload: null,
   };
+  activeUploadState = progressState;
   updateUploadProgress(progressState);
 
   try {
@@ -3822,6 +3852,32 @@ function bindEvents() {
     });
   }
 
+  $('uploadProgressPause')?.addEventListener('click', () => {
+    const upload = activeUploadState;
+    if (!upload || upload.finished) return;
+    upload.paused = !upload.paused;
+    if (upload.paused) {
+      upload.status = 'Subida pausada';
+      $('uploadProgressPause').textContent = '▶ Reanudar';
+      updateUploadProgress(upload);
+    } else {
+      upload.status = `Subiendo ${upload.index + 1}/${upload.totalFiles}`;
+      $('uploadProgressPause').textContent = 'Ⅱ Pausar';
+      upload.resumeUpload?.();
+      upload.resumeUpload = null;
+      updateUploadProgress(upload);
+    }
+  });
+  $('uploadProgressCancel')?.addEventListener('click', () => {
+    const upload = activeUploadState;
+    if (!upload || upload.finished) return;
+    upload.cancelled = true;
+    upload.resumeUpload?.();
+    upload.resumeUpload = null;
+    $('uploadProgressCancel').disabled = true;
+    $('uploadProgressPause').disabled = true;
+    if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = 'Cancelando subida…';
+  });
   $('uploadProgressRetry')?.addEventListener('click', async () => {
     const files = lastUploadFiles.slice();
     if (!files.length) return;
