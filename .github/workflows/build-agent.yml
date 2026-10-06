@@ -521,21 +521,32 @@ jobs:
           $exe = (Resolve-Path "dist/MoonWolf-Agent.exe").Path
           $version = $env:AGENT_TAG -replace '^agent-v', ''
 
-          # node.exe conserva su propia información de versión ("Bode Runtime")
+          # node.exe conserva su propia información de versión ("Node Runtime")
           # al convertirse en ejecutable SEA. Sobrescribimos los campos que
           # Windows usa para identificar la aplicación en el Explorador y la
           # barra de tareas.
-          npx --yes rcedit $exe `
-            --set-version-string "FileDescription" "MoonWolf Agent" `
-            --set-version-string "ProductName" "MoonWolf Agent" `
-            --set-version-string "InternalName" "MoonWolf-Agent.exe" `
-            --set-version-string "OriginalFilename" "MoonWolf-Agent.exe" `
-            --set-version-string "CompanyName" "MoonWolf" `
-            --set-version-string "LegalCopyright" "Copyright MoonWolf" `
-            --set-file-version "$version.0" `
-            --set-product-version "$version.0"
+          # rcedit no publica un binario CLI ejecutable en npm. resedit-cli sí
+          # lo hace y conserva el resto de recursos PE (incluido el icono).
+          $patched = Join-Path (Split-Path $exe) "MoonWolf-Agent.metadata.exe"
+          if (Test-Path -LiteralPath $patched) {
+            Remove-Item -LiteralPath $patched -Force
+          }
+
+          npx --yes resedit-cli@3.1.1 `
+            --in $exe `
+            --out $patched `
+            --file-description "MoonWolf Agent" `
+            --product-name "MoonWolf Agent" `
+            --internal-name "MoonWolf-Agent.exe" `
+            --original-filename "MoonWolf-Agent.exe" `
+            --company-name "MoonWolf" `
+            --file-version "$version.0.0" `
+            --product-version "$version.0.0"
 
           if ($LASTEXITCODE -ne 0) { throw "No se pudieron actualizar los metadatos de Windows." }
+          if (-not (Test-Path -LiteralPath $patched)) { throw "resedit-cli no generó el ejecutable parcheado." }
+
+          Move-Item -LiteralPath $patched -Destination $exe -Force
 
           $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
           Write-Host "FileDescription: $($info.FileDescription)"
