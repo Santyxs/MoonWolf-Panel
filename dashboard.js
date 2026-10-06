@@ -3830,18 +3830,19 @@ function bindEvents() {
     button.addEventListener('click', () => runBulkAction(button.dataset.bulkAction));
   });
   const filesView = $('view-files');
-  if (filesView) {
+  const filesLayout = filesView?.querySelector('.files-layout');
+  if (filesView && filesLayout) {
     ['dragenter', 'dragover'].forEach(type => filesView.addEventListener(type, event => {
       event.preventDefault();
       event.dataTransfer.dropEffect = 'copy';
-      filesView.classList.add('is-dragging');
+      filesLayout.classList.add('is-dragging');
     }));
     filesView.addEventListener('dragleave', event => {
-      if (!filesView.contains(event.relatedTarget)) filesView.classList.remove('is-dragging');
+      if (!filesView.contains(event.relatedTarget)) filesLayout.classList.remove('is-dragging');
     });
     filesView.addEventListener('drop', async event => {
       event.preventDefault();
-      filesView.classList.remove('is-dragging');
+      filesLayout.classList.remove('is-dragging');
       const files = event.dataTransfer?.files;
       if (files?.length) await uploadSelectedFiles(files);
     });

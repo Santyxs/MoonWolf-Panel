@@ -610,7 +610,7 @@ select:focus:not(:focus-visible) {
 /* ══════════════════════════════════════════════
    FILE MANAGER
    ══════════════════════════════════════════════ */
-.files-layout  {.files-layout.is-dragging {
+.files-layout.is-dragging {
   position: relative;
   outline: 2px dashed var(--accent); outline-offset: 8px; border-radius: var(--r-lg);
   background: radial-gradient(circle at center, rgba(0,200,255,.12), rgba(0,200,255,.025) 58%, transparent 80%);
@@ -637,6 +637,7 @@ select:focus:not(:focus-visible) {
   .files-layout.is-dragging, .files-layout.is-dragging::after { animation: none; }
 }
 
+.files-layout  {
   display: flex;
   flex-direction: column;
   gap: 12px;
