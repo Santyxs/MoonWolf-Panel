@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const { Server } = require('socket.io');
 const fs = require('fs').promises;
 const fsSync = require('fs');
+const os = require('os');
 const path = require('path');
 const net = require('net');
 const { spawn } = require('child_process');
@@ -2351,8 +2352,38 @@ let stopRequested = false;
 let crashCount = 0;
 let lastCrashTime = 0;
 let statsBusy = false;
+let previousCpuSnapshot = null;
 
 let lastStatus = 'offline';
+
+function getCpuSnapshot() {
+  return os.cpus().reduce((snapshot, cpu) => {
+    const times = cpu.times || {};
+    const idle = Number(times.idle) || 0;
+    const total = Object.values(times).reduce((sum, value) => sum + (Number(value) || 0), 0);
+
+    snapshot.idle += idle;
+    snapshot.total += total;
+    return snapshot;
+  }, { idle: 0, total: 0 });
+}
+
+function getCpuUsage() {
+  const current = getCpuSnapshot();
+
+  if (!previousCpuSnapshot) {
+    previousCpuSnapshot = current;
+    return 0;
+  }
+
+  const idleDelta = current.idle - previousCpuSnapshot.idle;
+  const totalDelta = current.total - previousCpuSnapshot.total;
+  previousCpuSnapshot = current;
+
+  if (totalDelta <= 0) return 0;
+
+  return Math.round(Math.max(0, Math.min(100, (1 - idleDelta / totalDelta) * 100)) * 10) / 10;
+}
 
 function broadcastStatus(s) {
   lastStatus = s;
@@ -2381,6 +2412,8 @@ function startStatsTimer() {
     clearInterval(statsTimer);
   }
 
+  previousCpuSnapshot = getCpuSnapshot();
+
   statsTimer = setInterval(async () => {
     if (statsBusy) return;
     if (!mcProcess || mcProcess.exitCode !== null) return;
@@ -2391,6 +2424,7 @@ function startStatsTimer() {
       const uptimeSec = Math.floor((Date.now() - startTime) / 1000);
       const mem = process.memoryUsage();
       const rcon = await queryRconStats();
+      const cpuUsage = getCpuUsage();
 
       io.to(LOCAL_AGENT_ROOM).emit('stats', {
         players: rcon?.players ?? 0,
@@ -2403,7 +2437,7 @@ function startStatsTimer() {
           used: (mem.rss / 1024 / 1024 / 1024).toFixed(2),
           total: '16.00',
         },
-        cpuUsage: 0,
+        cpuUsage,
       });
     } finally {
       statsBusy = false;
