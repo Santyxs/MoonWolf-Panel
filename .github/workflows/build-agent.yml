@@ -535,6 +535,7 @@ jobs:
           npx --yes resedit-cli@3.1.1 `
             --in $exe `
             --out $patched `
+            --ignore-signed `
             --file-description "MoonWolf Agent" `
             --product-name "MoonWolf Agent" `
             --internal-name "MoonWolf-Agent.exe" `
