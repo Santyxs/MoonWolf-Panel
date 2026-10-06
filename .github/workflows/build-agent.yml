@@ -513,6 +513,37 @@ jobs:
 
           Write-Host "Icono de MoonWolf (16x16 + 32x32, DIB clásico) incrustado correctamente."
 
+      - name: Set Windows application metadata
+        shell: pwsh
+        env:
+          AGENT_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          $exe = (Resolve-Path "dist/MoonWolf-Agent.exe").Path
+          $version = $env:AGENT_TAG -replace '^agent-v', ''
+
+          # node.exe conserva su propia información de versión ("Bode Runtime")
+          # al convertirse en ejecutable SEA. Sobrescribimos los campos que
+          # Windows usa para identificar la aplicación en el Explorador y la
+          # barra de tareas.
+          npx --yes rcedit $exe `
+            --set-version-string "FileDescription" "MoonWolf Agent" `
+            --set-version-string "ProductName" "MoonWolf Agent" `
+            --set-version-string "InternalName" "MoonWolf-Agent.exe" `
+            --set-version-string "OriginalFilename" "MoonWolf-Agent.exe" `
+            --set-version-string "CompanyName" "MoonWolf" `
+            --set-version-string "LegalCopyright" "Copyright MoonWolf" `
+            --set-file-version "$version.0" `
+            --set-product-version "$version.0"
+
+          if ($LASTEXITCODE -ne 0) { throw "No se pudieron actualizar los metadatos de Windows." }
+
+          $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
+          Write-Host "FileDescription: $($info.FileDescription)"
+          Write-Host "ProductName: $($info.ProductName)"
+          if ($info.FileDescription -ne "MoonWolf Agent" -or $info.ProductName -ne "MoonWolf Agent") {
+            throw "Los metadatos no contienen el nombre esperado MoonWolf Agent."
+          }
+
       - name: Verify executable
         shell: pwsh
         run: |
