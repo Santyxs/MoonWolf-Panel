@@ -1385,18 +1385,8 @@ function openFileContext(event, name, type) {
   }, 0);
 }
 
-const FILE_UPLOAD_CHUNK_SIZE = 2 * 1024 * 1024;
-
-function bytesToBase64(bytes) {
-  let binary = '';
-  const step = 0x8000;
-
-  for (let i = 0; i < bytes.length; i += step) {
-    binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + step, bytes.length)));
-  }
-
-  return btoa(binary);
-}
+const FILE_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024;
+const FILE_UPLOAD_PARALLEL_CHUNKS = 4;
 
 function normalizeUploadRelativePath(value) {
   return String(value || '')
@@ -1517,6 +1507,7 @@ async function uploadOneFile(file, relativePath, progressState, overwrite = true
   progressState.currentFileSize = file.size;
   progressState.currentFileDone = 0;
   updateUploadProgress(progressState);
+
   const relPath = normalizeUploadRelativePath(relativePath || file.name);
 
   if (!relPath) {
@@ -1528,48 +1519,128 @@ async function uploadOneFile(file, relativePath, progressState, overwrite = true
     : relPath;
 
   const uploadId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
-  let offset = 0;
+  const totalSize = file.size;
 
-  while (offset < file.size || (file.size === 0 && offset === 0)) {
+  if (totalSize === 0) {
     await waitForUploadResume(progressState);
-    const end = file.size === 0 ? 0 : Math.min(offset + FILE_UPLOAD_CHUNK_SIZE, file.size);
+    const data = await postUploadChunk(uploadId, target, 0, totalSize, new Uint8Array(), true, overwrite);
+    if (!data?.ok) {
+      const uploadError = new Error(data?.error || `No se pudo subir ${file.name}`);
+      if (/ya existe un archivo/i.test(uploadError.message)) uploadError.isFileConflict = true;
+      throw uploadError;
+    }
+    progressState.completedFiles += 1;
+    progressState.status = `Subiendo ${progressState.completedFiles}/${progressState.totalFiles}`;
+    updateUploadProgress(progressState);
+    return;
+  }
+
+  const chunkCount = Math.ceil(totalSize / FILE_UPLOAD_CHUNK_SIZE);
+  let nextChunk = 0;
+  let completedChunks = 0;
+
+  const uploadChunk = async chunkIndex => {
+    const offset = chunkIndex * FILE_UPLOAD_CHUNK_SIZE;
+    const end = Math.min(offset + FILE_UPLOAD_CHUNK_SIZE, totalSize);
     const buffer = await file.slice(offset, end).arrayBuffer();
     const bytes = new Uint8Array(buffer);
 
     let data;
     let lastError;
+
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await waitForUploadResume(progressState);
+
       try {
-        data = await postJSON('/api/files/upload-chunk', {
-          uploadId, path: target, offset, totalSize: file.size,
-          chunkBase64: bytesToBase64(bytes), final: end >= file.size, overwrite,
-        });
-        if (!data.ok) {
+        data = await postUploadChunk(
+          uploadId,
+          target,
+          offset,
+          totalSize,
+          bytes,
+          end >= totalSize,
+          overwrite
+        );
+
+        if (!data?.ok) {
           const uploadError = new Error(data.error || `No se pudo subir ${file.name}`);
           if (/ya existe un archivo/i.test(uploadError.message)) uploadError.isFileConflict = true;
           throw uploadError;
         }
+
         break;
       } catch (error) {
         lastError = error;
         if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
       }
     }
-    if (!data?.ok) throw lastError || new Error(`No se pudo subir ${file.name}`);
-    if (file.size === 0) {
-      offset = 1;
-      break;
+
+    if (!data?.ok) {
+      throw lastError || new Error(`No se pudo subir ${file.name}`);
     }
 
-    offset = end;
-    progressState.currentFileDone = offset;
+    completedChunks += 1;
+    progressState.currentFileDone = Math.min(totalSize, (progressState.currentFileDone || 0) + bytes.length);
     progressState.doneBytes += bytes.length;
+    progressState.status = `Subiendo ${progressState.completedFiles + 1}/${progressState.totalFiles} · ${completedChunks}/${chunkCount} bloques`;
     updateUploadProgress(progressState);
-  }
+  };
+
+  const worker = async () => {
+    while (true) {
+      await waitForUploadResume(progressState);
+      if (progressState.cancelled) throw uploadCancelledError();
+
+      const chunkIndex = nextChunk++;
+      if (chunkIndex >= chunkCount) return;
+
+      await uploadChunk(chunkIndex);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(FILE_UPLOAD_PARALLEL_CHUNKS, chunkCount) }, worker)
+  );
+
+  progressState.currentFileDone = totalSize;
   progressState.completedFiles += 1;
   progressState.status = `Subiendo ${progressState.completedFiles}/${progressState.totalFiles}`;
   updateUploadProgress(progressState);
+}
+
+function postUploadChunk(uploadId, target, offset, totalSize, bytes, final, overwrite) {
+  const params = new URLSearchParams({
+    uploadId,
+    path: target,
+    offset: String(offset),
+    totalSize: String(totalSize),
+    final: final ? '1' : '0',
+    overwrite: overwrite ? '1' : '0',
+  });
+
+  return rpcHttp(`/api/files/upload-chunk?${params.toString()}`, {
+    method: 'POST',
+    body: bytes,
+  }).then(result => {
+    const status = result?.status || 500;
+    let data = result?.data;
+
+    if (result?.bodyBase64 !== undefined) {
+      const bytesResult = decodeResultBody(result);
+      const text = new TextDecoder().decode(bytesResult);
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = null;
+      }
+    }
+
+    if (!data || typeof data !== 'object') {
+      data = { ok: Boolean(result?.ok), status, error: 'Respuesta vacía.' };
+    }
+
+    return { ...data, status };
+  });
 }
 
 async function uploadSelectedFiles(fileList) {

@@ -750,13 +750,26 @@ async function main() {
       }
 
       const safeRequestPath = parsedPath.pathname + parsedPath.search;
-      const body = request.body !== undefined && request.body !== null ? JSON.stringify(request.body) : undefined;
+      const isBinaryBody = Buffer.isBuffer(request.body) ||
+        request.body instanceof Uint8Array ||
+        request.body instanceof ArrayBuffer;
+
+      let body;
+      let contentType;
+
+      if (isBinaryBody) {
+        body = Buffer.from(request.body);
+        contentType = 'application/octet-stream';
+      } else if (request.body !== undefined && request.body !== null) {
+        body = JSON.stringify(request.body);
+        contentType = 'application/json';
+      }
 
       const response = await fetch(`${localUrl}${safeRequestPath}`, {
         method,
         headers: {
           'X-MoonWolf-Token': config.localToken,
-          ...(body ? { 'Content-Type': 'application/json' } : {}),
+          ...(body ? { 'Content-Type': contentType } : {}),
         },
         body,
         signal: controller.signal,
@@ -795,187 +808,6 @@ async function main() {
     } finally {
       clearTimeout(timeoutId);
     }
-  }
-
-  function clearPairing() {
-    clearTimeout(pairingRenewTimer);
-    pairingCode = '';
-    pairingExpiresAt = 0;
-    gui?.update();
-  }
-
-  function connectLocalSocket() {
-    localSocket?.disconnect();
-
-    localSocket = io(localUrl, {
-      auth: {
-        role: 'local-agent',
-        token: config.localToken,
-      },
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 10000,
-    });
-
-    for (const event of ['status', 'log', 'log_batch', 'history', 'stats']) {
-      localSocket.on(event, payload => {
-        if (cloudSocket?.connected) {
-          cloudSocket.emit('event', {
-            name: event,
-            payload,
-          });
-        }
-      });
-    }
-
-    localSocket.on('connect', () => {
-      addLog('Socket local conectado.');
-    });
-
-    localSocket.on('connect_error', error => {
-      addLog(`Error del Socket local: ${error?.message || error}`, 'error');
-    });
-
-    localSocket.on('disconnect', reason => {
-      addLog(`Socket local desconectado${reason ? `: ${reason}` : '.'}`, 'warn');
-    });
-  }
-
-  function requestPairingCode() {
-    if (!cloudSocket?.connected) return;
-
-    pairingRequestCount++;
-    addLog(
-      `[diagnóstico] Solicitud de pairing #${pairingRequestCount} ` +
-      `(socket=${cloudSocket.id || 'sin-id'}, pid=${process.pid})`
-    );
-    clearPairing();
-    addLog('Solicitando código de emparejamiento...');
-    cloudSocket.emit('pairing_create');
-  }
-
-  function scheduleReconnect() {
-    if (shuttingDown) return;
-
-    clearTimeout(reconnectTimer);
-    addLog(
-      `[diagnóstico] Reconexión programada en ${reconnectDelay}ms ` +
-      `(pid=${process.pid}, agentId=${config.agentId})`,
-      'warn'
-    );
-    reconnectTimer = setTimeout(connectCloud, reconnectDelay);
-    reconnectDelay = Math.min(reconnectDelay * 2, 30000);
-  }
-
-  function connectCloud() {
-    if (shuttingDown) return;
-
-    cloudSocket?.disconnect();
-    cloudConnected = false;
-    clearPairing();
-    cloudConnectionAttempt++;
-    addLog(
-      `[diagnóstico] Conectando con MoonWolf Cloud (intento #${cloudConnectionAttempt}, ` +
-      `pid=${process.pid}, agentId=${config.agentId}, version=${VERSION})...`
-    );
-    addLog('Conectando con MoonWolf Cloud...');
-    gui.update();
-
-    cloudSocket = io(PANEL_URL, {
-      path: CLOUD_PATH,
-      transports: ['websocket'],
-      auth: {
-        role: 'agent',
-        agentId: config.agentId,
-        token: config.agentToken,
-      },
-      reconnection: false,
-    });
-
-    cloudSocket.on('connect', () => {
-      reconnectDelay = 1000;
-      cloudConnected = true;
-      addLog(
-        `[diagnóstico] Socket Cloud conectado: socket=${cloudSocket.id}, ` +
-        `transport=${cloudSocket.io?.engine?.transport?.name || 'desconocido'}`
-      );
-      addLog('Conectado a MoonWolf Cloud.');
-      connectLocalSocket();
-      requestPairingCode();
-      runUpdateCheck();
-      scheduleUpdateCheck();
-      gui.update();
-    });
-
-    cloudSocket.on('pairing_ready', data => {
-      const code = String(data?.code || '');
-
-      if (!PAIRING_CODE_RE.test(code)) {
-        addLog('Cloud devolvió un código de emparejamiento inválido.', 'error');
-        return;
-      }
-
-      pairingCode = code;
-      const serverTtlMs = Number(data?.ttlMs || 0);
-      const serverExpiresAt = Number(data?.expiresAt || 0);
-      const ttlMs = Number.isFinite(serverTtlMs) && serverTtlMs > 0
-        ? serverTtlMs
-        : Math.max(0, serverExpiresAt - Date.now());
-      // La expiración local solo sirve para mostrar el estado en la GUI.
-      // La renovación se programa con ttlMs, sin depender del reloj del servidor.
-      pairingExpiresAt = Date.now() + ttlMs;
-
-      addLog(
-        `[diagnóstico] Pairing recibido: socket=${cloudSocket.id || 'sin-id'}, ` +
-        `ttl=${ttlMs}ms, expira-local=${pairingExpiresAt ? new Date(pairingExpiresAt).toISOString() : 'desconocido'}`
-      );
-
-      clearTimeout(pairingRenewTimer);
-      pairingRenewTimer = setTimeout(
-        requestPairingCode,
-        Math.max(5000, ttlMs - 20_000)
-      );
-      addLog(`Código de emparejamiento disponible: ${code}`);
-      gui.update();
-    });
-
-    cloudSocket.on('pairing_consumed', () => {
-      addLog(`[diagnóstico] Pairing consumido por el panel (socket=${cloudSocket.id || 'sin-id'}).`);
-      clearPairing();
-      addLog('Código de emparejamiento utilizado. Generando uno nuevo.');
-      requestPairingCode();
-    });
-
-    cloudSocket.on('rpc', async request => {
-      const result = await forwardHttp(request || {});
-      cloudSocket?.emit('rpc_result', result);
-    });
-
-    cloudSocket.on('connect_error', error => {
-      cloudConnected = false;
-      clearPairing();
-      addLog(
-        `[diagnóstico] connect_error: name=${error?.name || 'n/a'}, ` +
-        `message=${error?.message || error}, description=${error?.description || 'n/a'}`,
-        'error'
-      );
-      addLog(`Error de conexión con Cloud: ${error?.message || error}`, 'error');
-      gui.update();
-    });
-
-    cloudSocket.on('disconnect', reason => {
-      cloudConnected = false;
-      clearPairing();
-      addLog(
-        `[diagnóstico] Socket Cloud desconectado: reason=${reason || 'sin-motivo'}, ` +
-        `socket=${cloudSocket?.id || 'sin-id'}, active=${!shuttingDown}`,
-        'warn'
-      );
-      addLog(`Desconectado de MoonWolf Cloud${reason ? `: ${reason}` : '.'}`, 'warn');
-      gui.update();
-      scheduleReconnect();
-    });
   }
 
   function shutdown() {

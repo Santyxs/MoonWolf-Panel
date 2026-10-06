@@ -518,7 +518,7 @@ app.use((req, res, next) => {
 });
 
 const io = new Server(server, {
-  maxHttpBufferSize: 4e6,
+  maxHttpBufferSize: 20 * 1024 * 1024,
   cors: {
     origin: ALLOWED_ORIGIN,
     methods: ['GET', 'POST'],
@@ -1862,7 +1862,10 @@ io.on('connection', socket => {
     });
 
     socket.on('rpc', request => {
-      if (!socketEventAllowed(socket, 'rpc', 120)) {
+      const isUploadChunk = String(request?.path || '').startsWith('/api/files/upload-chunk');
+      const rpcLimit = isUploadChunk ? 2000 : 120;
+
+      if (!socketEventAllowed(socket, 'rpc', rpcLimit)) {
         return socket.emit('rpc_result', {
           id: request?.id || null,
           ok: false,
@@ -3462,10 +3465,9 @@ function getArchiver() {
   return archiver || (archiver = require('archiver'));
 }
 
-const FILE_UPLOAD_MAX_CHUNK_BYTES = 2 * 1024 * 1024;
+const FILE_UPLOAD_MAX_CHUNK_BYTES = 8 * 1024 * 1024;
 const FILE_UPLOAD_ID_RE = /^[a-zA-Z0-9_-]{8,120}$/;
 const FILE_UPLOAD_DIR = path.join(BASE_DIR, '.moonwolf-uploads');
-
 const FILE_UPLOAD_RETENTION_MS = Math.max(
   60 * 60 * 1000,
   Number(process.env.MOONWOLF_UPLOAD_RETENTION_HOURS || 24) * 60 * 60 * 1000
@@ -3475,6 +3477,22 @@ const FILE_UPLOAD_CLEANUP_INTERVAL_MS = Math.max(
   Number(process.env.MOONWOLF_UPLOAD_CLEANUP_INTERVAL_MINUTES || 60) * 60 * 1000
 );
 const activeFileUploads = new Set();
+const fileUploadLocks = new Map();
+
+function withFileUploadLock(uploadId, task) {
+  const previous = fileUploadLocks.get(uploadId) || Promise.resolve();
+  const current = previous
+    .catch(() => {})
+    .then(task);
+
+  fileUploadLocks.set(uploadId, current);
+
+  return current.finally(() => {
+    if (fileUploadLocks.get(uploadId) === current) {
+      fileUploadLocks.delete(uploadId);
+    }
+  });
+}
 
 async function cleanupStaleFileUploads() {
   let entries;
@@ -3492,9 +3510,9 @@ async function cleanupStaleFileUploads() {
   let removed = 0;
 
   for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith('.part')) continue;
+    if (!entry.isFile() || !/\\.(part|json)$/.test(entry.name)) continue;
 
-    const uploadId = entry.name.slice(0, -'.part'.length);
+    const uploadId = entry.name.replace(/\\.(part|json)$/, '');
     if (activeFileUploads.has(uploadId)) continue;
 
     const uploadPath = path.join(FILE_UPLOAD_DIR, entry.name);
@@ -3513,7 +3531,7 @@ async function cleanupStaleFileUploads() {
   }
 
   if (removed) {
-    console.log(`[uploads] Limpieza automática: ${removed} fragmento(s) temporal(es) eliminado(s).`);
+    console.log(`[uploads] Limpieza automática: ${removed} temporal(es) eliminado(s).`);
   }
 }
 
@@ -3524,118 +3542,172 @@ const fileUploadCleanupTimer = setInterval(
 );
 fileUploadCleanupTimer.unref?.();
 
-app.post('/api/files/upload-chunk', async (req, res) => {
-  const {
-    uploadId,
-    path: rel,
-    offset,
-    totalSize,
-    chunkBase64,
-    final,
-    overwrite,
-  } = req.body || {};
+app.post(
+  '/api/files/upload-chunk',
+  express.raw({ type: 'application/octet-stream', limit: 9 * 1024 * 1024 }),
+  async (req, res) => {
+    const {
+      uploadId,
+      path: relParam,
+      offset: offsetParam,
+      totalSize: totalSizeParam,
+      final: finalParam,
+      overwrite: overwriteParam,
+    } = req.query || {};
 
-  if (!FILE_UPLOAD_ID_RE.test(String(uploadId || ''))) {
-    return fail(res, 'Identificador de subida no válido');
-  }
+    const rel = String(relParam || '');
+    const uploadIdString = String(uploadId || '');
+    const numericOffset = Number(offsetParam);
+    const numericTotal = Number(totalSizeParam);
+    const final = String(finalParam || '') === '1';
+    const overwrite = String(overwriteParam || '') === '1';
 
-  if (typeof rel !== 'string' || !rel.trim()) {
-    return fail(res, 'Ruta requerida');
-  }
-
-  const numericOffset = Number(offset);
-  const numericTotal = Number(totalSize);
-
-  if (!Number.isSafeInteger(numericOffset) || numericOffset < 0 ||
-      !Number.isSafeInteger(numericTotal) || numericTotal < 0) {
-    return fail(res, 'Tamaño de subida no válido');
-  }
-
-  if (typeof chunkBase64 !== 'string') {
-    return fail(res, 'Bloque de datos requerido');
-  }
-
-  let chunk;
-
-  try {
-    chunk = Buffer.from(chunkBase64, 'base64');
-  } catch {
-    return fail(res, 'Bloque de datos no válido');
-  }
-
-  if (chunk.length > FILE_UPLOAD_MAX_CHUNK_BYTES) {
-    return fail(res, 'Bloque demasiado grande');
-  }
-
-  const full = safePath(rel);
-  if (!full) {
-    return fail(res, 'Ruta no permitida');
-  }
-
-  if (numericOffset + chunk.length > numericTotal) {
-    return fail(res, 'El bloque excede el tamaño indicado');
-  }
-
-  const uploadDir = path.resolve(FILE_UPLOAD_DIR);
-  const uploadPath = path.join(uploadDir, `${uploadId}.part`);
-
-  if (!uploadPath.startsWith(uploadDir + path.sep)) {
-    return fail(res, 'Ruta temporal no permitida');
-  }
-
-  activeFileUploads.add(String(uploadId));
-
-  try {
-    await fs.mkdir(uploadDir, { recursive: true });
-
-    let currentSize = 0;
-    try {
-      currentSize = (await fs.stat(uploadPath)).size;
-    } catch {}
-
-    if (currentSize !== numericOffset) {
-      return fail(res, `Orden de bloques incorrecto (esperado ${currentSize}, recibido ${numericOffset})`);
+    if (!FILE_UPLOAD_ID_RE.test(uploadIdString)) {
+      return fail(res, 'Identificador de subida no válido');
     }
 
-    if (numericOffset === 0) {
-      await fs.writeFile(uploadPath, chunk);
-    } else if (chunk.length) {
-      await fs.appendFile(uploadPath, chunk);
+    if (!rel.trim()) {
+      return fail(res, 'Ruta requerida');
     }
 
-    const completed = Boolean(final) || numericOffset + chunk.length === numericTotal;
-
-    if (!completed) {
-      return ok(res, { uploaded: numericOffset + chunk.length, complete: false });
+    if (!Number.isSafeInteger(numericOffset) || numericOffset < 0 ||
+        !Number.isSafeInteger(numericTotal) || numericTotal < 0) {
+      return fail(res, 'Tamaño de subida no válido');
     }
 
-    const finalSize = (await fs.stat(uploadPath)).size;
-    if (finalSize !== numericTotal) {
-      return fail(res, `Tamaño final incorrecto: ${finalSize}/${numericTotal}`);
+    const chunk = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+
+    if (chunk.length > FILE_UPLOAD_MAX_CHUNK_BYTES) {
+      return fail(res, 'Bloque demasiado grande');
     }
 
-    await fs.mkdir(path.dirname(full), { recursive: true });
+    const full = safePath(rel);
+    if (!full) {
+      return fail(res, 'Ruta no permitida');
+    }
 
-    if (!overwrite) {
+    if (numericOffset + chunk.length > numericTotal) {
+      return fail(res, 'El bloque excede el tamaño indicado');
+    }
+
+    const uploadDir = path.resolve(FILE_UPLOAD_DIR);
+    const uploadPath = path.join(uploadDir, `${uploadIdString}.part`);
+    const manifestPath = path.join(uploadDir, `${uploadIdString}.json`);
+
+    if (!uploadPath.startsWith(uploadDir + path.sep) ||
+        !manifestPath.startsWith(uploadDir + path.sep)) {
+      return fail(res, 'Ruta temporal no permitida');
+    }
+
+    return withFileUploadLock(uploadIdString, async () => {
+      activeFileUploads.add(uploadIdString);
+
       try {
-        await fs.access(full);
-        return fail(res, 'Ya existe un archivo con ese nombre');
-      } catch {}
-    }
+        await fs.mkdir(uploadDir, { recursive: true });
 
-    if (overwrite) {
-      try { await fs.rm(full, { recursive: true, force: true }); } catch {}
-    }
+        let manifest = {
+          path: rel,
+          totalSize: numericTotal,
+          chunks: [],
+        };
 
-    await fs.rename(uploadPath, full);
-    return ok(res, { uploaded: finalSize, complete: true, path: rel });
-  } catch (e) {
-    try { if (Boolean(final)) await fs.rm(uploadPath, { force: true }); } catch {}
-    return fail(res, e.message || 'No se pudo guardar el archivo');
-  } finally {
-    activeFileUploads.delete(String(uploadId));
+        try {
+          const stored = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+          if (
+            stored &&
+            stored.path === rel &&
+            stored.totalSize === numericTotal &&
+            Array.isArray(stored.chunks)
+          ) {
+            manifest = stored;
+          }
+        } catch {}
+
+        if (manifest.path !== rel || manifest.totalSize !== numericTotal) {
+          return fail(res, 'La subida no coincide con sus datos originales');
+        }
+
+        const chunkEnd = numericOffset + chunk.length;
+        const duplicate = manifest.chunks.some(
+          item => item.offset === numericOffset && item.end === chunkEnd
+        );
+
+        if (!duplicate && chunk.length) {
+          const handle = await fs.open(uploadPath, 'a+');
+          try {
+            await handle.write(chunk, 0, chunk.length, numericOffset);
+          } finally {
+            await handle.close();
+          }
+
+          manifest.chunks.push({ offset: numericOffset, end: chunkEnd });
+          manifest.chunks.sort((a, b) => a.offset - b.offset);
+        }
+
+        const merged = [];
+        for (const item of manifest.chunks) {
+          const last = merged[merged.length - 1];
+          if (last && item.offset <= last.end) {
+            last.end = Math.max(last.end, item.end);
+          } else {
+            merged.push({ offset: item.offset, end: item.end });
+          }
+        }
+
+        manifest.chunks = merged;
+        await fs.writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+
+        const complete = numericTotal === 0
+          ? true
+          : manifest.chunks.length === 1 &&
+            manifest.chunks[0].offset === 0 &&
+            manifest.chunks[0].end === numericTotal;
+
+        if (numericTotal === 0) {
+          await fs.writeFile(uploadPath, Buffer.alloc(0));
+        }
+
+        if (!complete) {
+          return ok(res, {
+            uploaded: manifest.chunks.reduce((sum, item) => sum + (item.end - item.offset), 0),
+            complete: false,
+          });
+        }
+
+        const finalSize = (await fs.stat(uploadPath)).size;
+        if (finalSize !== numericTotal) {
+          return fail(res, `Tamaño final incorrecto: ${finalSize}/${numericTotal}`);
+        }
+
+        await fs.mkdir(path.dirname(full), { recursive: true });
+
+        if (!overwrite) {
+          try {
+            await fs.access(full);
+            return fail(res, 'Ya existe un archivo con ese nombre');
+          } catch {}
+        }
+
+        if (overwrite) {
+          try { await fs.rm(full, { recursive: true, force: true }); } catch {}
+        }
+
+        await fs.rename(uploadPath, full);
+        await fs.rm(manifestPath, { force: true });
+
+        return ok(res, {
+          uploaded: finalSize,
+          complete: true,
+          path: rel,
+        });
+      } catch (e) {
+        return fail(res, e.message || 'No se pudo guardar el archivo');
+      } finally {
+        activeFileUploads.delete(uploadIdString);
+      }
+    });
   }
-});
+);
 
 app.post('/api/files/create', async (req, res) => {
   const { path: dir, name, isDir } = req.body || {};
