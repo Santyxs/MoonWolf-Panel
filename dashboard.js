@@ -62,6 +62,7 @@ let agentOnline = false;
 
 let editor = null;
 let currentFile = null;
+let selectedFilePaths = new Set();
 let originalFileContent = '';
 let currentDir = '';
 
@@ -3803,17 +3804,21 @@ function bindEvents() {
   document.querySelectorAll('[data-bulk-action]').forEach(button => {
     button.addEventListener('click', () => runBulkAction(button.dataset.bulkAction));
   });
-  const dropzone = $('filesDropzone');
-  if (dropzone) {
-    dropzone.addEventListener('click', () => $('fileUploadInput')?.click());
-    ['dragenter', 'dragover'].forEach(type => dropzone.addEventListener(type, event => { event.preventDefault(); dropzone.classList.add('is-dragging'); }));
-    ['dragleave', 'drop'].forEach(type => dropzone.addEventListener(type, event => { event.preventDefault(); dropzone.classList.remove('is-dragging'); }));
-    dropzone.addEventListener('drop', async event => {
+  const filesView = $('view-files');
+  if (filesView) {
+    ['dragenter', 'dragover'].forEach(type => filesView.addEventListener(type, event => {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+      filesView.classList.add('is-dragging');
+    }));
+    filesView.addEventListener('dragleave', event => {
+      if (!filesView.contains(event.relatedTarget)) filesView.classList.remove('is-dragging');
+    });
+    filesView.addEventListener('drop', async event => {
+      event.preventDefault();
+      filesView.classList.remove('is-dragging');
       const files = event.dataTransfer?.files;
       if (files?.length) await uploadSelectedFiles(files);
-    });
-    dropzone.addEventListener('keydown', event => {
-      if (event.key === 'Enter' || event.key === ' ') $('fileUploadInput')?.click();
     });
   }
 
