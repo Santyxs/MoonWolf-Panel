@@ -900,24 +900,6 @@ function updateStats(stats = {}) {
   if ($('statCpu')) {
     $('statCpu').innerHTML = `${safeCpu}<span class="stat-unit"> %</span>`;
   }
-  const disk = stats.diskSpace || {};
-  const diskUsed = Number(disk.used);
-  const diskTotal = Number(disk.total);
-  const diskPercent = Number(disk.percent);
-  const safeDiskUsed = Number.isFinite(diskUsed) ? diskUsed : 0;
-  const safeDiskTotal = Number.isFinite(diskTotal) ? diskTotal : 0;
-  const safeDiskPercent = Number.isFinite(diskPercent)
-    ? Math.min(100, Math.max(0, diskPercent))
-    : (safeDiskTotal > 0 ? (safeDiskUsed / safeDiskTotal) * 100 : 0);
-  if ($('statDisk')) {
-    $('statDisk').innerHTML = `${safeDiskUsed.toFixed(2)}<span class="stat-unit">/${safeDiskTotal.toFixed(2)} GB</span>`;
-    $('statDisk').className = `stat-value ${
-      safeDiskPercent >= 90 ? 'disk-bad' : safeDiskPercent >= 75 ? 'disk-warn' : 'disk-good'
-    }`;
-  }
-  if ($('statDiskDetail')) {
-    $('statDiskDetail').textContent = `${safeDiskPercent.toFixed(0)}% usado`;
-  }
 }
 
 /* ══════════════════════════════════════════════

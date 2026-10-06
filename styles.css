@@ -497,13 +497,10 @@ select:focus:not(:focus-visible) {
   font-family: 'Orbitron', sans-serif;
 }
 .stat-unit  { font-size: var(--fs-xs); color: var(--muted2); }
-.stat-detail { font-size: var(--fs-xs); color: var(--muted2); letter-spacing: .4px; }
+
 .tps-good { color: var(--green)  !important; }
 .tps-warn { color: var(--yellow) !important; }
 .tps-bad  { color: var(--red)    !important; }
-.disk-good { color: var(--green) !important; }
-.disk-warn { color: var(--yellow) !important; }
-.disk-bad  { color: var(--red) !important; }
 
 /* ── CONSOLE ── */
 .console {

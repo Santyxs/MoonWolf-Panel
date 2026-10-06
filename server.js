@@ -2391,13 +2391,6 @@ function startStatsTimer() {
       const uptimeSec = Math.floor((Date.now() - startTime) / 1000);
       const mem = process.memoryUsage();
       const rcon = await queryRconStats();
-      const disk = await fs.statfs(BASE_DIR).catch(() => null);
-      const blockSize = Number(disk?.bsize || disk?.frsize || 0);
-      const diskTotalBytes = blockSize * Number(disk?.blocks || 0);
-      const diskFreeBytes = blockSize * Number(disk?.bavail ?? disk?.bfree ?? 0);
-      const diskUsedBytes = Math.max(0, diskTotalBytes - diskFreeBytes);
-      const diskTotalGb = diskTotalBytes / 1024 ** 3;
-      const diskUsedGb = diskUsedBytes / 1024 ** 3;
 
       io.to(LOCAL_AGENT_ROOM).emit('stats', {
         players: rcon?.players ?? 0,
@@ -2411,12 +2404,6 @@ function startStatsTimer() {
           total: '16.00',
         },
         cpuUsage: 0,
-        diskSpace: {
-          used: diskUsedGb,
-          total: diskTotalGb,
-          free: diskFreeBytes / 1024 ** 3,
-          percent: diskTotalBytes > 0 ? (diskUsedBytes / diskTotalBytes) * 100 : 0,
-        },
       });
     } finally {
       statsBusy = false;
