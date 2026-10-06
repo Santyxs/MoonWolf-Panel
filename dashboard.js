@@ -1475,7 +1475,7 @@ function updateUploadProgress(progressState) {
   if ($('uploadProgressSpeed')) $('uploadProgressSpeed').textContent = speed > 0 ? `${formatUploadBytes(speed)}/s` : '—';
   if ($('uploadProgressEta')) $('uploadProgressEta').textContent = percent >= 100 ? 'Completado' : formatUploadEta(eta);
 }
-function finishUploadProgress(message, isError = false, detail = '') {
+function finishUploadProgress(message, isError = false, detail = '', hidePanel = false) {
   const panel = $('uploadProgressPanel');
   if (!panel) return;
   if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = message;
@@ -1484,6 +1484,7 @@ function finishUploadProgress(message, isError = false, detail = '') {
   if ($('uploadProgressRetry')) $('uploadProgressRetry').hidden = !isError || !lastUploadFiles.length;
   setUploadControls(false);
   panel.classList.toggle('upload-progress-error', isError);
+  if (hidePanel) panel.hidden = true;
   if (!isError) setTimeout(() => { panel.hidden = true; }, 3500);
 }
 function askFileConflict(fileName) {
@@ -1595,7 +1596,8 @@ async function uploadSelectedFiles(fileList) {
     const uploadFileWithConflict = async file => {
       const relative = file.webkitRelativePath || file.name;
       progressState.activeFiles = (progressState.activeFiles || 0) + 1;
-      progressState.status = `Subiendo ${Math.min(progressState.completedFiles + 1, progressState.totalFiles)}/${progressState.totalFiles} · ${progressState.activeFiles} simultáneos`;
+      const parallelLabel = progressState.activeFiles > 1 ? ` · ${progressState.activeFiles} simultáneos` : '';
+      progressState.status = `Subiendo ${Math.min(progressState.completedFiles + 1, progressState.totalFiles)}/${progressState.totalFiles}${parallelLabel}`;
       try {
         try {
           await uploadOneFile(file, relative, progressState, false);
@@ -1632,7 +1634,7 @@ async function uploadSelectedFiles(fileList) {
     toast(`✅ ${files.length} ${files.length === 1 ? 'archivo subido' : 'archivos subidos'} correctamente`, 'ok');
     populateFiles(currentDir);
   } catch (error) {
-    finishUploadProgress(error.isCancelled ? 'Subida cancelada' : 'Subida interrumpida', true, error.message || 'Error desconocido');
+    finishUploadProgress(error.isCancelled ? 'Subida cancelada' : 'Subida interrumpida', true, error.message || 'Error desconocido', error.isCancelled);
     toast(`❌ ${error.message}`, 'err');
   }
 }
@@ -3870,6 +3872,7 @@ function bindEvents() {
     $('uploadProgressCancel').disabled = true;
     $('uploadProgressPause').disabled = true;
     if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = 'Cancelando subida…';
+    if ($('uploadProgressPanel')) $('uploadProgressPanel').hidden = true;
   });
   $('uploadProgressRetry')?.addEventListener('click', async () => {
     const files = lastUploadFiles.slice();
