@@ -55,8 +55,6 @@ function loadConfig() {
     config.localToken = makeSecret();
   }
 
-  // El secreto de sesión pertenece al perfil del Agent y no al directorio
-  // donde está instalado el ejecutable.
   if (typeof config.sessionSecret !== 'string' || config.sessionSecret.length < 32) {
     const legacySecretPath = path.join(__dirname, '.moonwolf-session-secret');
 
@@ -221,11 +219,6 @@ async function downloadUpdate(info, onProgress) {
   return dest;
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   ═══ NUEVO: modo updater ═══
-   Cuando el agent viejo lanza este binario con --self-update,
-   esperamos a que muera, sobrescribimos su .exe y lo relanzamos.
-   ═══════════════════════════════════════════════════════════════ */
 async function runAsUpdater(oldPid, oldExe) {
   const selfPath = process.execPath;
 
@@ -233,17 +226,14 @@ async function runAsUpdater(oldPid, oldExe) {
     try { process.kill(pid, 0); return true; } catch { return false; }
   };
 
-  /* 1) Esperar a que el proceso viejo termine (máx. 60s) */
   const deadline = Date.now() + 60_000;
 
   while (Date.now() < deadline && isAlive(oldPid)) {
     await wait(200);
   }
 
-  /* 2) Gracia extra: Windows tarda en soltar los handles del .exe */
   await wait(3000);
 
-  /* 3) Copiar nuestro binario encima del viejo, con reintentos */
   let lastError = null;
 
   for (let attempt = 1; attempt <= 30; attempt++) {
@@ -258,7 +248,6 @@ async function runAsUpdater(oldPid, oldExe) {
   }
 
   if (lastError) {
-    /* Falló todo: relanzamos el exe viejo para no dejar al usuario sin agent */
     try {
       spawn(oldExe, [], { detached: true, windowsHide: true, stdio: 'ignore' }).unref();
     } catch {}
@@ -266,20 +255,15 @@ async function runAsUpdater(oldPid, oldExe) {
     process.exit(1);
   }
 
-  /* 4) Lanzar el exe actualizado normalmente */
   try {
     spawn(oldExe, [], { detached: true, windowsHide: true, stdio: 'ignore' }).unref();
   } catch (error) {
     process.exit(1);
   }
 
-  /* 5) Salir. El próximo cleanUpdateDir() se encargará de este updater.exe */
   process.exit(0);
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   CAMBIO: applyUpdate reescrito — sin .bat ni .vbs
-   ═══════════════════════════════════════════════════════════════ */
 function applyUpdate(downloadedPath) {
   if (process.platform !== 'win32') {
     throw new Error('La auto-actualización solo está disponible en Windows.');
@@ -301,16 +285,12 @@ function applyUpdate(downloadedPath) {
 
   fs.mkdirSync(UPDATE_DIR, { recursive: true });
 
-  /* Copiamos el exe nuevo a un updater.exe separado. Ese updater es
-     el mismo binario que vamos a instalar, pero arrancado en modo
-     "--self-update", así que sabe sobrescribirse y relanzarse. */
   const updaterPath = path.join(UPDATE_DIR, 'updater.exe');
 
   try { fs.unlinkSync(updaterPath); } catch {}
 
   fs.copyFileSync(downloadedPath, updaterPath);
 
-  /* Lanzamos el updater desacoplado con: pid del proceso viejo + ruta del exe viejo */
   const child = spawn(
     updaterPath,
     ['--self-update', String(process.pid), currentExe],
@@ -326,9 +306,6 @@ function applyUpdate(downloadedPath) {
   return true;
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   CAMBIO: cleanUpdateDir más robusto
-   ═══════════════════════════════════════════════════════════════ */
 function cleanUpdateDir() {
   if (!fs.existsSync(UPDATE_DIR)) return;
 
@@ -356,20 +333,17 @@ function cleanUpdateDir() {
 
     if (now - stat.mtimeMs <= MAX_AGE) continue;
 
-    /* chmod por si quedó con atributo de solo lectura residual */
     try { fs.chmodSync(full, 0o666); } catch {}
 
     try {
       fs.unlinkSync(full);
     } catch (error) {
-      /* A veces Windows tarda en soltar el handle; lo reintentaremos en el próximo arranque */
       try { console.warn(`[cleanUpdateDir] No se pudo borrar ${entry}: ${error.message}`); } catch {}
     }
   }
 }
 
 async function main() {
-  /* ═══ NUEVO: modo updater — se comprueba ANTES que nada ═══ */
   const selfUpdateIdx = process.argv.indexOf('--self-update');
 
   if (selfUpdateIdx !== -1) {
@@ -398,7 +372,6 @@ async function main() {
     await wait(1500);
   }
 
-  /* Resto del arranque normal */
   const config = loadConfig();
   const localUrl = `http://127.0.0.1:${LOCAL_PORT}`;
 
@@ -568,7 +541,6 @@ async function main() {
     }, UPDATE_CHECK_INTERVAL_MS);
   }
 
-  /* ═══ CAMBIO: timings de applyUpdateNow para dar margen al updater ═══ */
   function applyUpdateNow() {
     if (updateStatus === 'error') {
       updateStatus = 'idle';
@@ -597,7 +569,6 @@ async function main() {
       addLog('Cerrando para aplicar la actualización...');
       gui?.update();
 
-      /* Damos tiempo al updater.exe a arrancar y engancharse al PID viejo */
       setTimeout(() => {
         try { gui?.close?.(); } catch { try { process.exit(0); } catch {} }
       }, 1000);
@@ -935,8 +906,6 @@ async function main() {
       const ttlMs = Number.isFinite(serverTtlMs) && serverTtlMs > 0
         ? serverTtlMs
         : Math.max(0, serverExpiresAt - Date.now());
-      // La expiración local solo sirve para mostrar el estado en la GUI.
-      // La renovación se programa con ttlMs, sin depender del reloj del servidor.
       pairingExpiresAt = Date.now() + ttlMs;
 
       addLog(
