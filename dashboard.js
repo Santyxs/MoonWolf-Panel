@@ -63,6 +63,8 @@ let agentOnline = false;
 let editor = null;
 let currentFile = null;
 let selectedFilePaths = new Set();
+let lastUploadFiles = [];
+let activeUploadState = null;
 let originalFileContent = '';
 let currentDir = '';
 
@@ -1573,6 +1575,7 @@ async function uploadSelectedFiles(fileList) {
   const files = Array.from(fileList || {}).filter(file => file && typeof file.size === 'number');
 
   if (!files.length) return;
+  lastUploadFiles = files;
 
   const progressState = {
     completedFiles: 0,
@@ -3851,7 +3854,7 @@ function bindEvents() {
       $('uploadProgressPause').textContent = '▶ Reanudar';
       updateUploadProgress(upload);
     } else {
-      upload.status = `Subiendo ${upload.index + 1}/${upload.totalFiles}`;
+      upload.status = `Subiendo ${upload.completedFiles + 1}/${upload.totalFiles}`;
       $('uploadProgressPause').textContent = 'Ⅱ Pausar';
       upload.resumeUpload?.();
       upload.resumeUpload = null;
