@@ -373,9 +373,6 @@ function createWindow() {
     focused: true,
   });
 
-  // WebView2 puede mostrar una superficie negra si la ventana se hace visible
-  // antes de completar su primer pintado. La mostramos después de enviar el
-  // estado inicial y de arrancar el loop nativo.
   try { window.setVisible(false); } catch {}
 
   applyWindowIcon();
