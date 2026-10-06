@@ -1383,7 +1383,7 @@ function openFileContext(event, name, type) {
   }, 0);
 }
 
-const FILE_UPLOAD_CHUNK_SIZE = 1024 * 1024;
+const FILE_UPLOAD_CHUNK_SIZE = 2 * 1024 * 1024;
 
 function bytesToBase64(bytes) {
   let binary = '';
@@ -1464,11 +1464,11 @@ function updateUploadProgress(progressState) {
   panel.classList.remove('upload-progress-error');
   if ($('uploadProgressError')) $('uploadProgressError').textContent = '';
   if ($('uploadProgressRetry')) $('uploadProgressRetry').hidden = true;
-  if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = progressState.status || `Subiendo ${progressState.index + 1}/${progressState.totalFiles}`;
+  if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = progressState.status || `Subiendo ${progressState.completedFiles + 1}/${progressState.totalFiles}`;
   if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = progressState.currentFile ? `${progressState.currentFile} · ${formatUploadBytes(currentDone)} / ${formatUploadBytes(currentTotal)}` : 'Preparando…';
   if ($('uploadProgressPercent')) $('uploadProgressPercent').textContent = `${percent}%`;
   if ($('uploadProgressFill')) $('uploadProgressFill').style.width = `${percent}%`;
-  if ($('uploadProgressFiles')) $('uploadProgressFiles').textContent = `${Math.min(progressState.index, progressState.totalFiles)}/${progressState.totalFiles} archivos`;
+  if ($('uploadProgressFiles')) $('uploadProgressFiles').textContent = `${Math.min(progressState.completedFiles, progressState.totalFiles)}/${progressState.totalFiles} archivos`;
   if ($('uploadProgressBytes')) $('uploadProgressBytes').textContent = `${formatUploadBytes(done)} de ${formatUploadBytes(total)}`;
   if ($('uploadProgressSpeed')) $('uploadProgressSpeed').textContent = speed > 0 ? `${formatUploadBytes(speed)}/s` : '—';
   if ($('uploadProgressEta')) $('uploadProgressEta').textContent = percent >= 100 ? 'Completado' : formatUploadEta(eta);
@@ -1524,7 +1524,7 @@ async function uploadOneFile(file, relativePath, progressState, overwrite = true
     ? `${currentDir.replace(/\\/g, '/').replace(/\/$/, '')}/${relPath}`
     : relPath;
 
-  const uploadId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${progressState.index}`;
+  const uploadId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
   let offset = 0;
 
   while (offset < file.size || (file.size === 0 && offset === 0)) {
@@ -1563,14 +1563,10 @@ async function uploadOneFile(file, relativePath, progressState, overwrite = true
     progressState.currentFileDone = offset;
     progressState.doneBytes += bytes.length;
     updateUploadProgress(progressState);
-    const percent = progressState.totalBytes > 0
-      ? Math.round((progressState.doneBytes / progressState.totalBytes) * 100)
-      : 100;
-
-    toast(`⬆️ Subiendo ${progressState.index + 1}/${progressState.totalFiles}: ${percent}%`, 'info');
   }
-
-  progressState.index += 1;
+  progressState.completedFiles += 1;
+  progressState.status = `Subiendo ${progressState.completedFiles}/${progressState.totalFiles}`;
+  updateUploadProgress(progressState);
 }
 
 async function uploadSelectedFiles(fileList) {
@@ -1579,7 +1575,7 @@ async function uploadSelectedFiles(fileList) {
   if (!files.length) return;
 
   const progressState = {
-    index: 0,
+    completedFiles: 0,
     totalFiles: files.length,
     totalBytes: files.reduce((sum, file) => sum + file.size, 0),
     doneBytes: 0,
@@ -1591,31 +1587,43 @@ async function uploadSelectedFiles(fileList) {
   updateUploadProgress(progressState);
 
   try {
-    for (const file of files) {
-      progressState.status = `Subiendo ${progressState.index + 1}/${progressState.totalFiles}`;
+    let nextFileIndex = 0;
+    progressState.conflictQueue = Promise.resolve();
+    const uploadFileWithConflict = async file => {
       const relative = file.webkitRelativePath || file.name;
+      progressState.activeFiles = (progressState.activeFiles || 0) + 1;
+      progressState.status = `Subiendo ${Math.min(progressState.completedFiles + 1, progressState.totalFiles)}/${progressState.totalFiles} · ${progressState.activeFiles} simultáneos`;
       try {
-        await uploadOneFile(file, relative, progressState, false);
-      } catch (error) {
-        if (!isFileConflict(error)) throw error;
-        const choice = await askFileConflict(relative);
-        if (choice === 'keep') {
-          progressState.index += 1;
-          progressState.status = `Manteniendo ${progressState.index}/${progressState.totalFiles}`;
-          updateUploadProgress(progressState);
-          continue;
+        try {
+          await uploadOneFile(file, relative, progressState, false);
+        } catch (error) {
+          if (!isFileConflict(error)) throw error;
+          const prompt = progressState.conflictQueue.then(() => askFileConflict(relative));
+          progressState.conflictQueue = prompt.catch(() => 'cancel');
+          const choice = await prompt;
+          if (choice === 'keep') {
+            progressState.completedFiles += 1;
+            progressState.status = `Manteniendo ${progressState.completedFiles}/${progressState.totalFiles}`;
+            updateUploadProgress(progressState);
+            return;
+          }
+          if (choice === 'cancel') throw Object.assign(new Error('Subida cancelada por conflicto de archivo'), { isCancelled: true });
+          await uploadOneFile(file, relative, progressState, true);
         }
-        if (choice === 'cancel') {
-          const cancelled = new Error('Subida cancelada por conflicto de archivo');
-          cancelled.isCancelled = true;
-          throw cancelled;
-        }
-        await uploadOneFile(file, relative, progressState, true);
+      } finally {
+        progressState.activeFiles = Math.max(0, (progressState.activeFiles || 1) - 1);
       }
-    }
-
+    };
+    const worker = async () => {
+      while (true) {
+        const fileIndex = nextFileIndex++;
+        if (fileIndex >= files.length) return;
+        await uploadFileWithConflict(files[fileIndex]);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, files.length) }, worker));
     progressState.doneBytes = progressState.totalBytes;
-    progressState.index = progressState.totalFiles;
+    progressState.completedFiles = progressState.totalFiles;
     updateUploadProgress(progressState);
     finishUploadProgress('Subida completada');
     toast(`✅ ${files.length} ${files.length === 1 ? 'archivo subido' : 'archivos subidos'} correctamente`, 'ok');
