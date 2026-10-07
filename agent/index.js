@@ -615,7 +615,7 @@ async function main() {
         .map(entry => `[${new Date(entry.time).toLocaleString('es-ES')}] [${entry.level.toUpperCase()}] ${entry.message}`)
         .join('\n\n');
 
-      fs.writeFileSync(logPath, content + (content ? '\n' : ''), 'utf8');
+      atomicWriteFileSync(logPath, content + (content ? '\n' : ''), 'utf8');
       return logPath;
     },
 
