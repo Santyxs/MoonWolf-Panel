@@ -59,6 +59,7 @@ let reconnectDelay = 1000;
 
 let currentStatus = 'offline';
 let agentOnline = false;
+let cloudConnecting = false;
 
 let editor = null;
 let currentFile = null;
@@ -527,6 +528,10 @@ async function connectCloud(manual = false) {
     } catch {}
   }
 
+  cloudConnecting = true;
+  updateAgentUi();
+  updateAgentStatusBadges();
+
   return new Promise((resolve, reject) => {
     let settled = false;
 
@@ -554,14 +559,22 @@ async function connectCloud(manual = false) {
     cloudSocket.once('connect', () => {
       reconnectDelay = 1000;
 
+      cloudConnecting = false;
       showApp();
 
       addActivity('Conectado a MoonWolf Cloud', 'ok', '☁️');
+
+      updateAgentUi();
+      updateAgentStatusBadges();
 
       finish(resolve);
     });
 
     cloudSocket.once('connect_error', error => {
+      cloudConnecting = false;
+      updateAgentUi();
+      updateAgentStatusBadges();
+
       const message =
         error?.message || 'No se pudo conectar con MoonWolf Cloud.';
 
@@ -626,10 +639,13 @@ async function connectCloud(manual = false) {
     });
 
     cloudSocket.on('disconnect', reason => {
+      cloudConnecting = false;
       setAgentOnline(false);
 
       currentStatus = 'offline';
       updateStatusUi('offline');
+      updateAgentUi();
+      updateAgentStatusBadges();
 
       clearPending('Conexión con MoonWolf Cloud perdida.');
 
@@ -755,14 +771,16 @@ function setAgentOnline(online) {
   const nextState = Boolean(online);
 
   if (agentOnline === nextState) {
-    updateAgentUi(nextState);
+    updateAgentUi();
     updateStatusUi(currentStatus);
+    updateAgentStatusBadges();
     return;
   }
 
   agentOnline = nextState;
-  updateAgentUi(nextState);
+  updateAgentUi();
   updateStatusUi(currentStatus);
+  updateAgentStatusBadges();
 
   if (nextState) {
     if (lastAgentActivityState !== true) {
@@ -779,7 +797,11 @@ function setAgentOnline(online) {
   }
 }
 
-function updateAgentUi(online) {
+function updateAgentUi() {
+  const state = cloudConnecting
+    ? 'connecting'
+    : (agentOnline ? 'online' : 'offline');
+
   const elements = [
     $('agentStatus'),
     $('sbAgentStatus'),
@@ -789,20 +811,29 @@ function updateAgentUi(online) {
   for (const element of elements) {
     if (!element) continue;
 
-    element.classList.toggle('online', Boolean(online));
-    element.classList.toggle('offline', !online);
+    element.classList.toggle('online',     state === 'online');
+    element.classList.toggle('offline',    state === 'offline');
+    element.classList.toggle('connecting', state === 'connecting');
 
     if (element.dataset && element.dataset.agentStatus !== undefined) {
-      element.dataset.agentStatus = online ? 'online' : 'offline';
+      element.dataset.agentStatus = state;
     }
   }
 
-  const textElements = [$('agentStatusText'), $('sbAgentStatusText')];
+  const text = {
+    online:     'AGENT ONLINE',
+    offline:    'AGENT OFFLINE',
+    connecting: 'AGENT CONECTANDO...',
+  }[state];
 
-  for (const element of textElements) {
-    if (!element) continue;
+  for (const element of [$('agentStatusText'), $('sbAgentStatusText')]) {
+    if (element) element.textContent = text;
+  }
+}
 
-    element.textContent = online ? 'AGENT ONLINE' : 'AGENT OFFLINE';
+function updateAgentStatusBadges() {
+  if ($('view-settings')?.classList.contains('active')) {
+    renderSettings();
   }
 }
 
@@ -3749,6 +3780,26 @@ function renderSettings() {
 
   if (!element) return;
 
+  const cloudConnected = Boolean(cloudSocket?.connected);
+
+  let cloudCls, cloudText;
+  if (cloudConnecting) {
+    cloudCls = 'connecting'; cloudText = '● CONECTANDO...';
+  } else if (cloudConnected) {
+    cloudCls = 'online';     cloudText = '● ONLINE';
+  } else {
+    cloudCls = 'offline';    cloudText = '● OFFLINE';
+  }
+
+  let agentCls, agentText;
+  if (cloudConnecting) {
+    agentCls = 'connecting'; agentText = '● CONECTANDO...';
+  } else if (cloudConnected && agentOnline) {
+    agentCls = 'online';     agentText = '● CONECTADO';
+  } else {
+    agentCls = 'offline';    agentText = '● DESCONECTADO';
+  }
+
   element.innerHTML = `
     <div class="settings-group">
       <div class="settings-group-header">
@@ -3757,9 +3808,7 @@ function renderSettings() {
           <div class="settings-group-title">MoonWolf Cloud</div>
           <div class="settings-group-sub">Conexión WebSocket con el panel remoto</div>
         </div>
-        <span class="settings-status ${cloudSocket?.connected ? 'online' : 'offline'}">
-          ${cloudSocket?.connected ? '● ONLINE' : '● OFFLINE'}
-        </span>
+        <span class="settings-status ${cloudCls}">${cloudText}</span>
       </div>
     </div>
 
@@ -3770,9 +3819,7 @@ function renderSettings() {
           <div class="settings-group-title">MoonWolf Agent</div>
           <div class="settings-group-sub">Identificador único de esta instalación</div>
         </div>
-        <span class="settings-status ${agentOnline ? 'online' : 'offline'}">
-          ${agentOnline ? '● CONECTADO' : '● DESCONECTADO'}
-        </span>
+        <span class="settings-status ${agentCls}">${agentText}</span>
       </div>
       <div class="settings-group-body">
         <div class="settings-field">
@@ -4075,7 +4122,7 @@ function bindEvents() {
 
   $('btnNewBackup')?.addEventListener('click', createBackup);
 
-  updateAgentUi(agentOnline);
+  updateAgentUi();
   updateStatusUi(currentStatus);
 
   showLogin('');
