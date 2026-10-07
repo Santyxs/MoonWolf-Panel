@@ -31,13 +31,17 @@ const CSP_AGENT = [
   "frame-ancestors 'none'",
 ].join('; ');
 
-const TRAY_ICON_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABNElEQVR42s2XsQ6CMBRF+yf8mAmTq7OrswMxcXBz0w/wC4yzYdLJwbg5MZiIGkjtJWiwgZZC+yrJiaDUe9v32r4yVrmmg3sgiASxgFsmLv87YHWX+CEUJA6EZaAR1olzYsLqsCceDCRFOMq4cE9EzFHCtU5MZtpoOU75Zv7k2/WLz4b9TbQ2ANHrOefpjRfg2cYoaA2gl6d99hUGh11mLQxMJ3455j/iYDFKaQzIPbfde6UBxFgWB0g+EgPVhKuymjzcG8BUqxMnM9A0/GQhgEiTAZIkVBkgmYaqEJAsRKokJFuKm6ah7YQ0XohkYBTvyjsjntvslsZLsc4M2nw+nW1GOtCmba3QaTtWgXdNCpXOBUlTLjiriOpKMoB7fNdnFngvSr2X5X4PJt6PZn9xOPV5PH8DKeu0vPehIOQAAAAASUVORK5CYII=', 'base64');
+const TRAY_ICON_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABNElEQVR42s2XsQ6CMBRF+yf8mAmTq7OrswMxcXBz0w/wC4yzYdLJwbg5MZiIGkjtJWiwgZZC+yrJiaDUe9v32r4yVrmmg3sgiASxgFsmLv87YHWX+CEUJA6EZaAR1olzYsLqsCceDCRFOMq4cE9EzFHCtU5MZtpoOU75Zv7k2/WLz4b9TbQ2ANHrOefpjRfg2cYoaA2gl6d99hUGh11mLQxMJ3455j/iYDFKaQzIPbfde6UBxFgWB0g+EgPVhKuymjzcG8BUqxMnM9A0/GQhgEiTAZIkVBkgmYaqEJAsRKokJFuKm6ah7YQ0XohkYBTvyjsjntvslsZLsc4M2nw+nW1GOtCmba3QaTtWgXdNCpXOBUlTLjiriOpKMoB7fNdnFngvSr2X5X4PJt6PZn9xOPV5PH8DKeu0vPehIOQAAAAASUVORK5CYII=',
+  'base64'
+);
 
 let getAsset = null;
 let isStandalone = false;
 
 try {
   const sea = require('node:sea');
+
   if (typeof sea.getAsset === 'function') {
     getAsset = sea.getAsset;
     isStandalone = true;
@@ -47,14 +51,25 @@ try {
 function prepareNativeAddon() {
   if (!isStandalone || !getAsset) return;
 
-  const runtimeDir = path.join(os.tmpdir(), 'MoonWolf-Agent', 'webviewjs');
+  const runtimeDir = path.join(
+    os.tmpdir(),
+    'MoonWolf-Agent',
+    'webviewjs'
+  );
+
   fs.mkdirSync(runtimeDir, { recursive: true });
 
-  const nativePath = path.join(runtimeDir, 'webview.win32-x64-msvc.node');
+  const nativePath = path.join(
+    runtimeDir,
+    'webview.win32-x64-msvc.node'
+  );
 
   try {
     if (!fs.existsSync(nativePath)) {
-      fs.writeFileSync(nativePath, Buffer.from(getAsset(NATIVE_ASSET)));
+      fs.writeFileSync(
+        nativePath,
+        Buffer.from(getAsset(NATIVE_ASSET))
+      );
     }
   } catch (error) {
     throw new Error(`No se pudo preparar WebViewJS: ${error.message}`);
@@ -91,17 +106,30 @@ let actions = {};
 function cleanupOldExe() {
   try {
     const selfPath = process.execPath;
+
     if (!/\.exe$/i.test(selfPath)) return;
 
     const oldPath = selfPath + '.old';
-    if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+
+    if (fs.existsSync(oldPath)) {
+      fs.unlinkSync(oldPath);
+    }
   } catch {}
 }
 
 cleanupOldExe();
 
 function decodePngRgba(png) {
-  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const signature = Buffer.from([
+    0x89,
+    0x50,
+    0x4e,
+    0x47,
+    0x0d,
+    0x0a,
+    0x1a,
+    0x0a,
+  ]);
 
   if (!png.subarray(0, 8).equals(signature)) {
     throw new Error('El icono de MoonWolf no es un PNG válido.');
@@ -117,15 +145,25 @@ function decodePngRgba(png) {
 
   while (offset < png.length) {
     const length = png.readUInt32BE(offset);
-    const type = png.toString('ascii', offset + 4, offset + 8);
+    const type = png.toString(
+      'ascii',
+      offset + 4,
+      offset + 8
+    );
+
     const dataStart = offset + 8;
     const dataEnd = dataStart + length;
 
     if (dataEnd + 4 > png.length) {
-      throw new Error('PNG de MoonWolf corrupto.');
+      throw new Error(
+        'PNG de MoonWolf corrupto.'
+      );
     }
 
-    const data = png.subarray(dataStart, dataEnd);
+    const data = png.subarray(
+      dataStart,
+      dataEnd
+    );
 
     if (type === 'IHDR') {
       width = data.readUInt32BE(0);
@@ -143,15 +181,21 @@ function decodePngRgba(png) {
   }
 
   if (width !== 32 || height !== 32) {
-    throw new Error(`Tamaño de icono no compatible: ${width}x${height}.`);
+    throw new Error(
+      `Tamaño de icono no compatible: ${width}x${height}.`
+    );
   }
 
   if (bitDepth !== 8 || colorType !== 6) {
-    throw new Error(`Formato PNG no compatible: bitDepth=${bitDepth}, colorType=${colorType}.`);
+    throw new Error(
+      `Formato PNG no compatible: bitDepth=${bitDepth}, colorType=${colorType}.`
+    );
   }
 
   if (interlaceMethod !== 0) {
-    throw new Error('PNG entrelazado no compatible.');
+    throw new Error(
+      'PNG entrelazado no compatible.'
+    );
   }
 
   const compressed = Buffer.concat(idat);
@@ -159,13 +203,16 @@ function decodePngRgba(png) {
 
   const bytesPerPixel = 4;
   const stride = width * bytesPerPixel;
-  const expectedLength = height * (stride + 1);
+  const expectedLength =
+    height * (stride + 1);
 
   if (raw.length !== expectedLength) {
     throw new Error(`Datos PNG inesperados: ${raw.length} bytes, esperados ${expectedLength}.`);
   }
 
-  const rgba = Buffer.alloc(width * height * 4);
+  const rgba = Buffer.alloc(
+    width * height * 4
+  );
 
   let rawOffset = 0;
   let outputOffset = 0;
@@ -190,46 +237,100 @@ function decodePngRgba(png) {
     for (let x = 0; x < stride; x++) {
       const value = raw[rawOffset++];
 
-      const left = x >= bytesPerPixel ? current[x - bytesPerPixel] : 0;
+      const left =
+        x >= bytesPerPixel
+          ? current[x - bytesPerPixel]
+          : 0;
+
       const up = previous[x];
-      const upLeft = x >= bytesPerPixel ? previous[x - bytesPerPixel] : 0;
+
+      const upLeft =
+        x >= bytesPerPixel
+          ? previous[x - bytesPerPixel]
+          : 0;
 
       let reconstructed;
 
       switch (filterType) {
-        case 0: reconstructed = value; break;
-        case 1: reconstructed = value + left; break;
-        case 2: reconstructed = value + up; break;
-        case 3: reconstructed = value + Math.floor((left + up) / 2); break;
-        case 4: reconstructed = value + paeth(left, up, upLeft); break;
-        default: throw new Error(`Filtro PNG no compatible: ${filterType}.`);
+        case 0:
+          reconstructed = value;
+          break;
+
+        case 1:
+          reconstructed = value + left;
+          break;
+
+        case 2:
+          reconstructed = value + up;
+          break;
+
+        case 3:
+          reconstructed =
+            value +
+            Math.floor((left + up) / 2);
+          break;
+
+        case 4:
+          reconstructed =
+            value +
+            paeth(left, up, upLeft);
+          break;
+
+        default:
+          throw new Error(
+            `Filtro PNG no compatible: ${filterType}.`
+          );
       }
 
-      current[x] = reconstructed & 0xff;
+      current[x] =
+        reconstructed & 0xff;
     }
 
-    current.copy(rgba, outputOffset);
+    current.copy(
+      rgba,
+      outputOffset
+    );
+
     outputOffset += stride;
 
     current.copy(previous);
   }
 
-  return { data: rgba, width, height };
+  return {
+    data: rgba,
+    width,
+    height,
+  };
 }
 
 function applyWindowIcon() {
   if (!window) return;
 
   try {
-    const icon = decodePngRgba(TRAY_ICON_PNG);
+    const icon =
+      decodePngRgba(TRAY_ICON_PNG);
 
-    if (typeof window.setWindowIcon === 'function') {
-      window.setWindowIcon(icon.data, icon.width, icon.height);
+    if (
+      typeof window.setWindowIcon ===
+      'function'
+    ) {
+      window.setWindowIcon(
+        icon.data,
+        icon.width,
+        icon.height
+      );
     }
 
     if (process.platform === 'win32') {
-      if (typeof window.setTaskbarIcon === 'function') {
-        window.setTaskbarIcon(icon.data, icon.width, icon.height);
+      if (
+        typeof window.setTaskbarIcon ===
+        'function'
+      ) {
+        window.setTaskbarIcon(
+          icon.data,
+          icon.width,
+          icon.height
+        );
       }
     }
   } catch (error) {
@@ -238,12 +339,24 @@ function applyWindowIcon() {
 }
 
 function mimeType(filePath) {
-  const ext = path.extname(filePath).toLowerCase();
+  const ext =
+    path.extname(filePath).toLowerCase();
 
-  if (ext === '.html') return 'text/html; charset=utf-8';
-  if (ext === '.css') return 'text/css; charset=utf-8';
-  if (ext === '.js') return 'text/javascript; charset=utf-8';
-  if (ext === '.json') return 'application/json; charset=utf-8';
+  if (ext === '.html') {
+    return 'text/html; charset=utf-8';
+  }
+
+  if (ext === '.css') {
+    return 'text/css; charset=utf-8';
+  }
+
+  if (ext === '.js') {
+    return 'text/javascript; charset=utf-8';
+  }
+
+  if (ext === '.json') {
+    return 'application/json; charset=utf-8';
+  }
 
   return 'application/octet-stream';
 }
@@ -251,32 +364,69 @@ function mimeType(filePath) {
 function readUiAsset(assetName) {
   if (isStandalone && getAsset) {
     try {
-      return Buffer.from(getAsset(assetName)).toString('utf8');
+      return Buffer.from(
+        getAsset(assetName)
+      ).toString('utf8');
     } catch {}
   }
 
-  const filePath = path.join(__dirname, assetName);
-  return fs.readFileSync(filePath, 'utf8');
+  const filePath =
+    path.join(__dirname, assetName);
+
+  return fs.readFileSync(
+    filePath,
+    'utf8'
+  );
 }
 
 function openUrl(url) {
-  try { execFile('explorer.exe', [url], { windowsHide: true }); } catch {}
+  try {
+    execFile(
+      'explorer.exe',
+      [url],
+      { windowsHide: true }
+    );
+  } catch {}
 }
 
 function openFolder(folder) {
   if (!folder) return;
-  try { execFile('explorer.exe', [folder], { windowsHide: true }); } catch {}
+
+  try {
+    execFile(
+      'explorer.exe',
+      [folder],
+      { windowsHide: true }
+    );
+  } catch {}
 }
 
 function openConfigFolder(configPath) {
-  const folder = path.dirname(configPath || CONFIG_DIR);
-  try { execFile('explorer.exe', [folder], { windowsHide: true }); } catch {}
+  const folder =
+    path.dirname(
+      configPath || CONFIG_DIR
+    );
+
+  try {
+    execFile(
+      'explorer.exe',
+      [folder],
+      { windowsHide: true }
+    );
+  } catch {}
 }
 
 function hideToTray() {
-  if (!tray || !window) return false;
+  if (!tray || !window) {
+    return false;
+  }
 
-  try { window.hide(); return true; } catch { return false; }
+  try {
+    window.hide();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function showFromTray() {
@@ -286,6 +436,7 @@ function showFromTray() {
     window.show();
     window.setMinimized(false);
     window.focus();
+
     return true;
   } catch {
     return false;
@@ -294,27 +445,47 @@ function showFromTray() {
 
 function quitApp() {
   if (isQuitting) return;
+
   isQuitting = true;
 
-  try { window?.hide(); } catch {}
+  try {
+    window?.hide();
+  } catch {}
 
   Promise.resolve()
     .then(() => actions.onQuit?.())
-    .catch(error => console.error('[app] onQuit falló:', error?.message || error))
+    .catch(error =>
+      console.error(
+        '[app] onQuit falló:',
+        error?.message || error
+      )
+    )
     .then(finishQuit);
 }
 
 function finishQuit() {
-  try { tray?.dispose(); } catch (error) {
-    console.error('[app] tray.dispose falló:', error?.message || error);
+  try {
+    tray?.dispose();
+  } catch (error) {
+    console.error(
+      '[app] tray.dispose falló:',
+      error?.message || error
+    );
   }
 
-  try { app?.exit(); } catch (error) {
-    console.error('[app] app.exit falló:', error?.message || error);
+  try {
+    app?.exit();
+  } catch (error) {
+    console.error(
+      '[app] app.exit falló:',
+      error?.message || error
+    );
   }
 
   setImmediate(() => {
-    try { process.exit(0); } catch {}
+    try {
+      process.exit(0);
+    } catch {}
   });
 }
 
@@ -324,12 +495,20 @@ function createTray() {
   try {
     tray = app.createTrayIcon({
       id: 'moonwolf-agent',
-      icon: { data: TRAY_ICON_PNG },
+      icon: {
+        data: TRAY_ICON_PNG,
+      },
       tooltip: 'MoonWolf Agent',
       menu: {
         items: [
-          { id: 'tray-open', label: 'Abrir MoonWolf Agent' },
-          { id: 'tray-quit', label: 'Salir' },
+          {
+            id: 'tray-open',
+            label: 'Abrir MoonWolf Agent',
+          },
+          {
+            id: 'tray-quit',
+            label: 'Salir',
+          },
         ],
       },
       menuOnLeftClick: false,
@@ -337,16 +516,34 @@ function createTray() {
     });
 
     tray.on('click', event => {
-      const button = String(event?.button || '').toLowerCase();
-      const buttonState = String(event?.buttonState || '').toLowerCase();
+      const button =
+        String(
+          event?.button || ''
+        ).toLowerCase();
 
-      if (button && !button.includes('left')) return;
-      if (buttonState.includes('down')) return;
+      const buttonState =
+        String(
+          event?.buttonState || ''
+        ).toLowerCase();
+
+      if (
+        button &&
+        !button.includes('left')
+      ) {
+        return;
+      }
+
+      if (buttonState.includes('down')) {
+        return;
+      }
 
       showFromTray();
     });
 
-    tray.on('double-click', showFromTray);
+    tray.on(
+      'double-click',
+      showFromTray
+    );
   } catch {
     tray = null;
   }
@@ -368,53 +565,87 @@ function createWindow() {
     focused: true,
   });
 
-  try { window.setVisible(false); } catch {}
+  try {
+    window.setVisible(false);
+  } catch {}
 
   applyWindowIcon();
 
-  window.registerProtocol('moonwolf', async request => {
-    try {
-      const url = new URL(request.url);
-      const pathname = decodeURIComponent(url.pathname || '/');
+  window.registerProtocol(
+    'moonwolf',
+    async request => {
+      try {
+        const url =
+          new URL(request.url);
 
-      const assetName = UI_ASSETS[pathname];
+        const pathname =
+          decodeURIComponent(
+            url.pathname || '/'
+          );
 
-      if (!assetName) {
-        return new Response('Not found', {
-          status: 404,
-          headers: {
-            'Content-Type': 'text/plain; charset=utf-8',
-            'Content-Security-Policy': CSP_AGENT,
-          },
-        });
+        const assetName =
+          UI_ASSETS[pathname];
+
+        if (!assetName) {
+          return new Response(
+            'Not found',
+            {
+              status: 404,
+              headers: {
+                'Content-Type':
+                  'text/plain; charset=utf-8',
+                'Content-Security-Policy':
+                  CSP_AGENT,
+              },
+            }
+          );
+        }
+
+        return new Response(
+          readUiAsset(assetName),
+          {
+            status: 200,
+            headers: {
+              'Content-Type':
+                mimeType(assetName),
+              'Cache-Control':
+                'no-store',
+              'Content-Security-Policy':
+                CSP_AGENT,
+              'X-Content-Type-Options':
+                'nosniff',
+              'Referrer-Policy':
+                'no-referrer',
+            },
+          }
+        );
+      } catch (error) {
+        return new Response(
+          `MoonWolf UI error: ${error.message}`,
+          {
+            status: 500,
+            headers: {
+              'Content-Type':
+                'text/plain; charset=utf-8',
+              'Content-Security-Policy':
+                CSP_AGENT,
+            },
+          }
+        );
       }
-
-      return new Response(readUiAsset(assetName), {
-        status: 200,
-        headers: {
-          'Content-Type': mimeType(assetName),
-          'Cache-Control': 'no-store',
-          'Content-Security-Policy': CSP_AGENT,
-          'X-Content-Type-Options': 'nosniff',
-          'Referrer-Policy': 'no-referrer',
-        },
-      });
-    } catch (error) {
-      return new Response(`MoonWolf UI error: ${error.message}`, {
-        status: 500,
-        headers: {
-          'Content-Type': 'text/plain; charset=utf-8',
-          'Content-Security-Policy': CSP_AGENT,
-        },
-      });
     }
-  });
+  );
 
-  fs.mkdirSync(WEBVIEW_DATA_DIR, { recursive: true });
+  fs.mkdirSync(
+    WEBVIEW_DATA_DIR,
+    { recursive: true }
+  );
 
-  const webContext = app.createWebContext({
-    dataDirectory: WEBVIEW_DATA_DIR,
-  });
+  const webContext =
+    app.createWebContext({
+      dataDirectory:
+        WEBVIEW_DATA_DIR,
+    });
 
   webview = window.createWebview({
     url: 'moonwolf://localhost/index.html',
@@ -422,26 +653,102 @@ function createWindow() {
     webContext,
   });
 
-  if (typeof webview.on === 'function') {
-    webview.on('error', error => {
-      console.error('[webview] error:', error?.message || error);
-    });
+  try {
+    webview.evaluateScript(`
+      (() => {
+        const disableContextMenu = event => {
+          event.preventDefault();
+          event.stopPropagation();
+          return false;
+        };
 
-    webview.on('crashed', () => {
-      console.error('[webview] proceso de renderizado crasheado.');
-    });
+        document.addEventListener(
+          'contextmenu',
+          disableContextMenu,
+          true
+        );
 
-    webview.on('unresponsive', () => {
-      console.warn('[webview] no responde.');
-    });
+        document.addEventListener(
+          'selectstart',
+          event => {
+            if (event.target?.closest?.('button')) {
+              event.preventDefault();
+            }
+          },
+          true
+        );
+      })();
+    `);
+  } catch (error) {
+    console.warn('[webview] No se pudo desactivar el menú contextual:', error?.message || error);
+  }
 
-    webview.on('responsive', () => {
-      console.log('[webview] vuelve a responder.');
-    });
+  if (
+    typeof webview.on ===
+    'function'
+  ) {
+    webview.on(
+      'error',
+      error => {
+        console.error(
+          '[webview] error:',
+          error?.message || error
+        );
+      }
+    );
+
+    webview.on(
+      'crashed',
+      () => {
+        console.error('[webview] proceso de renderizado crasheado.');
+      }
+    );
+
+    webview.on(
+      'unresponsive',
+      () => {
+        console.warn('[webview] no responde.');
+      }
+    );
+
+    webview.on(
+      'responsive',
+      () => {
+        console.log('[webview] vuelve a responder.');
+      }
+    );
+
+    webview.on(
+      'page-load-finished',
+      () => {
+        try {
+          webview.evaluateScript(`
+            (() => {
+              if (window.__moonwolfContextMenuDisabled) {
+                return;
+              }
+
+              window.__moonwolfContextMenuDisabled = true;
+
+              document.addEventListener(
+                'contextmenu',
+                event => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  return false;
+                },
+                true
+              );
+            })();
+          `);
+        } catch {}
+      }
+    );
   }
 
   webview.expose('native', {
-    getState: () => stateProvider(),
+    getState: () =>
+      stateProvider(),
 
     openPanel: () => {
       openUrl(PANEL_URL);
@@ -449,42 +756,61 @@ function createWindow() {
     },
 
     openServerFolder: () => {
-      openFolder(stateProvider().serverDir);
+      openFolder(
+        stateProvider().serverDir
+      );
+
       return true;
     },
 
     openConfig: () => {
-      openConfigFolder(stateProvider().configPath);
+      openConfigFolder(
+        stateProvider().configPath
+      );
+
       return true;
     },
 
     setServerDir: dir =>
-      typeof actions.setServerDir === 'function'
+      typeof actions.setServerDir ===
+      'function'
         ? actions.setServerDir(dir)
-        : { ok: false, error: 'No disponible.' },
+        : {
+            ok: false,
+            error: 'No disponible.',
+          },
 
     clearLogs: () =>
-      typeof actions.clearLogs === 'function' &&
+      typeof actions.clearLogs ===
+        'function' &&
       actions.clearLogs(),
 
     saveLogs: () =>
-      typeof actions.saveLogs === 'function' &&
+      typeof actions.saveLogs ===
+        'function' &&
       actions.saveLogs(),
 
-    hideToTray: () => hideToTray(),
+    hideToTray: () =>
+      hideToTray(),
 
     restart: () =>
-      typeof actions.restart === 'function' &&
+      typeof actions.restart ===
+        'function' &&
       actions.restart(),
 
     checkForUpdates: () =>
-      typeof actions.checkForUpdates === 'function' &&
+      typeof actions.checkForUpdates ===
+        'function' &&
       actions.checkForUpdates(),
 
     applyUpdate: () =>
-      typeof actions.applyUpdate === 'function'
+      typeof actions.applyUpdate ===
+        'function'
         ? actions.applyUpdate()
-        : { ok: false, error: 'No disponible.' },
+        : {
+            ok: false,
+            error: 'No disponible.',
+          },
 
     close: () => {
       quitApp();
@@ -492,42 +818,78 @@ function createWindow() {
     },
   });
 
-  window.on('resize', () => {
-    try {
-      if (window.isMinimized()) hideToTray();
-    } catch {}
-  });
+  window.on(
+    'resize',
+    () => {
+      try {
+        if (window.isMinimized()) {
+          hideToTray();
+        }
+      } catch {}
+    }
+  );
 
-  window.on('close', event => {
-    if (isQuitting) return;
+  window.on(
+    'close',
+    event => {
+      if (isQuitting) return;
 
-    try { event?.preventDefault?.(); } catch {}
+      try {
+        event?.preventDefault?.();
+      } catch {}
 
-    quitApp();
-  });
+      quitApp();
+    }
+  );
 
-  window.on('error', error => {
-    console.error('[window] error:', error?.message || error);
-  });
+  window.on(
+    'error',
+    error => {
+      console.error(
+        '[window] error:',
+        error?.message || error
+      );
+    }
+  );
 
-  app.on('application-close-requested', () => quitApp());
+  app.on(
+    'application-close-requested',
+    () => quitApp()
+  );
 
-  app.on('custom-menu-click', event => {
-    const id = event?.customMenuEvent?.id;
+  app.on(
+    'custom-menu-click',
+    event => {
+      const id =
+        event?.customMenuEvent?.id;
 
-    if (id === 'tray-open') showFromTray();
-    if (id === 'tray-quit') quitApp();
-  });
+      if (id === 'tray-open') {
+        showFromTray();
+      }
+
+      if (id === 'tray-quit') {
+        quitApp();
+      }
+    }
+  );
 
   const ready =
-    typeof app.whenReady === 'function'
-      ? app.whenReady({ autoRun: false })
+    typeof app.whenReady ===
+    'function'
+      ? app.whenReady({
+          autoRun: false,
+        })
       : null;
 
-  app.run({ interval: 16, ref: true });
+  app.run({
+    interval: 16,
+    ref: true,
+  });
 
   if (ready) {
-    ready.then(createTray).catch(() => {});
+    ready
+      .then(createTray)
+      .catch(() => {});
   }
 }
 
@@ -539,64 +901,112 @@ function notifyStateChanged() {
   let stateJson;
 
   try {
-    stateJson = JSON.stringify(stateProvider());
+    stateJson =
+      JSON.stringify(
+        stateProvider()
+      );
   } catch {
     return;
   }
 
-  if (stateJson === lastStateJson) return;
+  if (
+    stateJson === lastStateJson
+  ) {
+    return;
+  }
 
   lastStateJson = stateJson;
 
-  const safeJson = stateJson
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029');
+  const safeJson =
+    stateJson
+      .replace(
+        /\u2028/g,
+        '\\u2028'
+      )
+      .replace(
+        /\u2029/g,
+        '\\u2029'
+      );
 
   const script =
     `window.dispatchEvent(new CustomEvent(` +
     `'moonwolf-state', { detail: ${safeJson} }));`;
 
-  try { webview.evaluateScript(script); } catch {}
+  try {
+    webview.evaluateScript(
+      script
+    );
+  } catch {}
 }
 
 function scheduleStateChanged() {
-  if (notifyTimer !== null) return;
+  if (notifyTimer !== null) {
+    return;
+  }
 
-  notifyTimer = setTimeout(notifyStateChanged, 100);
+  notifyTimer =
+    setTimeout(
+      notifyStateChanged,
+      100
+    );
 }
 
 function revealWindowAfterInitialPaint() {
   initialPaintTimer = null;
 
-  if (!window || isQuitting) return;
-
-  try { webview?.setWebviewVisibility?.(true); } catch {}
+  if (!window || isQuitting) {
+    return;
+  }
 
   try {
-    if (typeof window.setVisible === 'function') window.setVisible(true);
-    else window.show();
+    webview?.setWebviewVisibility?.(
+      true
+    );
+  } catch {}
+
+  try {
+    if (
+      typeof window.setVisible ===
+      'function'
+    ) {
+      window.setVisible(true);
+    } else {
+      window.show();
+    }
+
     window.setMinimized(false);
     window.focus();
   } catch (error) {
-    console.warn('[window] No se pudo mostrar la ventana tras el primer pintado:', error?.message || error);
+    console.warn(
+      '[window] No se pudo mostrar la ventana tras el primer pintado:',
+      error?.message || error
+    );
   }
 }
 
-function startGui(getState, guiActions = {}) {
+function startGui(
+  getState,
+  guiActions = {}
+) {
   stateProvider = getState;
   actions = guiActions;
 
   createWindow();
 
-  initialPaintTimer = setTimeout(() => {
-    notifyStateChanged();
-    revealWindowAfterInitialPaint();
-  }, 350);
+  initialPaintTimer =
+    setTimeout(() => {
+      notifyStateChanged();
+      revealWindowAfterInitialPaint();
+    }, 350);
 
   return {
     update: scheduleStateChanged,
-    close: () => quitApp(),
+
+    close: () =>
+      quitApp(),
   };
 }
 
-module.exports = { startGui };
+module.exports = {
+  startGui,
+};
