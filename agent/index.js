@@ -204,30 +204,53 @@ async function downloadUpdate(info, onProgress) {
   let received = 0;
   const reader = response.body.getReader();
 
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+  return new Promise((resolve, reject) => {
+    fileStream.on('error', error => {
+      reader.cancel().catch(() => {});
+      try { fs.unlinkSync(dest); } catch {}
+      reject(new Error(`Error escribiendo archivo: ${error.message}`));
+    });
 
-      received += value.length;
-      fileStream.write(value);
+    (async () => {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-      if (onProgress && total > 0) {
-        onProgress(Math.min(100, Math.round((received / total) * 100)));
+          received += value.length;
+          const writable = fileStream.write(value);
+
+          if (onProgress && total > 0) {
+            onProgress(Math.min(100, Math.round((received / total) * 100)));
+          }
+
+          if (!writable) {
+            await new Promise(res => fileStream.once('drain', res));
+          }
+        }
+
+        fileStream.end(() => {
+          try {
+            const stat = fs.statSync(dest);
+
+            if (stat.size < 1024 * 1024) {
+              try { fs.unlinkSync(dest); } catch {}
+              reject(new Error('El archivo descargado es demasiado pequeño.'));
+              return;
+            }
+
+            resolve(dest);
+          } catch (error) {
+            reject(new Error(`Error verificando archivo: ${error.message}`));
+          }
+        });
+      } catch (error) {
+        fileStream.destroy();
+        try { fs.unlinkSync(dest); } catch {}
+        reject(new Error(`Error descargando: ${error.message}`));
       }
-    }
-  } finally {
-    await new Promise(resolve => fileStream.end(resolve));
-  }
-
-  const stat = fs.statSync(dest);
-
-  if (stat.size < 1024 * 1024) {
-    try { fs.unlinkSync(dest); } catch {}
-    throw new Error('El archivo descargado es demasiado pequeño.');
-  }
-
-  return dest;
+    })();
+  });
 }
 
 async function runAsUpdater(oldPid, oldExe) {
