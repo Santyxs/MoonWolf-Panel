@@ -257,6 +257,65 @@ function canManageShareTokens(session) {
   return Boolean(session && permissionAllows(session.permission, 'admin'));
 }
 
+/* ══════════════════════════════════════════════
+   OWNER-ONLY OPERATIONS
+   ══════════════════════════════════════════════ */
+
+function isOwnerSession(session) {
+  return Boolean(session && session.kind === 'owner');
+}
+
+const OWNER_ONLY_STARTUP_FIELDS = Object.freeze([
+  'javaMode',
+  'javaOverridePath',
+  'javaPath',
+  'extraArgs',
+  'programArgs',
+]);
+
+const FORBIDDEN_JVM_ARG_PATTERNS = Object.freeze([
+  /^-javaagent[:=]/i,
+  /^-agentlib[:=]/i,
+  /^-agentpath[:=]/i,
+  /^-Xbootclasspath/i,
+  /^-XX:OnError=/i,
+  /^-XX:OnOutOfMemoryError=/i,
+  /^-XX:OnExit=/i,
+  /^-XX:Flags=/i,
+  /^-XX:VMOptionsFile=/i,
+  /^-XX:ErrorFile=/i,
+  /^-XX:HeapDumpPath=/i,
+  /^@/,
+]);
+
+function validateExtraArgs(rawArgs) {
+  const tokens = String(rawArgs || '').split(/\s+/).filter(Boolean);
+
+  for (const token of tokens) {
+    for (const pattern of FORBIDDEN_JVM_ARG_PATTERNS) {
+      if (pattern.test(token)) {
+        throw new Error(
+          `Flag JVM bloqueado: "${token}". Los flags que cargan código nativo o ejecutan comandos (javaagent, agentlib, OnError, OnOutOfMemoryError, @argfiles…) no están permitidos.`
+        );
+      }
+    }
+  }
+
+  return tokens.join(' ');
+}
+
+const DANGEROUS_UPLOAD_EXTENSIONS = new Set([
+  '.exe', '.com', '.bat', '.cmd', '.ps1', '.psm1', '.vbs', '.vbe',
+  '.js', '.jse', '.wsf', '.wsh', '.msi', '.msp', '.scr', '.pif',
+  '.cpl', '.dll', '.sys', '.drv', '.ocx', '.lnk', '.url', '.reg',
+  '.jar',
+]);
+
+function isDangerousUploadPath(relPath) {
+  const ext = path.extname(String(relPath || '')).toLowerCase();
+  return DANGEROUS_UPLOAD_EXTENSIONS.has(ext);
+}
+
 const ADMIN_ROUTE_RULES = Object.freeze([
   {
     methods: new Set(['GET', 'HEAD']),
@@ -285,6 +344,7 @@ const ADMIN_ROUTE_RULES = Object.freeze([
       '/api/databases',
       '/api/databases/:name/reset-password',
       '/api/backups',
+      '/api/backups/:name/restore',
       '/api/startup',
       '/api/ports',
       '/api/plugins/install',
@@ -558,6 +618,18 @@ const SOCKET_CONNECTION_WINDOW_MS = 60_000;
 const SOCKET_CONNECTION_ATTEMPTS = 40;
 const socketConnectionAttempts = new Map();
 const socketConnections = new Map();
+
+/**
+ * Número de proxies de confianza delante del panel (p.ej. Render = 1).
+ * Un cliente puede falsificar el PRIMER elemento de X-Forwarded-For,
+ * pero el proxy de confianza añade la IP real al FINAL. Contamos desde
+ * la derecha para no confiar en datos que el cliente controla.
+ */
+const TRUSTED_PROXY_HOPS = Math.max(
+  0,
+  Number(process.env.MOONWOLF_TRUSTED_PROXY_HOPS ?? 1)
+);
+
 const OPERATION_RATE_RULES = Object.freeze([
   { id: 'pair', methods: new Set(['POST']), paths: ['/pair'], limit: 10, windowMs: 5 * 60_000 },
   { id: 'share-tokens', methods: new Set(['POST', 'PATCH', 'DELETE']), paths: ['/share-tokens', '/share-tokens/:id'], limit: 20, windowMs: 60_000 },
@@ -575,7 +647,9 @@ const OPERATION_RATE_RULES = Object.freeze([
   { id: 'installation', methods: new Set(['POST', 'DELETE']), paths: [
     '/plugins/install', '/plugins/installed/:file', '/versions/install',
   ], limit: 10, windowMs: 60_000 },
-  { id: 'backup-mutation', methods: new Set(['POST', 'DELETE']), paths: ['/backups', '/backups/:name'], limit: 10, windowMs: 60_000 },
+  { id: 'backup-mutation', methods: new Set(['POST', 'DELETE']), paths: [
+    '/backups', '/backups/:name', '/backups/:name/restore',
+  ], limit: 10, windowMs: 60_000 },
 ]);
 
 function loginRateLimited(ip) {
@@ -649,10 +723,14 @@ function operationRateLimited(ip, method, pathname) {
 }
 
 function socketClientIp(socket) {
-  const forwarded = String(socket.handshake.headers['x-forwarded-for'] || '')
-    .split(',')[0]
-    .trim();
-  return forwarded || String(socket.handshake.address || 'unknown');
+  if (TRUSTED_PROXY_HOPS > 0) {
+    const forwarded = String(socket.handshake.headers['x-forwarded-for'] || '');
+    const parts = forwarded.split(',').map(part => part.trim()).filter(Boolean);
+    if (parts.length >= TRUSTED_PROXY_HOPS) {
+      return parts[parts.length - TRUSTED_PROXY_HOPS];
+    }
+  }
+  return String(socket.handshake.address || 'unknown');
 }
 
 function socketConnectionAllowed(socket) {
@@ -857,7 +935,7 @@ app.use(express.json({ limit: '10mb' }));
 
 /* ══════════════════════════════════════════════
    RATE LIMIT
-/* ══════════════════════════════════════════════ */   
+   ══════════════════════════════════════════════ */
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'moonwolf-local' });
 });
@@ -1496,12 +1574,21 @@ function safeJavaPath(value) {
   const candidate = path.resolve(raw);
   if (!['java', 'java.exe'].includes(path.basename(candidate).toLowerCase())) return null;
 
+  const comparable = item => process.platform === 'win32'
+    ? path.normalize(item).toLowerCase()
+    : path.normalize(item);
+  const baseResolved = comparable(path.resolve(BASE_DIR));
+  const candidateResolved = comparable(candidate);
+  if (
+    candidateResolved === baseResolved ||
+    candidateResolved.startsWith(baseResolved + path.sep)
+  ) {
+    return null;
+  }
+
   try {
     const stats = fsSync.lstatSync(candidate);
     const realCandidate = fsSync.realpathSync.native(candidate);
-    const comparable = item => process.platform === 'win32'
-      ? path.normalize(item).toLowerCase()
-      : path.normalize(item);
     if (!stats.isFile() || stats.isSymbolicLink() || comparable(realCandidate) !== comparable(candidate)) {
       return null;
     }
@@ -2498,6 +2585,36 @@ app.post('/api/startup', async (req, res) => {
     serverPort,
   } = req.body || {};
 
+  // ── Gate rol ─────────────────────────────────────────────
+  const session = getSessionFromRequest(req);
+  if (!isOwnerSession(session)) {
+    const current = loadStartupConfig();
+    const attempted = {
+      javaMode:         String(javaMode || ''),
+      javaOverridePath: String(javaOverridePath || ''),
+      javaPath:         String(javaPath || ''),
+      extraArgs:        String(extraArgs || ''),
+      programArgs:      String(programArgs || ''),
+    };
+    for (const field of OWNER_ONLY_STARTUP_FIELDS) {
+      const nextValue = attempted[field] ?? '';
+      const prevValue = String(current[field] ?? '');
+      if (nextValue !== prevValue) {
+        return res.status(403).json({
+          ok: false,
+          error: `Solo el propietario puede modificar "${field}". Los accesos compartidos no pueden cambiar cómo se lanza la JVM.`,
+        });
+      }
+    }
+  }
+
+  let safeExtraArgs;
+  try {
+    safeExtraArgs = validateExtraArgs(extraArgs);
+  } catch (error) {
+    return fail(res, error.message);
+  }
+
   const safeJar = safeJarName(jar);
   if (!safeJar) {
     return fail(res, 'Nombre de archivo .jar no válido');
@@ -2537,7 +2654,7 @@ app.post('/api/startup', async (req, res) => {
       minecraftVersion: String(minecraftVersion || '').trim(),
       minMemoryMb: Math.round(min),
       maxMemoryMb: Math.round(max),
-      extraArgs: String(extraArgs || '').trim(),
+      extraArgs: safeExtraArgs,
       programArgs: programArgs === undefined ? loadStartupConfig().programArgs : String(programArgs || '').trim(),
       stopCommand: String(stopCommand || '').trim() || 'stop',
       autoRestartOnCrash: Boolean(autoRestartOnCrash),
@@ -2756,6 +2873,11 @@ app.delete('/api/databases/:name', async (req, res) => {
 /* ══════════════════════════════════════════════
     MINECRAFT PROCESS
     ══════════════════════════════════════════════ */
+const MC_STOP_TIMEOUT_MS = Math.max(
+  5_000,
+  Number(process.env.MOONWOLF_STOP_TIMEOUT_MS || 30_000)
+);
+
 const DONE_RE = /Done \([\d.,]+s\)!|Listening on /;
 let mcProcess = null;
 let launchPromise = null;
@@ -2868,7 +2990,7 @@ async function launchServerInternal() {
     broadcastStatus('offline');
     return false;
   }
-   
+
   const minecraftVersion =
     String(cfg.minecraftVersion || '').trim() ||
     detectMinecraftVersionFromJarName(cfg.jar);
@@ -2897,10 +3019,10 @@ async function launchServerInternal() {
   ];
 
   stopRequested = false;
-   
-   broadcastLog(`▶ Lanzando: ${javaBin}`, 'system');
-  
-   mcProcess = spawn(javaBin, args, {
+
+  broadcastLog(`▶ Lanzando: ${javaBin}`, 'system');
+
+  mcProcess = spawn(javaBin, args, {
     cwd: BASE_DIR,
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -3013,11 +3135,34 @@ app.post('/api/stop', (_req, res) => {
   if (!mcProcess || mcProcess.exitCode !== null) {
     return fail(res, 'El servidor no está corriendo');
   }
+  if (stopRequested) {
+    return fail(res, 'El servidor ya se está deteniendo');
+  }
 
   stopRequested = true;
   broadcastStatus('stopping');
   broadcastLog('⏹ Enviando comando de parada...', 'system');
-  mcProcess.stdin.write(`${loadStartupConfig().stopCommand || 'stop'}\n`);
+
+  const proc = mcProcess;
+  const killTimer = setTimeout(() => {
+    if (proc.exitCode === null) {
+      broadcastLog(
+        `⚠️ El servidor no se detuvo en ${Math.round(MC_STOP_TIMEOUT_MS / 1000)}s. Forzando cierre del proceso.`,
+        'warn'
+      );
+      try { proc.kill('SIGKILL'); } catch {}
+    }
+  }, MC_STOP_TIMEOUT_MS);
+
+  proc.once('close', () => clearTimeout(killTimer));
+
+  try {
+    proc.stdin.write(`${loadStartupConfig().stopCommand || 'stop'}\n`);
+  } catch (error) {
+    broadcastLog(`⚠️ No se pudo enviar el comando por stdin (${error.message}). Forzando cierre...`, 'warn');
+    try { proc.kill(); } catch {}
+  }
+
   ok(res);
 });
 
@@ -3025,12 +3170,35 @@ app.post('/api/restart', (_req, res) => {
   if (!mcProcess || mcProcess.exitCode !== null) {
     return fail(res, 'El servidor no está corriendo');
   }
+  if (stopRequested) {
+    return fail(res, 'El servidor ya se está deteniendo o reiniciando');
+  }
 
   stopRequested = true;
   restarting = true;
   broadcastStatus('restarting');
   broadcastLog('↺ Reiniciando servidor...', 'system');
-  mcProcess.stdin.write(`${loadStartupConfig().stopCommand || 'stop'}\n`);
+
+  const proc = mcProcess;
+  const killTimer = setTimeout(() => {
+    if (proc.exitCode === null) {
+      broadcastLog(
+        `⚠️ El servidor no se detuvo en ${Math.round(MC_STOP_TIMEOUT_MS / 1000)}s. Forzando cierre para reiniciar.`,
+        'warn'
+      );
+      try { proc.kill('SIGKILL'); } catch {}
+    }
+  }, MC_STOP_TIMEOUT_MS);
+
+  proc.once('close', () => clearTimeout(killTimer));
+
+  try {
+    proc.stdin.write(`${loadStartupConfig().stopCommand || 'stop'}\n`);
+  } catch (error) {
+    broadcastLog(`⚠️ No se pudo enviar el comando por stdin (${error.message}). Forzando cierre...`, 'warn');
+    try { proc.kill(); } catch {}
+  }
+
   ok(res);
 });
 
@@ -3243,6 +3411,14 @@ app.get('/api/plugins/versions', async (req, res) => {
 });
 
 app.post('/api/plugins/install', async (req, res) => {
+  const session = getSessionFromRequest(req);
+  if (!isOwnerSession(session)) {
+    return res.status(403).json({
+      ok: false,
+      error: 'Solo el propietario puede instalar plugins: los plugins son código que se ejecuta en la máquina del servidor.',
+    });
+  }
+
   const { url, filename } = req.body;
 
   if (!url || !filename) {
@@ -3292,6 +3468,14 @@ app.get('/api/plugins/installed', async (_req, res) => {
 });
 
 app.delete('/api/plugins/installed/:file', async (req, res) => {
+  const session = getSessionFromRequest(req);
+  if (!isOwnerSession(session)) {
+    return res.status(403).json({
+      ok: false,
+      error: 'Solo el propietario puede eliminar plugins.',
+    });
+  }
+
   const dest = safePluginPath(req.params.file);
 
   if (!dest) {
@@ -3735,6 +3919,14 @@ app.get('/api/versions/builds', async (req, res) => {
 });
 
 app.post('/api/versions/install', async (req, res) => {
+  const session = getSessionFromRequest(req);
+  if (!isOwnerSession(session)) {
+    return res.status(403).json({
+      ok: false,
+      error: 'Solo el propietario puede instalar o reemplazar el servidor (server.jar).',
+    });
+  }
+
   const { software: sw, version, build, url, loaderVersion } = req.body;
 
   if (!sw || !version) {
@@ -3969,9 +4161,9 @@ async function cleanupStaleFileUploads() {
   let removed = 0;
 
   for (const entry of entries) {
-    if (!entry.isFile() || !/\\.(part|json)$/.test(entry.name)) continue;
+    if (!entry.isFile() || !/\.(part|json)$/.test(entry.name)) continue;
 
-    const uploadId = entry.name.replace(/\\.(part|json)$/, '');
+    const uploadId = entry.name.replace(/\.(part|json)$/, '');
     if (activeFileUploads.has(uploadId)) continue;
 
     const uploadPath = path.join(FILE_UPLOAD_DIR, entry.name);
@@ -4038,6 +4230,14 @@ app.post(
 
     if (chunk.length > FILE_UPLOAD_MAX_CHUNK_BYTES) {
       return fail(res, 'Bloque demasiado grande');
+    }
+
+    const session = getSessionFromRequest(req);
+    if (!isOwnerSession(session) && isDangerousUploadPath(rel)) {
+      return res.status(403).json({
+        ok: false,
+        error: `Los accesos compartidos no pueden subir archivos "${path.extname(rel)}". Esta extensión permite ejecutar código en el host.`,
+      });
     }
 
     const full = safePath(rel);
@@ -4379,6 +4579,7 @@ app.post('/api/files/bulk', async (req, res) => {
   const failed = results.length - completed;
   return ok(res, { completed, failed, results });
 });
+
 app.post('/api/files/delete', async (req, res) => {
   const { path: rel, isDir } = req.body;
 
@@ -4415,6 +4616,10 @@ const BACKUPS_DIR = path.join(STARTUP_DIR, 'backups');
 const BACKUP_NAME_RE = /^[A-Za-z0-9 _.-]{1,80}$/;
 const BACKUP_FILE_RE = /^[A-Za-z0-9_.-]{1,120}\.zip$/;
 
+const BACKUP_RETENTION = Math.max(1, Number(process.env.MOONWOLF_BACKUP_RETENTION || 10));
+const BACKUP_EXCLUDES = Object.freeze(['.moonwolf', '.moonwolf-uploads']);
+const BACKUP_FLUSH_WAIT_MS = 3000;
+
 function ensureBackupsDir() {
   if (!fsSync.existsSync(BACKUPS_DIR)) {
     fsSync.mkdirSync(BACKUPS_DIR, { recursive: true });
@@ -4427,6 +4632,58 @@ function safeBackupPath(filename) {
   }
 
   return path.join(BACKUPS_DIR, filename);
+}
+
+async function withMinecraftSavedOff(task) {
+  const running = Boolean(mcProcess && mcProcess.exitCode === null);
+
+  const send = cmd => {
+    if (!running || !mcProcess?.stdin?.writable) return;
+    try {
+      mcProcess.stdin.write(cmd + '\n');
+    } catch (error) {
+      console.warn(`[backup] No se pudo enviar "${cmd}":`, error.message);
+    }
+  };
+
+  if (running) {
+    send('save-off');
+    send('save-all flush');
+    await new Promise(resolve => setTimeout(resolve, BACKUP_FLUSH_WAIT_MS));
+  }
+
+  try {
+    return await task();
+  } finally {
+    send('save-on');
+  }
+}
+
+async function pruneOldBackups() {
+  const entries = await fs.readdir(BACKUPS_DIR, { withFileTypes: true });
+  const files = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.zip')) continue;
+    try {
+      const stats = await fs.stat(path.join(BACKUPS_DIR, entry.name));
+      files.push({ name: entry.name, mtimeMs: stats.mtimeMs });
+    } catch {}
+  }
+
+  files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  const toRemove = files.slice(BACKUP_RETENTION);
+  for (const file of toRemove) {
+    try {
+      await fs.rm(path.join(BACKUPS_DIR, file.name), { force: true });
+      console.log(`[backup] Retención: eliminada ${file.name}`);
+    } catch (error) {
+      console.warn(`[backup] No se pudo eliminar ${file.name}:`, error.message);
+    }
+  }
+
+  return toRemove.length;
 }
 
 app.get('/api/backups', async (_req, res) => {
@@ -4473,24 +4730,33 @@ app.post('/api/backups', async (req, res) => {
     const zipName = `${safeLabel}_${timestamp}.zip`;
     const zipPath = path.join(BACKUPS_DIR, zipName);
 
-    await createZipAtomically(zipPath, archive => {
-      archive.directory(BASE_DIR, false, entryData => {
-        if (entryData.name === '.moonwolf' || entryData.name.startsWith('.moonwolf/')) {
-          return false;
-        }
-
-        return entryData;
+    const result = await withMinecraftSavedOff(async () => {
+      await createZipAtomically(zipPath, archive => {
+        archive.directory(BASE_DIR, false, entryData => {
+          const name = String(entryData.name || '').replace(/\\/g, '/');
+          for (const excluded of BACKUP_EXCLUDES) {
+            if (name === excluded || name.startsWith(excluded + '/')) {
+              return false;
+            }
+          }
+          return entryData;
+        });
       });
+
+      const stats = await fs.stat(zipPath);
+      return { sizeMb: (stats.size / 1024 / 1024).toFixed(2) };
     });
 
-    const stats = await fs.stat(zipPath);
+    const pruned = await pruneOldBackups().catch(error => {
+      console.warn('[backup] Retención falló:', error.message);
+      return 0;
+    });
 
     ok(res, {
       name: zipName,
-      sizeMb: (stats.size / 1024 / 1024).toFixed(2),
-      warning: wasRunning
-        ? 'El servidor sigue en marcha; algunos archivos (el mundo) pudieron cambiar durante la copia.'
-        : null,
+      sizeMb: result.sizeMb,
+      pruned,
+      consistency: wasRunning ? 'server-consistent' : 'server-offline',
     });
   } catch (e) {
     fail(res, `No se pudo crear la copia de seguridad: ${e.message}`);
@@ -4524,6 +4790,104 @@ app.delete('/api/backups/:name', async (req, res) => {
     ok(res);
   } catch (e) {
     fail(res, `No se pudo eliminar: ${e.message}`);
+  }
+});
+
+app.post('/api/backups/:name/restore', async (req, res) => {
+  const session = getSessionFromRequest(req);
+  if (!isOwnerSession(session)) {
+    return res.status(403).json({
+      ok: false,
+      error: 'Solo el propietario puede restaurar copias de seguridad: sobrescriben la totalidad de los archivos del servidor.',
+    });
+  }
+
+  const full = safeBackupPath(req.params.name);
+
+  if (!full) {
+    return fail(res, 'Nombre no válido');
+  }
+
+  try {
+    const stat = await fs.stat(full);
+    if (!stat.isFile()) {
+      return fail(res, 'La copia no es un archivo válido');
+    }
+  } catch {
+    return fail(res, 'Copia de seguridad no encontrada');
+  }
+
+  const wasRunning = Boolean(mcProcess && mcProcess.exitCode === null);
+
+  try {
+    if (wasRunning) {
+      broadcastLog('🛑 Deteniendo el servidor antes de restaurar...', 'system');
+      broadcastStatus('stopping');
+      await stopMinecraft(MC_STOP_TIMEOUT_MS);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    const staging = path.join(BACKUPS_DIR, `.restore-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`);
+
+    try {
+      await fs.mkdir(staging, { recursive: true });
+
+      const psQuote = value => `'${String(value).replace(/'/g, "''")}'`;
+
+      await new Promise((resolve, reject) => {
+        const child = spawn(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy', 'Bypass',
+            '-Command',
+            `Expand-Archive -LiteralPath ${psQuote(full)} -DestinationPath ${psQuote(staging)} -Force`,
+          ],
+          { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }
+        );
+
+        let stderr = '';
+        let stdout = '';
+        child.stderr.on('data', data => { stderr += String(data); });
+        child.stdout.on('data', data => { stdout += String(data); });
+        child.once('error', reject);
+        child.once('close', code => {
+          if (code === 0) return resolve();
+          reject(new Error((stderr || stdout).trim() || `Expand-Archive terminó con código ${code}`));
+        });
+      });
+
+      const entries = await fs.readdir(staging, { withFileTypes: true });
+
+      for (const entry of entries) {
+        const src = path.join(staging, entry.name);
+        const dst = path.join(BASE_DIR, entry.name);
+
+        if (BACKUP_EXCLUDES.includes(entry.name)) continue;
+        if (!safePath(entry.name)) continue;
+
+        await fs.rm(dst, { recursive: true, force: true });
+        await fs.cp(src, dst, { recursive: true, force: true });
+      }
+
+      broadcastLog(`✅ Copia restaurada: ${req.params.name}`, 'success');
+
+      if (wasRunning) {
+        broadcastLog('▶ Reiniciando el servidor después de la restauración...', 'system');
+        broadcastStatus('starting');
+        launchServer().catch(error =>
+          broadcastLog(`❌ Error al reiniciar tras restaurar: ${error.message}`, 'error')
+        );
+      }
+
+      ok(res, { restored: true, wasRunning });
+    } finally {
+      await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+    }
+  } catch (error) {
+    console.error('[backup/restore]', error);
+    fail(res, `No se pudo restaurar la copia: ${error.message}`);
   }
 });
 
@@ -4604,18 +4968,44 @@ function stopMinecraft(timeoutMs = 30000) {
 
 module.exports = { stopMinecraft };
 
-async function start() {
-  server.listen(PORT, HOST, () => {
-    console.log(`MoonWolf Panel → http://${HOST}:${PORT}`);
-
-    const cfg = loadStartupConfig();
-
-    if (cfg.autoStartOnBoot) {
-      broadcastLog('🌙 Arranque automático activado. Iniciando servidor...', 'system');
-      broadcastStatus('starting');
-      launchServer().catch(error => broadcastLog(`❌ Error en arranque automático: ${error.message}`, 'error'));
-    }
+function listenWithRetry(basePort, maxAttempts = 10) {
+  return new Promise((resolve, reject) => {
+    let attempts = 0;
+    const tryListen = port => {
+      const onError = error => {
+        if (error.code === 'EADDRINUSE' && attempts < maxAttempts - 1) {
+          attempts += 1;
+          server.off('listening', onListening);
+          console.warn(`[server] Puerto ${port} ocupado, probando ${port + 1}...`);
+          tryListen(port + 1);
+        } else {
+          server.off('error', onError);
+          reject(error);
+        }
+      };
+      const onListening = () => {
+        server.off('error', onError);
+        resolve(port);
+      };
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(port, HOST);
+    };
+    tryListen(basePort);
   });
+}
+
+async function start() {
+  const actualPort = await listenWithRetry(PORT);
+  console.log(`MoonWolf Panel → http://${HOST}:${actualPort}`);
+
+  const cfg = loadStartupConfig();
+
+  if (cfg.autoStartOnBoot) {
+    broadcastLog('🌙 Arranque automático activado. Iniciando servidor...', 'system');
+    broadcastStatus('starting');
+    launchServer().catch(error => broadcastLog(`❌ Error en arranque automático: ${error.message}`, 'error'));
+  }
 }
 
 start().catch(error => {
