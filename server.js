@@ -17,10 +17,6 @@ const { pipeline } = require('stream/promises');
 
 /* ══════════════════════════════════════════════
    ATOMIC FILE WRITE HELPERS
-   Todos los ficheros de estado (secrets, tokens,
-   configs) se escriben con el mismo patrón:
-   tmp → fsync → rename, + backup rotativo y
-   recuperación desde .bak cuando aplica.
    ══════════════════════════════════════════════ */
 function atomicWriteFileSync(filePath, data, options = 'utf8') {
   const tempPath = `${filePath}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
