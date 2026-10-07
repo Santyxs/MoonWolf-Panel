@@ -219,7 +219,7 @@ async function checkForUpdate(currentVersion) {
   }
 
   const release = await response.json();
-  const match = String(release.tag_name || '').match(/^agent-v(.+)$/);
+  const match = String(release.tag_name || '').match(/^(?:agent-)?v?(.+)$/i);
 
   if (!match) return null;
 
@@ -807,7 +807,7 @@ async function main() {
     const timeoutId = setTimeout(() => controller.abort(), FORWARD_TIMEOUT_MS);
 
     try {
-      const method = request.method || 'GET';
+      const method = (request.method || 'GET').toUpperCase();
       const parsedPath = new URL(String(request.path || ''), 'http://moonwolf.invalid');
 
       if (parsedPath.origin !== 'http://moonwolf.invalid' || !parsedPath.pathname.startsWith('/api/')) {
@@ -815,9 +815,15 @@ async function main() {
       }
 
       const safeRequestPath = parsedPath.pathname + parsedPath.search;
-      const isBinaryBody = Buffer.isBuffer(request.body) ||
+      
+      let isBinaryBody = Buffer.isBuffer(request.body) ||
         request.body instanceof Uint8Array ||
         request.body instanceof ArrayBuffer;
+
+      if (!isBinaryBody && request.body && typeof request.body === 'object' && request.body.type === 'Buffer' && Array.isArray(request.body.data)) {
+        isBinaryBody = true;
+        request.body = Buffer.from(request.body.data);
+      }
 
       let body;
       let contentType;
@@ -826,19 +832,41 @@ async function main() {
         body = Buffer.from(request.body);
         contentType = 'application/octet-stream';
       } else if (request.body !== undefined && request.body !== null) {
-        body = JSON.stringify(request.body);
+        if (typeof request.body === 'string') {
+          body = request.body;
+        } else {
+          body = JSON.stringify(request.body);
+        }
         contentType = 'application/json';
       }
 
-      const response = await fetch(`${localUrl}${safeRequestPath}`, {
+      const fetchHeaders = {
+        'X-MoonWolf-Token': config.localToken,
+      };
+
+      if (request.headers && typeof request.headers === 'object') {
+        for (const [key, val] of Object.entries(request.headers)) {
+          const lower = key.toLowerCase();
+          if (lower !== 'host' && lower !== 'content-length' && lower !== 'x-moonwolf-token') {
+            fetchHeaders[key] = val;
+          }
+        }
+      }
+
+      const fetchOptions = {
         method,
-        headers: {
-          'X-MoonWolf-Token': config.localToken,
-          ...(body ? { 'Content-Type': contentType } : {}),
-        },
-        body,
+        headers: fetchHeaders,
         signal: controller.signal,
-      });
+      };
+
+      if (method !== 'GET' && method !== 'HEAD' && body !== undefined) {
+        fetchOptions.body = body;
+        if (contentType && !fetchHeaders['content-type'] && !fetchHeaders['Content-Type']) {
+          fetchOptions.headers['Content-Type'] = contentType;
+        }
+      }
+
+      const response = await fetch(`${localUrl}${safeRequestPath}`, fetchOptions);
 
       const bytes = Buffer.from(await response.arrayBuffer());
 
