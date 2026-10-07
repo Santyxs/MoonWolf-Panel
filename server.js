@@ -1320,9 +1320,8 @@ async function resolveJavaForServer(minecraftVersion) {
   return executable;
 }
 
-
-const PORT = Number(process.env.MOONWOLF_PORT || process.env.PORT || 3000);
-const PAPER_UA = 'MoonWolfPanel/2.0 (contact@moonwolf.local)';
+const PORT = process.env.PORT || 10000;
+const HOST = '0.0.0.0';
 
 const STARTUP_DIR = path.join(BASE_DIR, '.moonwolf');
 const STARTUP_CONFIG_PATH = path.join(STARTUP_DIR, 'startup.json');
@@ -1840,8 +1839,6 @@ function safePath(rel) {
       const stats = fsSync.lstatSync(current);
       const realCurrent = fsSync.realpathSync.native(current);
 
-      // isSymbolicLink cubre symlinks; la comparación con realpath detecta
-      // junctions y otros reparse points que redirigen el árbol en Windows.
       if (stats.isSymbolicLink() || comparable(realCurrent) !== comparable(current)) return null;
     } catch (error) {
       if (error?.code === 'ENOENT') break;
@@ -1938,7 +1935,7 @@ async function downloadFile(url, dest) {
   let response;
   for (let redirect = 0; redirect <= DOWNLOAD_MAX_REDIRECTS; redirect++) {
     response = await fetch(currentUrl, {
-      headers: { 'User-Agent': PAPER_UA },
+      headers: { 'User-Agent': 'MoonWolfPanel/2.0 (contact@moonwolf.local)' },
       redirect: 'manual',
       signal: AbortSignal.timeout(10 * 60 * 1000),
     });
@@ -4500,9 +4497,8 @@ function stopMinecraft(timeoutMs = 30000) {
 module.exports = { stopMinecraft };
 
 async function start() {
-  // El panel local no debe exponerse en interfaces de red externas.
-  server.listen(PORT, '127.0.0.1', () => {
-    console.log(`MoonWolf Panel → http://localhost:${PORT}`);
+  server.listen(PORT, HOST, () => {
+    console.log(`MoonWolf Panel → http://${HOST}:${PORT}`);
 
     const cfg = loadStartupConfig();
 
