@@ -552,14 +552,14 @@ async function main() {
     }, UPDATE_CHECK_INTERVAL_MS);
   }
 
-  function applyUpdateNow() {
+  async function applyUpdateNow() {
     if (updateStatus === 'error') {
       updateStatus = 'idle';
       updateError = null;
       updateFilePath = null;
       gui?.update();
 
-      startUpdateDownload();
+      await startUpdateDownload();
 
       return { ok: true };
     }
@@ -575,7 +575,7 @@ async function main() {
       addLog(`Aplicando actualización v${updateAvailable.version}...`);
       setUpdateNotice('Aplicando actualización… el agent se reiniciará', 'info', 3000);
 
-      applyUpdate(updateFilePath);
+      await Promise.resolve(applyUpdate(updateFilePath));
 
       addLog('Cerrando para aplicar la actualización...');
       gui?.update();
@@ -619,7 +619,7 @@ async function main() {
       return logPath;
     },
 
-    setServerDir: newDir => {
+    setServerDir: async newDir => {
       const trimmed = String(newDir || '').trim();
 
       if (!trimmed) {
@@ -641,7 +641,7 @@ async function main() {
       config.serverDir = resolved;
 
       try {
-        atomicWriteFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8');
+        await Promise.resolve(atomicWriteFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8'));
       } catch (error) {
         return { ok: false, error: `No se pudo guardar la configuración: ${error.message}` };
       }
