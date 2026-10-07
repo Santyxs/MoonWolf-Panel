@@ -24,9 +24,6 @@ function formatPath(value) {
   return String(value || '—');
 }
 
-/* ══════════════════════════════════════════════
-   CUSTOM CONFIRM
-   ══════════════════════════════════════════════ */
 function customConfirm(message, title = 'Reiniciar Agent') {
   return new Promise(resolve => {
     const overlay = document.createElement('div');
@@ -97,10 +94,8 @@ function render() {
   const cloudConnected = Boolean(state.cloudConnected);
   const localReady = Boolean(state.localServerReady);
 
-  $('pairing-code').textContent = state.pairingCode || '—';
-  $('server-dir').textContent = formatPath(state.serverDir);
-  $('server-dir').title = formatPath(state.serverDir);
-  $('version').textContent = state.version && /^\d/.test(state.version) ? `v${state.version}` : (state.version || '—');
+  $('pairing-code').textContent = state.pairingCode \vert{}\vert{} '—';$('server-dir').textContent = formatPath(state.serverDir);
+  $('server-dir').title = formatPath(state.serverDir);$('version').textContent = state.version && /^\d/.test(state.version) ? `v${state.version}` : (state.version || '—');
 
   $('status-dot').className = `status-dot ${cloudConnected ? 'connected' : 'connecting'}`;
   $('status-title').textContent = cloudConnected ? 'Conectado' : 'Desconectado';
@@ -223,8 +218,7 @@ function renderSettings() {
   const configDir = String(state.configPath || '').replace(/[\\/][^\\/]*$/, '');
 
   $('settings-config-dir').textContent = formatPath(configDir);
-  $('settings-config-dir').title = formatPath(configDir);
-  $('settings-agent-id').textContent = state.agentId || '—';
+  $('settings-config-dir').title = formatPath(configDir);$('settings-agent-id').textContent = state.agentId || '—';
 }
 
 function renderLogs() {
@@ -299,8 +293,7 @@ function flashButton(button, label) {
 }
 
 function openServerDirModal() {
-  $('serverdir-input').value = state.serverDir || '';
-  $('serverdir-error').textContent = '';
+  $('serverdir-input').value = state.serverDir \vert{}\vert{} '';$('serverdir-error').textContent = '';
   openModal('serverdir-modal');
 }
 
@@ -308,8 +301,7 @@ function bindEvents() {
   $('open-panel')?.addEventListener('click', () => nativeApi().openPanel?.());
   $('open-server')?.addEventListener('click', () => nativeApi().openServerFolder?.());
   $('open-logs')?.addEventListener('click', () => openModal('logs-modal'));
-  $('close-logs')?.addEventListener('click', () => closeModal('logs-modal'));
-  $('logs-modal')?.querySelector('.modal-backdrop')?.addEventListener('click', () => closeModal('logs-modal'));
+  $('close-logs')?.addEventListener('click', () => closeModal('logs-modal'));$('logs-modal')?.querySelector('.modal-backdrop')?.addEventListener('click', () => closeModal('logs-modal'));
 
   $('copy-pairing')?.addEventListener('click', async event => {
     const button = event.currentTarget;
@@ -336,13 +328,8 @@ function bindEvents() {
 
   $('edit-server-dir')?.addEventListener('click', openServerDirModal);
 
-  $('settings')?.addEventListener('click', () => {
-    renderSettings();
-    openModal('settings-modal');
-  });
-  $('close-settings')?.addEventListener('click', () => closeModal('settings-modal'));
-  $('settings-modal')?.querySelector('.modal-backdrop')?.addEventListener('click', () => closeModal('settings-modal'));
-  $('settings-open-config')?.addEventListener('click', () => nativeApi().openConfig?.());
+  $('settings')?.addEventListener('click', () => {     renderSettings();     openModal('settings-modal');   });$('close-settings')?.addEventListener('click', () => closeModal('settings-modal'));
+  $('settings-modal')?.querySelector('.modal-backdrop')?.addEventListener('click', () => closeModal('settings-modal'));$('settings-open-config')?.addEventListener('click', () => nativeApi().openConfig?.());
   $('settings-hide-tray')?.addEventListener('click', () => {
     closeModal('settings-modal');
     nativeApi().hideToTray?.();
@@ -358,23 +345,32 @@ function bindEvents() {
   });
 
   $('close-serverdir')?.addEventListener('click', () => closeModal('serverdir-modal'));
-  $('cancel-serverdir')?.addEventListener('click', () => closeModal('serverdir-modal'));
-  $('serverdir-modal')?.querySelector('.modal-backdrop')?.addEventListener('click', () => closeModal('serverdir-modal'));
+  $('cancel-serverdir')?.addEventListener('click', () => closeModal('serverdir-modal'));$('serverdir-modal')?.querySelector('.modal-backdrop')?.addEventListener('click', () => closeModal('serverdir-modal'));
 
-  $('save-serverdir')?.addEventListener('click', () => {
-    const result = nativeApi().setServerDir?.($('serverdir-input').value);
-    if (!result?.ok) {
-      $('serverdir-error').textContent = result?.error || 'No se pudo guardar la ruta.';
+  $('save-serverdir')?.addEventListener('click', async () => {
+    const api = nativeApi();
+    const inputVal = $('serverdir-input').value;
+    if (!api.setServerDir) {
+      $('serverdir-error').textContent = 'La interfaz nativa no está disponible.';
       return;
     }
-    state.serverDir = result.serverDir || $('serverdir-input').value;
+    try {
+      const result = await api.setServerDir(inputVal);
+      if (result && result.ok === false) {
+        $('serverdir-error').textContent = result.error || result.message || 'No se pudo guardar la ruta.';
+        return;
+      }
+      state.serverDir = (result && result.serverDir) || inputVal;
 
-    if (result.restartRequired) {
-      state.restartRequired = true;
+      if (result && result.restartRequired) {
+        state.restartRequired = true;
+      }
+
+      closeModal('serverdir-modal');
+      render();
+    } catch (err) {
+      $('serverdir-error').textContent = err.message || 'Error al establecer la ruta.';
     }
-
-    closeModal('serverdir-modal');
-    render();
   });
 
   $('restart-agent')?.addEventListener('click', async () => {
@@ -388,15 +384,27 @@ function bindEvents() {
     }
   });
 
-  $('update-apply')?.addEventListener('click', () => {
-  if (!state.updateAvailable) return;
-  if (state.updateStatus !== 'ready' && state.updateStatus !== 'error') return;
+  $('update-apply')?.addEventListener('click', async () => {
+    if (!state.updateAvailable) return;
+    if (state.updateStatus !== 'ready' && state.updateStatus !== 'error') return;
 
-  const result = nativeApi().applyUpdate?.();
+    const api = nativeApi();
+    if (!api.applyUpdate) {
+      if ($('update-description')) {$('update-description').textContent = 'La interfaz nativa no está disponible.';
+      }
+      return;
+    }
 
-  if (result && !result.ok) {
-    $('update-description').textContent = result.error || 'No se pudo aplicar la actualización.';
-  }
+    try {
+      const result = await api.applyUpdate();
+      if (result && result.ok === false) {
+        if ($('update-description')) {$('update-description').textContent = result.error || result.message || 'No se pudo aplicar la actualización.';
+        }
+      }
+    } catch (err) {
+      if ($('update-description')) {$('update-description').textContent = err.message || 'Error durante la actualización.';
+      }
+    }
   });
 
   document.addEventListener('keydown', event => {
