@@ -118,48 +118,71 @@ function ensureSocketIo() {
 
 let codeMirrorPromise = null;
 
-function loadExternalScript(src) {
+const CODEMIRROR_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16';
+
+const CODEMIRROR_MODES = {
+  javascript: `${CODEMIRROR_CDN}/mode/javascript/javascript.min.js`,
+  yaml:       `${CODEMIRROR_CDN}/mode/yaml/yaml.min.js`,
+  xml:        `${CODEMIRROR_CDN}/mode/xml/xml.min.js`,
+  properties: `${CODEMIRROR_CDN}/mode/properties/properties.min.js`,
+  shell:      `${CODEMIRROR_CDN}/mode/shell/shell.min.js`,
+  toml:       `${CODEMIRROR_CDN}/mode/toml/toml.min.js`,
+  nginx:      `${CODEMIRROR_CDN}/mode/nginx/nginx.min.js`,
+};
+
+function loadExternalScript(src, dataAttr) {
   return new Promise((resolve, reject) => {
+    if (dataAttr && document.querySelector(`script[data-cm-asset="${dataAttr}"]`)) {
+      return resolve();
+    }
     const script = document.createElement('script');
     script.src = src;
-    script.onload = resolve;
+    if (dataAttr) script.dataset.cmAsset = dataAttr;
+    script.onload = () => resolve();
     script.onerror = () => reject(new Error(`No se pudo cargar ${src}`));
     document.head.appendChild(script);
   });
 }
 
+function loadExternalStylesheet(href, dataAttr) {
+  if (dataAttr && document.querySelector(`link[data-cm-asset="${dataAttr}"]`)) {
+    return;
+  }
+  const link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = href;
+  if (dataAttr) link.dataset.cmAsset = dataAttr;
+  document.head.appendChild(link);
+}
+
 async function ensureCodeMirror(mode) {
-  if (window.CodeMirror) return true;
+  const modeUrl = CODEMIRROR_MODES[mode];
+
+  if (window.CodeMirror) {
+    if (!modeUrl) return true;
+    try {
+      await loadExternalScript(modeUrl, `mode-${mode}`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   if (!codeMirrorPromise) {
-    const base = '/vendor/codemirror';
-    const css = document.createElement('link');
-    css.rel = 'stylesheet';
-    css.href = `${base}/codemirror.min.css`;
-    document.head.appendChild(css);
-    const theme = document.createElement('link');
-    theme.rel = 'stylesheet';
-    theme.href = `${base}/dracula.min.css`;
-    document.head.appendChild(theme);
-    codeMirrorPromise = loadExternalScript(`${base}/codemirror.min.js`);
+    loadExternalStylesheet(`${CODEMIRROR_CDN}/codemirror.min.css`, 'core-css');
+    loadExternalStylesheet(`${CODEMIRROR_CDN}/theme/dracula.min.css`, 'dracula-css');
+
+    codeMirrorPromise = loadExternalScript(`${CODEMIRROR_CDN}/codemirror.min.js`, 'core-js')
+      .catch(error => {
+        codeMirrorPromise = null;
+        throw error;
+      });
   }
 
   try {
     await codeMirrorPromise;
-    const base = '/vendor/codemirror';
-    const modeUrl = {
-      javascript: `${base}/mode/javascript/javascript.min.js`,
-      yaml: `${base}/mode/yaml/yaml.min.js`,
-      xml: `${base}/mode/xml/xml.min.js`,
-      properties: `${base}/mode/properties/properties.min.js`,
-      shell: `${base}/mode/shell/shell.min.js`,
-      toml: `${base}/mode/toml/toml.min.js`,
-      nginx: `${base}/mode/nginx/nginx.min.js`,
-    }[mode];
-    if (modeUrl && !document.querySelector(`script[data-codemirror-mode="${mode}"]`)) {
-      await loadExternalScript(modeUrl);
-      document.querySelectorAll('script').forEach(script => {
-        if (script.src === modeUrl) script.dataset.codemirrorMode = mode;
-      });
+    if (modeUrl) {
+      await loadExternalScript(modeUrl, `mode-${mode}`);
     }
     return true;
   } catch {
@@ -169,11 +192,6 @@ async function ensureCodeMirror(mode) {
 
 /* LOGIN */
 
-// Formatea el código mientras se teclea (o se pega).
-// - El prefijo "MW" es opcional.
-// - "S..." => token compartido MW-SHARE-XXXX-XXXX-XXXX-XXXX
-// - "P..." o cualquier otro => código de emparejamiento MW-PXXX-XXXX
-// - No fuerza el prefijo al borrar, así que Backspace vacía el campo.
 function formatLoginCode(raw) {
   const clean = String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
@@ -1824,8 +1842,6 @@ async function openFile(rel) {
       });
 
       editor.setValue(data.content || '');
-      // Cada archivo debe abrirse desde el inicio, sin heredar ningún scroll
-      // horizontal/vertical ni dejar la primera línea bajo el borde superior.
       editor.scrollTo(0, 0);
       editor.setCursor({ line: 0, ch: 0 });
 
@@ -1833,8 +1849,6 @@ async function openFile(rel) {
       editor.on('change', updateEditorDirtyState);
       updateEditorDirtyState();
       updateEditorStatus();
-      // El panel se muestra justo antes de crear CodeMirror; refrescar en el
-      // siguiente frame evita que calcule un ancho/alto de 0 y corte el texto.
       requestAnimationFrame(() => {
         if (!editor) return;
         editor.setSize('100%', '100%');
