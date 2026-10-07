@@ -44,6 +44,18 @@ const STATUS_LEVELS = {
   stopping: 'warn',
 };
 
+/**
+ * Extensiones que dan ejecución de código en el host. Los accesos
+ * compartidos no pueden subirlas. Debe coincidir con la lista del
+ * servidor (`server.js → DANGEROUS_UPLOAD_EXTENSIONS`).
+ */
+const DANGEROUS_UPLOAD_EXTENSIONS = new Set([
+  '.exe', '.com', '.bat', '.cmd', '.ps1', '.psm1', '.vbs', '.vbe',
+  '.js', '.jse', '.wsf', '.wsh', '.msi', '.msp', '.scr', '.pif',
+  '.cpl', '.dll', '.sys', '.drv', '.ocx', '.lnk', '.url', '.reg',
+  '.jar',
+]);
+
 /* STATE */
 
 let cloudSocket = null;
@@ -85,6 +97,26 @@ const activities = [];
 
 let lastAgentActivityState = null;
 let lastStatusActivity = null;
+
+/* ══════════════════════════════════════════════
+   PERMISOS
+   ══════════════════════════════════════════════ */
+
+const PERMISSION_RANK = { read: 1, control: 2, admin: 3 };
+
+function hasPermission(required) {
+  return (PERMISSION_RANK[panelPermission] || 0) >= (PERMISSION_RANK[required] || 99);
+}
+
+function isOwnerSession() {
+  return panelKind === 'owner';
+}
+
+function isDangerousUploadFile(file) {
+  const name = String(file?.name || '').toLowerCase();
+  const ext = name.match(/\.[a-z0-9]+$/)?.[0] || '';
+  return DANGEROUS_UPLOAD_EXTENSIONS.has(ext);
+}
 
 /* SOCKET.IO */
 
@@ -201,7 +233,6 @@ function formatLoginCode(raw) {
 
   const body = clean.startsWith('MW') ? clean.slice(2) : clean;
 
-  // Token compartido: MW-SHARE-XXXX-XXXX-XXXX-XXXX
   if (body.startsWith('S')) {
     const head = body.slice(0, 5);
     if (body.length <= 5) return `MW-${head}`;
@@ -212,7 +243,6 @@ function formatLoginCode(raw) {
     return `MW-${head}${groups.length ? `-${groups.join('-')}` : ''}`;
   }
 
-  // Código de emparejamiento: MW-PXXX-XXXX
   const rest = (body.startsWith('P') ? body.slice(1) : body)
     .replace(/[^A-Z2-9]/g, '')
     .slice(0, 7);
@@ -417,11 +447,6 @@ function setSession(session, id, permission = 'admin', kind = 'owner') {
 function clearSession() {
   setSession('', '', 'admin', 'owner');
   pairingCode = '';
-}
-
-const PERMISSION_RANK = { read: 1, control: 2, admin: 3 };
-function hasPermission(required) {
-  return (PERMISSION_RANK[panelPermission] || 0) >= (PERMISSION_RANK[required] || 99);
 }
 
 async function attemptLogin() {
@@ -1696,6 +1721,17 @@ async function uploadSelectedFiles(fileList) {
   const files = Array.from(fileList || {}).filter(file => file && typeof file.size === 'number');
 
   if (!files.length) return;
+  if (!isOwnerSession()) {
+    const dangerous = files.filter(isDangerousUploadFile);
+    if (dangerous.length) {
+      toast(
+        `🔒 Bloqueado: ${dangerous.map(file => file.name).join(', ')}. Los accesos compartidos no pueden subir ejecutables.`,
+        'err'
+      );
+      return;
+    }
+  }
+
   lastUploadFiles = files;
 
   const progressState = {
@@ -2133,6 +2169,11 @@ async function openPluginVersions(plugin) {
 }
 
 async function installPlugin(version) {
+  if (!isOwnerSession()) {
+    toast('🔒 Solo el propietario puede instalar plugins.', 'warn');
+    return;
+  }
+
   const file = (version.files || []).find(item => item.primary) || version.files?.[0];
 
   if (!file?.url) {
@@ -2184,6 +2225,8 @@ async function loadInstalledPlugins() {
     return;
   }
 
+  const owner = isOwnerSession();
+
   element.innerHTML =
     (data.plugins || [])
       .map(
@@ -2193,7 +2236,8 @@ async function loadInstalledPlugins() {
             <strong>☕ ${escHtml(plugin.filename)}</strong>
             <div style="font-size:11px;color:var(--muted2)">${escHtml(plugin.size)} · ${escHtml(plugin.modified)}</div>
           </div>
-          <button class="small-btn danger" data-delete-plugin="${escHtml(plugin.filename)}">Eliminar</button>
+          <button class="small-btn danger" data-delete-plugin="${escHtml(plugin.filename)}"
+            ${owner ? '' : 'disabled title="Solo el propietario"'}>Eliminar</button>
         </div>
       `
       )
@@ -2523,6 +2567,11 @@ async function selectVersionBuilds(software, version, item = versionFindSoftware
 }
 
 async function installVersionSelection(software, version, build) {
+  if (!isOwnerSession()) {
+    toast('🔒 Solo el propietario puede instalar o reemplazar el servidor.', 'warn');
+    return;
+  }
+
   const label = versionFindSoftware(software).label || software;
   const buildLabel = build?.build !== undefined ? `Build ${build.build}` : 'versión seleccionada';
 
@@ -2844,6 +2893,7 @@ async function loadBackups() {
   }
 
   const backups = data.backups || [];
+  const owner = isOwnerSession();
 
   container.innerHTML = backups.length
     ? backups
@@ -2858,6 +2908,9 @@ async function loadBackups() {
           <span class="bk-size">${escHtml(backup.sizeMb)} MB</span>
           <span class="bk-actions">
             <button class="icon-btn edit" data-download-backup="${escHtml(backup.name)}" title="Descargar">⬇️</button>
+            <button class="icon-btn warn" data-restore-backup="${escHtml(backup.name)}"
+              title="${owner ? 'Restaurar' : 'Solo el propietario'}"
+              ${owner ? '' : 'disabled'}>♻️</button>
             <button class="icon-btn" data-delete-backup="${escHtml(backup.name)}" title="Eliminar">🗑️</button>
           </span>
         </div>
@@ -2869,6 +2922,12 @@ async function loadBackups() {
   container.querySelectorAll('[data-download-backup]').forEach(button => {
     button.addEventListener('click', () =>
       downloadBackup(button.dataset.downloadBackup)
+    );
+  });
+
+  container.querySelectorAll('[data-restore-backup]').forEach(button => {
+    button.addEventListener('click', () =>
+      restoreBackup(button.dataset.restoreBackup)
     );
   });
 
@@ -2884,12 +2943,12 @@ async function loadBackups() {
         return;
       }
 
-      const data = await api(`/api/backups/${encodeURIComponent(name)}`, {
+      const result = await api(`/api/backups/${encodeURIComponent(name)}`, {
         method: 'DELETE',
       });
 
-      if (!data.ok) {
-        toast(`❌ ${data.error}`, 'err');
+      if (!result.ok) {
+        toast(`❌ ${result.error}`, 'err');
         return;
       }
 
@@ -2964,6 +3023,54 @@ async function downloadBackup(name) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch (error) {
     toast(`❌ ${error.message}`, 'err');
+  }
+}
+
+async function restoreBackup(name) {
+  if (!isOwnerSession()) {
+    toast('🔒 Solo el propietario puede restaurar copias.', 'warn');
+    return;
+  }
+
+  const typed = prompt(
+    `⚠️ RESTAURAR "${name}"\n\n` +
+    'Esto reemplazará TODOS los archivos actuales del servidor (mundos, plugins, configs).\n' +
+    'Los directorios internos .moonwolf y .moonwolf-uploads NO se tocan.\n' +
+    'Si el servidor está corriendo, se detendrá y se reiniciará automáticamente.\n\n' +
+    'Escribe RESTAURAR en mayúsculas para confirmar:'
+  );
+
+  if (typed !== 'RESTAURAR') {
+    if (typed !== null) toast('Restauración cancelada.', 'warn');
+    return;
+  }
+
+  const button = document.querySelector(`[data-restore-backup="${CSS.escape(name)}"]`);
+  if (button) { button.disabled = true; }
+
+  toast('⏳ Restaurando copia... el servidor puede tardar en reiniciar.', 'info');
+
+  try {
+    const data = await postJSON(
+      `/api/backups/${encodeURIComponent(name)}/restore`,
+      {}
+    );
+
+    if (!data.ok) {
+      throw new Error(data.error || 'No se pudo restaurar la copia.');
+    }
+
+    toast(
+      data.wasRunning
+        ? '✅ Copia restaurada. El servidor se está reiniciando.'
+        : '✅ Copia restaurada.',
+      'ok'
+    );
+    addActivity(`Copia restaurada: ${name}`, 'ok', '♻️');
+    loadBackups();
+  } catch (error) {
+    toast(`❌ ${error.message}`, 'err');
+    if (button) { button.disabled = false; }
   }
 }
 
@@ -3177,6 +3284,7 @@ async function loadStartup() {
   const jars = Array.isArray(data.jars) ? data.jars : [];
   const hasCurrentJar = jars.includes(cfg.jar);
   const port = data.serverPort;
+  const owner = isOwnerSession();
 
   element.innerHTML = `
     <div class="startup-form">
@@ -3215,8 +3323,11 @@ async function loadStartup() {
       </div>
 
       <div class="form-group">
-        <label class="form-label">Java</label>
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:var(--panel)">
+        <label class="form-label">
+          Java
+          ${owner ? '' : '<span class="owner-lock">🔒 Solo el propietario</span>'}
+        </label>
+        <div class="startup-java-card">
           <span style="font-size:18px">☕</span>
           <div style="flex:1;min-width:220px">
             <div style="font-weight:700" id="stJavaManagedLabel">
@@ -3238,11 +3349,20 @@ async function loadStartup() {
 
         <div style="margin-top:10px">
           <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
-            <input id="stJavaOverride" type="checkbox" ${cfg.javaMode === 'override' ? 'checked' : ''}>
+            <input id="stJavaOverride" type="checkbox"
+              ${cfg.javaMode === 'override' ? 'checked' : ''}
+              ${owner ? '' : 'disabled'}>
             Usar un Java personalizado (avanzado)
           </label>
-          <input id="stJavaOverridePath" class="form-input" type="text" style="margin-top:8px;display:${cfg.javaMode === 'override' ? 'block' : 'none'}" placeholder="C:\Program Files\Java\jdk-21\bin\java.exe" value="${escHtml(cfg.javaOverridePath || cfg.javaPath || '')}">
-          <div class="form-hint">Normalmente no necesitas tocar esto. El modo gestionado evita depender de un JDK instalado en Windows.</div>
+          <input id="stJavaOverridePath" class="form-input" type="text"
+            style="margin-top:8px;display:${cfg.javaMode === 'override' ? 'block' : 'none'}"
+            placeholder="C:\\Program Files\\Java\\jdk-21\\bin\\java.exe"
+            value="${escHtml(cfg.javaOverridePath || cfg.javaPath || '')}"
+            ${owner ? '' : 'readonly'}>
+          <div class="form-hint">
+            Normalmente no necesitas tocar esto.
+            ${owner ? '' : ' Solo el propietario puede modificar la ruta de Java.'}
+          </div>
         </div>
       </div>
 
@@ -3259,11 +3379,26 @@ async function loadStartup() {
 
       <div class="form-group">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
-          <label class="form-label" style="margin-bottom:0">Argumentos JVM extra (antes de "-jar")</label>
-          <button type="button" class="small-btn" id="btnAikarFlags" style="font-size:10px;padding:4px 9px;flex-shrink:0">⚡ Usar Aikar's Flags</button>
+          <label class="form-label" style="margin-bottom:0">
+            Argumentos JVM extra (antes de "-jar")
+            ${owner ? '' : '<span class="owner-lock">🔒 Solo el propietario</span>'}
+          </label>
+          ${
+            owner
+              ? `<button type="button" class="small-btn" id="btnAikarFlags" style="font-size:10px;padding:4px 9px;flex-shrink:0">⚡ Usar Aikar's Flags</button>`
+              : ''
+          }
         </div>
-        <input id="stArgs" class="form-input" type="text" placeholder="-XX:+UseG1GC" value="${escHtml(cfg.extraArgs || '')}">
-        <div class="form-hint">Flags de la JVM (recolector de basura, memoria avanzada...). Se insertan justo antes de "-jar".</div>
+        <input id="stArgs" class="form-input" type="text"
+          placeholder="-XX:+UseG1GC"
+          value="${escHtml(cfg.extraArgs || '')}"
+          ${owner ? '' : 'readonly'}>
+        <div class="form-hint">
+          Flags de la JVM (recolector de basura, memoria avanzada...). Se insertan justo antes de "-jar".
+          ${owner
+            ? ' Los flags que cargan código (javaagent, agentlib, OnError...) están bloqueados por seguridad.'
+            : ' Solo el propietario puede modificarlos.'}
+        </div>
       </div>
 
       <div class="form-row">
@@ -3343,21 +3478,27 @@ async function saveStartup() {
   }
 
   const portValue = $('stPort')?.value.trim();
+  const owner = isOwnerSession();
 
   const body = {
     jar: jarSelect.value,
-    javaPath: $('stJavaOverridePath')?.value.trim() || '',
-    javaMode: Boolean($('stJavaOverride')?.checked) ? 'override' : 'managed',
-    javaOverridePath: $('stJavaOverride')?.checked ? ($('stJavaOverridePath')?.value.trim() || '') : '',
     minecraftVersion: $('stMinecraftVersion')?.value.trim() || '',
     minMemoryMb: Number($('stMinMem')?.value) || 1024,
     maxMemoryMb: Number($('stMaxMem')?.value) || 2048,
-    extraArgs: $('stArgs')?.value.trim() || '',
     stopCommand: $('stStopCmd')?.value.trim() || 'stop',
     autoRestartOnCrash: Boolean($('stAutoRestart')?.checked),
     autoStartOnBoot: Boolean($('stAutoStart')?.checked),
     serverPort: portValue ? Number(portValue) : undefined,
   };
+
+  if (owner) {
+    body.javaPath = $('stJavaOverridePath')?.value.trim() || '';
+    body.javaMode = Boolean($('stJavaOverride')?.checked) ? 'override' : 'managed';
+    body.javaOverridePath = $('stJavaOverride')?.checked
+      ? ($('stJavaOverridePath')?.value.trim() || '')
+      : '';
+    body.extraArgs = $('stArgs')?.value.trim() || '';
+  }
 
   const button = $('btnSaveStartup');
 
@@ -3618,9 +3759,9 @@ function renderUsers() {
   const element = $('userList');
   if (!element) return;
 
-  const isOwner = panelPermission === 'admin';
+  const canManageUsers = isOwnerSession() && panelPermission === 'admin';
 
-  if (!isOwner) {
+  if (!canManageUsers) {
     element.innerHTML = `
       <div class="user-access-grid">
         <div class="panel user-access-card">
@@ -3639,7 +3780,9 @@ function renderUsers() {
             <strong>${escHtml(sharePermissionLabel(panelPermission))}</strong>
           </div>
           <div class="user-info-note">
-            Tu acceso está limitado a los permisos asignados por el propietario. No puedes crear ni revocar accesos.
+            Tu acceso está limitado a los permisos asignados por el propietario.
+            Las operaciones que permiten ejecutar código en el host (instalar plugins,
+            cambiar flags JVM, restaurar backups) están reservadas al propietario.
           </div>
         </div>
       </div>
@@ -3654,12 +3797,12 @@ function renderUsers() {
         <div><span class="user-stat-label">Accesos activos</span><strong id="userStatTotal">—</strong></div>
       </div>
       <div class="user-stat-card">
-        <span class="user-stat-icon">🎮</span>
-        <div><span class="user-stat-label">Con control</span><strong id="userStatControl">—</strong></div>
-      </div>
-      <div class="user-stat-card">
         <span class="user-stat-icon">👁️</span>
         <div><span class="user-stat-label">Solo lectura</span><strong id="userStatRead">—</strong></div>
+      </div>
+      <div class="user-stat-card">
+        <span class="user-stat-icon">🎮</span>
+        <div><span class="user-stat-label">Con control</span><strong id="userStatControl">—</strong></div>
       </div>
       <div class="user-stat-card">
         <span class="user-stat-icon">🛡️</span>
@@ -3671,15 +3814,21 @@ function renderUsers() {
       <div class="panel-header">
         <div>
           <div class="panel-title"><span>➕</span> NUEVO USUARIO</div>
-          <div class="user-panel-subtitle">Crea un acceso independiente sin compartir tu código de propietario.</div>
+          <div class="user-panel-subtitle">Crea un acceso independiente.</div>
         </div>
+      </div>
+      <div class="user-admin-warning" role="note">
+        🔒 Los accesos con permiso <strong>Administrador</strong> pueden controlar Minecraft por completo
+        (arrancar, comandos, ficheros, backups, bases de datos), pero <strong>no pueden instalar plugins/mods
+        ni modificar cómo se lanza la JVM</strong>. Esas operaciones quedan reservadas al propietario para
+        impedir la ejecución de código arbitrario en la máquina del servidor.
       </div>
       <div class="user-create-form">
         <input id="shareLabel" class="form-input" placeholder="Nombre (ej. Paco)" maxlength="60">
         <select id="sharePermission" class="form-input">
           <option value="read">👁️ Solo lectura</option>
           <option value="control">🎮 Control</option>
-          <option value="admin">🛡️ Administrador (control total)</option>
+          <option value="admin">🛡️ Administrador</option>
         </select>
         <select id="shareExpiry" class="form-input">
           <option value="never">Sin caducidad</option>
