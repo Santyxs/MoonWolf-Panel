@@ -2689,19 +2689,6 @@ a.btn-primary { text-decoration: none; }
   background: rgba(255,204,0,.06);
   color: #ffe8a3;
 }
-.user-admin-warning {
-  margin: 0 16px 4px;
-  padding: 12px 14px;
-  border: 1px solid rgba(255,204,0,.35);
-  border-left: 3px solid var(--yellow);
-  border-radius: var(--r-md);
-  background: rgba(255,204,0,.06);
-  color: #ffe8a3;
-  font-size: var(--fs-xs);
-  line-height: 1.6;
-}
-.user-admin-warning strong { color: var(--yellow); }
-
 @media (max-width:850px) {
   .user-create-form { grid-template-columns:1fr 1fr; }
   .user-create-btn  { width:100%; }
@@ -2713,8 +2700,6 @@ a.btn-primary { text-decoration: none; }
   .user-permission-select { width:calc(100% - 52px); margin-left:52px; }
   .user-revoke-btn { margin-left:52px; }
 }
-
-/* MoonWolf Panel — visual refresh */
 
 body {
   background:
