@@ -36,23 +36,83 @@ function makeSecret() {
 
 function atomicWriteFileSync(filePath, data, options = 'utf8') {
   const tempPath = `${filePath}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
+  let fd = null;
+
   try {
-    fs.writeFileSync(tempPath, data, options);
+    fd = fs.openSync(tempPath, 'wx');
+    fs.writeFileSync(fd, data, options);
+    
+    try { fs.fsyncSync(fd); } catch {}
+
+    fs.closeSync(fd);
+    fd = null;
+
     fs.renameSync(tempPath, filePath);
   } catch (error) {
+    if (fd !== null) { try { fs.closeSync(fd); } catch {} }
     try { fs.rmSync(tempPath, { force: true }); } catch {}
     throw error;
   }
 }
 
+function writeConfig(config) {
+  const serialized = JSON.stringify(config, null, 2);
+
+  try {
+    if (fs.existsSync(CONFIG_PATH)) {
+      const current = fs.readFileSync(CONFIG_PATH, 'utf8');
+      JSON.parse(current);
+      atomicWriteFileSync(`${CONFIG_PATH}.bak`, current, 'utf8');
+    }
+  } catch {}
+
+  atomicWriteFileSync(CONFIG_PATH, serialized, 'utf8');
+}
+
 function loadConfig() {
   ensureConfigDir();
 
-  let config = {};
+  const readJsonObject = filePath => {
+    try {
+      const raw = fs.readFileSync(filePath, 'utf8');
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed
+        : null;
+    } catch {
+      return null;
+    }
+  };
 
-  try {
-    config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-  } catch {}
+  let config = readJsonObject(CONFIG_PATH);
+
+  if (!config) {
+    const backupPath = `${CONFIG_PATH}.bak`;
+    const backup = readJsonObject(backupPath);
+
+    if (backup) {
+      console.warn(
+        `[config] ${CONFIG_PATH} ilegible; recuperado desde ${backupPath}. ` +
+        'Se conservará el agentId original.'
+      );
+      config = backup;
+    } else if (fs.existsSync(CONFIG_PATH)) {
+      const quarantine = `${CONFIG_PATH}.corrupt-${Date.now()}`;
+      try {
+        fs.renameSync(CONFIG_PATH, quarantine);
+        console.warn(
+          `[config] ${CONFIG_PATH} corrupto y sin backup válido; ` +
+          `movido a ${quarantine}. Se generará un agentId nuevo.`
+        );
+      } catch (error) {
+        console.warn(
+          `[config] No se pudo aislar ${CONFIG_PATH}: ${error?.message || error}`
+        );
+      }
+    }
+  }
+
+  config = config || {};
 
   if (!config.agentId || typeof config.agentId !== 'string') {
     config.agentId = crypto.randomUUID();
@@ -95,7 +155,7 @@ function loadConfig() {
 
   delete config.token;
 
-  atomicWriteFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8');
+  writeConfig(config);
   return config;
 }
 
@@ -664,7 +724,7 @@ async function main() {
       config.serverDir = resolved;
 
       try {
-        await Promise.resolve(atomicWriteFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8'));
+        writeConfig(config);
       } catch (error) {
         return { ok: false, error: `No se pudo guardar la configuración: ${error.message}` };
       }
