@@ -114,14 +114,67 @@ function canManageShareTokens(session) {
   return Boolean(session && permissionAllows(session.permission, 'admin'));
 }
 
+const ADMIN_ROUTE_RULES = Object.freeze([
+  {
+    methods: new Set(['GET', 'HEAD']),
+    paths: [
+      '/api/files',
+      '/api/files/content',
+      '/api/files/download',
+      '/api/databases/status',
+      '/api/databases',
+      '/api/backups',
+      '/api/backups/download/:name',
+      '/api/debug/start',
+    ],
+  },
+  {
+    methods: new Set(['POST']),
+    paths: [
+      '/api/files/content',
+      '/api/files/create',
+      '/api/files/rename',
+      '/api/files/copy',
+      '/api/files/move',
+      '/api/files/compress',
+      '/api/files/bulk',
+      '/api/files/delete',
+      '/api/databases',
+      '/api/databases/:name/reset-password',
+      '/api/backups',
+      '/api/startup',
+      '/api/ports',
+      '/api/plugins/install',
+      '/api/versions/install',
+    ],
+  },
+  {
+    methods: new Set(['DELETE']),
+    paths: [
+      '/api/databases/:name',
+      '/api/backups/:name',
+      '/api/plugins/installed/:file',
+    ],
+  },
+]);
+
+function routeMatchesPattern(route, pattern) {
+  const routeParts = route.split('/');
+  const patternParts = pattern.split('/');
+  if (routeParts.length !== patternParts.length) return false;
+
+  return patternParts.every((part, index) => part.startsWith(':') || part === routeParts[index]);
+}
+
 function requiredPermission(method, pathname) {
   const verb = String(method || 'GET').toUpperCase();
   const route = String(pathname || '').split('?')[0];
 
-  if (/^\/api\/(files|backups|databases|debug)(\/|$)/.test(route)) return 'admin';
-  if (verb !== 'GET' && verb !== 'HEAD' && /^\/api\/(startup|ports|versions\/install|plugins\/install|plugins\/installed)/.test(route)) return 'admin';
+  const isAdminRoute = ADMIN_ROUTE_RULES.some(rule =>
+    rule.methods.has(verb) && rule.paths.some(pattern => routeMatchesPattern(route, pattern))
+  );
+  if (isAdminRoute) return 'admin';
   if (verb === 'GET' || verb === 'HEAD') return 'read';
-
   return 'control';
 }
 
@@ -1610,16 +1663,38 @@ app.post('/api/ports', (req, res) => {
 });
 
 function safePath(rel) {
-  const base = path.resolve(BASE_DIR);
-  const full = path.resolve(path.join(BASE_DIR, rel));
-  if (!(full.startsWith(base + path.sep) || full === base)) return null;
+  if (typeof rel !== 'string') return null;
+
+  let base;
+  try {
+    // Canonicalizar la raíz permite aceptar una BASE_DIR que sea un alias,
+    // pero impide que sus descendientes salgan del árbol real permitido.
+    base = fsSync.realpathSync.native(path.resolve(BASE_DIR));
+  } catch {
+    return null;
+  }
+
+  const comparable = value => process.platform === 'win32'
+    ? path.normalize(value).toLowerCase()
+    : path.normalize(value);
+  const comparableBase = comparable(base);
+  const full = path.resolve(path.join(base, rel));
+  const comparableFull = comparable(full);
+  if (!(comparableFull.startsWith(comparableBase + path.sep) || comparableFull === comparableBase)) {
+    return null;
+  }
 
   let current = base;
   const relative = path.relative(base, full);
   for (const part of relative ? relative.split(path.sep) : []) {
     current = path.join(current, part);
     try {
-      if (fsSync.lstatSync(current).isSymbolicLink()) return null;
+      const stats = fsSync.lstatSync(current);
+      const realCurrent = fsSync.realpathSync.native(current);
+
+      // isSymbolicLink cubre symlinks; la comparación con realpath detecta
+      // junctions y otros reparse points que redirigen el árbol en Windows.
+      if (stats.isSymbolicLink() || comparable(realCurrent) !== comparable(current)) return null;
     } catch (error) {
       if (error?.code === 'ENOENT') break;
       return null;
@@ -4171,7 +4246,8 @@ function stopMinecraft(timeoutMs = 30000) {
 module.exports = { stopMinecraft };
 
 async function start() {
-  server.listen(PORT, LOCAL_AGENT_TOKEN ? '127.0.0.1' : '0.0.0.0', () => {
+  // El panel local no debe exponerse en interfaces de red externas.
+  server.listen(PORT, '127.0.0.1', () => {
     console.log(`MoonWolf Panel → http://localhost:${PORT}`);
 
     const cfg = loadStartupConfig();
