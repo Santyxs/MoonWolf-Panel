@@ -261,6 +261,15 @@ select:focus:not(:focus-visible) {
   border: 1px solid transparent;
   white-space: nowrap;
   user-select: none;
+  background: none;
+  font-family: inherit;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+}
+.sb-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .sb-item:hover {
   background: var(--surface2);
