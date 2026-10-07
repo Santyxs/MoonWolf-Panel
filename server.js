@@ -15,12 +15,29 @@ const { spawn } = require('child_process');
 const { Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 
+/* ══════════════════════════════════════════════
+   ATOMIC FILE WRITE HELPERS
+   Todos los ficheros de estado (secrets, tokens,
+   configs) se escriben con el mismo patrón:
+   tmp → fsync → rename, + backup rotativo y
+   recuperación desde .bak cuando aplica.
+   ══════════════════════════════════════════════ */
 function atomicWriteFileSync(filePath, data, options = 'utf8') {
   const tempPath = `${filePath}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
+  let fd = null;
+
   try {
-    fsSync.writeFileSync(tempPath, data, options);
+    fd = fsSync.openSync(tempPath, 'wx');
+    fsSync.writeFileSync(fd, data, options);
+
+    try { fsSync.fsyncSync(fd); } catch {}
+
+    fsSync.closeSync(fd);
+    fd = null;
+
     fsSync.renameSync(tempPath, filePath);
   } catch (error) {
+    if (fd !== null) { try { fsSync.closeSync(fd); } catch {} }
     try { fsSync.rmSync(tempPath, { force: true }); } catch {}
     throw error;
   }
@@ -28,13 +45,83 @@ function atomicWriteFileSync(filePath, data, options = 'utf8') {
 
 async function atomicWriteFile(filePath, data, options = 'utf8') {
   const tempPath = `${filePath}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
+  let handle = null;
+
   try {
-    await fs.writeFile(tempPath, data, options);
+    handle = await fs.open(tempPath, 'wx');
+    await handle.writeFile(data, options);
+    try { await handle.sync(); } catch {}
+    await handle.close();
+    handle = null;
     await fs.rename(tempPath, filePath);
   } catch (error) {
+    if (handle) { try { await handle.close(); } catch {} }
     await fs.rm(tempPath, { force: true }).catch(() => {});
     throw error;
   }
+}
+
+function writeFileWithBackup(filePath, data, options = 'utf8', validate = () => true) {
+  try {
+    if (fsSync.existsSync(filePath)) {
+      const current = fsSync.readFileSync(filePath, options);
+      if (current && String(current).length > 0 && validate(current)) {
+        atomicWriteFileSync(`${filePath}.bak`, current, options);
+      }
+    }
+  } catch {}
+
+  atomicWriteFileSync(filePath, data, options);
+}
+
+function readJsonConfig(filePath) {
+  try {
+    const raw = fsSync.readFileSync(filePath, 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function readJsonConfigWithRecovery(filePath, fallback = null) {
+  const primary = readJsonConfig(filePath);
+  if (primary !== null) return primary;
+
+  const backupPath = `${filePath}.bak`;
+  const backup = readJsonConfig(backupPath);
+  if (backup !== null) {
+    console.warn(`[config] ${filePath} ilegible; recuperado desde ${backupPath}.`);
+    try {
+      atomicWriteFileSync(filePath, JSON.stringify(backup, null, 2), 'utf8');
+    } catch (error) {
+      console.warn(`[config] No se pudo restaurar ${filePath}: ${error?.message || error}`);
+    }
+    return backup;
+  }
+
+  if (fsSync.existsSync(filePath)) {
+    const quarantine = `${filePath}.corrupt-${Date.now()}`;
+    try {
+      fsSync.renameSync(filePath, quarantine);
+      console.warn(
+        `[config] ${filePath} corrupto y sin backup válido; movido a ${quarantine}.`
+      );
+    } catch (error) {
+      console.warn(`[config] No se pudo aislar ${filePath}: ${error?.message || error}`);
+    }
+  }
+
+  return fallback;
+}
+
+function writeJsonConfig(filePath, value, options = 'utf8') {
+  const serialized = JSON.stringify(value, null, 2);
+  writeFileWithBackup(
+    filePath,
+    serialized,
+    options,
+    current => { JSON.parse(current); return true; }
+  );
 }
 
 /* ══════════════════════════════════════════════
@@ -77,11 +164,47 @@ const SESSION_SECRET = (() => {
     'MoonWolf'
   );
   const secretPath = path.join(appDir, 'session-secret');
+  const backupPath = `${secretPath}.bak`;
 
-  try {
-    const saved = fsSync.readFileSync(secretPath, 'utf8').trim();
-    if (saved.length >= 32) return saved;
-  } catch {}
+  const readSecret = filePath => {
+    try {
+      const raw = fsSync.readFileSync(filePath, 'utf8').trim();
+      return raw.length >= 32 ? raw : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const fromDisk = readSecret(secretPath);
+  if (fromDisk) return fromDisk;
+
+  const fromBackup = readSecret(backupPath);
+  if (fromBackup) {
+    console.warn(
+      `[session] ${secretPath} ilegible; recuperado desde ${backupPath}. ` +
+      'Las sesiones del panel siguen siendo válidas.'
+    );
+    try {
+      fsSync.mkdirSync(appDir, { recursive: true });
+      atomicWriteFileSync(secretPath, fromBackup, { encoding: 'utf8', mode: 0o600 });
+    } catch (error) {
+      console.warn('[session] No se pudo restaurar el secret:', error.message);
+    }
+    return fromBackup;
+  }
+
+  if (fsSync.existsSync(secretPath)) {
+    const quarantine = `${secretPath}.corrupt-${Date.now()}`;
+    try {
+      fsSync.renameSync(secretPath, quarantine);
+      console.warn(
+        `[session] ${secretPath} corrupto y sin backup válido; movido a ${quarantine}. ` +
+        'Se generará un secret nuevo — las sesiones del panel caducarán.'
+      );
+    } catch (error) {
+      console.warn(`[session] No se pudo aislar ${secretPath}: ${error?.message || error}`);
+    }
+  }
 
   const secret = crypto.randomBytes(32).toString('hex');
 
@@ -203,12 +326,8 @@ function requiredPermission(method, pathname) {
 }
 
 function loadShareTokens() {
-  try {
-    const data = JSON.parse(fsSync.readFileSync(SHARE_TOKEN_STORE_PATH, 'utf8'));
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
+  const data = readJsonConfigWithRecovery(SHARE_TOKEN_STORE_PATH, []);
+  return Array.isArray(data) ? data : [];
 }
 
 function saveShareTokens(tokens) {
@@ -218,7 +337,7 @@ function saveShareTokens(tokens) {
     fsSync.mkdirSync(dir, { recursive: true });
   }
 
-  atomicWriteFileSync(SHARE_TOKEN_STORE_PATH, JSON.stringify(tokens, null, 2), 'utf8');
+  writeJsonConfig(SHARE_TOKEN_STORE_PATH, tokens);
 }
 
 function hashShareToken(token) {
@@ -358,11 +477,8 @@ const AGENT_STORE_PATH =
 function verifyOrRegisterAgent(agentId, token) {
   if (!/^[A-Za-z0-9-]{16,64}$/.test(agentId)) return false;
 
-  let db = {};
-
-  try {
-    db = JSON.parse(fsSync.readFileSync(AGENT_STORE_PATH, 'utf8')) || {};
-  } catch {}
+  const db = readJsonConfigWithRecovery(AGENT_STORE_PATH, {}) || {};
+  if (typeof db !== 'object' || Array.isArray(db)) return false;
 
   const hash = hashShareToken(token);
 
@@ -370,7 +486,8 @@ function verifyOrRegisterAgent(agentId, token) {
     db[agentId] = hash;
 
     try {
-      atomicWriteFileSync(AGENT_STORE_PATH, JSON.stringify(db), { encoding: 'utf8', mode: 0o600 });
+      writeJsonConfig(AGENT_STORE_PATH, db, { encoding: 'utf8', mode: 0o600 });
+      try { fsSync.chmodSync(AGENT_STORE_PATH, 0o600); } catch {}
     } catch (error) {
       console.warn('[agents] No se pudo persistir el registro:', error.message);
     }
@@ -1341,12 +1458,11 @@ const DEFAULT_STARTUP_CONFIG = {
 };
 
 function loadStartupConfig() {
-  try {
-    const raw = JSON.parse(fsSync.readFileSync(STARTUP_CONFIG_PATH, 'utf8'));
-    return { ...DEFAULT_STARTUP_CONFIG, ...raw };
-  } catch {
+  const raw = readJsonConfigWithRecovery(STARTUP_CONFIG_PATH);
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { ...DEFAULT_STARTUP_CONFIG };
   }
+  return { ...DEFAULT_STARTUP_CONFIG, ...raw };
 }
 
 function saveStartupConfig(partial) {
@@ -1356,7 +1472,7 @@ function saveStartupConfig(partial) {
     fsSync.mkdirSync(STARTUP_DIR, { recursive: true });
   }
 
-  atomicWriteFileSync(STARTUP_CONFIG_PATH, JSON.stringify(next, null, 2), 'utf8');
+  writeJsonConfig(STARTUP_CONFIG_PATH, next);
   return next;
 }
 
@@ -1456,7 +1572,7 @@ function writeServerPort(port) {
     content = (content.length && !content.endsWith('\n') ? content + '\n' : content) + `server-port=${port}\n`;
   }
 
-  atomicWriteFileSync(SERVER_PROPERTIES_PATH, content, 'utf8');
+  writeFileWithBackup(SERVER_PROPERTIES_PATH, content, 'utf8');
 }
 
 /* ══════════════════════════════════════════════
@@ -1508,7 +1624,7 @@ function writeServerProperties(values) {
     }
   }
 
-  atomicWriteFileSync(
+  writeFileWithBackup(
     SERVER_PROPERTIES_PATH,
     output.join('\n').replace(/\n+$/, '') + '\n',
     'utf8'
@@ -2478,12 +2594,8 @@ function getMysqlPool() {
 }
 
 function loadDatabasesStore() {
-  try {
-    const raw = JSON.parse(fsSync.readFileSync(DATABASES_STORE_PATH, 'utf8'));
-    return Array.isArray(raw) ? raw : [];
-  } catch {
-    return [];
-  }
+  const data = readJsonConfigWithRecovery(DATABASES_STORE_PATH, []);
+  return Array.isArray(data) ? data : [];
 }
 
 function saveDatabasesStore(list) {
@@ -2491,7 +2603,7 @@ function saveDatabasesStore(list) {
     fsSync.mkdirSync(STARTUP_DIR, { recursive: true });
   }
 
-  atomicWriteFileSync(DATABASES_STORE_PATH, JSON.stringify(list, null, 2), 'utf8');
+  writeJsonConfig(DATABASES_STORE_PATH, list);
 }
 
 function generateDbPassword() {
