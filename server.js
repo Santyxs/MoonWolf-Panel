@@ -415,6 +415,7 @@ const RUNTIME_DIR =
 
 const loginAttempts = new Map();
 const apiHits = new Map();
+const operationHits = new Map();
 const API_RATE_LIMIT = 120;
 const API_RATE_WINDOW_MS = 60_000;
 const SOCKET_CONNECTION_LIMIT = 20;
@@ -422,6 +423,25 @@ const SOCKET_CONNECTION_WINDOW_MS = 60_000;
 const SOCKET_CONNECTION_ATTEMPTS = 40;
 const socketConnectionAttempts = new Map();
 const socketConnections = new Map();
+const OPERATION_RATE_RULES = Object.freeze([
+  { id: 'pair', methods: new Set(['POST']), paths: ['/pair'], limit: 10, windowMs: 5 * 60_000 },
+  { id: 'share-tokens', methods: new Set(['POST', 'PATCH', 'DELETE']), paths: ['/share-tokens', '/share-tokens/:id'], limit: 20, windowMs: 60_000 },
+  { id: 'server-lifecycle', methods: new Set(['POST']), paths: ['/start', '/stop', '/restart'], limit: 20, windowMs: 60_000 },
+  { id: 'server-command', methods: new Set(['POST']), paths: ['/command'], limit: 30, windowMs: 60_000 },
+  { id: 'startup-ports', methods: new Set(['POST']), paths: ['/startup', '/ports'], limit: 20, windowMs: 60_000 },
+  { id: 'file-upload', methods: new Set(['POST']), paths: ['/files/upload-chunk'], limit: 2_000, windowMs: 60_000 },
+  { id: 'file-mutation', methods: new Set(['POST']), paths: [
+    '/files/content', '/files/create', '/files/rename', '/files/copy',
+    '/files/move', '/files/compress', '/files/bulk', '/files/delete',
+  ], limit: 60, windowMs: 60_000 },
+  { id: 'database-mutation', methods: new Set(['POST', 'DELETE']), paths: [
+    '/databases', '/databases/:name/reset-password', '/databases/:name',
+  ], limit: 10, windowMs: 60_000 },
+  { id: 'installation', methods: new Set(['POST', 'DELETE']), paths: [
+    '/plugins/install', '/plugins/installed/:file', '/versions/install',
+  ], limit: 10, windowMs: 60_000 },
+  { id: 'backup-mutation', methods: new Set(['POST', 'DELETE']), paths: ['/backups', '/backups/:name'], limit: 10, windowMs: 60_000 },
+]);
 
 function loginRateLimited(ip) {
   const now = Date.now();
@@ -457,6 +477,40 @@ function apiRateLimited(ip) {
   rec.count++;
 
   return rec.count > API_RATE_LIMIT;
+}
+
+function operationPathMatches(pathname, pattern) {
+  const pathParts = pathname.split('/');
+  const patternParts = pattern.split('/');
+  if (pathParts.length !== patternParts.length) return false;
+  return patternParts.every((part, index) => part.startsWith(':') || part === pathParts[index]);
+}
+
+function operationRateRule(method, pathname) {
+  const verb = String(method || '').toUpperCase();
+  const route = String(pathname || '').split('?')[0];
+  return OPERATION_RATE_RULES.find(rule =>
+    rule.methods.has(verb) && rule.paths.some(pattern => operationPathMatches(route, pattern))
+  ) || null;
+}
+
+function operationRateLimited(ip, method, pathname) {
+  const rule = operationRateRule(method, pathname);
+  if (!rule) return null;
+
+  const key = `${ip}:${rule.id}`;
+  const now = Date.now();
+  const current = operationHits.get(key);
+  if (!current || now > current.resetAt) {
+    operationHits.set(key, { count: 1, resetAt: now + rule.windowMs });
+    return null;
+  }
+
+  current.count++;
+  if (current.count > rule.limit) {
+    return rule;
+  }
+  return null;
 }
 
 function socketClientIp(socket) {
@@ -525,6 +579,10 @@ setInterval(() => {
 
   for (const [ip, rec] of loginAttempts) {
     if (now > rec.resetAt) loginAttempts.delete(ip);
+  }
+
+  for (const [key, rec] of operationHits) {
+    if (now > rec.resetAt) operationHits.delete(key);
   }
 
   for (const [code, pairing] of pairingCodes) {
@@ -674,6 +732,17 @@ app.use('/api', (req, res, next) => {
     return res.status(429).json({
       ok: false,
       error: 'Demasiadas peticiones, espera un momento.',
+    });
+  }
+
+  const operationRule = operationRateLimited(req.ip, req.method, req.path);
+  if (operationRule) {
+    const current = operationHits.get(`${req.ip}:${operationRule.id}`);
+    const retryAfter = Math.max(1, Math.ceil((current.resetAt - Date.now()) / 1000));
+    res.setHeader('Retry-After', String(retryAfter));
+    return res.status(429).json({
+      ok: false,
+      error: `Límite de operación alcanzado para ${operationRule.id}. Espera unos segundos.`,
     });
   }
 
