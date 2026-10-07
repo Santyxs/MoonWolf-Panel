@@ -91,6 +91,39 @@ function customConfirm(message, title = 'Reiniciar Agent') {
   });
 }
 
+let lastNoticeRef = null;
+let pendingUpdateCheck = false;
+let updateCheckTimer = null;
+
+const UPDATE_CHECK_TIMEOUT = 8000;
+
+function cancelUpdateCheck() {
+  pendingUpdateCheck = false;
+
+  clearTimeout(updateCheckTimer);
+  updateCheckTimer = null;
+}
+
+function completeUpdateCheck(found) {
+  cancelUpdateCheck();
+
+  const button = $('settings-check-update');
+
+  if (button) {
+    flashButton(
+      button,
+      found ? '¡Disponible!' : 'Sin novedades'
+    );
+  }
+}
+
+function revealUpdateIfPending() {
+  if (!pendingUpdateCheck || !state.updateAvailable) return;
+
+  closeModal('settings-modal');
+  completeUpdateCheck(true);
+}
+
 function render() {
   const cloudConnected = Boolean(state.cloudConnected);
   const localReady = Boolean(state.localServerReady);
@@ -129,6 +162,7 @@ function render() {
   }
 
   renderUpdateBanner();
+  revealUpdateIfPending();
   renderUpdateNotice();
   renderSettings();
   renderLogs();
@@ -252,8 +286,6 @@ function renderUpdateBanner() {
     applyButton.innerHTML = '<span>⬇</span>Preparando';
   }
 }
-
-let lastNoticeRef = null;
 
 function renderUpdateNotice() {
   const element = $('update-notice');
@@ -547,7 +579,52 @@ function bindEvents() {
 
   $('settings-check-update')?.addEventListener(
     'click',
-    () => nativeApi().checkForUpdates?.()
+    async event => {
+      const button = event.currentTarget;
+      const api = nativeApi();
+
+      if (!api.checkForUpdates) {
+        flashButton(button, 'No disponible');
+        return;
+      }
+
+      if (state.updateAvailable) {
+        closeModal('settings-modal');
+        flashButton(button, '¡Disponible!');
+        return;
+      }
+
+      pendingUpdateCheck = true;
+
+      flashButton(button, 'Buscando…');
+
+      clearTimeout(updateCheckTimer);
+
+      updateCheckTimer = setTimeout(() => {
+        if (!pendingUpdateCheck) return;
+
+        if (state.updateAvailable) {
+          closeModal('settings-modal');
+          completeUpdateCheck(true);
+        } else {
+          completeUpdateCheck(false);
+        }
+      }, UPDATE_CHECK_TIMEOUT);
+
+      try {
+        const result = await api.checkForUpdates();
+
+        if (
+          result &&
+          typeof result === 'object' &&
+          result.available === false
+        ) {
+          completeUpdateCheck(false);
+        }
+      } catch {
+        completeUpdateCheck(false);
+      }
+    }
   );
 
   $('close-serverdir')?.addEventListener(
