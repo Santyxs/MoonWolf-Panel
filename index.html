@@ -20,7 +20,7 @@
     <!-- SIDEBAR -->
     <nav class="sidebar" aria-label="Navegación principal">
       <div class="sb-logo">
-        <div class="sb-logo-icon">🌙</div>
+        <div class="sb-logo-icon" aria-hidden="true">🌙</div>
         <div>
           <h1>MOONWOLF</h1>
           <small>PANEL v2.0</small>
@@ -28,31 +28,53 @@
       </div>
 
       <div class="sb-status offline" id="sbStatus" role="status" aria-live="polite">
-        <div class="sb-dot"></div>
+        <div class="sb-dot" aria-hidden="true"></div>
         <span id="sbStatusText">OFFLINE</span>
       </div>
 
-      <nav class="sb-section">
+      <nav class="sb-section" aria-label="Servidor">
         <div class="sb-section-label">Servidor</div>
-        <div class="sb-item active" data-view="terminal" data-label="Terminal"><span class="sb-icon">📟</span><span>Terminal</span></div>
-        <div class="sb-item" data-view="files" data-label="Archivos"><span class="sb-icon">📂</span><span>Archivos</span></div>
-        <div class="sb-item" data-view="plugins" data-label="Plugins"><span class="sb-icon">🧩</span><span>Plugins</span></div>
-        <div class="sb-item" data-view="versions" data-label="Versiones"><span class="sb-icon">📦</span><span>Versiones</span></div>
+        <button type="button" class="sb-item active" data-view="terminal" data-label="Terminal" aria-current="page">
+          <span class="sb-icon" aria-hidden="true">📟</span><span>Terminal</span>
+        </button>
+        <button type="button" class="sb-item" data-view="files" data-label="Archivos">
+          <span class="sb-icon" aria-hidden="true">📂</span><span>Archivos</span>
+        </button>
+        <button type="button" class="sb-item" data-view="plugins" data-label="Plugins">
+          <span class="sb-icon" aria-hidden="true">🧩</span><span>Plugins</span>
+        </button>
+        <button type="button" class="sb-item" data-view="versions" data-label="Versiones">
+          <span class="sb-icon" aria-hidden="true">📦</span><span>Versiones</span>
+        </button>
       </nav>
 
-      <nav class="sb-section">
+      <nav class="sb-section" aria-label="Sistema">
         <div class="sb-section-label">Sistema</div>
-        <div class="sb-item" data-view="databases" data-label="Bases de datos"><span class="sb-icon">🗂️</span><span>Bases de datos</span></div>
-        <div class="sb-item" data-view="users" data-label="Usuarios"><span class="sb-icon">👥</span><span>Usuarios</span></div>
-        <div class="sb-item" data-view="backups" data-label="Backups"><span class="sb-icon">💾</span><span>Backups</span></div>
-        <div class="sb-item" data-view="ports" data-label="Puertos"><span class="sb-icon">🔌</span><span>Puertos</span></div>
+        <button type="button" class="sb-item" data-view="databases" data-label="Bases de datos">
+          <span class="sb-icon" aria-hidden="true">🗂️</span><span>Bases de datos</span>
+        </button>
+        <button type="button" class="sb-item" data-view="users" data-label="Usuarios">
+          <span class="sb-icon" aria-hidden="true">👥</span><span>Usuarios</span>
+        </button>
+        <button type="button" class="sb-item" data-view="backups" data-label="Backups">
+          <span class="sb-icon" aria-hidden="true">💾</span><span>Backups</span>
+        </button>
+        <button type="button" class="sb-item" data-view="ports" data-label="Puertos">
+          <span class="sb-icon" aria-hidden="true">🔌</span><span>Puertos</span>
+        </button>
       </nav>
 
-      <nav class="sb-section">
+      <nav class="sb-section" aria-label="Configuración">
         <div class="sb-section-label">Configuración</div>
-        <div class="sb-item" data-view="startup" data-label="Startup"><span class="sb-icon">⚙️</span><span>Startup</span></div>
-        <div class="sb-item" data-view="settings" data-label="Ajustes"><span class="sb-icon">🛠️</span><span>Ajustes</span></div>
-        <div class="sb-item" data-view="activitylog" data-label="Registro"><span class="sb-icon">📑</span><span>Registro</span></div>
+        <button type="button" class="sb-item" data-view="startup" data-label="Startup">
+          <span class="sb-icon" aria-hidden="true">⚙️</span><span>Startup</span>
+        </button>
+        <button type="button" class="sb-item" data-view="settings" data-label="Ajustes">
+          <span class="sb-icon" aria-hidden="true">🛠️</span><span>Ajustes</span>
+        </button>
+        <button type="button" class="sb-item" data-view="activitylog" data-label="Registro">
+          <span class="sb-icon" aria-hidden="true">📑</span><span>Registro</span>
+        </button>
       </nav>
 
       <div class="sb-spacer"></div>
