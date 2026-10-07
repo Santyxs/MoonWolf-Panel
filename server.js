@@ -12,6 +12,8 @@ const os = require('os');
 const path = require('path');
 const net = require('net');
 const { spawn } = require('child_process');
+const { Transform } = require('stream');
+const { pipeline } = require('stream/promises');
 
 /* ══════════════════════════════════════════════
    Environments
@@ -1868,29 +1870,109 @@ function xmlValues(xml, tag) {
     .filter(Boolean);
 }
 
+const DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024;
+const DOWNLOAD_MAX_REDIRECTS = 5;
+const DOWNLOAD_ALLOWED_HOSTS = Object.freeze([
+  'api.modrinth.com',
+  'modrinth.com',
+  'spiget.org',
+  'papermc.io',
+  'neoforged.net',
+  'minecraftforge.net',
+  'fabricmc.net',
+  'mojang.com',
+  'github.com',
+  'githubusercontent.com',
+  'spigotmc.org',
+]);
+
+function isAllowedDownloadUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(String(value));
+  } catch {
+    return null;
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  const allowedHost = DOWNLOAD_ALLOWED_HOSTS.some(host => hostname === host || hostname.endsWith(`.${host}`));
+  if (parsed.protocol !== 'https:' || !allowedHost || parsed.username || parsed.password) return null;
+  if (parsed.port && parsed.port !== '443') return null;
+  return parsed;
+}
+
+function safeDownloadDestination(dest) {
+  const relative = path.relative(BASE_DIR, path.resolve(String(dest || '')));
+  const safe = safePath(relative);
+  if (!safe || path.resolve(safe) !== path.resolve(dest)) return null;
+  return safe;
+}
+
 async function downloadFile(url, dest) {
   const { default: fetch } = await import('node-fetch');
-  const response = await fetch(url, {
-    headers: { 'User-Agent': PAPER_UA },
+  const finalDest = safeDownloadDestination(dest);
+  if (!finalDest) throw new Error('Destino de descarga no permitido.');
+
+  let currentUrl = isAllowedDownloadUrl(url);
+  if (!currentUrl) throw new Error('URL de descarga no permitida.');
+
+  let response;
+  for (let redirect = 0; redirect <= DOWNLOAD_MAX_REDIRECTS; redirect++) {
+    response = await fetch(currentUrl, {
+      headers: { 'User-Agent': PAPER_UA },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(10 * 60 * 1000),
+    });
+    if (![301, 302, 303, 307, 308].includes(response.status)) break;
+    const location = response.headers.get('location');
+    if (!location || redirect === DOWNLOAD_MAX_REDIRECTS) {
+      throw new Error('Demasiadas redirecciones o redirección inválida.');
+    }
+    currentUrl = isAllowedDownloadUrl(new URL(location, currentUrl).toString());
+    if (!currentUrl) throw new Error('Redirección de descarga no permitida.');
+  }
+
+  if (!response?.ok || !response.body) {
+    throw new Error(`Download failed: ${response?.status || 0} ${response?.statusText || ''}`.trim());
+  }
+
+  const contentLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(contentLength) && contentLength > DOWNLOAD_MAX_BYTES) {
+    throw new Error('La descarga supera el tamaño máximo permitido.');
+  }
+
+  const contentType = (response.headers.get('content-type') || '').toLowerCase();
+  if (contentType.includes('text/html')) {
+    throw new Error('La descarga devolvió HTML en lugar de un archivo. Instálalo manualmente desde su página de recursos.');
+  }
+
+  const tempDest = `${finalDest}.download-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
+  let bytes = 0;
+  let head = Buffer.alloc(0);
+  const limiter = new Transform({
+    transform(chunk, _encoding, callback) {
+      bytes += chunk.length;
+      head = Buffer.concat([head, chunk.subarray(0, Math.max(0, 512 - head.length))]);
+      if (bytes > DOWNLOAD_MAX_BYTES) {
+        return callback(new Error('La descarga supera el tamaño máximo permitido.'));
+      }
+      callback(null, chunk);
+    },
+    flush(callback) {
+      const textHead = head.toString('utf8').trim().toLowerCase();
+      if (textHead.startsWith('<!doctype html') || textHead.startsWith('<html') || textHead.startsWith('<head')) {
+        return callback(new Error('La descarga devolvió HTML en lugar de un archivo. Instálalo manualmente desde su página de recursos.'));
+      }
+      callback();
+    },
   });
 
-  if (!response.ok) {
-    throw new Error(`Download failed: ${response.status} ${response.statusText}`);
+  try {
+    await pipeline(response.body, limiter, fsSync.createWriteStream(tempDest, { flags: 'wx' }));
+    await fs.rename(tempDest, finalDest);
+  } catch (error) {
+    await fs.rm(tempDest, { force: true }).catch(() => {});
+    throw error;
   }
-
-  const buffer = Buffer.from(await response.arrayBuffer());
-  const contentType = (response.headers.get('content-type') || '').toLowerCase();
-  const head = buffer.subarray(0, 20).toString('utf8').trim().toLowerCase();
-
-  if (
-    contentType.includes('text/html') ||
-    head.startsWith('<!doctype html') ||
-    head.startsWith('<html')
-  ) {
-    throw new Error('La descarga fue bloqueada por la protección anti-bot de SpigotMC. Instala este plugin manualmente desde su página de recursos.');
-  }
-
-  await fs.writeFile(dest, buffer);
 }
 
 function semverCmp(a, b) {
