@@ -2231,11 +2231,20 @@ a.btn-primary { text-decoration: none; }
   border-radius: var(--r-full);
   white-space: nowrap;
 }
+
 .settings-status.online {
   color: var(--green);
   background: rgba(0,255,136,0.08);
   border: 1px solid rgba(0,255,136,0.3);
 }
+
+.settings-status.connecting {
+  color: var(--yellow);
+  background: rgba(255,204,0,0.08);
+  border: 1px solid rgba(255,204,0,0.3);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
 .settings-status.offline {
   color: var(--red);
   background: rgba(255,68,85,0.08);
