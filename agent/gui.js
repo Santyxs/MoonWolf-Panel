@@ -7,12 +7,7 @@ const zlib = require('node:zlib');
 const { execFile } = require('node:child_process');
 
 const PANEL_URL = 'https://moonwolf-panel.onrender.com';
-
-const CONFIG_DIR = path.join(
-  process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
-  'MoonWolf'
-);
-
+const CONFIG_DIR = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'MoonWolf');
 const NATIVE_ASSET = 'native/webview.win32-x64-msvc.node';
 const WEBVIEW_DATA_DIR = path.join(CONFIG_DIR, 'WebView2Data');
 
