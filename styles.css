@@ -4,6 +4,7 @@
   --surface:   #0b1016;
   --surface2:  #0f151d;
   --surface3:  #141c27;
+  --panel:     var(--surface);
 
   --border:    #1b2a3a;
   --border2:   #2a3c50;
@@ -457,6 +458,20 @@ select:focus:not(:focus-visible) {
 .btn-restart::before { background: rgba(255,204,0,0.05); }
 .btn-restart:hover:not(:disabled) { border-color: var(--yellow); box-shadow: var(--glow-yellow); }
 
+.btn-primary {
+  border-color: rgba(0,200,255,0.4);
+  color: var(--accent);
+  background: rgba(0,200,255,0.08);
+}
+.btn-primary::before { background: rgba(0,200,255,0.05); }
+.btn-primary:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(0,200,255,0.16);
+  box-shadow: var(--glow-accent);
+}
+.btn-primary:disabled { opacity: 0.4; }
+a.btn-primary { text-decoration: none; }
+
 /* ── STATS GRID ── */
 .stats-grid {
   display: grid;
@@ -522,7 +537,6 @@ select:focus:not(:focus-visible) {
 .log-line.system  .log-text { color: var(--accent); }
 .log-line.cmd     .log-text { color: var(--purple); }
 
-/* Colores ANSI y códigos § de Minecraft emitidos por servidores modernos. */
 .ansi-bold { font-weight: 700; }
 .ansi-black { color: #111827; }
 .ansi-red, .ansi-dark-red { color: #ff5c70; }
@@ -1381,6 +1395,30 @@ select:focus:not(:focus-visible) {
 }
 .plg-inst-meta { font-size: var(--fs-xs); color: var(--muted2); margin-top: 2px; }
 
+.installed-plugin-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 14px;
+  margin-bottom: 3px;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+.installed-plugin-row:hover {
+  background: var(--surface2);
+  border-color: var(--border);
+}
+.installed-plugin-row > div { flex: 1; min-width: 0; }
+.installed-plugin-row strong {
+  display: block;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  word-break: break-all;
+}
+.installed-plugin-row .small-btn { flex-shrink: 0; }
+
 /* ══════════════════════════════════════════════
    VERSIONES — SERVIDORES POR CATEGORÍA
    ══════════════════════════════════════════════ */
@@ -1803,33 +1841,6 @@ select:focus:not(:focus-visible) {
    USERS
    ══════════════════════════════════════════════ */
 .user-list { padding: var(--sp-sm); }
-.user-row  {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-md);
-  padding: 10px var(--sp-md);
-  border-radius: var(--r-md);
-  border: 1px solid transparent;
-  transition: all var(--t-fast);
-}
-.user-row:hover { background: var(--surface2); border-color: var(--border); }
-.user-avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: var(--r-sm);
-  background: linear-gradient(135deg, var(--accent2), var(--accent));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: var(--fs-md);
-  flex-shrink: 0;
-}
-.user-name   { flex: 1; font-size: var(--fs-base); color: var(--text); }
-.user-role   { font-size: var(--fs-xs); padding: 3px 10px; border-radius: var(--r-full); letter-spacing: 0.5px; }
-.user-role.op     { background: rgba(255,204,0,0.1); border: 1px solid rgba(255,204,0,0.3); color: var(--yellow); }
-.user-role.member { background: rgba(0,200,255,0.1); border: 1px solid rgba(0,200,255,0.2); color: var(--accent); }
-.user-last    { color: var(--muted2); font-size: var(--fs-xs); width: 110px; text-align: right; }
-.user-actions { display: flex; gap: var(--sp-xs); }
 
 .icon-btn {
   background: none;
@@ -2098,6 +2109,58 @@ select:focus:not(:focus-visible) {
   .startup-toggles {
     grid-template-columns: 1fr;
   }
+}
+
+/* ── Toggle switch ── */
+.toggle {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+}
+.toggle input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--surface3);
+  border: 1px solid var(--border2);
+  border-radius: var(--r-full);
+  pointer-events: none;
+  transition: background var(--t-base), border-color var(--t-base), box-shadow var(--t-base);
+}
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--muted2);
+  transition: transform var(--t-base), background var(--t-base), box-shadow var(--t-base);
+}
+.toggle input:checked + .toggle-slider {
+  background: rgba(0,200,255,.18);
+  border-color: rgba(0,200,255,.6);
+  box-shadow: 0 0 10px rgba(0,200,255,.18);
+}
+.toggle input:checked + .toggle-slider::before {
+  transform: translateX(20px);
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(0,200,255,.5);
+}
+.toggle input:focus-visible + .toggle-slider {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* ══════════════════════════════════════════════
@@ -2489,7 +2552,7 @@ select:focus:not(:focus-visible) {
   }
 }
 
-/* ── USERS (bloque específico) ── */
+/* ── USERS ── */
 .user-stats-grid {
   display:grid;
   grid-template-columns:repeat(4,1fr);
@@ -2544,8 +2607,16 @@ select:focus:not(:focus-visible) {
   font-size: var(--fs-sm);
   word-break:break-all;
 }
-.user-row { display:flex; align-items:center; gap:12px; padding:14px 16px; border-bottom:1px solid var(--border); }
+.user-row {
+  display:flex;
+  align-items:center;
+  gap:12px;
+  padding:14px 16px;
+  border-bottom:1px solid var(--border);
+  transition: background var(--t-fast);
+}
 .user-row:last-child { border-bottom:0; }
+.user-row:hover      { background: var(--surface2); }
 .user-avatar,
 .user-profile-icon {
   width:40px;
@@ -2600,9 +2671,9 @@ select:focus:not(:focus-visible) {
   .user-permission-select { width:calc(100% - 52px); margin-left:52px; }
   .user-revoke-btn { margin-left:52px; }
 }
+
 /* MoonWolf Panel — visual refresh */
 
-/* El layout gana profundidad sin perder la estética técnica original. */
 body {
   background:
     radial-gradient(circle at 80% -10%, rgba(0, 200, 255, .11), transparent 30rem),
@@ -2648,7 +2719,6 @@ body {
 .stat-card { background: linear-gradient(145deg, rgba(20,28,39,.92), rgba(11,16,22,.92)); }
 .stat-value { text-shadow: 0 0 16px rgba(0,200,255,.13); }
 
-/* Navegación de iconos usable en móvil: el texto aparece como tooltip. */
 @media (max-width: 768px) {
   .sb-item { position: relative; justify-content: center; padding: 11px 8px; }
   .sb-item:hover::after {
