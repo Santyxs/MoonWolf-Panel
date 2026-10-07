@@ -1043,9 +1043,7 @@ function requiredJavaForMinecraft(version) {
     if (parsed.minor === 16) return parsed.patch >= 5 ? 16 : 11;
     if (parsed.minor === 17) return 17;
     if (parsed.minor === 18 || parsed.minor === 19) return 17;
-    // 1.20.0 – 1.20.4 → Java 17 | 1.20.5+ → Java 21
     if (parsed.minor === 20) return parsed.patch >= 5 ? 21 : 17;
-    // 1.21.x → Java 21
     if (parsed.minor === 21) return 21;
   }
 
@@ -1814,8 +1812,6 @@ function safePath(rel) {
 
   let base;
   try {
-    // Canonicalizar la raíz permite aceptar una BASE_DIR que sea un alias,
-    // pero impide que sus descendientes salgan del árbol real permitido.
     base = fsSync.realpathSync.native(path.resolve(BASE_DIR));
   } catch {
     return null;
