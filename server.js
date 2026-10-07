@@ -15,6 +15,28 @@ const { spawn } = require('child_process');
 const { Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 
+function atomicWriteFileSync(filePath, data, options = 'utf8') {
+  const tempPath = `${filePath}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
+  try {
+    fsSync.writeFileSync(tempPath, data, options);
+    fsSync.renameSync(tempPath, filePath);
+  } catch (error) {
+    try { fsSync.rmSync(tempPath, { force: true }); } catch {}
+    throw error;
+  }
+}
+
+async function atomicWriteFile(filePath, data, options = 'utf8') {
+  const tempPath = `${filePath}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
+  try {
+    await fs.writeFile(tempPath, data, options);
+    await fs.rename(tempPath, filePath);
+  } catch (error) {
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
 /* ══════════════════════════════════════════════
    Environments
    ══════════════════════════════════════════════ */
@@ -65,7 +87,7 @@ const SESSION_SECRET = (() => {
 
   try {
     fsSync.mkdirSync(appDir, { recursive: true });
-    fsSync.writeFileSync(secretPath, secret, { encoding: 'utf8', mode: 0o600 });
+    atomicWriteFileSync(secretPath, secret, { encoding: 'utf8', mode: 0o600 });
   } catch (error) {
     console.warn('[session] No se pudo persistir SESSION_SECRET:', error.message);
   }
@@ -196,9 +218,7 @@ function saveShareTokens(tokens) {
     fsSync.mkdirSync(dir, { recursive: true });
   }
 
-  const tmp = `${SHARE_TOKEN_STORE_PATH}.tmp`;
-  fsSync.writeFileSync(tmp, JSON.stringify(tokens, null, 2), 'utf8');
-  fsSync.renameSync(tmp, SHARE_TOKEN_STORE_PATH);
+  atomicWriteFileSync(SHARE_TOKEN_STORE_PATH, JSON.stringify(tokens, null, 2), 'utf8');
 }
 
 function hashShareToken(token) {
@@ -350,7 +370,7 @@ function verifyOrRegisterAgent(agentId, token) {
     db[agentId] = hash;
 
     try {
-      fsSync.writeFileSync(AGENT_STORE_PATH, JSON.stringify(db), { encoding: 'utf8', mode: 0o600 });
+      atomicWriteFileSync(AGENT_STORE_PATH, JSON.stringify(db), { encoding: 'utf8', mode: 0o600 });
     } catch (error) {
       console.warn('[agents] No se pudo persistir el registro:', error.message);
     }
@@ -1339,7 +1359,7 @@ function saveStartupConfig(partial) {
     fsSync.mkdirSync(STARTUP_DIR, { recursive: true });
   }
 
-  fsSync.writeFileSync(STARTUP_CONFIG_PATH, JSON.stringify(next, null, 2), 'utf8');
+  atomicWriteFileSync(STARTUP_CONFIG_PATH, JSON.stringify(next, null, 2), 'utf8');
   return next;
 }
 
@@ -1439,7 +1459,7 @@ function writeServerPort(port) {
     content = (content.length && !content.endsWith('\n') ? content + '\n' : content) + `server-port=${port}\n`;
   }
 
-  fsSync.writeFileSync(SERVER_PROPERTIES_PATH, content, 'utf8');
+  atomicWriteFileSync(SERVER_PROPERTIES_PATH, content, 'utf8');
 }
 
 /* ══════════════════════════════════════════════
@@ -1491,7 +1511,7 @@ function writeServerProperties(values) {
     }
   }
 
-  fsSync.writeFileSync(
+  atomicWriteFileSync(
     SERVER_PROPERTIES_PATH,
     output.join('\n').replace(/\n+$/, '') + '\n',
     'utf8'
@@ -2315,7 +2335,7 @@ app.post('/api/files/content', async (req, res) => {
   }
 
   try {
-    await fs.writeFile(full, content, 'utf-8');
+    await atomicWriteFile(full, content, 'utf-8');
     ok(res);
   } catch {
     fail(res, 'No se puede guardar');
@@ -2474,9 +2494,7 @@ function saveDatabasesStore(list) {
     fsSync.mkdirSync(STARTUP_DIR, { recursive: true });
   }
 
-  const tmp = `${DATABASES_STORE_PATH}.tmp`;
-  fsSync.writeFileSync(tmp, JSON.stringify(list, null, 2), 'utf8');
-  fsSync.renameSync(tmp, DATABASES_STORE_PATH);
+  atomicWriteFileSync(DATABASES_STORE_PATH, JSON.stringify(list, null, 2), 'utf8');
 }
 
 function generateDbPassword() {
@@ -2635,6 +2653,7 @@ app.delete('/api/databases/:name', async (req, res) => {
     ══════════════════════════════════════════════ */
 const DONE_RE = /Done \([\d.,]+s\)!|Listening on /;
 let mcProcess = null;
+let launchPromise = null;
 let startTime = null;
 let statsTimer = null;
 let restarting = false;
@@ -2735,7 +2754,7 @@ function startStatsTimer() {
   }, 5000);
 }
 
-async function launchServer() {
+async function launchServerInternal() {
   const cfg = loadStartupConfig();
   const jarPath = path.join(BASE_DIR, cfg.jar);
 
@@ -2860,8 +2879,18 @@ async function launchServer() {
   return true;
 }
 
+function launchServer() {
+  if (launchPromise) return launchPromise;
+
+  launchPromise = launchServerInternal().finally(() => {
+    launchPromise = null;
+  });
+
+  return launchPromise;
+}
+
 app.post('/api/start', (_req, res) => {
-  if (mcProcess && mcProcess.exitCode === null) {
+  if (launchPromise || (mcProcess && mcProcess.exitCode === null)) {
     return fail(res, 'El servidor ya está en marcha');
   }
 
@@ -3752,6 +3781,44 @@ function getArchiver() {
   return archiver || (archiver = require('archiver'));
 }
 
+async function createZipAtomically(zipPath, configureArchive) {
+  const tempPath = `${zipPath}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
+  try {
+    await new Promise((resolve, reject) => {
+      const output = fsSync.createWriteStream(tempPath, { flags: 'wx' });
+      const archive = getArchiver()('zip', { zlib: { level: 6 } });
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        if (error) reject(error);
+        else resolve();
+      };
+      output.once('close', () => finish());
+      output.once('error', finish);
+      archive.once('error', finish);
+      archive.pipe(output);
+      try {
+        configureArchive(archive);
+        void archive.finalize().catch(finish);
+      } catch (error) {
+        finish(error);
+      }
+    });
+
+    try {
+      await fs.rename(tempPath, zipPath);
+    } catch (error) {
+      if (!['EEXIST', 'EPERM'].includes(error?.code)) throw error;
+      await fs.rm(zipPath, { force: true });
+      await fs.rename(tempPath, zipPath);
+    }
+  } catch (error) {
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
 const FILE_UPLOAD_MAX_CHUNK_BYTES = 8 * 1024 * 1024;
 const FILE_UPLOAD_ID_RE = /^[a-zA-Z0-9_-]{8,120}$/;
 const FILE_UPLOAD_DIR = path.join(BASE_DIR, '.moonwolf-uploads');
@@ -3942,7 +4009,7 @@ app.post(
         }
 
         manifest.chunks = merged;
-        await fs.writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+        await atomicWriteFile(manifestPath, JSON.stringify(manifest), 'utf8');
 
         const complete = numericTotal === 0
           ? true
@@ -4023,7 +4090,7 @@ app.post('/api/files/create', async (req, res) => {
       await fs.mkdir(full, { recursive: true });
     } else {
       await fs.mkdir(path.dirname(full), { recursive: true });
-      await fs.writeFile(full, '', 'utf-8');
+      await atomicWriteFile(full, '', 'utf-8');
     }
 
     ok(res, { path: rel });
@@ -4144,22 +4211,13 @@ app.post('/api/files/compress', async (req, res) => {
   }
 
   try {
-    await new Promise((resolve, reject) => {
-      const output = fsSync.createWriteStream(zipDest);
-      const archive = getArchiver()('zip', { zlib: { level: 6 } });
-
-      output.on('close', resolve);
-      archive.on('error', reject);
-      archive.pipe(output);
-
+    await createZipAtomically(zipDest, archive => {
       const stat = fsSync.statSync(full);
       if (stat.isDirectory()) {
         archive.directory(full, name);
       } else {
         archive.file(full, { name });
       }
-
-      archive.finalize();
     });
 
     ok(res, { zipName });
@@ -4202,16 +4260,9 @@ app.post('/api/files/bulk', async (req, res) => {
         const zipName = `${baseName}.zip`;
         const zipDest = path.join(path.dirname(full), zipName);
         if (!zipDest.startsWith(path.resolve(BASE_DIR) + path.sep)) throw new Error('Destino no válido');
-        await new Promise((resolve, reject) => {
-          const output = fsSync.createWriteStream(zipDest);
-          const archive = getArchiver()('zip', { zlib: { level: 6 } });
-          output.on('close', resolve);
-          output.on('error', reject);
-          archive.on('error', reject);
-          archive.pipe(output);
+        await createZipAtomically(zipDest, archive => {
           if (stat.isDirectory()) archive.directory(full, baseName);
           else archive.file(full, { name: path.basename(full) });
-          archive.finalize();
         });
       }
       results.push({ path: rel, ok: true });
@@ -4317,14 +4368,7 @@ app.post('/api/backups', async (req, res) => {
     const zipName = `${safeLabel}_${timestamp}.zip`;
     const zipPath = path.join(BACKUPS_DIR, zipName);
 
-    await new Promise((resolve, reject) => {
-      const output = fsSync.createWriteStream(zipPath);
-      const archive = getArchiver()('zip', { zlib: { level: 6 } });
-
-      output.on('close', resolve);
-      archive.on('error', reject);
-      archive.pipe(output);
-
+    await createZipAtomically(zipPath, archive => {
       archive.directory(BASE_DIR, false, entryData => {
         if (entryData.name === '.moonwolf' || entryData.name.startsWith('.moonwolf/')) {
           return false;
@@ -4332,8 +4376,6 @@ app.post('/api/backups', async (req, res) => {
 
         return entryData;
       });
-
-      archive.finalize();
     });
 
     const stats = await fs.stat(zipPath);
