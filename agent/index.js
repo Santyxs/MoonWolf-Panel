@@ -34,6 +34,17 @@ function makeSecret() {
   return crypto.randomBytes(32).toString('base64url');
 }
 
+function atomicWriteFileSync(filePath, data, options = 'utf8') {
+  const tempPath = `${filePath}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
+  try {
+    fs.writeFileSync(tempPath, data, options);
+    fs.renameSync(tempPath, filePath);
+  } catch (error) {
+    try { fs.rmSync(tempPath, { force: true }); } catch {}
+    throw error;
+  }
+}
+
 function loadConfig() {
   ensureConfigDir();
 
@@ -84,7 +95,7 @@ function loadConfig() {
 
   delete config.token;
 
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8');
+  atomicWriteFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8');
   return config;
 }
 
@@ -630,7 +641,7 @@ async function main() {
       config.serverDir = resolved;
 
       try {
-        fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8');
+        atomicWriteFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8');
       } catch (error) {
         return { ok: false, error: `No se pudo guardar la configuración: ${error.message}` };
       }
