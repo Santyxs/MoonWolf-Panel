@@ -1288,6 +1288,63 @@ function safeJarName(name) {
   return value;
 }
 
+function safeJavaPath(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  if (!path.isAbsolute(raw)) return null;
+
+  const candidate = path.resolve(raw);
+  if (!['java', 'java.exe'].includes(path.basename(candidate).toLowerCase())) return null;
+
+  try {
+    const stats = fsSync.lstatSync(candidate);
+    const realCandidate = fsSync.realpathSync.native(candidate);
+    const comparable = item => process.platform === 'win32'
+      ? path.normalize(item).toLowerCase()
+      : path.normalize(item);
+    if (!stats.isFile() || stats.isSymbolicLink() || comparable(realCandidate) !== comparable(candidate)) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  return candidate;
+}
+
+function verifyJavaExecutable(javaBin) {
+  return new Promise(resolve => {
+    let output = '';
+    let settled = false;
+    const child = spawn(javaBin, ['-version'], {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const finish = valid => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(Boolean(valid));
+    };
+    const timeout = setTimeout(() => {
+      child.kill();
+      finish(false);
+    }, 5000);
+    child.stdout.on('data', data => { output += String(data); });
+    child.stderr.on('data', data => { output += String(data); });
+    child.once('error', () => finish(false));
+    child.once('close', code => finish(code === 0 && /\bversion\s+["']?\d/i.test(output)));
+  });
+}
+
+async function validateJavaOverride(value) {
+  const javaBin = safeJavaPath(value);
+  if (!javaBin || !(await verifyJavaExecutable(javaBin))) {
+    throw new Error('La ruta debe apuntar a un ejecutable Java válido (java o java.exe).');
+  }
+  return javaBin;
+}
+
 function readServerPort() {
   try {
     const content = fsSync.readFileSync(SERVER_PROPERTIES_PATH, 'utf8');
@@ -2144,7 +2201,7 @@ app.get('/api/startup', async (_req, res) => {
   }
 });
 
-app.post('/api/startup', (req, res) => {
+app.post('/api/startup', async (req, res) => {
   const {
     jar,
     javaPath,
@@ -2188,11 +2245,15 @@ app.post('/api/startup', (req, res) => {
   }
 
   try {
+    const mode = String(javaMode || '').trim() === 'override' ? 'override' : 'managed';
+    const configuredJava = mode === 'override'
+      ? await validateJavaOverride(javaOverridePath || javaPath)
+      : 'java';
     const config = saveStartupConfig({
       jar: safeJar,
-      javaPath: String(javaPath || '').trim() || 'java',
-      javaMode: String(javaMode || '').trim() === 'override' ? 'override' : 'managed',
-      javaOverridePath: String(javaOverridePath || '').trim(),
+      javaPath: configuredJava,
+      javaMode: mode,
+      javaOverridePath: mode === 'override' ? configuredJava : '',
       minecraftVersion: String(minecraftVersion || '').trim(),
       minMemoryMb: Math.round(min),
       maxMemoryMb: Math.round(max),
@@ -2541,7 +2602,7 @@ async function launchServer() {
 
   try {
     if (cfg.javaMode === 'override' && String(cfg.javaOverridePath || '').trim()) {
-      javaBin = String(cfg.javaOverridePath).trim();
+      javaBin = await validateJavaOverride(cfg.javaOverridePath);
     } else {
       javaBin = await resolveJavaForServer(minecraftVersion);
     }
@@ -4185,7 +4246,7 @@ app.get('/api/debug/start', async (_req, res) => {
   try {
     javaBin =
       cfg.javaMode === 'override' && String(cfg.javaOverridePath || '').trim()
-        ? String(cfg.javaOverridePath).trim()
+        ? await validateJavaOverride(cfg.javaOverridePath)
         : await resolveJavaForServer(minecraftVersion);
   } catch (error) {
     javaResolveError = error.message;
