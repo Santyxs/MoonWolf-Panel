@@ -2450,8 +2450,24 @@ io.on('connection', socket => {
         return rejectRpc(429, 'Demasiadas solicitudes pendientes. Espera a que terminen algunas operaciones.');
       }
 
+      // ── Whitelist estricta ────────────────────────────────────
+      // Solo estos campos llegan al Agent. Cualquier otro (headers,
+      // cookies, host, origin, referer, ip…) que un panel modificado
+      // intente colar en el payload del RPC se descarta aquí. El Agent
+      // construye sus propias cabeceras; no debe reenviar las del
+      // cliente aunque las reciba.
+      const sanitized = {
+        id,
+        method: request.method,
+        path: request.path,
+      };
+
+      if (request.body !== undefined) {
+        sanitized.body = request.body;
+      }
+
       socket.data.pendingRpc.add(id);
-      agentSocket.emit('rpc', request);
+      agentSocket.emit('rpc', sanitized);
     });
 
     socket.on('disconnect', () => {
@@ -2585,7 +2601,6 @@ app.post('/api/startup', async (req, res) => {
     serverPort,
   } = req.body || {};
 
-  // ── Gate rol ─────────────────────────────────────────────
   const session = getSessionFromRequest(req);
   if (!isOwnerSession(session)) {
     const current = loadStartupConfig();
