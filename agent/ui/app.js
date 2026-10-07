@@ -80,6 +80,7 @@ function customConfirm(message, title = 'Reiniciar Agent') {
 
     acceptBtn.addEventListener('click', () => close(true));
     cancelBtn.addEventListener('click', () => close(false));
+
     overlay.addEventListener('click', event => {
       if (event.target === overlay) close(false);
     });
@@ -94,21 +95,35 @@ function render() {
   const cloudConnected = Boolean(state.cloudConnected);
   const localReady = Boolean(state.localServerReady);
 
-  $('pairing-code').textContent = state.pairingCode \vert{}\vert{} '—';$('server-dir').textContent = formatPath(state.serverDir);
-  $('server-dir').title = formatPath(state.serverDir);$('version').textContent = state.version && /^\d/.test(state.version) ? `v${state.version}` : (state.version || '—');
+  $('pairing-code').textContent = state.pairingCode || '—';
 
-  $('status-dot').className = `status-dot ${cloudConnected ? 'connected' : 'connecting'}`;
-  $('status-title').textContent = cloudConnected ? 'Conectado' : 'Desconectado';
+  $('server-dir').textContent = formatPath(state.serverDir);
+  $('server-dir').title = formatPath(state.serverDir);
+
+  $('version').textContent =
+    state.version && /^\d/.test(state.version)
+      ? `v${state.version}`
+      : (state.version || '—');
+
+  $('status-dot').className =
+    `status-dot ${cloudConnected ? 'connected' : 'connecting'}`;
+
+  $('status-title').textContent =
+    cloudConnected ? 'Conectado' : 'Desconectado';
+
   $('status-description').textContent = cloudConnected
     ? 'MoonWolf Agent conectado con MoonWolf Cloud'
     : 'Conectando con MoonWolf Cloud';
 
-  $('local-dot').className = `mini-dot ${localReady ? 'ready' : ''}`;
+  $('local-dot').className =
+    `mini-dot ${localReady ? 'ready' : ''}`;
+
   $('local-status').textContent = localReady
     ? 'Servidor local listo'
     : 'Servidor local iniciando';
 
   const banner = $('restart-banner');
+
   if (banner) {
     banner.classList.toggle('hidden', !state.restartRequired);
   }
@@ -121,6 +136,7 @@ function render() {
 
 function renderUpdateBanner() {
   const banner = $('update-banner');
+
   if (!banner) return;
 
   const available = state.updateAvailable;
@@ -143,46 +159,94 @@ function renderUpdateBanner() {
   const progress = Number(state.updateProgress) || 0;
 
   if (status === 'downloading') {
-    if (title) title.textContent = `Descargando ${version}…`;
-    if (description) description.textContent = `${progress}% completado`;
-    if (track) track.classList.remove('hidden');
-    if (fill) fill.style.width = `${progress}%`;
+    if (title) {
+      title.textContent = `Descargando ${version}…`;
+    }
+
+    if (description) {
+      description.textContent = `${progress}% completado`;
+    }
+
+    if (track) {
+      track.classList.remove('hidden');
+    }
+
+    if (fill) {
+      fill.style.width = `${progress}%`;
+    }
+
     if (applyButton) {
       applyButton.disabled = true;
       applyButton.innerHTML = '<span>⬇</span>Descargando';
     }
+
     return;
   }
 
   if (status === 'ready' || status === 'installing') {
-    if (title) title.textContent = `Listo para actualizar a ${version}`;
-    if (description) description.textContent = status === 'installing'
-      ? 'Aplicando actualización…'
-      : 'La actualización se instalará y MoonWolf Agent se reiniciará.';
-    if (track) track.classList.add('hidden');
+    if (title) {
+      title.textContent = `Listo para actualizar a ${version}`;
+    }
+
+    if (description) {
+      description.textContent =
+        status === 'installing'
+          ? 'Aplicando actualización…'
+          : 'La actualización se instalará y MoonWolf Agent se reiniciará.';
+    }
+
+    if (track) {
+      track.classList.add('hidden');
+    }
+
     if (applyButton) {
       applyButton.disabled = status === 'installing';
-      applyButton.innerHTML = status === 'installing'
-        ? '<span>⏳</span>Instalando'
-        : '<span>⬆</span>Actualizar ahora';
+
+      applyButton.innerHTML =
+        status === 'installing'
+          ? '<span>⏳</span>Instalando'
+          : '<span>⬆</span>Actualizar ahora';
     }
+
     return;
   }
 
   if (status === 'error') {
-    if (title) title.textContent = `Error actualizando a ${version}`;
-    if (description) description.textContent = state.updateError || 'No se pudo completar la actualización.';
-    if (track) track.classList.add('hidden');
+    if (title) {
+      title.textContent = `Error actualizando a ${version}`;
+    }
+
+    if (description) {
+      description.textContent =
+        state.updateError ||
+        'No se pudo completar la actualización.';
+    }
+
+    if (track) {
+      track.classList.add('hidden');
+    }
+
     if (applyButton) {
       applyButton.disabled = false;
       applyButton.innerHTML = '<span>↻</span>Reintentar';
     }
+
     return;
   }
 
-  if (title) title.textContent = `Actualización disponible · ${version}`;
-  if (description) description.textContent = 'Se descargará automáticamente en segundo plano.';
-  if (track) track.classList.add('hidden');
+  if (title) {
+    title.textContent = `Actualización disponible · ${version}`;
+  }
+
+  if (description) {
+    description.textContent =
+      'Se descargará automáticamente en segundo plano.';
+  }
+
+  if (track) {
+    track.classList.add('hidden');
+  }
+
   if (applyButton) {
     applyButton.disabled = true;
     applyButton.innerHTML = '<span>⬇</span>Preparando';
@@ -193,6 +257,7 @@ let lastNoticeRef = null;
 
 function renderUpdateNotice() {
   const element = $('update-notice');
+
   if (!element) return;
 
   const notice = state.updateNotice;
@@ -205,6 +270,7 @@ function renderUpdateNotice() {
   }
 
   if (lastNoticeRef === notice) return;
+
   lastNoticeRef = notice;
 
   element.textContent = notice.message;
@@ -215,25 +281,45 @@ function renderUpdateNotice() {
 function renderSettings() {
   if (!$('settings-config-dir')) return;
 
-  const configDir = String(state.configPath || '').replace(/[\\/][^\\/]*$/, '');
+  const configDir = String(state.configPath || '')
+    .replace(/[\\/][^\\/]*$/, '');
 
   $('settings-config-dir').textContent = formatPath(configDir);
-  $('settings-config-dir').title = formatPath(configDir);$('settings-agent-id').textContent = state.agentId || '—';
+  $('settings-config-dir').title = formatPath(configDir);
+
+  $('settings-agent-id').textContent =
+    state.agentId || '—';
 }
 
 function renderLogs() {
-  const logs = Array.isArray(state.logs) ? state.logs : [];
+  const logs = Array.isArray(state.logs)
+    ? state.logs
+    : [];
+
   const list = $('logs-list');
+
   if (!list) return;
 
-  $('logs-count').textContent = `${logs.length} entradas`;
+  $('logs-count').textContent =
+    `${logs.length} entradas`;
+
   list.innerHTML = logs.length
     ? logs.map(entry => {
-        const time = entry.time ? new Date(entry.time).toLocaleTimeString('es-ES') : '--:--:--';
+        const time = entry.time
+          ? new Date(entry.time).toLocaleTimeString('es-ES')
+          : '--:--:--';
+
         const level = String(entry.level || 'info');
-        return `<div class="log-entry ${level}"><span class="log-time">${escapeHtml(time)}</span><span>${escapeHtml(entry.message)}</span></div>`;
+
+        return `
+          <div class="log-entry ${level}">
+            <span class="log-time">${escapeHtml(time)}</span>
+            <span>${escapeHtml(entry.message)}</span>
+          </div>
+        `;
       }).join('')
     : '<div class="empty-state">No hay logs todavía.</div>';
+
   list.scrollTop = list.scrollHeight;
 }
 
@@ -246,9 +332,16 @@ function escapeHtml(value) {
 }
 
 function refreshState(event) {
-  const next = event?.detail || nativeApi().getState?.();
+  const next =
+    event?.detail ||
+    nativeApi().getState?.();
+
   if (next && typeof next === 'object') {
-    state = { ...state, ...next };
+    state = {
+      ...state,
+      ...next
+    };
+
     render();
   }
 }
@@ -271,13 +364,19 @@ async function copyText(text) {
 
   try {
     const area = document.createElement('textarea');
+
     area.value = text;
     area.style.position = 'fixed';
     area.style.opacity = '0';
+
     document.body.appendChild(area);
+
     area.select();
+
     const ok = document.execCommand('copy');
+
     area.remove();
+
     return ok;
   } catch {
     return false;
@@ -285,143 +384,324 @@ async function copyText(text) {
 }
 
 function flashButton(button, label) {
-  const original = button.dataset.label || button.textContent;
+  const original =
+    button.dataset.label ||
+    button.textContent;
+
   button.dataset.label = original;
+
   button.textContent = label;
+
   clearTimeout(button._flashTimer);
-  button._flashTimer = setTimeout(() => { button.textContent = original; }, 1200);
+
+  button._flashTimer = setTimeout(() => {
+    button.textContent = original;
+  }, 1200);
 }
 
 function openServerDirModal() {
-  $('serverdir-input').value = state.serverDir \vert{}\vert{} '';$('serverdir-error').textContent = '';
+  $('serverdir-input').value =
+    state.serverDir || '';
+
+  $('serverdir-error').textContent = '';
+
   openModal('serverdir-modal');
 }
 
 function bindEvents() {
-  $('open-panel')?.addEventListener('click', () => nativeApi().openPanel?.());
-  $('open-server')?.addEventListener('click', () => nativeApi().openServerFolder?.());
-  $('open-logs')?.addEventListener('click', () => openModal('logs-modal'));
-  $('close-logs')?.addEventListener('click', () => closeModal('logs-modal'));$('logs-modal')?.querySelector('.modal-backdrop')?.addEventListener('click', () => closeModal('logs-modal'));
+  $('open-panel')?.addEventListener(
+    'click',
+    () => nativeApi().openPanel?.()
+  );
 
-  $('copy-pairing')?.addEventListener('click', async event => {
-    const button = event.currentTarget;
-    if (!state.pairingCode) return;
-    const ok = await copyText(state.pairingCode);
-    flashButton(button, ok ? 'Copiado' : 'Error');
-  });
+  $('open-server')?.addEventListener(
+    'click',
+    () => nativeApi().openServerFolder?.()
+  );
 
-  $('clear-logs')?.addEventListener('click', () => {
-    nativeApi().clearLogs?.();
-    render();
-  });
+  $('open-logs')?.addEventListener(
+    'click',
+    () => openModal('logs-modal')
+  );
 
-  $('copy-logs')?.addEventListener('click', async event => {
-    const button = event.currentTarget;
-    const text = (state.logs || [])
-      .map(entry => `[${entry.time || ''}] [${entry.level || 'info'}] ${entry.message || ''}`)
-      .join('\n');
-    const ok = await copyText(text);
-    flashButton(button, ok ? 'Copiado' : 'Error');
-  });
+  $('close-logs')?.addEventListener(
+    'click',
+    () => closeModal('logs-modal')
+  );
 
-  $('save-logs')?.addEventListener('click', () => nativeApi().saveLogs?.());
-
-  $('edit-server-dir')?.addEventListener('click', openServerDirModal);
-
-  $('settings')?.addEventListener('click', () => {     renderSettings();     openModal('settings-modal');   });$('close-settings')?.addEventListener('click', () => closeModal('settings-modal'));
-  $('settings-modal')?.querySelector('.modal-backdrop')?.addEventListener('click', () => closeModal('settings-modal'));$('settings-open-config')?.addEventListener('click', () => nativeApi().openConfig?.());
-  $('settings-hide-tray')?.addEventListener('click', () => {
-    closeModal('settings-modal');
-    nativeApi().hideToTray?.();
-  });
-  $('settings-copy-id')?.addEventListener('click', async event => {
-    const button = event.currentTarget;
-    if (!state.agentId) return;
-    const ok = await copyText(state.agentId);
-    flashButton(button, ok ? 'Copiado' : 'Error');
-  });
-  $('settings-check-update')?.addEventListener('click', () => {
-    nativeApi().checkForUpdates?.();
-  });
-
-  $('close-serverdir')?.addEventListener('click', () => closeModal('serverdir-modal'));
-  $('cancel-serverdir')?.addEventListener('click', () => closeModal('serverdir-modal'));$('serverdir-modal')?.querySelector('.modal-backdrop')?.addEventListener('click', () => closeModal('serverdir-modal'));
-
-  $('save-serverdir')?.addEventListener('click', async () => {
-    const api = nativeApi();
-    const inputVal = $('serverdir-input').value;
-    if (!api.setServerDir) {
-      $('serverdir-error').textContent = 'La interfaz nativa no está disponible.';
-      return;
-    }
-    try {
-      const result = await api.setServerDir(inputVal);
-      if (result && result.ok === false) {
-        $('serverdir-error').textContent = result.error || result.message || 'No se pudo guardar la ruta.';
-        return;
-      }
-      state.serverDir = (result && result.serverDir) || inputVal;
-
-      if (result && result.restartRequired) {
-        state.restartRequired = true;
-      }
-
-      closeModal('serverdir-modal');
-      render();
-    } catch (err) {
-      $('serverdir-error').textContent = err.message || 'Error al establecer la ruta.';
-    }
-  });
-
-  $('restart-agent')?.addEventListener('click', async () => {
-    const ok = await customConfirm(
-      'Reiniciar MoonWolf Agent?',
-      'Reiniciar Agent'
+  $('logs-modal')
+    ?.querySelector('.modal-backdrop')
+    ?.addEventListener(
+      'click',
+      () => closeModal('logs-modal')
     );
 
-    if (ok) {
-      nativeApi().restart?.();
+  $('copy-pairing')?.addEventListener(
+    'click',
+    async event => {
+      const button = event.currentTarget;
+
+      if (!state.pairingCode) return;
+
+      const ok = await copyText(
+        state.pairingCode
+      );
+
+      flashButton(
+        button,
+        ok ? 'Copiado' : 'Error'
+      );
     }
-  });
+  );
 
-  $('update-apply')?.addEventListener('click', async () => {
-    if (!state.updateAvailable) return;
-    if (state.updateStatus !== 'ready' && state.updateStatus !== 'error') return;
+  $('clear-logs')?.addEventListener(
+    'click',
+    () => {
+      nativeApi().clearLogs?.();
+      render();
+    }
+  );
 
-    const api = nativeApi();
-    if (!api.applyUpdate) {
-      if ($('update-description')) {$('update-description').textContent = 'La interfaz nativa no está disponible.';
+  $('copy-logs')?.addEventListener(
+    'click',
+    async event => {
+      const button = event.currentTarget;
+
+      const text = (state.logs || [])
+        .map(entry =>
+          `[${entry.time || ''}] ` +
+          `[${entry.level || 'info'}] ` +
+          `${entry.message || ''}`
+        )
+        .join('\n');
+
+      const ok = await copyText(text);
+
+      flashButton(
+        button,
+        ok ? 'Copiado' : 'Error'
+      );
+    }
+  );
+
+  $('save-logs')?.addEventListener(
+    'click',
+    () => nativeApi().saveLogs?.()
+  );
+
+  $('edit-server-dir')?.addEventListener(
+    'click',
+    openServerDirModal
+  );
+
+  $('settings')?.addEventListener(
+    'click',
+    () => {
+      renderSettings();
+      openModal('settings-modal');
+    }
+  );
+
+  $('close-settings')?.addEventListener(
+    'click',
+    () => closeModal('settings-modal')
+  );
+
+  $('settings-modal')
+    ?.querySelector('.modal-backdrop')
+    ?.addEventListener(
+      'click',
+      () => closeModal('settings-modal')
+    );
+
+  $('settings-open-config')?.addEventListener(
+    'click',
+    () => nativeApi().openConfig?.()
+  );
+
+  $('settings-hide-tray')?.addEventListener(
+    'click',
+    () => {
+      closeModal('settings-modal');
+      nativeApi().hideToTray?.();
+    }
+  );
+
+  $('settings-copy-id')?.addEventListener(
+    'click',
+    async event => {
+      const button = event.currentTarget;
+
+      if (!state.agentId) return;
+
+      const ok = await copyText(
+        state.agentId
+      );
+
+      flashButton(
+        button,
+        ok ? 'Copiado' : 'Error'
+      );
+    }
+  );
+
+  $('settings-check-update')?.addEventListener(
+    'click',
+    () => nativeApi().checkForUpdates?.()
+  );
+
+  $('close-serverdir')?.addEventListener(
+    'click',
+    () => closeModal('serverdir-modal')
+  );
+
+  $('cancel-serverdir')?.addEventListener(
+    'click',
+    () => closeModal('serverdir-modal')
+  );
+
+  $('serverdir-modal')
+    ?.querySelector('.modal-backdrop')
+    ?.addEventListener(
+      'click',
+      () => closeModal('serverdir-modal')
+    );
+
+  $('save-serverdir')?.addEventListener(
+    'click',
+    async () => {
+      const api = nativeApi();
+      const inputVal =
+        $('serverdir-input').value;
+
+      if (!api.setServerDir) {
+        $('serverdir-error').textContent =
+          'La interfaz nativa no está disponible.';
+        return;
       }
-      return;
-    }
 
-    try {
-      const result = await api.applyUpdate();
-      if (result && result.ok === false) {
-        if ($('update-description')) {$('update-description').textContent = result.error || result.message || 'No se pudo aplicar la actualización.';
+      try {
+        const result =
+          await api.setServerDir(inputVal);
+
+        if (result && result.ok === false) {
+          $('serverdir-error').textContent =
+            result.error ||
+            result.message ||
+            'No se pudo guardar la ruta.';
+
+          return;
+        }
+
+        state.serverDir =
+          (result && result.serverDir) ||
+          inputVal;
+
+        if (result && result.restartRequired) {
+          state.restartRequired = true;
+        }
+
+        closeModal('serverdir-modal');
+        render();
+      } catch (err) {
+        $('serverdir-error').textContent =
+          err.message ||
+          'Error al establecer la ruta.';
+      }
+    }
+  );
+
+  $('restart-agent')?.addEventListener(
+    'click',
+    async () => {
+      const ok = await customConfirm(
+        'Reiniciar MoonWolf Agent?',
+        'Reiniciar Agent'
+      );
+
+      if (ok) {
+        nativeApi().restart?.();
+      }
+    }
+  );
+
+  $('update-apply')?.addEventListener(
+    'click',
+    async () => {
+      if (!state.updateAvailable) return;
+
+      if (
+        state.updateStatus !== 'ready' &&
+        state.updateStatus !== 'error'
+      ) {
+        return;
+      }
+
+      const api = nativeApi();
+
+      if (!api.applyUpdate) {
+        if ($('update-description')) {
+          $('update-description').textContent =
+            'La interfaz nativa no está disponible.';
+        }
+
+        return;
+      }
+
+      try {
+        const result =
+          await api.applyUpdate();
+
+        if (result && result.ok === false) {
+          if ($('update-description')) {
+            $('update-description').textContent =
+              result.error ||
+              result.message ||
+              'No se pudo aplicar la actualización.';
+          }
+        }
+      } catch (err) {
+        if ($('update-description')) {
+          $('update-description').textContent =
+            err.message ||
+            'Error durante la actualización.';
         }
       }
-    } catch (err) {
-      if ($('update-description')) {$('update-description').textContent = err.message || 'Error durante la actualización.';
+    }
+  );
+
+  document.addEventListener(
+    'keydown',
+    event => {
+      if (event.key !== 'Escape') return;
+
+      for (
+        const id of [
+          'logs-modal',
+          'serverdir-modal',
+          'settings-modal'
+        ]
+      ) {
+        $(id)?.classList.add('hidden');
       }
     }
-  });
-
-  document.addEventListener('keydown', event => {
-    if (event.key !== 'Escape') return;
-    for (const id of ['logs-modal', 'serverdir-modal', 'settings-modal']) {
-      $(id)?.classList.add('hidden');
-    }
-  });
+  );
 }
 
-window.addEventListener('moonwolf-state', refreshState);
+window.addEventListener(
+  'moonwolf-state',
+  refreshState
+);
 
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => {
-    bindEvents();
-    refreshState();
-  }, { once: true });
+  document.addEventListener(
+    'DOMContentLoaded',
+    () => {
+      bindEvents();
+      refreshState();
+    },
+    { once: true }
+  );
 } else {
   bindEvents();
   refreshState();
