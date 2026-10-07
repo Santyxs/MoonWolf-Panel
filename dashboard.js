@@ -3817,12 +3817,6 @@ function renderUsers() {
           <div class="user-panel-subtitle">Crea un acceso independiente.</div>
         </div>
       </div>
-      <div class="user-admin-warning" role="note">
-        🔒 Los accesos con permiso <strong>Administrador</strong> pueden controlar Minecraft por completo
-        (arrancar, comandos, ficheros, backups, bases de datos), pero <strong>no pueden instalar plugins/mods
-        ni modificar cómo se lanza la JVM</strong>. Esas operaciones quedan reservadas al propietario para
-        impedir la ejecución de código arbitrario en la máquina del servidor.
-      </div>
       <div class="user-create-form">
         <input id="shareLabel" class="form-input" placeholder="Nombre (ej. Paco)" maxlength="60">
         <select id="sharePermission" class="form-input">
