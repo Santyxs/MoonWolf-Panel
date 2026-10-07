@@ -2056,7 +2056,7 @@ const fail = (res, error) => res.json({ ok: false, error });
 
 async function apiFetch(url) {
   const { default: fetch } = await import('node-fetch');
-  const res = await fetch(url, { headers: { 'User-Agent': PAPER_UA } });
+  const res = await fetch(url, { headers: { 'User-Agent': 'MoonWolfPanel/2.0 (contact@moonwolf.local)' } });
 
   if (!res.ok) {
     throw new Error(`HTTP ${res.status} -> ${url}`);
@@ -2067,7 +2067,7 @@ async function apiFetch(url) {
 
 async function apiFetchText(url) {
   const { default: fetch } = await import('node-fetch');
-  const res = await fetch(url, { headers: { 'User-Agent': PAPER_UA } });
+  const res = await fetch(url, { headers: { 'User-Agent': 'MoonWolfPanel/2.0 (contact@moonwolf.local)' } });
 
   if (!res.ok) {
     throw new Error(`HTTP ${res.status} -> ${url}`);
