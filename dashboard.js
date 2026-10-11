@@ -1816,9 +1816,14 @@ function setUploadControls(visible) {
 }
 // MODIFICADO: en subidas de un solo archivo se evita duplicar
 // la información de bytes del archivo actual (ya está en la barra global).
+// Además, se ignoran actualizaciones residuales cuando la subida ya terminó.
 function updateUploadProgress(progressState) {
   const panel = $('uploadProgressPanel');
   if (!panel) return;
+
+  // Ignora cualquier actualización residual después de que la subida haya terminado.
+  if (progressState.finished) return;
+
   const total = progressState.totalBytes || 0;
   const done = Math.min(progressState.doneBytes || 0, total);
   const percent = total ? Math.min(100, Math.round((done / total) * 100)) : 100;
@@ -1865,9 +1870,15 @@ function updateUploadProgress(progressState) {
     $('uploadProgressEta').textContent = percent >= 100 ? 'Completado' : formatUploadEta(eta);
   }
 }
+// MODIFICADO: marca el estado como terminado para bloquear updates residuales
+// que podrían volver a mostrar la barra después del timeout de ocultado.
 function finishUploadProgress(message, isError = false, detail = '', hidePanel = false) {
   const panel = $('uploadProgressPanel');
   if (!panel) return;
+
+  // Marca el estado como terminado: cualquier updateUploadProgress posterior hará early-return.
+  if (activeUploadState) activeUploadState.finished = true;
+
   if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = message;
   if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = isError ? 'La subida se detuvo' : 'Todos los archivos se han procesado';
   if ($('uploadProgressError')) $('uploadProgressError').textContent = detail;
