@@ -8,7 +8,7 @@ const { spawn } = require('node:child_process');
 const { io } = require('socket.io-client');
 const { startGui } = require('./gui');
 
-const PANEL_URL = 'https://moonwolf-panel.onrender.com';
+const PANEL_URL = 'https://moonwolf-panel.up.railway.app';
 const CLOUD_PATH = '/socket.io';
 const VERSION = typeof __AGENT_VERSION__ !== 'undefined' ? __AGENT_VERSION__ : 'dev';
 
