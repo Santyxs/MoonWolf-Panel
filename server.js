@@ -640,13 +640,6 @@ const SOCKET_CONNECTION_WINDOW_MS = 60_000;
 const SOCKET_CONNECTION_ATTEMPTS = 40;
 const socketConnectionAttempts = new Map();
 const socketConnections = new Map();
-
-/**
- * Número de proxies de confianza delante del panel (p.ej. Render = 1).
- * Un cliente puede falsificar el PRIMER elemento de X-Forwarded-For,
- * pero el proxy de confianza añade la IP real al FINAL. Contamos desde
- * la derecha para no confiar en datos que el cliente controla.
- */
 const TRUSTED_PROXY_HOPS = Math.max(
   0,
   Number(process.env.MOONWOLF_TRUSTED_PROXY_HOPS ?? 1)
@@ -2489,12 +2482,7 @@ io.on('connection', socket => {
         return rejectRpc(429, 'Demasiadas solicitudes pendientes. Espera a que terminen algunas operaciones.');
       }
 
-      // ── Whitelist estricta ────────────────────────────────────
-      // Solo estos campos llegan al Agent. Cualquier otro (headers,
-      // cookies, host, origin, referer, ip…) que un panel modificado
-      // intente colar en el payload del RPC se descarta aquí. El Agent
-      // construye sus propias cabeceras; no debe reenviar las del
-      // cliente aunque las reciba.
+      // ── Whitelist ────────────────────────────────────
       const sanitized = {
         id,
         method: request.method,
