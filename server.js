@@ -217,6 +217,18 @@ const SESSION_SECRET = (() => {
 const PANEL_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const PAIRING_TTL_MS = 5 * 60 * 1000;
 
+const ICE_SERVERS = (() => {
+  try {
+    const parsed = JSON.parse(process.env.MOONWOLF_ICE_SERVERS || '');
+    if (Array.isArray(parsed) && parsed.length) return parsed;
+  } catch {}
+
+  return [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+  ];
+})();
+
 function timingSafeEqualStr(a, b) {
   const bufA = Buffer.from(String(a ?? ''));
   const bufB = Buffer.from(String(b ?? ''));
@@ -460,6 +472,16 @@ function publicShareToken(record) {
 }
 
 function getSessionFromRequest(req) {
+  // Modo local (Agent): la petición ya pasó la verificación de X-MoonWolf-Token.
+  // Solo el Agent inyecta estas cabeceras, con el contexto verificado por Cloud.
+  if (LOCAL_AGENT_TOKEN) {
+    const localPermission = normalizeSharePermission(req.get('x-moonwolf-permission'));
+
+    return req.get('x-moonwolf-kind') === 'owner' && localPermission
+      ? { kind: 'owner', permission: localPermission }
+      : { kind: 'share', permission: localPermission || 'read' };
+  }
+
   const auth = String(req.headers.authorization || '');
 
   if (!auth.startsWith('Bearer ')) return null;
@@ -1138,6 +1160,7 @@ app.patch('/api/share-tokens/:id', (req, res) => {
   for (const panel of panelSockets) {
     if (panel.data.shareTokenId === record.id) {
       panel.data.permission = permission;
+      agentSockets.get(record.agentId)?.emit('direct_ctx', { peerId: panel.id, permission });
       panel.emit('session_info', {
         permission,
         kind: panel.data.kind || 'share',
@@ -2311,6 +2334,21 @@ io.on('connection', socket => {
       }
     });
 
+    socket.on('direct_signal', msg => {
+      if (!socketEventAllowed(socket, 'direct_signal', 240)) return;
+      if (!['answer', 'candidate'].includes(msg?.type)) return;
+
+      const panel = io.sockets.sockets.get(String(msg.peerId || ''));
+      if (!panel || panel.data.role !== 'panel' || panel.data.agentId !== agentId) return;
+
+      panel.emit('direct_signal', {
+        type: msg.type,
+        sdp: msg.type === 'answer' ? String(msg.sdp || '').slice(0, 32768) : undefined,
+        candidate: msg.type === 'candidate' ? String(msg.candidate || '').slice(0, 2048) : undefined,
+        sdpMid: msg.sdpMid === undefined ? undefined : String(msg.sdpMid).slice(0, 64),
+      });
+    });
+
     const notifyAgentState = online => {
       emitToAgentPanels(agentId, 'cloud_ready', { agentOnline: online });
       emitToAgentPanels(agentId, 'agent_status', { online });
@@ -2344,6 +2382,7 @@ io.on('connection', socket => {
 
     console.log('🖥️ Panel conectado:', socket.id, '->', agentId);
 
+    socket.emit('direct_config', { iceServers: ICE_SERVERS });
     socket.emit('cloud_ready', { agentOnline: online });
     socket.emit('agent_status', { online });
 
@@ -2460,6 +2499,10 @@ io.on('connection', socket => {
         id,
         method: request.method,
         path: request.path,
+        ctx: {
+          kind: socket.data.kind || 'owner',
+          permission: socket.data.permission || 'admin',
+        },
       };
 
       if (request.body !== undefined) {
@@ -2470,9 +2513,54 @@ io.on('connection', socket => {
       agentSocket.emit('rpc', sanitized);
     });
 
+    socket.on('direct_signal', msg => {
+      if (!socketEventAllowed(socket, 'direct_signal', 60)) return;
+
+      const agentSocket = agentSockets.get(agentId);
+
+      if (!agentSocket?.connected) {
+        return socket.emit('direct_signal', { type: 'unavailable' });
+      }
+
+      if (socket.data.kind === 'share') {
+        const share = loadShareTokens().find(
+          item => item.id === socket.data.shareTokenId && item.agentId === agentId
+        );
+
+        if (!share || share.revokedAt || (share.expiresAt && Number(share.expiresAt) <= Date.now())) {
+          socket.emit('share_revoked');
+          return socket.disconnect(true);
+        }
+
+        socket.data.permission = normalizeSharePermission(share.permission) || 'read';
+      }
+
+      if (msg?.type === 'offer') {
+        agentSocket.emit('direct_signal', {
+          peerId: socket.id,
+          type: 'offer',
+          sdp: String(msg.sdp || '').slice(0, 32768),
+          iceServers: ICE_SERVERS,
+          ctx: {
+            kind: socket.data.kind || 'owner',
+            permission: socket.data.permission || 'admin',
+            expiresAt: socket.data.sessionExp,
+          },
+        });
+      } else if (msg?.type === 'candidate') {
+        agentSocket.emit('direct_signal', {
+          peerId: socket.id,
+          type: 'candidate',
+          candidate: String(msg.candidate || '').slice(0, 2048),
+          sdpMid: String(msg.sdpMid ?? '0').slice(0, 64),
+        });
+      }
+    });
+
     socket.on('disconnect', () => {
       releaseSocketConnection(socket);
       clearTimeout(sessionTimer);
+      agentSockets.get(agentId)?.emit('direct_close', { peerId: socket.id });
       panelSockets.delete(socket);
       socket.data.pendingRpc?.clear();
       console.log('🖥️ Panel desconectado:', socket.id);
@@ -4981,7 +5069,7 @@ function stopMinecraft(timeoutMs = 30000) {
   });
 }
 
-module.exports = { stopMinecraft };
+module.exports = { stopMinecraft, requiredPermission, permissionAllows };
 
 function listenWithRetry(basePort, maxAttempts = 10) {
   return new Promise((resolve, reject) => {
