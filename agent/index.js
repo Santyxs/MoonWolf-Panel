@@ -67,16 +67,6 @@ function dcPrepareNative() {
   }
 
   process.env.NODE_DATACHANNEL_NATIVE_PATH = target;
-
-  const originalDlopen = process.dlopen;
-
-  process.dlopen = function (mod, filename, flags) {
-    if (/node_datachannel\.node$/i.test(String(filename))) {
-      return originalDlopen.call(this, mod, process.env.NODE_DATACHANNEL_NATIVE_PATH, flags);
-    }
-
-    return originalDlopen.call(this, mod, filename, flags);
-  };
 }
 
 function dcNormalizeCtx(ctx) {
