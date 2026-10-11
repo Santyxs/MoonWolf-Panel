@@ -44,11 +44,6 @@ const STATUS_LEVELS = {
   stopping: 'warn',
 };
 
-/**
- * Extensiones que dan ejecución de código en el host. Los accesos
- * compartidos no pueden subirlas. Debe coincidir con la lista del
- * servidor (`server.js → DANGEROUS_UPLOAD_EXTENSIONS`).
- */
 const DANGEROUS_UPLOAD_EXTENSIONS = new Set([
   '.exe', '.com', '.bat', '.cmd', '.ps1', '.psm1', '.vbs', '.vbe',
   '.js', '.jse', '.wsf', '.wsh', '.msi', '.msp', '.scr', '.pif',
@@ -613,6 +608,28 @@ async function connectCloud(manual = false) {
       finish(reject, new Error(message));
     });
 
+    cloudSocket.on('direct_config', data => {
+      if (Array.isArray(data?.iceServers) && data.iceServers.length) {
+        direct.iceServers = data.iceServers;
+      }
+    });
+
+    cloudSocket.on('direct_signal', async msg => {
+      const pc = direct.pc;
+
+      if (!pc) return;
+
+      try {
+        if (msg?.type === 'answer') {
+          await pc.setRemoteDescription({ type: 'answer', sdp: String(msg.sdp || '') });
+        } else if (msg?.type === 'candidate' && msg.candidate) {
+          await pc.addIceCandidate({ candidate: msg.candidate, sdpMid: msg.sdpMid });
+        } else if (msg?.type === 'unavailable') {
+          closeDirectLink(true);
+        }
+      } catch {}
+    });
+
     cloudSocket.on('cloud_ready', data => {
       setAgentOnline(Boolean(data?.agentOnline));
     });
@@ -718,7 +735,7 @@ async function cloudApi(pathname, init = {}) {
   return data;
 }
 
-function rpcHttp(pathname, init = {}) {
+function rpcCloud(pathname, init = {}) {
   if (!cloudSocket?.connected) {
     return Promise.reject(new Error('MoonWolf Cloud no está conectado.'));
   }
@@ -738,7 +755,272 @@ function rpcHttp(pathname, init = {}) {
   });
 }
 
+/* ══════════════════════════════════════════════
+   CANAL DIRECTO (WebRTC) — Panel ↔ Agent
+   ══════════════════════════════════════════════ */
+const DF = { REQ_HEAD: 1, REQ_BODY: 2, REQ_END: 3, RES_HEAD: 17, RES_BODY: 18, RES_END: 19, RES_ERR: 20 };
+const DIRECT_FRAME_BYTES = 16 * 1024;
+const DIRECT_HIGH_WATER = 1024 * 1024;
+const DIRECT_OPEN_TIMEOUT_MS = 15_000;
+
+const DIRECT_ROUTES = [
+  ['GET', '/api/files'],
+  ['GET', '/api/files/content'],
+  ['POST', '/api/files/content'],
+  ['GET', '/api/files/download'],
+  ['POST', '/api/files/upload-chunk'],
+  ['GET', '/api/backups/download/:name'],
+];
+
+const direct = {
+  pc: null,
+  dc: null,
+  ready: false,
+  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  nextId: 1,
+  reqs: new Map(),
+  waiters: [],
+  retryTimer: null,
+  openTimer: null,
+  failures: 0,
+};
+
+const directReady = () => direct.ready && direct.dc?.readyState === 'open';
+
+function isDirectRoute(method, pathname) {
+  const route = pathname.split('?')[0].split('/');
+
+  return DIRECT_ROUTES.some(([m, pattern]) => {
+    const parts = pattern.split('/');
+
+    return m === method &&
+      parts.length === route.length &&
+      parts.every((part, i) => part.startsWith(':') || part === route[i]);
+  });
+}
+
+function hasResultBody(result) {
+  return result?.bodyBytes !== undefined || result?.bodyBase64 !== undefined;
+}
+
+function wakeDirect() {
+  const waiters = direct.waiters.splice(0);
+  waiters.forEach(resolve => resolve());
+}
+
+function failDirectRequests(error) {
+  for (const req of direct.reqs.values()) req.reject(error);
+  direct.reqs.clear();
+}
+
+function scheduleDirectRetry() {
+  clearTimeout(direct.retryTimer);
+
+  if (!cloudSocket?.connected || !agentOnline) return;
+
+  direct.failures += 1;
+
+  const delay = Math.min(15_000 * 2 ** Math.min(direct.failures - 1, 5), 5 * 60_000);
+
+  direct.retryTimer = setTimeout(startDirectLink, delay);
+}
+
+function closeDirectLink(retry = false) {
+  clearTimeout(direct.openTimer);
+
+  const { pc, dc } = direct;
+  const wasReady = direct.ready;
+
+  direct.pc = null;
+  direct.dc = null;
+  direct.ready = false;
+
+  if (pc) pc.onconnectionstatechange = null;
+  if (dc) dc.onclose = null;
+
+  try { pc?.close(); } catch {}
+
+  failDirectRequests(new Error('Canal directo cerrado'));
+  wakeDirect();
+
+  if (wasReady) {
+    addActivity('Canal directo cerrado; se usa MoonWolf Cloud', 'warn', '⚡');
+    updateAgentStatusBadges();
+  }
+
+  if (retry) scheduleDirectRetry();
+  else clearTimeout(direct.retryTimer);
+}
+
+async function startDirectLink() {
+  if (direct.pc || directReady()) return;
+  if (!cloudSocket?.connected || !agentOnline || typeof RTCPeerConnection === 'undefined') return;
+
+  clearTimeout(direct.retryTimer);
+
+  const pc = new RTCPeerConnection({ iceServers: direct.iceServers });
+  const dc = pc.createDataChannel('moonwolf', { ordered: true });
+
+  dc.binaryType = 'arraybuffer';
+  dc.bufferedAmountLowThreshold = 256 * 1024;
+
+  direct.pc = pc;
+  direct.dc = dc;
+
+  pc.onicecandidate = event => {
+    if (!event.candidate) return;
+
+    cloudSocket?.emit('direct_signal', {
+      type: 'candidate',
+      candidate: event.candidate.candidate,
+      sdpMid: event.candidate.sdpMid,
+    });
+  };
+
+  pc.onconnectionstatechange = () => {
+    if (['failed', 'closed'].includes(pc.connectionState)) closeDirectLink(true);
+  };
+
+  dc.onopen = () => {
+    clearTimeout(direct.openTimer);
+    direct.ready = true;
+    direct.failures = 0;
+    addActivity('Canal directo con el Agent activo', 'ok', '⚡');
+    updateAgentStatusBadges();
+  };
+
+  dc.onclose = () => closeDirectLink(true);
+  dc.onbufferedamountlow = wakeDirect;
+  dc.onmessage = event => onDirectMessage(event.data);
+
+  direct.openTimer = setTimeout(() => {
+    if (directReady()) return;
+
+    addActivity('Sin ruta directa viable; se usa MoonWolf Cloud', 'info', '☁️');
+    closeDirectLink(true);
+  }, DIRECT_OPEN_TIMEOUT_MS);
+
+  try {
+    await pc.setLocalDescription(await pc.createOffer());
+    cloudSocket?.emit('direct_signal', { type: 'offer', sdp: pc.localDescription.sdp });
+  } catch {
+    closeDirectLink(true);
+  }
+}
+
+async function sendDirect(type, id, payload = new Uint8Array(0)) {
+  while (directReady() && direct.dc.bufferedAmount > DIRECT_HIGH_WATER) {
+    await new Promise(resolve => {
+      direct.waiters.push(resolve);
+      setTimeout(resolve, 2000);
+    });
+  }
+
+  if (!directReady()) throw new Error('Canal directo no disponible');
+
+  const frame = new Uint8Array(5 + payload.length);
+
+  frame[0] = type;
+  new DataView(frame.buffer).setUint32(1, id);
+  frame.set(payload, 5);
+
+  direct.dc.send(frame);
+}
+
+function onDirectMessage(data) {
+  if (!(data instanceof ArrayBuffer) || data.byteLength < 5) return;
+
+  const view = new DataView(data);
+  const type = view.getUint8(0);
+  const id = view.getUint32(1);
+  const req = direct.reqs.get(id);
+
+  if (!req) return;
+
+  if (type === DF.RES_HEAD) {
+    req.head = JSON.parse(new TextDecoder().decode(new Uint8Array(data, 5)));
+  } else if (type === DF.RES_BODY) {
+    const chunk = new Uint8Array(data, 5);
+
+    req.chunks.push(chunk);
+    req.size += chunk.length;
+  } else if (type === DF.RES_END) {
+    direct.reqs.delete(id);
+
+    const bytes = new Uint8Array(req.size);
+    let offset = 0;
+
+    for (const chunk of req.chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    const status = req.head?.status || 502;
+
+    req.resolve({
+      id: null,
+      ok: status >= 200 && status < 300,
+      status,
+      contentType: req.head?.contentType || 'application/octet-stream',
+      bodyBytes: bytes,
+    });
+  } else if (type === DF.RES_ERR) {
+    direct.reqs.delete(id);
+    req.reject(new Error(new TextDecoder().decode(new Uint8Array(data, 5))));
+  }
+}
+
+async function directRequest(method, pathname, body) {
+  const id = direct.nextId++ >>> 0;
+  const isBinary = body instanceof Uint8Array;
+  const encoder = new TextEncoder();
+
+  const payload = body === undefined || body === null
+    ? null
+    : isBinary ? body : encoder.encode(typeof body === 'string' ? body : JSON.stringify(body));
+
+  const done = new Promise((resolve, reject) => {
+    direct.reqs.set(id, { resolve, reject, head: null, chunks: [], size: 0 });
+  });
+
+  done.catch(() => {});
+
+  try {
+    await sendDirect(DF.REQ_HEAD, id, encoder.encode(JSON.stringify({
+      method,
+      path: pathname,
+      contentType: isBinary ? 'application/octet-stream' : 'application/json',
+    })));
+
+    if (payload) {
+      for (let off = 0; off < payload.length; off += DIRECT_FRAME_BYTES) {
+        await sendDirect(DF.REQ_BODY, id, payload.subarray(off, off + DIRECT_FRAME_BYTES));
+      }
+    }
+
+    await sendDirect(DF.REQ_END, id);
+  } catch (error) {
+    direct.reqs.delete(id);
+    throw error;
+  }
+
+  return done;
+}
+
+function rpcHttp(pathname, init = {}) {
+  const method = String(init.method || 'GET').toUpperCase();
+
+  if (directReady() && isDirectRoute(method, pathname)) {
+    // Todas las rutas directas son idempotentes: si el canal falla, se reintenta por Cloud.
+    return directRequest(method, pathname, init.body).catch(() => rpcCloud(pathname, init));
+  }
+
+  return rpcCloud(pathname, init);
+}
+
 function decodeResultBody(result) {
+  if (result?.bodyBytes) return result.bodyBytes;
+
   if (result?.bodyBase64 === undefined) {
     return null;
   }
@@ -759,7 +1041,7 @@ async function api(pathname, init = {}) {
   const status = result?.status || 500;
   const contentType = result?.contentType || 'application/json';
 
-  if (result?.bodyBase64 !== undefined) {
+  if (hasResultBody(result)) {
     const bytes = decodeResultBody(result);
     const text = new TextDecoder().decode(bytes);
 
@@ -794,6 +1076,9 @@ function postJSON(pathname, body) {
 
 function setAgentOnline(online) {
   const nextState = Boolean(online);
+
+  if (nextState) startDirectLink();
+  else closeDirectLink(false);
 
   if (agentOnline === nextState) {
     updateAgentUi();
@@ -1699,7 +1984,7 @@ function postUploadChunk(uploadId, target, offset, totalSize, bytes, final, over
     const status = result?.status || 500;
     let data = result?.data;
 
-    if (result?.bodyBase64 !== undefined) {
+    if (hasResultBody(result)) {
       const bytesResult = decodeResultBody(result);
       const text = new TextDecoder().decode(bytesResult);
       try {
@@ -1800,7 +2085,7 @@ async function downloadFile(rel, filename) {
     `/api/files/download?path=${encodeURIComponent(rel)}`
   );
 
-  if (!result?.bodyBase64) {
+  if (!hasResultBody(result) || result.ok === false) {
     toast(result?.data?.error || 'No se pudo descargar el archivo.', 'err');
     return;
   }
@@ -3001,7 +3286,7 @@ async function downloadBackup(name) {
       `/api/backups/download/${encodeURIComponent(name)}`
     );
 
-    if (!result?.bodyBase64) {
+    if (!hasResultBody(result) || result.ok === false) {
       toast(
         result?.data?.error || 'No se pudo descargar la copia de seguridad.',
         'err'
@@ -3969,6 +4254,17 @@ function renderSettings() {
           <code class="settings-field-value" title="${escHtml(agentId || '—')}">${escHtml(agentId || '—')}</code>
           <button class="small-btn" id="btnCopyAgentId">Copiar</button>
         </div>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <div class="settings-group-header">
+        <div class="settings-group-icon">⚡</div>
+        <div class="settings-group-info">
+          <div class="settings-group-title">Canal directo</div>
+          <div class="settings-group-sub">Archivos entre este navegador y el Agent, sin pasar por Cloud</div>
+        </div>
+        <span class="settings-status ${directReady() ? 'online' : 'connecting'}">${directReady() ? '● DIRECTO' : '● VÍA CLOUD'}</span>
       </div>
     </div>
 
