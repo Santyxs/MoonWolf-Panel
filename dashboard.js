@@ -44,6 +44,11 @@ const STATUS_LEVELS = {
   stopping: 'warn',
 };
 
+/**
+ * Extensiones que dan ejecución de código en el host. Los accesos
+ * compartidos no pueden subirlas. Debe coincidir con la lista del
+ * servidor (`server.js → DANGEROUS_UPLOAD_EXTENSIONS`).
+ */
 const DANGEROUS_UPLOAD_EXTENSIONS = new Set([
   '.exe', '.com', '.bat', '.cmd', '.ps1', '.psm1', '.vbs', '.vbe',
   '.js', '.jse', '.wsf', '.wsh', '.msi', '.msp', '.scr', '.pif',
@@ -1775,6 +1780,16 @@ function formatUploadEta(seconds) {
   const hours = Math.floor(minutes / 60);
   return `${hours}h ${(minutes % 60).toString().padStart(2, '0')}m restantes`;
 }
+// MODIFICADO: nueva función para formatear la duración total de una subida.
+function formatDuration(seconds) {
+  const total = Math.max(1, Math.round(seconds));
+  if (total < 60) return `${total}s`;
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  if (m < 60) return `${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
 function uploadCancelledError() {
   const error = new Error('Subida cancelada');
   error.isCancelled = true;
@@ -1799,6 +1814,8 @@ function setUploadControls(visible) {
     $('uploadProgressCancel').disabled = false;
   }
 }
+// MODIFICADO: en subidas de un solo archivo se evita duplicar
+// la información de bytes del archivo actual (ya está en la barra global).
 function updateUploadProgress(progressState) {
   const panel = $('uploadProgressPanel');
   if (!panel) return;
@@ -1810,19 +1827,43 @@ function updateUploadProgress(progressState) {
   const eta = speed > 0 ? (total - done) / speed : Infinity;
   const currentDone = progressState.currentFileDone || 0;
   const currentTotal = progressState.currentFileSize || 0;
+  const single = progressState.totalFiles === 1;
+
   panel.hidden = false;
   setUploadControls(Boolean(activeUploadState && !activeUploadState.finished));
   panel.classList.remove('upload-progress-error');
   if ($('uploadProgressError')) $('uploadProgressError').textContent = '';
   if ($('uploadProgressRetry')) $('uploadProgressRetry').hidden = true;
   if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = progressState.status || `Subiendo ${progressState.completedFiles + 1}/${progressState.totalFiles}`;
-  if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = progressState.currentFile ? `${progressState.currentFile} · ${formatUploadBytes(currentDone)} / ${formatUploadBytes(currentTotal)}` : 'Preparando…';
+
+  if ($('uploadProgressCurrent')) {
+    $('uploadProgressCurrent').textContent = progressState.currentFile
+      ? (single
+          ? progressState.currentFile
+          : `${progressState.currentFile} · ${formatUploadBytes(currentDone)} / ${formatUploadBytes(currentTotal)}`)
+      : 'Preparando…';
+  }
+
   if ($('uploadProgressPercent')) $('uploadProgressPercent').textContent = `${percent}%`;
   if ($('uploadProgressFill')) $('uploadProgressFill').style.width = `${percent}%`;
-  if ($('uploadProgressFiles')) $('uploadProgressFiles').textContent = `${Math.min(progressState.completedFiles, progressState.totalFiles)}/${progressState.totalFiles} archivos`;
-  if ($('uploadProgressBytes')) $('uploadProgressBytes').textContent = `${formatUploadBytes(done)} de ${formatUploadBytes(total)}`;
-  if ($('uploadProgressSpeed')) $('uploadProgressSpeed').textContent = speed > 0 ? `${formatUploadBytes(speed)}/s` : '—';
-  if ($('uploadProgressEta')) $('uploadProgressEta').textContent = percent >= 100 ? 'Completado' : formatUploadEta(eta);
+
+  if ($('uploadProgressFiles')) {
+    $('uploadProgressFiles').textContent = single
+      ? ''
+      : `${Math.min(progressState.completedFiles, progressState.totalFiles)}/${progressState.totalFiles} archivos`;
+  }
+
+  if ($('uploadProgressBytes')) {
+    $('uploadProgressBytes').textContent = `${formatUploadBytes(done)} de ${formatUploadBytes(total)}`;
+  }
+
+  if ($('uploadProgressSpeed')) {
+    $('uploadProgressSpeed').textContent = speed > 0 ? `${formatUploadBytes(speed)}/s` : '—';
+  }
+
+  if ($('uploadProgressEta')) {
+    $('uploadProgressEta').textContent = percent >= 100 ? 'Completado' : formatUploadEta(eta);
+  }
 }
 function finishUploadProgress(message, isError = false, detail = '', hidePanel = false) {
   const panel = $('uploadProgressPanel');
@@ -2071,7 +2112,9 @@ async function uploadSelectedFiles(fileList) {
     progressState.doneBytes = progressState.totalBytes;
     progressState.completedFiles = progressState.totalFiles;
     updateUploadProgress(progressState);
-    finishUploadProgress('Subida completada');
+    // MODIFICADO: incluye la duración total en el mensaje final.
+    const totalSeconds = (Date.now() - progressState.startedAt) / 1000;
+    finishUploadProgress(`Subida completada en ${formatDuration(totalSeconds)}`);
     toast(`✅ ${files.length} ${files.length === 1 ? 'archivo subido' : 'archivos subidos'} correctamente`, 'ok');
     populateFiles(currentDir);
   } catch (error) {
