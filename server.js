@@ -4207,7 +4207,7 @@ async function createZipAtomically(zipPath, configureArchive) {
   }
 }
 
-const FILE_UPLOAD_MAX_CHUNK_BYTES = 8 * 1024 * 1024;
+const FILE_UPLOAD_MAX_CHUNK_BYTES = 17 * 1024 * 1024;
 const FILE_UPLOAD_ID_RE = /^[a-zA-Z0-9_-]{8,120}$/;
 const FILE_UPLOAD_DIR = path.join(BASE_DIR, '.moonwolf-uploads');
 const FILE_UPLOAD_RETENTION_MS = Math.max(
@@ -4286,7 +4286,7 @@ fileUploadCleanupTimer.unref?.();
 
 app.post(
   '/api/files/upload-chunk',
-  express.raw({ type: 'application/octet-stream', limit: 9 * 1024 * 1024 }),
+  express.raw({ type: 'application/octet-stream', limit: 18 * 1024 * 1024 }),
   async (req, res) => {
     const {
       uploadId,
