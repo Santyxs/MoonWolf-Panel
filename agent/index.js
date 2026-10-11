@@ -8,6 +8,367 @@ const { spawn } = require('node:child_process');
 const { io } = require('socket.io-client');
 const { startGui } = require('./gui');
 
+/* ══════════════════════════════════════════════
+   CANAL DIRECTO (WebRTC) — Panel ↔ Agent
+   ══════════════════════════════════════════════ */
+const DC_NATIVE_ASSET = 'native/node_datachannel.node';
+const DC_FRAME = { REQ_HEAD: 1, REQ_BODY: 2, REQ_END: 3, RES_HEAD: 17, RES_BODY: 18, RES_END: 19, RES_ERR: 20 };
+const DC_FRAME_BYTES = 16 * 1024;
+const DC_HIGH_WATER = 1024 * 1024;
+const DC_LOW_WATER = 256 * 1024;
+const DC_MAX_BODY_BYTES = 9 * 1024 * 1024;
+const DC_MAX_PEERS = 8;
+const DC_MAX_INFLIGHT = 16;
+const DC_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
+const DC_EMPTY = Buffer.alloc(0);
+
+const DC_ROUTES = [
+  ['GET', '/api/files'],
+  ['GET', '/api/files/content'],
+  ['POST', '/api/files/content'],
+  ['GET', '/api/files/download'],
+  ['POST', '/api/files/upload-chunk'],
+  ['GET', '/api/backups/download/:name'],
+];
+
+function dcIsDirectRoute(method, pathname) {
+  const route = pathname.split('/');
+
+  return DC_ROUTES.some(([m, pattern]) => {
+    const parts = pattern.split('/');
+
+    return m === method &&
+      parts.length === route.length &&
+      parts.every((part, i) => part.startsWith(':') || part === route[i]);
+  });
+}
+
+function dcPrepareNative() {
+  if (process.env.NODE_DATACHANNEL_NATIVE_PATH) return;
+
+  let sea;
+
+  try {
+    sea = require('node:sea');
+  } catch {
+    return;
+  }
+
+  if (typeof sea.isSea !== 'function' || !sea.isSea()) return;
+
+  const dir = path.join(os.tmpdir(), 'MoonWolf-Agent', 'datachannel');
+  fs.mkdirSync(dir, { recursive: true });
+
+  const target = path.join(dir, 'node_datachannel.node');
+  const data = Buffer.from(sea.getAsset(DC_NATIVE_ASSET));
+
+  if (!fs.existsSync(target) || fs.statSync(target).size !== data.length) {
+    fs.writeFileSync(target, data);
+  }
+
+  process.env.NODE_DATACHANNEL_NATIVE_PATH = target;
+
+  const originalDlopen = process.dlopen;
+
+  process.dlopen = function (mod, filename, flags) {
+    if (/node_datachannel\.node$/i.test(String(filename))) {
+      return originalDlopen.call(this, mod, process.env.NODE_DATACHANNEL_NATIVE_PATH, flags);
+    }
+
+    return originalDlopen.call(this, mod, filename, flags);
+  };
+}
+
+function dcNormalizeCtx(ctx) {
+  return {
+    kind: ctx?.kind === 'owner' ? 'owner' : 'share',
+    permission: ['read', 'control', 'admin'].includes(ctx?.permission) ? ctx.permission : 'read',
+    expiresAt: Number(ctx?.expiresAt) || 0,
+  };
+}
+
+function dcSanitizeIce(servers) {
+  return (Array.isArray(servers) ? servers : []).filter(server => {
+    const urls = [].concat(server?.urls || []);
+
+    return urls.length && urls.every(url => /^(stun|turn|turns):/i.test(String(url)));
+  });
+}
+
+function createDirectManager({ localFetch, requiredPermission, permissionAllows, sendSignal, log }) {
+  let ndc = null;
+
+  try {
+    dcPrepareNative();
+    ndc = require('node-datachannel/polyfill');
+  } catch (error) {
+    log(`Canal directo no disponible (se usará solo Cloud): ${error.message}`, 'warn');
+  }
+
+  const peers = new Map();
+
+  function wake(peer) {
+    for (const resolve of peer.waiters) resolve();
+    peer.waiters.clear();
+  }
+
+  function waitDrain(peer) {
+    return new Promise(resolve => {
+      const timer = setTimeout(resolve, 5000);
+
+      peer.waiters.add(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
+  async function sendFrame(peer, type, id, payload = DC_EMPTY) {
+    while (peer.dc?.readyState === 'open' && peer.dc.bufferedAmount > DC_HIGH_WATER) {
+      await waitDrain(peer);
+    }
+
+    if (peer.dc?.readyState !== 'open') throw new Error('Canal cerrado');
+
+    const frame = Buffer.allocUnsafe(5 + payload.length);
+    frame[0] = type;
+    frame.writeUInt32BE(id, 1);
+    payload.copy(frame, 5);
+    peer.dc.send(frame);
+  }
+
+  async function reply(peer, id, status, error) {
+    try {
+      await sendFrame(peer, DC_FRAME.RES_HEAD, id, Buffer.from(JSON.stringify({ status, contentType: 'application/json' })));
+      await sendFrame(peer, DC_FRAME.RES_BODY, id, Buffer.from(JSON.stringify({ ok: false, error })));
+      await sendFrame(peer, DC_FRAME.RES_END, id);
+    } catch {}
+  }
+
+  function startRequest(peer, id, payload) {
+    let head;
+
+    try {
+      head = JSON.parse(payload.toString('utf8'));
+    } catch {
+      return reply(peer, id, 400, 'Cabecera no válida.');
+    }
+
+    const method = String(head.method || '').toUpperCase();
+    let url;
+
+    try {
+      url = new URL(String(head.path || ''), 'http://moonwolf.invalid');
+    } catch {
+      return reply(peer, id, 400, 'Ruta no válida.');
+    }
+
+    if (url.origin !== 'http://moonwolf.invalid' || !dcIsDirectRoute(method, url.pathname)) {
+      return reply(peer, id, 403, 'Ruta no permitida por el canal directo.');
+    }
+
+    if (!permissionAllows(peer.ctx.permission, requiredPermission(method, url.pathname))) {
+      return reply(peer, id, 403, 'No tienes permisos para realizar esta acción.');
+    }
+
+    if (peer.reqs.size >= DC_MAX_INFLIGHT) {
+      return reply(peer, id, 429, 'Demasiadas solicitudes simultáneas.');
+    }
+
+    peer.reqs.set(id, {
+      method,
+      path: url.pathname + url.search,
+      contentType: head.contentType === 'application/json' ? 'application/json' : 'application/octet-stream',
+      chunks: [],
+      size: 0,
+    });
+  }
+
+  async function runRequest(peer, id, req) {
+    try {
+      const body = req.size ? Buffer.concat(req.chunks, req.size) : undefined;
+
+      const response = await localFetch(
+        { method: req.method, path: req.path, body, contentType: req.contentType },
+        peer.ctx,
+        AbortSignal.timeout(DC_REQUEST_TIMEOUT_MS)
+      );
+
+      await sendFrame(peer, DC_FRAME.RES_HEAD, id, Buffer.from(JSON.stringify({
+        status: response.status,
+        contentType: response.headers.get('content-type') || 'application/octet-stream',
+      })));
+
+      if (response.body) {
+        for await (const chunk of response.body) {
+          for (let off = 0; off < chunk.length; off += DC_FRAME_BYTES) {
+            const len = Math.min(DC_FRAME_BYTES, chunk.length - off);
+
+            await sendFrame(peer, DC_FRAME.RES_BODY, id, Buffer.from(chunk.buffer, chunk.byteOffset + off, len));
+          }
+        }
+      }
+
+      await sendFrame(peer, DC_FRAME.RES_END, id);
+    } catch (error) {
+      try {
+        await sendFrame(peer, DC_FRAME.RES_ERR, id, Buffer.from(String(error?.message || error)));
+      } catch {}
+    }
+  }
+
+  function onMessage(peer, data) {
+    if (typeof data === 'string') return;
+
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    if (buf.length < 5) return;
+
+    const type = buf[0];
+    const id = buf.readUInt32BE(1);
+    const payload = buf.subarray(5);
+
+    if (type === DC_FRAME.REQ_HEAD) return startRequest(peer, id, payload);
+
+    const req = peer.reqs.get(id);
+    if (!req) return;
+
+    if (type === DC_FRAME.REQ_BODY) {
+      req.size += payload.length;
+
+      if (req.size > DC_MAX_BODY_BYTES) {
+        peer.reqs.delete(id);
+        return reply(peer, id, 413, 'Cuerpo demasiado grande.');
+      }
+
+      req.chunks.push(Buffer.from(payload));
+    } else if (type === DC_FRAME.REQ_END) {
+      peer.reqs.delete(id);
+      runRequest(peer, id, req);
+    }
+  }
+
+  function closePeer(peerId) {
+    const peer = peers.get(peerId);
+    if (!peer) return;
+
+    peers.delete(peerId);
+    clearTimeout(peer.expiryTimer);
+    peer.reqs.clear();
+    wake(peer);
+
+    try { peer.dc?.close(); } catch {}
+    try { peer.pc.close(); } catch {}
+
+    log(`Canal directo cerrado (${peerId}).`);
+  }
+
+  function createPeer(peerId, ctx, iceServers) {
+    const pc = new ndc.RTCPeerConnection({ iceServers: dcSanitizeIce(iceServers) });
+
+    const peer = {
+      id: peerId,
+      pc,
+      dc: null,
+      ctx,
+      reqs: new Map(),
+      waiters: new Set(),
+      expiryTimer: null,
+      ready: null,
+    };
+
+    peers.set(peerId, peer);
+
+    pc.onicecandidate = event => {
+      if (event.candidate?.candidate) {
+        sendSignal({
+          peerId,
+          type: 'candidate',
+          candidate: event.candidate.candidate,
+          sdpMid: event.candidate.sdpMid,
+        });
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (['failed', 'closed'].includes(pc.connectionState)) closePeer(peerId);
+    };
+
+    pc.ondatachannel = event => {
+      const dc = event.channel;
+
+      if (dc.label !== 'moonwolf' || peer.dc) {
+        try { dc.close(); } catch {}
+        return;
+      }
+
+      peer.dc = dc;
+      dc.binaryType = 'arraybuffer';
+      dc.bufferedAmountLowThreshold = DC_LOW_WATER;
+      dc.onbufferedamountlow = () => wake(peer);
+      dc.onmessage = message => onMessage(peer, message.data);
+      dc.onclose = () => closePeer(peerId);
+      dc.onopen = () => log(`Canal directo abierto con el panel (${peerId}, ${ctx.kind}/${ctx.permission}).`);
+    };
+
+    if (ctx.expiresAt) {
+      peer.expiryTimer = setTimeout(() => closePeer(peerId), Math.max(1000, ctx.expiresAt - Date.now()));
+      peer.expiryTimer.unref?.();
+    }
+
+    return peer;
+  }
+
+  async function handleSignal(msg) {
+    if (!ndc) return;
+
+    const peerId = String(msg?.peerId || '');
+    if (!peerId) return;
+
+    if (msg.type === 'offer') {
+      closePeer(peerId);
+      if (peers.size >= DC_MAX_PEERS) return;
+
+      const peer = createPeer(peerId, dcNormalizeCtx(msg.ctx), msg.iceServers);
+
+      peer.ready = (async () => {
+        await peer.pc.setRemoteDescription({ type: 'offer', sdp: String(msg.sdp || '') });
+        const answer = await peer.pc.createAnswer();
+        await peer.pc.setLocalDescription(answer);
+        sendSignal({ peerId, type: 'answer', sdp: peer.pc.localDescription.sdp });
+      })();
+
+      try {
+        await peer.ready;
+      } catch (error) {
+        log(`Falló la negociación del canal directo: ${error.message}`, 'warn');
+        closePeer(peerId);
+      }
+
+      return;
+    }
+
+    const peer = peers.get(peerId);
+    if (!peer || msg.type !== 'candidate' || !msg.candidate) return;
+
+    try {
+      await peer.ready;
+      await peer.pc.addIceCandidate({ candidate: msg.candidate, sdpMid: msg.sdpMid });
+    } catch {}
+  }
+
+  function updateCtx({ peerId, permission } = {}) {
+    const peer = peers.get(String(peerId || ''));
+    if (peer) peer.ctx = dcNormalizeCtx({ ...peer.ctx, permission });
+  }
+
+  function closeAll() {
+    for (const id of [...peers.keys()]) closePeer(id);
+  }
+
+  return { available: Boolean(ndc), handleSignal, updateCtx, closePeer, closeAll };
+}
+/* ══════════════════════════════════════════════ */
+
 const PANEL_URL = 'https://moonwolf-panel.up.railway.app';
 const CLOUD_PATH = '/socket.io';
 const VERSION = typeof __AGENT_VERSION__ !== 'undefined' ? __AGENT_VERSION__ : 'dev';
@@ -41,7 +402,7 @@ function atomicWriteFileSync(filePath, data, options = 'utf8') {
   try {
     fd = fs.openSync(tempPath, 'wx');
     fs.writeFileSync(fd, data, options);
-    
+
     try { fs.fsyncSync(fd); } catch {}
 
     fs.closeSync(fd);
@@ -802,72 +1163,69 @@ async function main() {
     throw error;
   }
 
+  function ctxHeaders(ctx) {
+    return {
+      'X-MoonWolf-Kind': ctx?.kind === 'owner' ? 'owner' : 'share',
+      'X-MoonWolf-Permission': ['read', 'control', 'admin'].includes(ctx?.permission) ? ctx.permission : 'read',
+    };
+  }
+
+  async function localFetch(request, ctx, signal) {
+    const method = (request.method || 'GET').toUpperCase();
+    const parsedPath = new URL(String(request.path || ''), 'http://moonwolf.invalid');
+
+    if (parsedPath.origin !== 'http://moonwolf.invalid' || !parsedPath.pathname.startsWith('/api/')) {
+      throw new Error('Ruta RPC no válida.');
+    }
+
+    let body = request.body;
+    let contentType = request.contentType;
+
+    if (body && typeof body === 'object' && body.type === 'Buffer' && Array.isArray(body.data)) {
+      body = Buffer.from(body.data);
+    }
+
+    if (Buffer.isBuffer(body) || body instanceof Uint8Array || body instanceof ArrayBuffer) {
+      body = Buffer.from(body);
+      contentType ||= 'application/octet-stream';
+    } else if (body !== undefined && body !== null) {
+      if (typeof body !== 'string') body = JSON.stringify(body);
+      contentType ||= 'application/json';
+    }
+
+    const headers = {};
+
+    if (request.headers && typeof request.headers === 'object') {
+      for (const [key, val] of Object.entries(request.headers)) {
+        const lower = key.toLowerCase();
+
+        if (lower !== 'host' && lower !== 'content-length' && !lower.startsWith('x-moonwolf-')) {
+          headers[key] = val;
+        }
+      }
+    }
+
+    Object.assign(headers, ctxHeaders(ctx), { 'X-MoonWolf-Token': config.localToken });
+
+    const options = { method, headers, signal };
+
+    if (method !== 'GET' && method !== 'HEAD' && body !== undefined) {
+      options.body = body;
+
+      if (contentType && !Object.keys(headers).some(key => key.toLowerCase() === 'content-type')) {
+        headers['Content-Type'] = contentType;
+      }
+    }
+
+    return fetch(`${localUrl}${parsedPath.pathname}${parsedPath.search}`, options);
+  }
+
   async function forwardHttp(request) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), FORWARD_TIMEOUT_MS);
 
     try {
-      const method = (request.method || 'GET').toUpperCase();
-      const parsedPath = new URL(String(request.path || ''), 'http://moonwolf.invalid');
-
-      if (parsedPath.origin !== 'http://moonwolf.invalid' || !parsedPath.pathname.startsWith('/api/')) {
-        throw new Error('Ruta RPC no válida.');
-      }
-
-      const safeRequestPath = parsedPath.pathname + parsedPath.search;
-      
-      let isBinaryBody = Buffer.isBuffer(request.body) ||
-        request.body instanceof Uint8Array ||
-        request.body instanceof ArrayBuffer;
-
-      if (!isBinaryBody && request.body && typeof request.body === 'object' && request.body.type === 'Buffer' && Array.isArray(request.body.data)) {
-        isBinaryBody = true;
-        request.body = Buffer.from(request.body.data);
-      }
-
-      let body;
-      let contentType;
-
-      if (isBinaryBody) {
-        body = Buffer.from(request.body);
-        contentType = 'application/octet-stream';
-      } else if (request.body !== undefined && request.body !== null) {
-        if (typeof request.body === 'string') {
-          body = request.body;
-        } else {
-          body = JSON.stringify(request.body);
-        }
-        contentType = 'application/json';
-      }
-
-      const fetchHeaders = {
-        'X-MoonWolf-Token': config.localToken,
-      };
-
-      if (request.headers && typeof request.headers === 'object') {
-        for (const [key, val] of Object.entries(request.headers)) {
-          const lower = key.toLowerCase();
-          if (lower !== 'host' && lower !== 'content-length' && lower !== 'x-moonwolf-token') {
-            fetchHeaders[key] = val;
-          }
-        }
-      }
-
-      const fetchOptions = {
-        method,
-        headers: fetchHeaders,
-        signal: controller.signal,
-      };
-
-      if (method !== 'GET' && method !== 'HEAD' && body !== undefined) {
-        fetchOptions.body = body;
-        if (contentType && !fetchHeaders['content-type'] && !fetchHeaders['Content-Type']) {
-          fetchOptions.headers['Content-Type'] = contentType;
-        }
-      }
-
-      const response = await fetch(`${localUrl}${safeRequestPath}`, fetchOptions);
-
+      const response = await localFetch(request, request.ctx, controller.signal);
       const bytes = Buffer.from(await response.arrayBuffer());
 
       return {
@@ -902,6 +1260,14 @@ async function main() {
       clearTimeout(timeoutId);
     }
   }
+
+  const direct = createDirectManager({
+    localFetch,
+    requiredPermission: localServerApi.requiredPermission,
+    permissionAllows: localServerApi.permissionAllows,
+    sendSignal: message => cloudSocket?.emit('direct_signal', message),
+    log: addLog,
+  });
 
   function clearPairing() {
     clearTimeout(pairingRenewTimer);
@@ -1056,6 +1422,10 @@ async function main() {
       cloudSocket?.emit('rpc_result', result);
     });
 
+    cloudSocket.on('direct_signal', message => direct.handleSignal(message || {}));
+    cloudSocket.on('direct_ctx', message => direct.updateCtx(message || {}));
+    cloudSocket.on('direct_close', message => direct.closePeer(String(message?.peerId || '')));
+
     cloudSocket.on('connect_error', error => {
       cloudConnected = false;
       clearPairing();
@@ -1069,6 +1439,7 @@ async function main() {
     });
 
     cloudSocket.on('disconnect', reason => {
+      direct.closeAll();
       cloudConnected = false;
       clearPairing();
       addLog(
@@ -1086,6 +1457,7 @@ async function main() {
     if (shuttingDown) return;
 
     shuttingDown = true;
+    try { direct.closeAll(); } catch {}
     clearTimeout(reconnectTimer);
     clearTimeout(updateCheckTimer);
     clearTimeout(updateNoticeTimer);
