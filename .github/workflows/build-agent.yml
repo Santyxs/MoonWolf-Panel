@@ -58,6 +58,15 @@ jobs:
           Write-Host "Addon nativo encontrado:"
           Write-Host (Resolve-Path -LiteralPath $native)
 
+          $datachannel = "agent/node_modules/node-datachannel/build/Release/node_datachannel.node"
+
+          if (-not (Test-Path -LiteralPath $datachannel)) {
+            throw "No se encontró el addon nativo de node-datachannel: $datachannel"
+          }
+
+          Write-Host "node-datachannel encontrado:"
+          Write-Host (Resolve-Path -LiteralPath $datachannel)
+
       - name: Patch WebViewJS native loader for SEA
         shell: pwsh
         run: |
@@ -181,6 +190,8 @@ jobs:
         run: |
           $native = (Resolve-Path `
             "agent/node_modules/@webviewjs/webview-win32-x64-msvc/webview.win32-x64-msvc.node").Path
+          $dcNative = (Resolve-Path `
+            "agent/node_modules/node-datachannel/build/Release/node_datachannel.node").Path
           $main = (Resolve-Path "dist/agent.cjs").Path
           $blob = Join-Path (Resolve-Path "dist").Path "sea-prep.blob"
           $indexHtml = (Resolve-Path "agent/ui/index.html").Path
@@ -199,6 +210,7 @@ jobs:
               "ui/style.css" = $styleCss
               "ui/app.js" = $appJs
               "native/webview.win32-x64-msvc.node" = $native
+              "native/node_datachannel.node" = $dcNative
             }
           }
 
