@@ -44,11 +44,6 @@ const STATUS_LEVELS = {
   stopping: 'warn',
 };
 
-/**
- * Extensiones que dan ejecución de código en el host. Los accesos
- * compartidos no pueden subirlas. Debe coincidir con la lista del
- * servidor (`server.js → DANGEROUS_UPLOAD_EXTENSIONS`).
- */
 const DANGEROUS_UPLOAD_EXTENSIONS = new Set([
   '.exe', '.com', '.bat', '.cmd', '.ps1', '.psm1', '.vbs', '.vbe',
   '.js', '.jse', '.wsf', '.wsh', '.msi', '.msp', '.scr', '.pif',
@@ -765,7 +760,7 @@ function rpcCloud(pathname, init = {}) {
    ══════════════════════════════════════════════ */
 const DF = { REQ_HEAD: 1, REQ_BODY: 2, REQ_END: 3, RES_HEAD: 17, RES_BODY: 18, RES_END: 19, RES_ERR: 20 };
 const DIRECT_FRAME_BYTES = 16 * 1024;
-const DIRECT_HIGH_WATER = 1024 * 1024;
+const DIRECT_HIGH_WATER = 4 * 1024 * 1024;
 const DIRECT_OPEN_TIMEOUT_MS = 15_000;
 
 const DIRECT_ROUTES = [
@@ -1749,8 +1744,8 @@ function openFileContext(event, name, type) {
   }, 0);
 }
 
-const FILE_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024;
-const FILE_UPLOAD_PARALLEL_CHUNKS = 4;
+const FILE_UPLOAD_CHUNK_SIZE = 16 * 1024 * 1024;
+const FILE_UPLOAD_PARALLEL_CHUNKS = 12;
 
 function normalizeUploadRelativePath(value) {
   return String(value || '')
@@ -1780,7 +1775,6 @@ function formatUploadEta(seconds) {
   const hours = Math.floor(minutes / 60);
   return `${hours}h ${(minutes % 60).toString().padStart(2, '0')}m restantes`;
 }
-// MODIFICADO: nueva función para formatear la duración total de una subida.
 function formatDuration(seconds) {
   const total = Math.max(1, Math.round(seconds));
   if (total < 60) return `${total}s`;
@@ -1814,14 +1808,11 @@ function setUploadControls(visible) {
     $('uploadProgressCancel').disabled = false;
   }
 }
-// MODIFICADO: en subidas de un solo archivo se evita duplicar
-// la información de bytes del archivo actual (ya está en la barra global).
-// Además, se ignoran actualizaciones residuales cuando la subida ya terminó.
+
 function updateUploadProgress(progressState) {
   const panel = $('uploadProgressPanel');
   if (!panel) return;
 
-  // Ignora cualquier actualización residual después de que la subida haya terminado.
   if (progressState.finished) return;
 
   const total = progressState.totalBytes || 0;
@@ -1870,13 +1861,11 @@ function updateUploadProgress(progressState) {
     $('uploadProgressEta').textContent = percent >= 100 ? 'Completado' : formatUploadEta(eta);
   }
 }
-// MODIFICADO: marca el estado como terminado para bloquear updates residuales
-// que podrían volver a mostrar la barra después del timeout de ocultado.
+
 function finishUploadProgress(message, isError = false, detail = '', hidePanel = false) {
   const panel = $('uploadProgressPanel');
   if (!panel) return;
 
-  // Marca el estado como terminado: cualquier updateUploadProgress posterior hará early-return.
   if (activeUploadState) activeUploadState.finished = true;
 
   if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = message;
