@@ -165,6 +165,31 @@ jobs:
             -Path "agent/webview-native-shim.js" `
             -Encoding utf8
 
+      - name: Patch node-datachannel native binding for esbuild/SEA
+        shell: pwsh
+        run: |
+          $pattern = 'require\(\s*[''"][^''"]*node_datachannel\.node[''"]\s*\)'
+          $replacement = '(() => { if (!process.env.NODE_DATACHANNEL_NATIVE_PATH) { throw new Error("NODE_DATACHANNEL_NATIVE_PATH no definido"); } const m = { exports: {} }; process.dlopen(m, process.env.NODE_DATACHANNEL_NATIVE_PATH, 2); return m.exports; })()'
+
+          $files = Get-ChildItem -Path "agent/node_modules/node-datachannel" -Recurse -Include "*.js","*.cjs","*.mjs" -File
+          $patched = 0
+
+          foreach ($file in $files) {
+            $text = Get-Content -LiteralPath $file.FullName -Raw
+            if ($text -match $pattern) {
+              $text = $text -replace $pattern, $replacement
+              Set-Content -LiteralPath $file.FullName -Value $text -Encoding utf8 -NoNewline
+              Write-Host "Patched: $($file.FullName)"
+              $patched++
+            }
+          }
+
+          if ($patched -eq 0) {
+            throw "No se encontró el require del binding nativo en node-datachannel"
+          }
+
+          Write-Host "Archivos parcheados: $patched"
+
       - name: Bundle Agent
         shell: bash
         env:
