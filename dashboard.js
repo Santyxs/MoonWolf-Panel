@@ -844,7 +844,7 @@ function closeDirectLink(retry = false) {
   wakeDirect();
 
   if (wasReady) {
-    addActivity('Canal directo cerrado; se usa MoonWolf Cloud', 'warn', '⚡');
+    addActivity('Canal directo cerrado; las operaciones de archivos esperan a que se reconecte', 'warn', '⚡');
     updateAgentStatusBadges();
   }
 
@@ -885,6 +885,7 @@ async function startDirectLink() {
     clearTimeout(direct.openTimer);
     direct.ready = true;
     direct.failures = 0;
+    wakeDirect();
     addActivity('Canal directo con el Agent activo', 'ok', '⚡');
     updateAgentStatusBadges();
   };
@@ -896,7 +897,7 @@ async function startDirectLink() {
   direct.openTimer = setTimeout(() => {
     if (directReady()) return;
 
-    addActivity('Sin ruta directa viable; se usa MoonWolf Cloud', 'info', '☁️');
+    addActivity('No se pudo establecer el canal directo; las operaciones de archivos quedan bloqueadas hasta reconectar', 'warn', '⚡');
     closeDirectLink(true);
   }, DIRECT_OPEN_TIMEOUT_MS);
 
@@ -1007,12 +1008,58 @@ async function directRequest(method, pathname, body) {
   return done;
 }
 
+async function waitForDirectReady(timeoutMs = DIRECT_OPEN_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (!directReady()) {
+    if (!cloudSocket?.connected) {
+      throw new Error('MoonWolf Cloud no está conectado. No se ha transferido ningún dato de archivo.');
+    }
+    if (!agentOnline) {
+      throw new Error('MoonWolf Agent está desconectado. No se ha transferido ningún dato de archivo.');
+    }
+    if (typeof RTCPeerConnection === 'undefined') {
+      throw new Error('Este navegador no admite WebRTC. La transferencia por Cloud está desactivada para evitar consumir tráfico.');
+    }
+
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      throw new Error('Conexión directa no disponible. No se ha transferido ningún dato por MoonWolf Cloud. Espera a que WebRTC se conecte e inténtalo de nuevo.');
+    }
+
+    startDirectLink();
+
+    await new Promise(resolve => {
+      let settled = false;
+      let timer;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        const index = direct.waiters.indexOf(wake);
+        if (index !== -1) direct.waiters.splice(index, 1);
+        resolve();
+      };
+      const wake = () => finish();
+      timer = setTimeout(finish, remaining);
+      direct.waiters.push(wake);
+    });
+  }
+}
+
 function rpcHttp(pathname, init = {}) {
   const method = String(init.method || 'GET').toUpperCase();
 
-  if (directReady() && isDirectRoute(method, pathname)) {
-    // Todas las rutas directas son idempotentes: si el canal falla, se reintenta por Cloud.
-    return directRequest(method, pathname, init.body).catch(() => rpcCloud(pathname, init));
+  if (isDirectRoute(method, pathname)) {
+    // Las rutas de archivos nunca recurren a Cloud, ni siquiera si WebRTC falla.
+    return waitForDirectReady().then(() =>
+      directRequest(method, pathname, init.body).catch(error => {
+        throw new Error(
+          'La conexión directa se ha interrumpido durante la operación. No se ha reintentado por MoonWolf Cloud para evitar consumir tráfico. Comprueba WebRTC e inténtalo de nuevo.',
+          { cause: error }
+        );
+      })
+    );
   }
 
   return rpcCloud(pathname, init);
@@ -4305,9 +4352,9 @@ function renderSettings() {
         <div class="settings-group-icon">⚡</div>
         <div class="settings-group-info">
           <div class="settings-group-title">Canal directo</div>
-          <div class="settings-group-sub">Archivos entre este navegador y el Agent, sin pasar por Cloud</div>
+          <div class="settings-group-sub">Transferencias de archivos por WebRTC; sin fallback de archivos por Cloud</div>
         </div>
-        <span class="settings-status ${directReady() ? 'online' : 'connecting'}">${directReady() ? '● DIRECTO' : '● VÍA CLOUD'}</span>
+        <span class="settings-status ${directReady() ? 'online' : 'connecting'}">${directReady() ? '● DIRECTO' : '● ESPERANDO'}</span>
       </div>
     </div>
 
