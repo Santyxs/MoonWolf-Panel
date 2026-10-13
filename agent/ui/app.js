@@ -115,7 +115,8 @@ function completeUpdateCheck(found) {
   if (button) {
     flashButton(
       button,
-      found ? '¡Disponible!' : 'Sin novedades'
+      found ? '¡Disponible!' : 'Sin novedades',
+      found ? 1600 : 2600
     );
   }
 }
@@ -501,7 +502,7 @@ async function copyText(text) {
   }
 }
 
-function flashButton(button, label) {
+function flashButton(button, label, duration = 1200) {
   const original =
     button.dataset.label ||
     button.textContent;
@@ -514,7 +515,7 @@ function flashButton(button, label) {
 
   button._flashTimer = setTimeout(() => {
     button.textContent = original;
-  }, 1200);
+  }, duration);
 }
 
 function openServerDirModal() {
@@ -698,13 +699,14 @@ function bindEvents() {
 
       if (state.updateAvailable) {
         closeModal('settings-modal');
-        flashButton(button, '¡Disponible!');
+        flashButton(button, '¡Disponible!', 1600);
         return;
       }
 
       pendingUpdateCheck = true;
 
-      flashButton(button, 'Buscando…');
+      // "Buscando…" persiste durante toda la comprobación
+      flashButton(button, 'Buscando…', UPDATE_CHECK_TIMEOUT);
 
       clearTimeout(updateCheckTimer);
 
@@ -722,6 +724,14 @@ function bindEvents() {
       try {
         const result = await api.checkForUpdates();
 
+        if (!pendingUpdateCheck) return;
+
+        if (state.updateAvailable) {
+          closeModal('settings-modal');
+          completeUpdateCheck(true);
+          return;
+        }
+
         if (
           result &&
           typeof result === 'object' &&
@@ -729,8 +739,12 @@ function bindEvents() {
         ) {
           completeUpdateCheck(false);
         }
+        // Si el nativo no responde con available:false,
+        // dejamos que el timeout cierre con "Sin novedades"
       } catch {
-        completeUpdateCheck(false);
+        if (pendingUpdateCheck) {
+          completeUpdateCheck(false);
+        }
       }
     }
   );
