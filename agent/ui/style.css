@@ -718,6 +718,53 @@ footer {
   color: var(--muted);
 }
 
+.settings-update-status {
+  margin-top: 14px;
+  padding: 11px 14px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  letter-spacing: 0.2px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  animation: settingsStatusIn 0.2s ease;
+}
+
+.settings-update-status.hidden {
+  display: none;
+}
+
+.settings-update-status.ok {
+  background: rgba(62, 226, 138, 0.1);
+  border-color: rgba(62, 226, 138, 0.4);
+  color: var(--green);
+}
+
+.settings-update-status.info {
+  background: rgba(139, 92, 246, 0.1);
+  border-color: rgba(139, 92, 246, 0.4);
+  color: var(--accent-light);
+}
+
+.settings-update-status.err {
+  background: rgba(255, 107, 122, 0.1);
+  border-color: rgba(255, 107, 122, 0.4);
+  color: var(--red);
+}
+
+@keyframes settingsStatusIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 .restart-banner,
 .update-banner {
   display: flex;
