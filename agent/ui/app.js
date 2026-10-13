@@ -24,7 +24,6 @@ const UPDATE_CHECK_TIMEOUT = 8000;
 let lastNoticeRef = null;
 let pendingUpdateCheck = false;
 let updateCheckTimer = null;
-let settingsStatusTimer = null;
 let logsFilter = 'all';
 let logsQuery = '';
 let logsRenderKey = '';
@@ -118,29 +117,6 @@ function cancelUpdateCheck() {
   updateCheckTimer = null;
 }
 
-function showSettingsUpdateStatus(kind, message, autoHide = 0) {
-  const element = $('settings-update-status');
-  if (!element) return;
-
-  clearTimeout(settingsStatusTimer);
-  settingsStatusTimer = null;
-
-  if (!message) {
-    element.className = 'settings-update-status hidden';
-    element.textContent = '';
-    return;
-  }
-
-  element.textContent = message;
-  element.className = `settings-update-status ${kind || 'info'}`;
-
-  if (autoHide > 0) {
-    settingsStatusTimer = setTimeout(() => {
-      element.classList.add('hidden');
-    }, autoHide);
-  }
-}
-
 function completeUpdateCheck(found) {
   cancelUpdateCheck();
 
@@ -152,13 +128,6 @@ function completeUpdateCheck(found) {
       found ? 1600 : 2000
     );
   }
-
-  showSettingsUpdateStatus(
-    found ? 'ok' : 'info',
-    found
-      ? 'Actualización disponible. Se descargará en segundo plano.'
-      : 'Ya tienes la última versión.'
-  );
 }
 
 function revealUpdateIfPending() {
@@ -556,7 +525,6 @@ function bindEvents() {
   $('edit-server-dir')?.addEventListener('click', openServerDirModal);
 
   $('settings')?.addEventListener('click', () => {
-    showSettingsUpdateStatus('', '');
     renderSettings();
     openModal('settings-modal');
   });
@@ -594,10 +562,6 @@ function bindEvents() {
 
     if (!api.checkForUpdates) {
       flashButton(button, 'No disponible');
-      showSettingsUpdateStatus(
-        'err',
-        'La interfaz nativa no está disponible.'
-      );
       return;
     }
 
@@ -609,7 +573,7 @@ function bindEvents() {
 
     pendingUpdateCheck = true;
 
-    // Solo cambia el botón; sin aviso intermedio
+    // Solo el botón cambia; nada de avisos intermedios
     flashButton(button, 'Buscando…', UPDATE_CHECK_TIMEOUT);
 
     clearTimeout(updateCheckTimer);
@@ -644,7 +608,7 @@ function bindEvents() {
         completeUpdateCheck(false);
       }
       // Si el nativo no responde con available:false,
-      // el timeout cierra con "Ya tienes la última versión."
+      // el timeout cierra con "Sin novedades"
     } catch {
       if (pendingUpdateCheck) completeUpdateCheck(false);
     }
