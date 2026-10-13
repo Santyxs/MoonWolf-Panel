@@ -7,15 +7,24 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <div class="ambient" aria-hidden="true"></div>
   <main class="app">
     <section class="hero">
       <div class="moon-logo"><div class="moon"></div></div>
-      <div class="brand"><h1>MoonWolf</h1><p>Agent</p></div>
+      <div class="brand">
+        <h1>MoonWolf</h1>
+        <p>Agent</p>
+      </div>
     </section>
-    <section class="status-card">
+
+    <section id="status-card" class="status-card connecting">
       <div id="status-dot" class="status-dot connecting"></div>
-      <div class="status-content"><strong id="status-title">Conectando...</strong><span id="status-description">Conectando con MoonWolf Cloud</span></div>
+      <div class="status-content">
+        <strong id="status-title">Conectando...</strong>
+        <span id="status-description">Conectando con MoonWolf Cloud</span>
+      </div>
     </section>
+
     <section class="info-card">
       <div class="info-row">
         <div>
@@ -26,15 +35,25 @@
       </div>
       <div class="separator"></div>
       <div class="info-row">
-        <div class="wide"><span class="label">Servidor</span><span id="server-dir" class="value path">—</span></div>
+        <div class="wide">
+          <span class="label">Servidor</span>
+          <span id="server-dir" class="value path">—</span>
+        </div>
         <button id="edit-server-dir" class="small-button" type="button">Cambiar</button>
       </div>
       <div class="separator"></div>
       <div class="info-row">
-        <div><span class="label">Versión</span><span id="version" class="value">—</span></div>
-        <div class="local-status"><span id="local-dot" class="mini-dot"></span><span id="local-status">Servidor local</span></div>
+        <div>
+          <span class="label">Versión</span>
+          <span id="version" class="value">—</span>
+        </div>
+        <div class="local-status">
+          <span id="local-dot" class="mini-dot"></span>
+          <span id="local-status">Servidor local</span>
+        </div>
       </div>
     </section>
+
     <section id="update-banner" class="update-banner hidden">
       <div class="update-banner-content">
         <strong id="update-title">Actualización disponible</strong>
@@ -43,27 +62,44 @@
           <div id="update-progress-fill" class="update-progress-fill"></div>
         </div>
       </div>
-      <button id="update-apply" class="button primary" type="button" disabled><span>⬆</span>Actualizar</button>
+      <button id="update-apply" class="button primary compact" type="button" disabled>
+        <span>⬆</span>Actualizar
+      </button>
     </section>
+
     <section id="restart-banner" class="restart-banner hidden">
       <div class="restart-banner-content">
         <strong>Reinicio pendiente</strong>
         <span>Los cambios en la carpeta del servidor requieren reiniciar el Agent.</span>
       </div>
-      <button id="restart-agent" class="button primary" type="button"><span>↻</span>Reiniciar ahora</button>
+      <button id="restart-agent" class="button primary compact" type="button">
+        <span>↻</span>Reiniciar ahora
+      </button>
     </section>
+
     <section class="actions">
-      <button id="open-panel" class="button primary" type="button"><span>↗</span>Abrir Panel</button>
-      <button id="settings" class="button secondary" type="button"><span>⚙</span>Configuración</button>
-      <button id="open-logs" class="button secondary" type="button"><span>☷</span>Logs</button>
+      <button id="open-panel" class="button primary" type="button">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M6.2 3.2a.75.75 0 0 0 0 1.5h3.99L3.47 11.42a.75.75 0 1 0 1.06 1.06L11.25 5.76v4a.75.75 0 0 0 1.5 0v-5.8a.75.75 0 0 0-.75-.76H6.2Z"/></svg>
+        Abrir Panel
+      </button>
+      <button id="settings" class="button secondary" type="button">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M2 4.75A.75.75 0 0 1 2.75 4h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 4.75Zm2 3.5A.75.75 0 0 1 4.75 7.5h6.5a.75.75 0 0 1 0 1.5h-6.5A.75.75 0 0 1 4 8.25Zm-1 3.5A.75.75 0 0 1 3.75 11h8.5a.75.75 0 0 1 0 1.5h-8.5A.75.75 0 0 1 3 11.75Z"/></svg>
+        Configuración
+      </button>
+      <button id="open-logs" class="button secondary" type="button">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M2.5 3.25A1.25 1.25 0 0 1 3.75 2h8.5A1.25 1.25 0 0 1 13.5 3.25v9.5A1.25 1.25 0 0 1 12.25 14h-8.5A1.25 1.25 0 0 1 2.5 12.75v-9.5Zm2.25 1.5a.75.75 0 0 0 0 1.5h6.5a.75.75 0 0 0 0-1.5h-6.5Zm0 3a.75.75 0 0 0 0 1.5h6.5a.75.75 0 0 0 0-1.5h-6.5Zm0 3a.75.75 0 0 0 0 1.5h4.5a.75.75 0 0 0 0-1.5h-4.5Z"/></svg>
+        Logs
+      </button>
     </section>
+
     <div id="update-notice" class="update-notice hidden"></div>
     <footer><span>MoonWolf Agent</span></footer>
   </main>
+
   <section id="logs-modal" class="modal hidden">
     <div class="modal-backdrop"></div>
-    <div class="logs-window">
-      <div class="logs-header">
+    <div class="dialog-window">
+      <div class="dialog-header">
         <div>
           <strong>Logs del Agent</strong>
           <span id="logs-count">0 entradas</span>
@@ -80,17 +116,18 @@
         </div>
       </div>
       <div id="logs-list" class="logs-list"></div>
-      <div class="logs-actions">
+      <div class="dialog-actions">
         <button id="copy-logs" class="small-button" type="button">Copiar</button>
         <button id="save-logs" class="small-button" type="button">Guardar</button>
         <button id="clear-logs" class="small-button danger" type="button">Limpiar</button>
       </div>
     </div>
   </section>
+
   <section id="serverdir-modal" class="modal hidden">
     <div class="modal-backdrop"></div>
-    <div class="logs-window" style="height:auto;max-height:none">
-      <div class="logs-header">
+    <div class="dialog-window compact">
+      <div class="dialog-header">
         <div>
           <strong>Carpeta del servidor</strong>
           <span>Ruta donde MoonWolf Agent gestiona los archivos del servidor</span>
@@ -102,16 +139,17 @@
         <div id="serverdir-error" class="field-error"></div>
         <div class="field-hint">Se creará la carpeta si no existe. Debes reiniciar MoonWolf Agent para aplicar el cambio.</div>
       </div>
-      <div class="logs-actions">
+      <div class="dialog-actions">
         <button id="cancel-serverdir" class="small-button" type="button">Cancelar</button>
-        <button id="save-serverdir" class="button primary" type="button" style="min-height:auto;padding:9px 18px">Guardar</button>
+        <button id="save-serverdir" class="button primary compact" type="button">Guardar</button>
       </div>
     </div>
   </section>
+
   <section id="settings-modal" class="modal hidden">
     <div class="modal-backdrop"></div>
-    <div class="logs-window" style="height:auto;max-height:none">
-      <div class="logs-header">
+    <div class="dialog-window compact">
+      <div class="dialog-header">
         <div>
           <strong>Configuración</strong>
           <span>Carpetas y datos del Agent</span>
@@ -119,30 +157,43 @@
         <button id="close-settings" class="modal-close" type="button">×</button>
       </div>
       <div class="form-body">
-        <div class="info-card">
+        <div class="info-card nested">
           <div class="info-row">
-            <div class="wide"><span class="label">Carpeta de configuración</span><span id="settings-config-dir" class="value path">—</span></div>
+            <div class="wide">
+              <span class="label">Carpeta de configuración</span>
+              <span id="settings-config-dir" class="value path">—</span>
+            </div>
             <button id="settings-open-config" class="small-button" type="button">Abrir</button>
           </div>
           <div class="separator"></div>
           <div class="info-row">
-            <div class="wide"><span class="label">Agent ID</span><span id="settings-agent-id" class="value path">—</span></div>
+            <div class="wide">
+              <span class="label">Agent ID</span>
+              <span id="settings-agent-id" class="value path">—</span>
+            </div>
             <button id="settings-copy-id" class="small-button" type="button">Copiar</button>
           </div>
           <div class="separator"></div>
           <div class="info-row">
-            <div class="wide"><span class="label">Buscar actualizaciones</span><span class="value">Comprueba si hay una versión más reciente</span></div>
+            <div class="wide">
+              <span class="label">Buscar actualizaciones</span>
+              <span class="value">Comprueba si hay una versión más reciente</span>
+            </div>
             <button id="settings-check-update" class="small-button" type="button">Buscar</button>
           </div>
           <div class="separator"></div>
           <div class="info-row">
-            <div class="wide"><span class="label">Bandeja del sistema</span><span class="value">Minimiza el programa a la bandeja</span></div>
+            <div class="wide">
+              <span class="label">Bandeja del sistema</span>
+              <span class="value">Minimiza el programa a la bandeja</span>
+            </div>
             <button id="settings-hide-tray" class="small-button" type="button">Minimizar</button>
           </div>
         </div>
       </div>
     </div>
   </section>
+
   <script src="app.js"></script>
 </body>
 </html>

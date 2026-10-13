@@ -144,6 +144,13 @@ function render() {
   $('status-dot').className =
     `status-dot ${cloudConnected ? 'connected' : 'connecting'}`;
 
+  const statusCard = $('status-card');
+
+  if (statusCard) {
+    statusCard.className =
+      `status-card ${cloudConnected ? 'connected' : 'connecting'}`;
+  }
+
   $('status-title').textContent =
     cloudConnected ? 'Conectado' : 'Desconectado';
 
