@@ -94,6 +94,9 @@ function customConfirm(message, title = 'Reiniciar Agent') {
 let lastNoticeRef = null;
 let pendingUpdateCheck = false;
 let updateCheckTimer = null;
+let logsFilter = 'all';
+let logsQuery = '';
+let logsRenderKey = '';
 
 const UPDATE_CHECK_TIMEOUT = 8000;
 
@@ -323,7 +326,27 @@ function renderSettings() {
     state.agentId || '—';
 }
 
-function renderLogs() {
+function formatLogTime(value) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return '--:--:--';
+  }
+
+  return [
+    String(date.getHours()).padStart(2, '0'),
+    String(date.getMinutes()).padStart(2, '0'),
+    String(date.getSeconds()).padStart(2, '0'),
+  ].join(':');
+}
+
+function logLevelLabel(level) {
+  if (level === 'error') return 'ERROR';
+  if (level === 'warn') return 'AVISO';
+  return 'INFO';
+}
+
+function renderLogs(force = false) {
   const logs = Array.isArray(state.logs)
     ? state.logs
     : [];
@@ -332,27 +355,83 @@ function renderLogs() {
 
   if (!list) return;
 
-  $('logs-count').textContent =
-    `${logs.length} entradas`;
+  const query = logsQuery.trim().toLowerCase();
+  const visible = logs.filter(entry => {
+    const level = String(entry.level || 'info');
 
-  list.innerHTML = logs.length
-    ? logs.map(entry => {
-        const time = entry.time
-          ? new Date(entry.time).toLocaleTimeString('es-ES')
-          : '--:--:--';
+    if (logsFilter !== 'all' && level !== logsFilter) {
+      return false;
+    }
 
-        const level = String(entry.level || 'info');
+    if (!query) return true;
 
-        return `
-          <div class="log-entry ${level}">
-            <span class="log-time">${escapeHtml(time)}</span>
-            <span>${escapeHtml(entry.message)}</span>
-          </div>
-        `;
-      }).join('')
-    : '<div class="empty-state">No hay logs todavía.</div>';
+    return String(entry.message || '')
+      .toLowerCase()
+      .includes(query);
+  });
 
-  list.scrollTop = list.scrollHeight;
+  const errors = logs.filter(entry => entry.level === 'error').length;
+  const warnings = logs.filter(entry => entry.level === 'warn').length;
+  const parts = [`${logs.length} ${logs.length === 1 ? 'entrada' : 'entradas'}`];
+
+  if (warnings) {
+    parts.push(`${warnings} aviso${warnings === 1 ? '' : 's'}`);
+  }
+
+  if (errors) {
+    parts.push(`${errors} error${errors === 1 ? '' : 'es'}`);
+  }
+
+  if (visible.length !== logs.length) {
+    parts.push(`${visible.length} visibles`);
+  }
+
+  $('logs-count').textContent = parts.join(' · ');
+
+  const last = logs[logs.length - 1];
+  const key = [
+    logs.length,
+    last?.time || '',
+    last?.message || '',
+    logsFilter,
+    query,
+  ].join('|');
+
+  if (!force && key === logsRenderKey) return;
+
+  logsRenderKey = key;
+
+  const nearBottom =
+    list.scrollHeight - list.scrollTop - list.clientHeight < 56;
+  const previousScroll = list.scrollTop;
+
+  if (!logs.length) {
+    list.innerHTML =
+      '<div class="empty-state">No hay logs todavía.</div>';
+    return;
+  }
+
+  if (!visible.length) {
+    list.innerHTML =
+      '<div class="empty-state">Ningún log coincide con la búsqueda o el filtro.</div>';
+    return;
+  }
+
+  list.innerHTML = visible.map(entry => {
+    const level = String(entry.level || 'info');
+
+    return (
+      `<div class="log-entry ${escapeHtml(level)}">` +
+        `<span class="log-time">${escapeHtml(formatLogTime(entry.time))}</span>` +
+        `<span class="log-level">${logLevelLabel(level)}</span>` +
+        `<span class="log-message">${escapeHtml(entry.message)}</span>` +
+      '</div>'
+    );
+  }).join('');
+
+  list.scrollTop = nearBottom
+    ? list.scrollHeight
+    : previousScroll;
 }
 
 function escapeHtml(value) {
@@ -453,8 +532,30 @@ function bindEvents() {
 
   $('open-logs')?.addEventListener(
     'click',
-    () => openModal('logs-modal')
+    () => {
+      openModal('logs-modal');
+      renderLogs(true);
+      const list = $('logs-list');
+      if (list) list.scrollTop = list.scrollHeight;
+    }
   );
+
+  $('logs-search')?.addEventListener('input', event => {
+    logsQuery = event.currentTarget.value || '';
+    renderLogs(true);
+  });
+
+  document.querySelectorAll('.log-filter').forEach(button => {
+    button.addEventListener('click', () => {
+      logsFilter = button.dataset.level || 'all';
+
+      document.querySelectorAll('.log-filter').forEach(item => {
+        item.classList.toggle('active', item === button);
+      });
+
+      renderLogs(true);
+    });
+  });
 
   $('close-logs')?.addEventListener(
     'click',

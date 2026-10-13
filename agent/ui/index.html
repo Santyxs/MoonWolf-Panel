@@ -63,7 +63,22 @@
   <section id="logs-modal" class="modal hidden">
     <div class="modal-backdrop"></div>
     <div class="logs-window">
-      <div class="logs-header"><div><strong>Logs del Agent</strong><span id="logs-count">0 entradas</span></div><button id="close-logs" class="modal-close" type="button">×</button></div>
+      <div class="logs-header">
+        <div>
+          <strong>Logs del Agent</strong>
+          <span id="logs-count">0 entradas</span>
+        </div>
+        <button id="close-logs" class="modal-close" type="button">×</button>
+      </div>
+      <div class="logs-toolbar">
+        <input id="logs-search" class="logs-search" type="search" placeholder="Buscar en los logs…" spellcheck="false" autocomplete="off">
+        <div class="logs-filters" role="tablist">
+          <button id="logs-filter-all" class="log-filter active" type="button" data-level="all">Todos</button>
+          <button id="logs-filter-info" class="log-filter" type="button" data-level="info">Info</button>
+          <button id="logs-filter-warn" class="log-filter" type="button" data-level="warn">Avisos</button>
+          <button id="logs-filter-error" class="log-filter" type="button" data-level="error">Errores</button>
+        </div>
+      </div>
       <div id="logs-list" class="logs-list"></div>
       <div class="logs-actions">
         <button id="copy-logs" class="small-button" type="button">Copiar</button>

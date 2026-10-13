@@ -533,73 +533,189 @@ footer {
   color: white;
 }
 
+.logs-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+
+  gap: 10px;
+
+  padding: 10px 14px;
+
+  border-bottom: 1px solid var(--border);
+
+  background: #10141c;
+}
+
+.logs-search {
+  flex: 1;
+  min-width: 0;
+
+  height: 34px;
+  padding: 0 12px;
+
+  border: 1px solid var(--border);
+  border-radius: 8px;
+
+  background: #0b0e14;
+  color: var(--text);
+
+  font-size: 12px;
+}
+
+.logs-search::placeholder {
+  color: #6d7786;
+}
+
+.logs-search:focus {
+  outline: none;
+  border-color: rgba(139, 92, 246, 0.7);
+}
+
+.logs-filters {
+  display: flex;
+  flex-shrink: 0;
+
+  gap: 6px;
+}
+
+.log-filter {
+  height: 30px;
+  padding: 0 10px;
+
+  border: 1px solid var(--border);
+  border-radius: 999px;
+
+  background: transparent;
+  color: #9aa4b2;
+
+  font-size: 11px;
+  font-weight: 600;
+
+  cursor: pointer;
+}
+
+.log-filter:hover {
+  color: white;
+  background: var(--surface-hover);
+}
+
+.log-filter.active {
+  color: white;
+  border-color: rgba(139, 92, 246, 0.55);
+  background: rgba(139, 92, 246, 0.18);
+}
+
 .logs-list {
   flex: 1;
 
   overflow-y: auto;
 
-  padding: 12px;
+  padding: 6px 0;
+
+  background: #0b0e14;
 
   font-family:
     "Cascadia Code",
     "Consolas",
+    "Courier New",
     monospace;
 
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.logs-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.logs-list::-webkit-scrollbar-thumb {
+  border-radius: 8px;
+  background: #2a3342;
 }
 
 .log-entry {
-  padding: 8px 10px;
+  display: grid;
 
-  margin-bottom: 5px;
+  grid-template-columns: 74px 58px minmax(0, 1fr);
 
-  border-radius: 7px;
+  gap: 10px;
+  align-items: start;
 
-  background: rgba(255, 255, 255, 0.025);
+  padding: 7px 16px;
 
-  border-left: 3px solid
-    rgba(139, 92, 246, 0.5);
+  border-left: 2px solid transparent;
+}
 
-  white-space: pre-wrap;
+.log-entry:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
 
-  word-break: break-word;
+.log-entry.info {
+  border-left-color: rgba(139, 92, 246, 0.7);
 }
 
 .log-entry.warn {
   border-left-color: var(--yellow);
+  background: rgba(242, 201, 76, 0.04);
 }
 
 .log-entry.error {
   border-left-color: var(--red);
-
-  background:
-    rgba(255, 92, 108, 0.045);
+  background: rgba(255, 92, 108, 0.06);
 }
 
 .log-time {
-  color: #667080;
+  color: #6d7786;
 
-  margin-right: 8px;
+  font-variant-numeric: tabular-nums;
+
+  padding-top: 1px;
 }
 
 .log-level {
-  margin-right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 
-  color: var(--accent-light);
+  width: 58px;
+  height: 18px;
 
+  border-radius: 4px;
+
+  font-size: 9px;
   font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.log-entry.info .log-level {
+  color: var(--accent-light);
+  background: rgba(139, 92, 246, 0.16);
 }
 
 .log-entry.warn .log-level {
-  color: var(--yellow);
+  color: #f6d56a;
+  background: rgba(242, 201, 76, 0.14);
 }
 
 .log-entry.error .log-level {
-  color: var(--red);
+  color: #ff8a95;
+  background: rgba(255, 92, 108, 0.16);
 }
 
 .log-message {
   color: #d9dee7;
+
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.log-entry.warn .log-message {
+  color: #f3e2a6;
+}
+
+.log-entry.error .log-message {
+  color: #ffc1c7;
 }
 
 .logs-empty {
