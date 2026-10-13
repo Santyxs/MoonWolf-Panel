@@ -609,8 +609,8 @@ function bindEvents() {
 
     pendingUpdateCheck = true;
 
+    // Solo cambia el botón; sin aviso intermedio
     flashButton(button, 'Buscando…', UPDATE_CHECK_TIMEOUT);
-    showSettingsUpdateStatus('info', 'Buscando actualizaciones…');
 
     clearTimeout(updateCheckTimer);
 
