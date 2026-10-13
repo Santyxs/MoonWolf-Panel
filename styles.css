@@ -776,6 +776,26 @@ a.btn-primary { text-decoration: none; }
 }
 .files-bulkbar.visible { display: flex; }
 .files-bulkbar strong { color: var(--accent); }
+.file-delete-card {
+  width: min(520px, 100%); padding: 20px; display: flex; flex-direction: column; gap: 14px;
+  border: 1px solid rgba(255,68,85,.42); border-radius: var(--r-lg);
+  background: var(--surface2); box-shadow: var(--shadow-lg), 0 0 28px rgba(255,68,85,.12);
+}
+.file-delete-head { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start; }
+.file-delete-head > div { display: flex; flex-direction: column; }
+.file-delete-icon { color: var(--red); font-size: 28px; line-height: 1; }
+.file-delete-head strong { color: var(--text); font-size: var(--fs-md); }
+.file-delete-head span { margin-top: 5px; color: var(--muted2); font-size: var(--fs-sm); }
+.file-delete-head span strong { display: inline; color: var(--red); font-size: inherit; }
+.file-delete-list {
+  margin: 0; padding: 8px 10px; list-style: none; max-height: 220px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface);
+}
+.file-delete-item { display: flex; align-items: baseline; gap: 8px; padding: 5px 4px; font-size: var(--fs-sm); }
+.file-delete-item + .file-delete-item { border-top: 1px solid var(--border); }
+.file-delete-name { color: var(--text); overflow-wrap: anywhere; }
+.file-delete-path { margin-left: auto; color: var(--muted2); font-size: var(--fs-xs); overflow-wrap: anywhere; text-align: right; }
+.file-delete-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .bulk-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .file-select, .file-select-all { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .file-select { width: 22px; justify-content: center; }

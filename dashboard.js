@@ -1656,7 +1656,10 @@ async function runBulkAction(action) {
     if (destination === null) return;
     destination = normalizeUploadRelativePath(destination);
   }
-  if (action === 'delete' && !confirm(`¿Eliminar ${items.length} elemento${items.length === 1 ? '' : 's'} seleccionado${items.length === 1 ? '' : 's'}?`)) return;
+  if (action === 'delete') {
+    const confirmed = await askFileDeleteConfirm(items);
+    if (confirmed !== 'delete') return;
+  }
   try {
     const data = await postJSON('/api/files/bulk', { action, items, destination });
     if (!data.ok) throw new Error(data.error || 'La operación masiva falló');
@@ -2094,6 +2097,56 @@ function askFileConflict(fileName) {
 }
 function isFileConflict(error) {
   return Boolean(error?.isFileConflict || error?.status === 409 || /ya existe un archivo/i.test(error?.message || ''));
+}
+function askFileDeleteConfirm(items) {
+  const modal = $('fileDeleteModal');
+  if (!modal) {
+    const list = items.map(item => `• ${item.path}`).join('\n');
+    const plural = items.length === 1 ? '' : 's';
+    return Promise.resolve(
+      confirm(
+        `¿Eliminar ${items.length} elemento${plural} seleccionado${plural}?\n\n${list}\n\nEsta acción no se puede deshacer.`
+      )
+        ? 'delete'
+        : 'cancel'
+    );
+  }
+  if ($('fileDeleteCount')) $('fileDeleteCount').textContent = items.length;
+  if ($('fileDeleteList')) {
+    $('fileDeleteList').innerHTML = items
+      .map(item => {
+        const label = item.path.split('/').pop() || item.path;
+        return `
+          <li class="file-delete-item">
+            <span class="file-delete-icon">${item.isDir ? '📁' : '📄'}</span>
+            <span class="file-delete-name">${escHtml(label)}</span>
+            <span class="file-delete-path">${escHtml(item.path)}</span>
+          </li>
+        `;
+      })
+      .join('');
+  }
+  modal.hidden = false;
+  return new Promise(resolve => {
+    const finish = choice => {
+      modal.hidden = true;
+      modal.querySelectorAll('[data-delete-choice]').forEach(button => {
+        button.removeEventListener('click', button._deleteHandler);
+        delete button._deleteHandler;
+      });
+      document.removeEventListener('keydown', onKey);
+      resolve(choice);
+    };
+    const onKey = event => {
+      if (event.key === 'Escape') finish('cancel');
+    };
+    modal.querySelectorAll('[data-delete-choice]').forEach(button => {
+      const handler = () => finish(button.dataset.deleteChoice);
+      button._deleteHandler = handler;
+      button.addEventListener('click', handler);
+    });
+    document.addEventListener('keydown', onKey);
+  });
 }
 async function uploadOneFile(file, relativePath, progressState, overwrite = true) {
   const relCandidate = file.customRelativePath || relativePath || file.webkitRelativePath || file.name;

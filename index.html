@@ -218,6 +218,22 @@
               </div>
             </div>
           </div>
+          <div class="file-conflict-modal" id="fileDeleteModal" hidden role="dialog" aria-modal="true" aria-labelledby="fileDeleteTitle">
+            <div class="file-delete-card">
+              <div class="file-delete-head">
+                <div class="file-delete-icon">🗑️</div>
+                <div>
+                  <strong id="fileDeleteTitle">Eliminar archivos</strong>
+                  <span>Vas a eliminar <strong id="fileDeleteCount">0</strong> elemento(s). Esta acción no se puede deshacer.</span>
+                </div>
+              </div>
+              <ul class="file-delete-list" id="fileDeleteList"></ul>
+              <div class="file-delete-actions">
+                <button class="small-btn" data-delete-choice="cancel" type="button">Cancelar</button>
+                <button class="small-btn danger" data-delete-choice="delete" type="button">🗑️ Eliminar</button>
+              </div>
+            </div>
+          </div>
           <div class="files-bulkbar" id="filesBulkbar" aria-live="polite">
             <span><strong id="selectedFilesCount">0</strong> seleccionados</span>
             <div class="bulk-actions">
