@@ -1051,11 +1051,10 @@ function rpcHttp(pathname, init = {}) {
   const method = String(init.method || 'GET').toUpperCase();
 
   if (isDirectRoute(method, pathname)) {
-    // Las rutas de archivos nunca recurren a Cloud, ni siquiera si WebRTC falla.
     return waitForDirectReady().then(() =>
       directRequest(method, pathname, init.body).catch(error => {
         throw new Error(
-          'La conexión directa se ha interrumpido durante la operación. No se ha reintentado por MoonWolf Cloud para evitar consumir tráfico. Comprueba WebRTC e inténtalo de nuevo.',
+          'La conexión directa se ha interrumpido durante la operación. Comprueba WebRTC e inténtalo de nuevo.',
           { cause: error }
         );
       })
@@ -1793,6 +1792,25 @@ function openFileContext(event, name, type) {
 
 const FILE_UPLOAD_CHUNK_SIZE = 16 * 1024 * 1024;
 const FILE_UPLOAD_PARALLEL_CHUNKS = 12;
+const UPLOAD_MAX_INFLIGHT = 12;
+let uploadInflight = 0;
+const uploadWaiters = [];
+
+async function acquireUploadSlot() {
+  if (uploadInflight < UPLOAD_MAX_INFLIGHT) {
+    uploadInflight++;
+    return;
+  }
+
+  await new Promise(resolve => uploadWaiters.push(resolve));
+}
+
+function releaseUploadSlot() {
+  const next = uploadWaiters.shift();
+
+  if (next) next();
+  else uploadInflight--;
+}
 
 function normalizeUploadRelativePath(value) {
   return String(value || '')
@@ -1986,7 +2004,7 @@ async function uploadOneFile(file, relativePath, progressState, overwrite = true
   let nextChunk = 0;
   let completedChunks = 0;
 
-  const uploadChunk = async chunkIndex => {
+  const uploadChunkInner = async chunkIndex => {
     const offset = chunkIndex * FILE_UPLOAD_CHUNK_SIZE;
     const end = Math.min(offset + FILE_UPLOAD_CHUNK_SIZE, totalSize);
     const buffer = await file.slice(offset, end).arrayBuffer();
@@ -2031,6 +2049,15 @@ async function uploadOneFile(file, relativePath, progressState, overwrite = true
     progressState.doneBytes += bytes.length;
     progressState.status = `Subiendo ${progressState.completedFiles + 1}/${progressState.totalFiles} · ${completedChunks}/${chunkCount} bloques`;
     updateUploadProgress(progressState);
+  };
+
+  const uploadChunk = async chunkIndex => {
+    await acquireUploadSlot();
+    try {
+      await uploadChunkInner(chunkIndex);
+    } finally {
+      releaseUploadSlot();
+    }
   };
 
   const worker = async () => {
@@ -2159,7 +2186,6 @@ async function uploadSelectedFiles(fileList) {
     progressState.doneBytes = progressState.totalBytes;
     progressState.completedFiles = progressState.totalFiles;
     updateUploadProgress(progressState);
-    // MODIFICADO: incluye la duración total en el mensaje final.
     const totalSeconds = (Date.now() - progressState.startedAt) / 1000;
     finishUploadProgress(`Subida completada en ${formatDuration(totalSeconds)}`);
     toast(`✅ ${files.length} ${files.length === 1 ? 'archivo subido' : 'archivos subidos'} correctamente`, 'ok');
