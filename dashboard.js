@@ -1849,7 +1849,7 @@ function openFileContext(event, name, type) {
   }, 0);
 }
 
-const FILE_UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024;
+const FILE_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024;
 const FILE_UPLOAD_PARALLEL_CHUNKS = 4;
 const UPLOAD_MAX_INFLIGHT = 6;
 let uploadInflight = 0;
@@ -2142,7 +2142,7 @@ async function uploadOneFile(file, relativePath, progressState, overwrite = true
     let data;
     let lastError;
 
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
       await waitForUploadResume(progressState);
 
       try {
@@ -2157,15 +2157,25 @@ async function uploadOneFile(file, relativePath, progressState, overwrite = true
         );
 
         if (!data?.ok) {
-          const uploadError = new Error(data.error || `No se pudo subir ${file.name}`);
+          const uploadError = new Error(data?.error || `No se pudo subir ${file.name}`);
           if (/ya existe un archivo/i.test(uploadError.message)) uploadError.isFileConflict = true;
+          if (data?.status === 429 || /demasiadas/i.test(uploadError.message)) {
+            uploadError.isRateLimited = true;
+          }
           throw uploadError;
         }
 
         break;
       } catch (error) {
         lastError = error;
-        if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+        if (attempt < 4) {
+          const delay = error?.isRateLimited ? (1500 * (attempt + 1)) : (500 * (attempt + 1));
+          if (error?.isRateLimited) {
+            progressState.status = `Esperando por límite de peticiones (${attempt + 1}/5)…`;
+            updateUploadProgress(progressState);
+          }
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
       }
     }
 

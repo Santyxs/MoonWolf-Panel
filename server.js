@@ -651,7 +651,7 @@ const OPERATION_RATE_RULES = Object.freeze([
   { id: 'server-lifecycle', methods: new Set(['POST']), paths: ['/start', '/stop', '/restart'], limit: 20, windowMs: 60_000 },
   { id: 'server-command', methods: new Set(['POST']), paths: ['/command'], limit: 30, windowMs: 60_000 },
   { id: 'startup-ports', methods: new Set(['POST']), paths: ['/startup', '/ports'], limit: 20, windowMs: 60_000 },
-  { id: 'file-upload', methods: new Set(['POST']), paths: ['/files/upload-chunk'], limit: 2_000, windowMs: 60_000 },
+  { id: 'file-upload', methods: new Set(['POST']), paths: ['/files/upload-chunk'], limit: 10_000, windowMs: 60_000 },
   { id: 'file-mutation', methods: new Set(['POST']), paths: [
     '/files/content', '/files/create', '/files/rename', '/files/copy',
     '/files/move', '/files/compress', '/files/bulk', '/files/delete',
@@ -956,7 +956,9 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.use('/api', (req, res, next) => {
-  if (apiRateLimited(req.ip)) {
+  const isUploadChunk = req.method === 'POST' && (req.path === '/files/upload-chunk' || req.path === '/api/files/upload-chunk');
+
+  if (!isUploadChunk && apiRateLimited(req.ip)) {
     return res.status(429).json({
       ok: false,
       error: 'Demasiadas peticiones, espera un momento.',
