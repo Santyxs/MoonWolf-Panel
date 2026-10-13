@@ -940,11 +940,18 @@ function onDirectMessage(data) {
 
   if (type === DF.RES_HEAD) {
     req.head = JSON.parse(new TextDecoder().decode(new Uint8Array(data, 5)));
+    req.totalSize = Number(req.head?.contentLength || req.head?.size) || 0;
+    if (typeof req.onProgress === 'function') {
+      req.onProgress(0, req.totalSize);
+    }
   } else if (type === DF.RES_BODY) {
     const chunk = new Uint8Array(data, 5);
 
     req.chunks.push(chunk);
     req.size += chunk.length;
+    if (typeof req.onProgress === 'function') {
+      req.onProgress(req.size, req.totalSize);
+    }
   } else if (type === DF.RES_END) {
     direct.reqs.delete(id);
 
@@ -971,18 +978,29 @@ function onDirectMessage(data) {
   }
 }
 
-async function directRequest(method, pathname, body) {
+async function directRequest(method, pathname, body, { onProgress, signal } = {}) {
   const id = direct.nextId++ >>> 0;
   const isBinary = body instanceof Uint8Array;
   const encoder = new TextEncoder();
+
+  if (signal?.aborted) {
+    return Promise.reject(new DOMException('Aborted', 'AbortError'));
+  }
 
   const payload = body === undefined || body === null
     ? null
     : isBinary ? body : encoder.encode(typeof body === 'string' ? body : JSON.stringify(body));
 
   const done = new Promise((resolve, reject) => {
-    direct.reqs.set(id, { resolve, reject, head: null, chunks: [], size: 0 });
+    direct.reqs.set(id, { resolve, reject, head: null, chunks: [], size: 0, onProgress, totalSize: 0 });
   });
+
+  if (signal) {
+    signal.addEventListener('abort', () => {
+      direct.reqs.delete(id);
+      try { sendDirect(DF.REQ_END, id); } catch {}
+    }, { once: true });
+  }
 
   done.catch(() => {});
 
@@ -995,6 +1013,7 @@ async function directRequest(method, pathname, body) {
 
     if (payload) {
       for (let off = 0; off < payload.length; off += DIRECT_FRAME_BYTES) {
+        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
         await sendDirect(DF.REQ_BODY, id, payload.subarray(off, off + DIRECT_FRAME_BYTES));
       }
     }
@@ -1052,7 +1071,8 @@ function rpcHttp(pathname, init = {}) {
 
   if (isDirectRoute(method, pathname)) {
     return waitForDirectReady().then(() =>
-      directRequest(method, pathname, init.body).catch(error => {
+      directRequest(method, pathname, init.body, { onProgress: init.onProgress, signal: init.signal }).catch(error => {
+        if (init.signal?.aborted || error?.name === 'AbortError') throw error;
         throw new Error(
           'La conexión directa se ha interrumpido durante la operación. Comprueba WebRTC e inténtalo de nuevo.',
           { cause: error }
@@ -1617,6 +1637,19 @@ async function runBulkAction(action) {
     return { path: rel, isDir: row?.dataset.type === 'dir' };
   });
   if (!items.length) return;
+  if (action === 'download') {
+    const count = items.length;
+    toast(`⬇️ Descargando ${count} elemento${count === 1 ? '' : 's'} seleccionado${count === 1 ? '' : 's'}...`, 'info');
+    for (const item of items) {
+      const name = item.path.split('/').pop();
+      if (item.isDir) {
+        await downloadDirectoryAsZip(item.path, name);
+      } else {
+        await downloadFile(item.path, name);
+      }
+    }
+    return;
+  }
   let destination;
   if (action === 'move') {
     destination = prompt('Carpeta relativa de destino:', currentDir || '');
@@ -1658,6 +1691,26 @@ function renderBreadcrumb(dir) {
   });
 }
 
+async function downloadDirectoryAsZip(rel, name) {
+  toast(`🗜️ Preparando y comprimiendo "${name}"...`, 'info');
+  try {
+    const data = await postJSON('/api/files/compress', {
+      path: rel,
+      name,
+    });
+    if (!data.ok) throw new Error(data.error || 'No se pudo comprimir la carpeta');
+
+    const zipName = data.zipName || `${name}.zip`;
+    const parentDir = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '';
+    const zipRel = parentDir ? `${parentDir}/${zipName}` : zipName;
+
+    await downloadFile(zipRel, zipName);
+    populateFiles(currentDir);
+  } catch (error) {
+    toast(`❌ ${error.message}`, 'err');
+  }
+}
+
 function openFileContext(event, name, type) {
   event.preventDefault();
 
@@ -1676,7 +1729,9 @@ function openFileContext(event, name, type) {
     <div class="ctx-item" data-action="rename">✏️ Renombrar</div>
     <div class="ctx-item" data-action="copy">📋 Copiar</div>
     <div class="ctx-item" data-action="move">🔀 Mover</div>
-    ${type !== 'dir' ? '<div class="ctx-item" data-action="download">⬇️ Descargar</div>' : ''}
+    ${type !== 'dir'
+      ? '<div class="ctx-item" data-action="download">⬇️ Descargar</div>'
+      : '<div class="ctx-item" data-action="download-folder">⬇️ Descargar (.zip)</div>'}
     <div class="ctx-item" data-action="compress">🗜️ Comprimir</div>
     <div class="ctx-sep"></div>
     <div class="ctx-item danger" data-action="delete">🗑️ Eliminar</div>
@@ -1755,6 +1810,10 @@ function openFileContext(event, name, type) {
         return downloadFile(rel, name);
       }
 
+      if (action === 'download-folder') {
+        return downloadDirectoryAsZip(rel, name);
+      }
+
       if (action === 'compress') {
         const data = await postJSON('/api/files/compress', {
           path: rel,
@@ -1790,11 +1849,76 @@ function openFileContext(event, name, type) {
   }, 0);
 }
 
-const FILE_UPLOAD_CHUNK_SIZE = 16 * 1024 * 1024;
-const FILE_UPLOAD_PARALLEL_CHUNKS = 12;
-const UPLOAD_MAX_INFLIGHT = 12;
+const FILE_UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024;
+const FILE_UPLOAD_PARALLEL_CHUNKS = 4;
+const UPLOAD_MAX_INFLIGHT = 6;
 let uploadInflight = 0;
 const uploadWaiters = [];
+
+async function getFilesFromDataTransfer(dataTransfer) {
+  const items = dataTransfer?.items;
+  if (!items || !items.length) {
+    return Array.from(dataTransfer?.files || []);
+  }
+
+  const entries = [];
+  const fallbackFiles = [];
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.kind === 'file') {
+      const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+      if (entry) {
+        entries.push(entry);
+      } else {
+        const file = item.getAsFile();
+        if (file) fallbackFiles.push(file);
+      }
+    }
+  }
+
+  if (!entries.length) {
+    return fallbackFiles.length ? fallbackFiles : Array.from(dataTransfer?.files || []);
+  }
+
+  const resultFiles = [];
+
+  async function traverseEntry(entry, parentPath = '') {
+    if (entry.isFile) {
+      return new Promise(resolve => {
+        entry.file(file => {
+          const rel = parentPath ? `${parentPath}/${file.name}` : file.name;
+          Object.defineProperty(file, 'customRelativePath', {
+            value: rel,
+            configurable: true,
+            writable: true,
+          });
+          resultFiles.push(file);
+          resolve();
+        }, () => resolve());
+      });
+    } else if (entry.isDirectory) {
+      const dirReader = entry.createReader();
+      const nextPath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
+      const readBatch = () => new Promise(resolve => {
+        dirReader.readEntries(entries => resolve(entries || []), () => resolve([]));
+      });
+      while (true) {
+        const batch = await readBatch();
+        if (!batch || !batch.length) break;
+        for (const child of batch) {
+          await traverseEntry(child, nextPath);
+        }
+      }
+    }
+  }
+
+  for (const entry of entries) {
+    await traverseEntry(entry);
+  }
+
+  return resultFiles.length ? resultFiles : fallbackFiles;
+}
 
 async function acquireUploadSlot() {
   if (uploadInflight < UPLOAD_MAX_INFLIGHT) {
@@ -1944,18 +2068,22 @@ function finishUploadProgress(message, isError = false, detail = '', hidePanel =
 }
 function askFileConflict(fileName) {
   const modal = $('fileConflictModal');
-  if (!modal) return Promise.resolve('cancel');
+  if (!modal) return Promise.resolve({ choice: 'cancel', applyAll: false });
   if ($('fileConflictName')) $('fileConflictName').textContent = fileName;
   if ($('fileConflictMessage')) $('fileConflictMessage').textContent = 'Ya existe un archivo con ese nombre. ¿Qué quieres hacer?';
+  const applyAllInput = $('fileConflictApplyAll');
+  if (applyAllInput) applyAllInput.checked = false;
+
   modal.hidden = false;
   return new Promise(resolve => {
     const finish = choice => {
+      const applyAll = Boolean(applyAllInput?.checked);
       modal.hidden = true;
       modal.querySelectorAll('[data-conflict-choice]').forEach(button => {
         button.removeEventListener('click', button._conflictHandler);
         delete button._conflictHandler;
       });
-      resolve(choice);
+      resolve({ choice, applyAll });
     };
     modal.querySelectorAll('[data-conflict-choice]').forEach(button => {
       const handler = () => finish(button.dataset.conflictChoice);
@@ -1968,12 +2096,13 @@ function isFileConflict(error) {
   return Boolean(error?.isFileConflict || /ya existe un archivo/i.test(error?.message || ''));
 }
 async function uploadOneFile(file, relativePath, progressState, overwrite = true) {
-  progressState.currentFile = file.webkitRelativePath || file.name;
+  const relCandidate = file.customRelativePath || relativePath || file.webkitRelativePath || file.name;
+  progressState.currentFile = relCandidate;
   progressState.currentFileSize = file.size;
   progressState.currentFileDone = 0;
   updateUploadProgress(progressState);
 
-  const relPath = normalizeUploadRelativePath(relativePath || file.name);
+  const relPath = normalizeUploadRelativePath(relCandidate);
 
   if (!relPath) {
     throw new Error(`Nombre de archivo no válido: ${file.name}`);
@@ -2142,6 +2271,7 @@ async function uploadSelectedFiles(fileList) {
     startedAt: Date.now(),
     status: `Subiendo 1/${files.length}`,
     paused: false, cancelled: false, finished: false, resumeUpload: null,
+    rememberConflictChoice: null,
   };
   activeUploadState = progressState;
   updateUploadProgress(progressState);
@@ -2150,7 +2280,7 @@ async function uploadSelectedFiles(fileList) {
     let nextFileIndex = 0;
     progressState.conflictQueue = Promise.resolve();
     const uploadFileWithConflict = async file => {
-      const relative = file.webkitRelativePath || file.name;
+      const relative = file.customRelativePath || file.webkitRelativePath || file.name;
       progressState.activeFiles = (progressState.activeFiles || 0) + 1;
       const parallelLabel = progressState.activeFiles > 1 ? ` · ${progressState.activeFiles} simultáneos` : '';
       progressState.status = `Subiendo ${Math.min(progressState.completedFiles + 1, progressState.totalFiles)}/${progressState.totalFiles}${parallelLabel}`;
@@ -2159,9 +2289,16 @@ async function uploadSelectedFiles(fileList) {
           await uploadOneFile(file, relative, progressState, false);
         } catch (error) {
           if (!isFileConflict(error)) throw error;
-          const prompt = progressState.conflictQueue.then(() => askFileConflict(relative));
-          progressState.conflictQueue = prompt.catch(() => 'cancel');
-          const choice = await prompt;
+          let choice = progressState.rememberConflictChoice;
+          if (!choice) {
+            const prompt = progressState.conflictQueue.then(() => askFileConflict(relative));
+            progressState.conflictQueue = prompt.catch(() => ({ choice: 'cancel', applyAll: false }));
+            const res = await prompt;
+            choice = res.choice;
+            if (res.applyAll && (choice === 'replace' || choice === 'keep')) {
+              progressState.rememberConflictChoice = choice;
+            }
+          }
           if (choice === 'keep') {
             progressState.completedFiles += 1;
             progressState.status = `Manteniendo ${progressState.completedFiles}/${progressState.totalFiles}`;
@@ -2196,31 +2333,115 @@ async function uploadSelectedFiles(fileList) {
   }
 }
 
-async function downloadFile(rel, filename) {
-  const result = await rpcHttp(
-    `/api/files/download?path=${encodeURIComponent(rel)}`
-  );
+let activeDownloadAbort = null;
 
-  if (!hasResultBody(result) || result.ok === false) {
-    toast(result?.data?.error || 'No se pudo descargar el archivo.', 'err');
-    return;
+async function downloadUrlWithProgress(pathname, filename, title = 'Descargando archivo') {
+  const panel = $('uploadProgressPanel');
+  const startedAt = Date.now();
+  let receivedBytes = 0;
+  let totalBytes = 0;
+
+  activeDownloadAbort = new AbortController();
+
+  if (panel) {
+    panel.hidden = false;
+    panel.classList.remove('upload-progress-error');
+    if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = title;
+    if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = filename;
+    if ($('uploadProgressPercent')) $('uploadProgressPercent').textContent = '0%';
+    if ($('uploadProgressFill')) $('uploadProgressFill').style.width = '0%';
+    if ($('uploadProgressFiles')) $('uploadProgressFiles').textContent = '1 archivo';
+    if ($('uploadProgressBytes')) $('uploadProgressBytes').textContent = 'Iniciando transferencia…';
+    if ($('uploadProgressSpeed')) $('uploadProgressSpeed').textContent = '—';
+    if ($('uploadProgressEta')) $('uploadProgressEta').textContent = 'Calculando tiempo…';
+    if ($('uploadProgressError')) $('uploadProgressError').textContent = '';
+    if ($('uploadProgressRetry')) $('uploadProgressRetry').hidden = true;
+    if ($('uploadProgressPause')) $('uploadProgressPause').hidden = true;
+    if ($('uploadProgressCancel')) {
+      $('uploadProgressCancel').hidden = false;
+      $('uploadProgressCancel').disabled = false;
+    }
   }
 
-  const bytes = decodeResultBody(result);
+  const onProgress = (done, total) => {
+    receivedBytes = done;
+    if (total) totalBytes = total;
+    if (!panel) return;
 
-  const blob = new Blob([bytes], {
-    type: result.contentType || 'application/octet-stream',
-  });
+    const percent = totalBytes > 0 ? Math.min(100, Math.round((receivedBytes / totalBytes) * 100)) : 0;
+    const elapsed = Math.max((Date.now() - startedAt) / 1000, 0.001);
+    const speed = receivedBytes / elapsed;
+    const eta = (totalBytes > receivedBytes && speed > 0) ? (totalBytes - receivedBytes) / speed : 0;
 
-  const url = URL.createObjectURL(blob);
+    if ($('uploadProgressPercent')) $('uploadProgressPercent').textContent = totalBytes > 0 ? `${percent}%` : formatUploadBytes(receivedBytes);
+    if ($('uploadProgressFill')) $('uploadProgressFill').style.width = totalBytes > 0 ? `${percent}%` : '60%';
+    if ($('uploadProgressBytes')) {
+      $('uploadProgressBytes').textContent = totalBytes > 0
+        ? `${formatUploadBytes(receivedBytes)} de ${formatUploadBytes(totalBytes)}`
+        : formatUploadBytes(receivedBytes);
+    }
+    if ($('uploadProgressSpeed')) $('uploadProgressSpeed').textContent = speed > 0 ? `${formatUploadBytes(speed)}/s` : '—';
+    if ($('uploadProgressEta')) {
+      $('uploadProgressEta').textContent = totalBytes > 0 ? (percent >= 100 ? 'Finalizando…' : formatUploadEta(eta)) : 'Descargando…';
+    }
+  };
 
-  const anchor = document.createElement('a');
+  try {
+    const result = await rpcHttp(pathname, {
+      onProgress,
+      signal: activeDownloadAbort.signal,
+    });
 
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
+    if (!hasResultBody(result) || result.ok === false) {
+      throw new Error(result?.data?.error || 'No se pudo descargar el archivo.');
+    }
 
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+    const bytes = decodeResultBody(result);
+    const blob = new Blob([bytes], {
+      type: result.contentType || 'application/octet-stream',
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 15000);
+
+    const totalSeconds = (Date.now() - startedAt) / 1000;
+    if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = `Descarga completada en ${formatDuration(totalSeconds)}`;
+    if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = filename;
+    if ($('uploadProgressPercent')) $('uploadProgressPercent').textContent = '100%';
+    if ($('uploadProgressFill')) $('uploadProgressFill').style.width = '100%';
+    if ($('uploadProgressCancel')) $('uploadProgressCancel').hidden = true;
+    setTimeout(() => { if (panel && !activeUploadState) panel.hidden = true; }, 3500);
+    toast(`✅ Descargado: ${filename}`, 'ok');
+  } catch (error) {
+    if (activeDownloadAbort?.signal?.aborted) {
+      if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = 'Descarga cancelada';
+      if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = filename;
+      setTimeout(() => { if (panel && !activeUploadState) panel.hidden = true; }, 2000);
+      toast('Descarga cancelada', 'info');
+      return;
+    }
+    if (panel) {
+      panel.classList.add('upload-progress-error');
+      if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = 'Error en la descarga';
+      if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = filename;
+      if ($('uploadProgressError')) $('uploadProgressError').textContent = error.message;
+      if ($('uploadProgressCancel')) $('uploadProgressCancel').hidden = true;
+    }
+    toast(`❌ ${error.message}`, 'err');
+  } finally {
+    activeDownloadAbort = null;
+  }
+}
+
+async function downloadFile(rel, filename) {
+  return downloadUrlWithProgress(
+    `/api/files/download?path=${encodeURIComponent(rel)}`,
+    filename,
+    'Descargando archivo'
+  );
 }
 
 function getEditorContent() {
@@ -3397,34 +3618,11 @@ async function createBackup() {
 }
 
 async function downloadBackup(name) {
-  try {
-    const result = await rpcHttp(
-      `/api/backups/download/${encodeURIComponent(name)}`
-    );
-
-    if (!hasResultBody(result) || result.ok === false) {
-      toast(
-        result?.data?.error || 'No se pudo descargar la copia de seguridad.',
-        'err'
-      );
-      return;
-    }
-
-    const bytes = decodeResultBody(result);
-    const blob = new Blob([bytes], {
-      type: result.contentType || 'application/zip',
-    });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-
-    anchor.href = url;
-    anchor.download = name;
-    anchor.click();
-
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  } catch (error) {
-    toast(`❌ ${error.message}`, 'err');
-  }
+  return downloadUrlWithProgress(
+    `/api/backups/download/${encodeURIComponent(name)}`,
+    name,
+    'Descargando copia de seguridad'
+  );
 }
 
 async function restoreBackup(name) {
@@ -4530,7 +4728,7 @@ function bindEvents() {
     filesView.addEventListener('drop', async event => {
       event.preventDefault();
       filesLayout.classList.remove('is-dragging');
-      const files = event.dataTransfer?.files;
+      const files = await getFilesFromDataTransfer(event.dataTransfer);
       if (files?.length) await uploadSelectedFiles(files);
     });
   }
@@ -4552,6 +4750,13 @@ function bindEvents() {
     }
   });
   $('uploadProgressCancel')?.addEventListener('click', () => {
+    if (activeDownloadAbort) {
+      activeDownloadAbort.abort();
+      activeDownloadAbort = null;
+      $('uploadProgressCancel').disabled = true;
+      if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = 'Cancelando descarga…';
+      return;
+    }
     const upload = activeUploadState;
     if (!upload || upload.finished) return;
     upload.cancelled = true;

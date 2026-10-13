@@ -206,6 +206,9 @@
                 <strong id="fileConflictTitle">Conflicto de archivo</strong>
                 <span id="fileConflictMessage">Ya existe un archivo con ese nombre.</span>
                 <code id="fileConflictName"></code>
+                <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:var(--fs-xs);color:var(--muted2);cursor:pointer">
+                  <input type="checkbox" id="fileConflictApplyAll"> Aplicar a todos los archivos restantes
+                </label>
               </div>
               <div class="file-conflict-actions">
                 <button class="small-btn conflict-replace" data-conflict-choice="replace" type="button">Reemplazar</button>
@@ -217,6 +220,7 @@
           <div class="files-bulkbar" id="filesBulkbar" aria-live="polite">
             <span><strong id="selectedFilesCount">0</strong> seleccionados</span>
             <div class="bulk-actions">
+              <button class="small-btn" data-bulk-action="download">⬇️ Descargar</button>
               <button class="small-btn" data-bulk-action="move">🔀 Mover</button>
               <button class="small-btn" data-bulk-action="compress">🗜️ Comprimir</button>
               <button class="small-btn danger" data-bulk-action="delete">🗑️ Eliminar</button>

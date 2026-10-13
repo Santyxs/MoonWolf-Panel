@@ -184,9 +184,13 @@ function createDirectManager({ localFetch, requiredPermission, permissionAllows,
         AbortSignal.timeout(DC_REQUEST_TIMEOUT_MS)
       );
 
+      const rawContentLength = response.headers?.get ? response.headers.get('content-length') : null;
+      const contentLength = rawContentLength ? Number(rawContentLength) : 0;
+
       await sendFrame(peer, DC_FRAME.RES_HEAD, id, Buffer.from(JSON.stringify({
         status: response.status,
-        contentType: response.headers.get('content-type') || 'application/octet-stream',
+        contentType: response.headers?.get ? (response.headers.get('content-type') || 'application/octet-stream') : 'application/octet-stream',
+        contentLength: Number.isFinite(contentLength) ? contentLength : 0,
       })));
 
       if (response.body) {
