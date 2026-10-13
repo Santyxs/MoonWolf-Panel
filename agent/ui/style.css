@@ -455,14 +455,8 @@ footer {
 }
 
 @keyframes dialogIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: none; }
 }
 
 .dialog-header {
@@ -755,14 +749,8 @@ footer {
 }
 
 @keyframes settingsStatusIn {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
 }
 
 .restart-banner,
@@ -839,6 +827,7 @@ footer {
   transition: width 0.3s ease;
 }
 
+/* Toast fuera de .app → ahora su z-index compite con los modales */
 .update-notice {
   position: fixed;
   bottom: 24px;
@@ -856,7 +845,7 @@ footer {
   border: 1px solid var(--border);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.75);
   animation: noticeIn 0.22s ease;
-  z-index: 9999;
+  z-index: 99999;
   pointer-events: none;
 }
 
@@ -883,14 +872,8 @@ footer {
 }
 
 @keyframes noticeIn {
-  from {
-    opacity: 0;
-    transform: translateY(12px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .mw-confirm-overlay {
