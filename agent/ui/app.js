@@ -94,6 +94,7 @@ function customConfirm(message, title = 'Reiniciar Agent') {
 let lastNoticeRef = null;
 let pendingUpdateCheck = false;
 let updateCheckTimer = null;
+let settingsStatusTimer = null;
 let logsFilter = 'all';
 let logsQuery = '';
 let logsRenderKey = '';
@@ -107,6 +108,32 @@ function cancelUpdateCheck() {
   updateCheckTimer = null;
 }
 
+function showSettingsUpdateStatus(kind, message, autoHide = 0) {
+  const element = $('settings-update-status');
+
+  if (!element) return;
+
+  clearTimeout(settingsStatusTimer);
+  settingsStatusTimer = null;
+
+  if (!message) {
+    element.classList.add('hidden');
+    element.textContent = '';
+    element.className = 'settings-update-status hidden';
+    return;
+  }
+
+  element.textContent = message;
+  element.className = `settings-update-status ${kind || 'info'}`;
+  element.classList.remove('hidden');
+
+  if (autoHide > 0) {
+    settingsStatusTimer = setTimeout(() => {
+      element.classList.add('hidden');
+    }, autoHide);
+  }
+}
+
 function completeUpdateCheck(found) {
   cancelUpdateCheck();
 
@@ -116,9 +143,16 @@ function completeUpdateCheck(found) {
     flashButton(
       button,
       found ? '¡Disponible!' : 'Sin novedades',
-      found ? 1600 : 2600
+      found ? 1600 : 2000
     );
   }
+
+  showSettingsUpdateStatus(
+    found ? 'ok' : 'info',
+    found
+      ? 'Actualización disponible. Se descargará en segundo plano.'
+      : 'Ya tienes la última versión.'
+  );
 }
 
 function revealUpdateIfPending() {
@@ -638,6 +672,7 @@ function bindEvents() {
   $('settings')?.addEventListener(
     'click',
     () => {
+      showSettingsUpdateStatus('', '');
       renderSettings();
       openModal('settings-modal');
     }
@@ -694,6 +729,10 @@ function bindEvents() {
 
       if (!api.checkForUpdates) {
         flashButton(button, 'No disponible');
+        showSettingsUpdateStatus(
+          'err',
+          'La interfaz nativa no está disponible.'
+        );
         return;
       }
 
@@ -705,8 +744,14 @@ function bindEvents() {
 
       pendingUpdateCheck = true;
 
-      // "Buscando…" persiste durante toda la comprobación
+      // El botón mantiene "Buscando…" durante toda la comprobación
       flashButton(button, 'Buscando…', UPDATE_CHECK_TIMEOUT);
+
+      // Mostramos el estado dentro del modal, debajo de la tarjeta
+      showSettingsUpdateStatus(
+        'info',
+        'Buscando actualizaciones…'
+      );
 
       clearTimeout(updateCheckTimer);
 
@@ -740,7 +785,7 @@ function bindEvents() {
           completeUpdateCheck(false);
         }
         // Si el nativo no responde con available:false,
-        // dejamos que el timeout cierre con "Sin novedades"
+        // el timeout cerrará con "Ya tienes la última versión"
       } catch {
         if (pendingUpdateCheck) {
           completeUpdateCheck(false);
