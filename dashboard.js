@@ -2093,7 +2093,7 @@ function askFileConflict(fileName) {
   });
 }
 function isFileConflict(error) {
-  return Boolean(error?.isFileConflict || /ya existe un archivo/i.test(error?.message || ''));
+  return Boolean(error?.isFileConflict || error?.status === 409 || /ya existe un archivo/i.test(error?.message || ''));
 }
 async function uploadOneFile(file, relativePath, progressState, overwrite = true) {
   const relCandidate = file.customRelativePath || relativePath || file.webkitRelativePath || file.name;
@@ -2120,7 +2120,10 @@ async function uploadOneFile(file, relativePath, progressState, overwrite = true
     const data = await postUploadChunk(uploadId, target, 0, totalSize, new Uint8Array(), true, overwrite);
     if (!data?.ok) {
       const uploadError = new Error(data?.error || `No se pudo subir ${file.name}`);
-      if (/ya existe un archivo/i.test(uploadError.message)) uploadError.isFileConflict = true;
+      uploadError.status = data?.status;
+      if (data?.status === 409 || data?.isFileConflict || /ya existe un archivo/i.test(uploadError.message)) {
+        uploadError.isFileConflict = true;
+      }
       throw uploadError;
     }
     progressState.completedFiles += 1;
@@ -2158,7 +2161,11 @@ async function uploadOneFile(file, relativePath, progressState, overwrite = true
 
         if (!data?.ok) {
           const uploadError = new Error(data?.error || `No se pudo subir ${file.name}`);
-          if (/ya existe un archivo/i.test(uploadError.message)) uploadError.isFileConflict = true;
+          uploadError.status = data?.status;
+          if (data?.status === 409 || data?.isFileConflict || /ya existe un archivo/i.test(uploadError.message)) {
+            uploadError.isFileConflict = true;
+            throw uploadError;
+          }
           if (data?.status === 429 || /demasiadas/i.test(uploadError.message)) {
             uploadError.isRateLimited = true;
           }
@@ -2305,17 +2312,41 @@ async function uploadSelectedFiles(fileList) {
             progressState.conflictQueue = prompt.catch(() => ({ choice: 'cancel', applyAll: false }));
             const res = await prompt;
             choice = res.choice;
-            if (res.applyAll && (choice === 'replace' || choice === 'keep')) {
+            if (res.applyAll && (choice === 'replace' || choice === 'keep' || choice === 'numbered')) {
               progressState.rememberConflictChoice = choice;
             }
           }
           if (choice === 'keep') {
             progressState.completedFiles += 1;
-            progressState.status = `Manteniendo ${progressState.completedFiles}/${progressState.totalFiles}`;
+            progressState.status = `Omitiendo ${progressState.completedFiles}/${progressState.totalFiles}`;
             updateUploadProgress(progressState);
             return;
           }
           if (choice === 'cancel') throw Object.assign(new Error('Subida cancelada por conflicto de archivo'), { isCancelled: true });
+
+          if (choice === 'numbered') {
+            let counter = 1;
+            while (true) {
+              const parent = relative.includes('/') ? relative.slice(0, relative.lastIndexOf('/') + 1) : '';
+              const currentFileName = relative.includes('/') ? relative.slice(relative.lastIndexOf('/') + 1) : relative;
+              const dot = currentFileName.lastIndexOf('.');
+              const nameBase = dot > 0 ? currentFileName.slice(0, dot).replace(/\s\(\d+\)$/, '') : currentFileName.replace(/\s\(\d+\)$/, '');
+              const ext = dot > 0 ? currentFileName.slice(dot) : '';
+              const newRelative = `${parent}${nameBase} (${counter})${ext}`;
+              try {
+                await uploadOneFile(file, newRelative, progressState, false);
+                break;
+              } catch (numErr) {
+                if (isFileConflict(numErr)) {
+                  counter++;
+                  continue;
+                }
+                throw numErr;
+              }
+            }
+            return;
+          }
+
           await uploadOneFile(file, relative, progressState, true);
         }
       } finally {

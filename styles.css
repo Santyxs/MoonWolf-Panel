@@ -761,6 +761,7 @@ a.btn-primary { text-decoration: none; }
 .file-conflict-copy code { margin-top: 9px; overflow-wrap: anywhere; color: var(--yellow); font-size: var(--fs-xs); }
 .file-conflict-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .conflict-replace { color: var(--yellow); border-color: rgba(255,204,0,.45); background: rgba(255,204,0,.1); }
+.conflict-numbered { color: var(--accent); border-color: rgba(0,200,255,.45); background: rgba(0,200,255,.1); }
 .files-bulkbar {
   display: none;
   align-items: center;

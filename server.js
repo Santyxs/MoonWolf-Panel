@@ -4338,6 +4338,17 @@ app.post(
       return fail(res, 'Ruta no permitida');
     }
 
+    if (!overwrite) {
+      try {
+        await fs.access(full);
+        return res.status(409).json({
+          ok: false,
+          isFileConflict: true,
+          error: 'Ya existe un archivo con ese nombre',
+        });
+      } catch {}
+    }
+
     if (numericOffset + chunk.length > numericTotal) {
       return fail(res, 'El bloque excede el tamaño indicado');
     }
@@ -4385,7 +4396,13 @@ app.post(
         );
 
         if (!duplicate && chunk.length) {
-          const handle = await fs.open(uploadPath, 'a+');
+          try {
+            await fs.access(uploadPath);
+          } catch {
+            await fs.writeFile(uploadPath, Buffer.alloc(0));
+          }
+
+          const handle = await fs.open(uploadPath, 'r+');
           try {
             await handle.write(chunk, 0, chunk.length, numericOffset);
           } finally {
@@ -4417,6 +4434,15 @@ app.post(
 
         if (numericTotal === 0) {
           await fs.writeFile(uploadPath, Buffer.alloc(0));
+        } else {
+          try {
+            const handle = await fs.open(uploadPath, 'r+');
+            try {
+              await handle.truncate(numericTotal);
+            } finally {
+              await handle.close();
+            }
+          } catch {}
         }
 
         if (!complete) {
@@ -4436,7 +4462,11 @@ app.post(
         if (!overwrite) {
           try {
             await fs.access(full);
-            return fail(res, 'Ya existe un archivo con ese nombre');
+            return res.status(409).json({
+              ok: false,
+              isFileConflict: true,
+              error: 'Ya existe un archivo con ese nombre',
+            });
           } catch {}
         }
 
