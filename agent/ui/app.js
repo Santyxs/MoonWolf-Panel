@@ -117,23 +117,10 @@ function cancelUpdateCheck() {
   updateCheckTimer = null;
 }
 
-function completeUpdateCheck(found) {
-  cancelUpdateCheck();
-
-  const button = $('settings-check-update');
-  if (button) {
-    flashButton(
-      button,
-      found ? '¡Disponible!' : 'Sin novedades',
-      found ? 1600 : 2000
-    );
-  }
-}
-
 function revealUpdateIfPending() {
   if (!pendingUpdateCheck || !state.updateAvailable) return;
   closeModal('settings-modal');
-  completeUpdateCheck(true);
+  cancelUpdateCheck();
 }
 
 /* ---------- Render ---------- */
@@ -556,61 +543,40 @@ function bindEvents() {
     flashButton(button, ok ? 'Copiado' : 'Error');
   });
 
-  $('settings-check-update')?.addEventListener('click', async event => {
-    const button = event.currentTarget;
+  $('settings-check-update')?.addEventListener('click', async () => {
     const api = nativeApi();
+    if (!api.checkForUpdates) return;
 
-    if (!api.checkForUpdates) {
-      flashButton(button, 'No disponible');
-      return;
-    }
-
+    // Si ya hay una actualización conocida, mostrarla directamente
     if (state.updateAvailable) {
       closeModal('settings-modal');
-      flashButton(button, '¡Disponible!', 1600);
       return;
     }
 
     pendingUpdateCheck = true;
 
-    // Solo el botón cambia; nada de avisos intermedios
-    flashButton(button, 'Buscando…', UPDATE_CHECK_TIMEOUT);
-
     clearTimeout(updateCheckTimer);
-
     updateCheckTimer = setTimeout(() => {
-      if (!pendingUpdateCheck) return;
-
-      if (state.updateAvailable) {
-        closeModal('settings-modal');
-        completeUpdateCheck(true);
-      } else {
-        completeUpdateCheck(false);
-      }
+      // Si el nativo nunca emite el estado, limpiamos el flag
+      pendingUpdateCheck = false;
+      updateCheckTimer = null;
     }, UPDATE_CHECK_TIMEOUT);
 
     try {
       const result = await api.checkForUpdates();
 
-      if (!pendingUpdateCheck) return;
-
-      if (state.updateAvailable) {
-        closeModal('settings-modal');
-        completeUpdateCheck(true);
-        return;
-      }
-
+      // Si el nativo responde explícitamente que no hay novedad, limpiamos
       if (
         result &&
         typeof result === 'object' &&
         result.available === false
       ) {
-        completeUpdateCheck(false);
+        cancelUpdateCheck();
       }
-      // Si el nativo no responde con available:false,
-      // el timeout cierra con "Sin novedades"
+      // Si hay update, esperamos al evento 'moonwolf-state'
+      // que disparará revealUpdateIfPending() en el próximo render.
     } catch {
-      if (pendingUpdateCheck) completeUpdateCheck(false);
+      cancelUpdateCheck();
     }
   });
 
