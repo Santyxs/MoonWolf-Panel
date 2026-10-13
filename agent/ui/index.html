@@ -8,6 +8,7 @@
 </head>
 <body>
   <div class="ambient" aria-hidden="true"></div>
+
   <main class="app">
     <section class="hero">
       <div class="moon-logo"><div class="moon"></div></div>
@@ -91,9 +92,11 @@
       </button>
     </section>
 
-    <div id="update-notice" class="update-notice hidden"></div>
     <footer><span>MoonWolf Agent</span></footer>
   </main>
+
+  <!-- Toast fuera de .app para que su z-index compita con los modales -->
+  <div id="update-notice" class="update-notice hidden"></div>
 
   <section id="logs-modal" class="modal hidden">
     <div class="modal-backdrop"></div>
