@@ -200,26 +200,12 @@ jobs:
         env:
           AGENT_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          echo "Directorio de trabajo: $(pwd)"
-
-          mkdir -p agent dist
-          printf 'module.exports = {};\n' > agent/webview-native-shim.js
-
-          if [ ! -f agent/webview-native-shim.js ]; then
-            echo "ERROR: No se ha creado el shim."
-            exit 1
-          fi
-
-          echo "Shim creado:"
-          ls -l agent/webview-native-shim.js
-          cat agent/webview-native-shim.js
-
           npx --no-install esbuild agent/index.js \
             --bundle \
             --platform=node \
             --target=node26 \
             --format=cjs \
-            --alias:@webviewjs/webview-win32-x64-msvc=./agent/webview-native-shim.js \
+            --external:@webviewjs/webview-win32-x64-msvc \
             --define:__AGENT_VERSION__="\"${AGENT_TAG#agent-v}\"" \
             --outfile=dist/agent.cjs \
             --log-level=info
