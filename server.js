@@ -245,6 +245,9 @@ function signValue(value) {
     .digest('base64url');
 }
 
+// Los tokens compartidos se almacenan exclusivamente en PostgreSQL/Neon.
+// El controlador `postgres` ya es una dependencia del proyecto; no requiere
+// modificar package.json ni package-lock.json.
 const SHARE_TOKEN_DATABASE_URL = String(process.env.DATABASE_URL || '').trim();
 let shareTokenSql = null;
 
@@ -394,12 +397,14 @@ function requiredPermission(method, pathname) {
 
 function getShareTokenSql() {
   if (!SHARE_TOKEN_DATABASE_URL) {
-    const error = new Error('DATABASE_URL no está configurada.');
+    const error = new Error('DATABASE_URL no está configurada. Los accesos compartidos requieren Neon.');
     error.code = 'SHARE_TOKEN_STORE_UNAVAILABLE';
     throw error;
   }
 
   if (!shareTokenSql) {
+    // Neon acepta conexiones PostgreSQL estándar. `prepare: false` evita
+    // problemas con el pooler de Neon, que puede usar pooling transaccional.
     const postgres = require('postgres');
     shareTokenSql = postgres(SHARE_TOKEN_DATABASE_URL, {
       max: 5,
@@ -433,11 +438,15 @@ async function initializeShareTokenStore() {
 }
 
 function removeLegacyShareTokenFiles() {
+  // No se migran tokens anteriores. Borramos el archivo antiguo y sus copias
+  // conocidas para que no quede una segunda fuente de autorizaciones.
   const legacyPaths = new Set([
     path.join(__dirname, '.moonwolf-share-tokens.json'),
   ]);
   if (process.env.MOONWOLF_SHARE_STORE) {
     const configuredPath = path.resolve(process.env.MOONWOLF_SHARE_STORE);
+    // Solo eliminamos destinos que claramente sean archivos JSON de tokens;
+    // una variable mal configurada nunca debe borrar otro archivo del proyecto.
     if (/share[-_]?tokens?\.json$/i.test(path.basename(configuredPath))) {
       legacyPaths.add(configuredPath);
     }
@@ -609,6 +618,8 @@ function publicShareToken(record) {
 }
 
 async function getSessionFromRequest(req) {
+  // Modo local (Agent): la petición ya pasó la verificación de X-MoonWolf-Token.
+  // Solo el Agent inyecta estas cabeceras, con el contexto verificado por Cloud.
   if (LOCAL_AGENT_TOKEN) {
     const localPermission = normalizeSharePermission(req.get('x-moonwolf-permission'));
 
@@ -630,6 +641,7 @@ async function getSessionFromRequest(req) {
       if (!isShareTokenActive(share)) return null;
       session.permission = normalizeSharePermission(share.permission) || 'read';
     } catch (error) {
+      // Si Neon falla, no damos por válida una sesión compartida usando cachés locales.
       console.error('[share-tokens] No se pudo validar la sesión compartida:', error.message);
       return null;
     }
@@ -5298,10 +5310,19 @@ async function start() {
   removeLegacyShareTokenFiles();
 
   if (SHARE_TOKEN_DATABASE_URL) {
-    // Si DATABASE_URL está configurada pero Neon no responde, no desplegamos
-    // una versión que pueda operar con un almacén de autorizaciones incompleto.
-    await initializeShareTokenStore();
-    console.log('[share-tokens] Neon conectado; almacenamiento PostgreSQL inicializado.');
+    try {
+      await initializeShareTokenStore();
+      console.log('[share-tokens] Neon conectado; almacenamiento PostgreSQL inicializado.');
+    } catch (error) {
+      // Un fallo de Neon no debe impedir que el panel y el Agent se conecten.
+      // Las operaciones de tokens seguirán fallando de forma cerrada (503) y
+      // nunca recurrirán a un almacenamiento JSON local.
+      console.error('[share-tokens] Neon no está disponible; el panel arrancará con la gestión de tokens deshabilitada:', error.message);
+      try {
+        if (shareTokenSql) await shareTokenSql.end({ timeout: 1 });
+      } catch {}
+      shareTokenSql = null;
+    }
   } else {
     console.warn('[share-tokens] DATABASE_URL no configurada. Los tokens compartidos quedan deshabilitados; no hay almacenamiento local alternativo.');
   }
