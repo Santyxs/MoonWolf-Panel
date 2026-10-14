@@ -200,7 +200,20 @@ jobs:
         env:
           AGENT_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          # El shim vive en agent/; esbuild se ejecuta desde la raíz del repo.
+          echo "Directorio de trabajo: $(pwd)"
+
+          mkdir -p agent dist
+          printf 'module.exports = {};\n' > agent/webview-native-shim.js
+
+          if [ ! -f agent/webview-native-shim.js ]; then
+            echo "ERROR: No se ha creado el shim."
+            exit 1
+          fi
+
+          echo "Shim creado:"
+          ls -l agent/webview-native-shim.js
+          cat agent/webview-native-shim.js
+
           npx --no-install esbuild agent/index.js \
             --bundle \
             --platform=node \
