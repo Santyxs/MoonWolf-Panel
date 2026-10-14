@@ -547,7 +547,6 @@ function bindEvents() {
     const api = nativeApi();
     if (!api.checkForUpdates) return;
 
-    // Si ya hay una actualización conocida, mostrarla directamente
     if (state.updateAvailable) {
       closeModal('settings-modal');
       return;
@@ -557,7 +556,6 @@ function bindEvents() {
 
     clearTimeout(updateCheckTimer);
     updateCheckTimer = setTimeout(() => {
-      // Si el nativo nunca emite el estado, limpiamos el flag
       pendingUpdateCheck = false;
       updateCheckTimer = null;
     }, UPDATE_CHECK_TIMEOUT);
@@ -565,7 +563,6 @@ function bindEvents() {
     try {
       const result = await api.checkForUpdates();
 
-      // Si el nativo responde explícitamente que no hay novedad, limpiamos
       if (
         result &&
         typeof result === 'object' &&
@@ -573,8 +570,6 @@ function bindEvents() {
       ) {
         cancelUpdateCheck();
       }
-      // Si hay update, esperamos al evento 'moonwolf-state'
-      // que disparará revealUpdateIfPending() en el próximo render.
     } catch {
       cancelUpdateCheck();
     }
