@@ -245,9 +245,11 @@ function signValue(value) {
     .digest('base64url');
 }
 
-const SHARE_TOKEN_STORE_PATH =
-  process.env.MOONWOLF_SHARE_STORE ||
-  path.join(__dirname, '.moonwolf-share-tokens.json');
+// Los tokens compartidos se almacenan exclusivamente en PostgreSQL/Neon.
+// El controlador `postgres` ya es una dependencia del proyecto; no requiere
+// modificar package.json ni package-lock.json.
+const SHARE_TOKEN_DATABASE_URL = String(process.env.DATABASE_URL || '').trim();
+let shareTokenSql = null;
 
 const PERMISSION_RANK = {
   read: 1,
@@ -393,19 +395,84 @@ function requiredPermission(method, pathname) {
   return 'control';
 }
 
-function loadShareTokens() {
-  const data = readJsonConfigWithRecovery(SHARE_TOKEN_STORE_PATH, []);
-  return Array.isArray(data) ? data : [];
-}
-
-function saveShareTokens(tokens) {
-  const dir = path.dirname(SHARE_TOKEN_STORE_PATH);
-
-  if (!fsSync.existsSync(dir)) {
-    fsSync.mkdirSync(dir, { recursive: true });
+function getShareTokenSql() {
+  if (!SHARE_TOKEN_DATABASE_URL) {
+    const error = new Error('DATABASE_URL no está configurada. Los accesos compartidos requieren Neon.');
+    error.code = 'SHARE_TOKEN_STORE_UNAVAILABLE';
+    throw error;
   }
 
-  writeJsonConfig(SHARE_TOKEN_STORE_PATH, tokens);
+  if (!shareTokenSql) {
+    // Neon acepta conexiones PostgreSQL estándar. `prepare: false` evita
+    // problemas con el pooler de Neon, que puede usar pooling transaccional.
+    const postgres = require('postgres');
+    shareTokenSql = postgres(SHARE_TOKEN_DATABASE_URL, {
+      max: 5,
+      idle_timeout: 20,
+      connect_timeout: 10,
+      ssl: 'require',
+      prepare: false,
+      connection: { application_name: 'moonwolf-panel' },
+    });
+  }
+
+  return shareTokenSql;
+}
+
+async function initializeShareTokenStore() {
+  const sql = getShareTokenSql();
+
+  await sql`CREATE TABLE IF NOT EXISTS moonwolf_share_tokens (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    token_hash CHAR(64) NOT NULL UNIQUE,
+    label TEXT NOT NULL DEFAULT 'Acceso compartido',
+    permission TEXT NOT NULL CHECK (permission IN ('read', 'control', 'admin')),
+    created_at BIGINT NOT NULL,
+    expires_at BIGINT NULL,
+    revoked_at BIGINT NULL
+  )`;
+
+  await sql`CREATE INDEX IF NOT EXISTS moonwolf_share_tokens_agent_created_idx
+    ON moonwolf_share_tokens (agent_id, created_at DESC)`;
+}
+
+function removeLegacyShareTokenFiles() {
+  // No se migran tokens anteriores. Borramos el archivo antiguo y sus copias
+  // conocidas para que no quede una segunda fuente de autorizaciones.
+  const legacyPaths = new Set([
+    path.join(__dirname, '.moonwolf-share-tokens.json'),
+  ]);
+  if (process.env.MOONWOLF_SHARE_STORE) {
+    const configuredPath = path.resolve(process.env.MOONWOLF_SHARE_STORE);
+    // Solo eliminamos destinos que claramente sean archivos JSON de tokens;
+    // una variable mal configurada nunca debe borrar otro archivo del proyecto.
+    if (/share[-_]?tokens?\.json$/i.test(path.basename(configuredPath))) {
+      legacyPaths.add(configuredPath);
+    }
+  }
+
+  for (const legacyPath of legacyPaths) {
+    const dir = path.dirname(legacyPath);
+    const base = path.basename(legacyPath);
+    const targets = [legacyPath, `${legacyPath}.bak`];
+
+    try {
+      for (const name of fsSync.readdirSync(dir)) {
+        if (name.startsWith(`${base}.corrupt-`) || name.startsWith(`${base}.tmp-`)) {
+          targets.push(path.join(dir, name));
+        }
+      }
+    } catch {}
+
+    for (const target of targets) {
+      try {
+        if (fsSync.existsSync(target)) fsSync.rmSync(target, { force: true });
+      } catch (error) {
+        console.warn(`[share-tokens] No se pudo eliminar el archivo antiguo ${target}: ${error.message}`);
+      }
+    }
+  }
 }
 
 function hashShareToken(token) {
@@ -426,7 +493,67 @@ function makeShareToken() {
   return `MW-SHARE-${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}`;
 }
 
-function createShareToken(agentId, permission, expiresAt, label) {
+function shareTokenFromRow(row) {
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    agentId: String(row.agent_id),
+    tokenHash: String(row.token_hash).trim(),
+    label: String(row.label || 'Acceso compartido'),
+    permission: String(row.permission),
+    createdAt: Number(row.created_at),
+    expiresAt: row.expires_at == null ? null : Number(row.expires_at),
+    revokedAt: row.revoked_at == null ? null : Number(row.revoked_at),
+  };
+}
+
+function isShareTokenActive(record) {
+  return Boolean(
+    record &&
+    !record.revokedAt &&
+    (!record.expiresAt || Number(record.expiresAt) > Date.now())
+  );
+}
+
+async function findShareToken(token) {
+  const hash = hashShareToken(token);
+  const sql = getShareTokenSql();
+  const rows = await sql`
+    SELECT id, agent_id, token_hash, label, permission, created_at, expires_at, revoked_at
+    FROM moonwolf_share_tokens
+    WHERE token_hash = ${hash}
+    LIMIT 1
+  `;
+  const record = shareTokenFromRow(rows[0]);
+  return isShareTokenActive(record) ? record : null;
+}
+
+async function findShareTokenById(id, agentId) {
+  if (!id || !agentId) return null;
+  const sql = getShareTokenSql();
+  const rows = await sql`
+    SELECT id, agent_id, token_hash, label, permission, created_at, expires_at, revoked_at
+    FROM moonwolf_share_tokens
+    WHERE id = ${String(id)} AND agent_id = ${String(agentId)}
+    LIMIT 1
+  `;
+  return shareTokenFromRow(rows[0]);
+}
+
+async function listShareTokensForAgent(agentId) {
+  const sql = getShareTokenSql();
+  const rows = await sql`
+    SELECT id, agent_id, token_hash, label, permission, created_at, expires_at, revoked_at
+    FROM moonwolf_share_tokens
+    WHERE agent_id = ${String(agentId)}
+      AND revoked_at IS NULL
+      AND (expires_at IS NULL OR expires_at > ${Date.now()})
+    ORDER BY created_at DESC
+  `;
+  return rows.map(shareTokenFromRow);
+}
+
+async function createShareToken(agentId, permission, expiresAt, label) {
   const token = makeShareToken();
   const record = {
     id: crypto.randomUUID(),
@@ -439,24 +566,43 @@ function createShareToken(agentId, permission, expiresAt, label) {
     revokedAt: null,
   };
 
-  const tokens = loadShareTokens();
-  tokens.push(record);
-  saveShareTokens(tokens);
+  const sql = getShareTokenSql();
+  await sql`
+    INSERT INTO moonwolf_share_tokens
+      (id, agent_id, token_hash, label, permission, created_at, expires_at, revoked_at)
+    VALUES
+      (${record.id}, ${record.agentId}, ${record.tokenHash}, ${record.label},
+       ${record.permission}, ${record.createdAt}, ${record.expiresAt}, NULL)
+  `;
 
   return { record, token };
 }
 
-function findShareToken(token) {
-  const hash = hashShareToken(token);
-  const record = loadShareTokens().find(item => {
-    const stored = String(item?.tokenHash || '');
-    return stored.length === hash.length && timingSafeEqualStr(stored, hash);
-  });
+async function updateShareTokenPermission(id, agentId, permission) {
+  const sql = getShareTokenSql();
+  const rows = await sql`
+    UPDATE moonwolf_share_tokens
+    SET permission = ${permission}
+    WHERE id = ${String(id)}
+      AND agent_id = ${String(agentId)}
+      AND revoked_at IS NULL
+      AND (expires_at IS NULL OR expires_at > ${Date.now()})
+    RETURNING id, agent_id, token_hash, label, permission, created_at, expires_at, revoked_at
+  `;
+  return shareTokenFromRow(rows[0]);
+}
 
-  if (!record || record.revokedAt) return null;
-  if (record.expiresAt && Number(record.expiresAt) <= Date.now()) return null;
-
-  return record;
+async function revokeShareToken(id, agentId) {
+  const sql = getShareTokenSql();
+  const rows = await sql`
+    UPDATE moonwolf_share_tokens
+    SET revoked_at = ${Date.now()}
+    WHERE id = ${String(id)}
+      AND agent_id = ${String(agentId)}
+      AND revoked_at IS NULL
+    RETURNING id, agent_id, token_hash, label, permission, created_at, expires_at, revoked_at
+  `;
+  return shareTokenFromRow(rows[0]);
 }
 
 function publicShareToken(record) {
@@ -471,7 +617,7 @@ function publicShareToken(record) {
   };
 }
 
-function getSessionFromRequest(req) {
+async function getSessionFromRequest(req) {
   // Modo local (Agent): la petición ya pasó la verificación de X-MoonWolf-Token.
   // Solo el Agent inyecta estas cabeceras, con el contexto verificado por Cloud.
   if (LOCAL_AGENT_TOKEN) {
@@ -490,13 +636,15 @@ function getSessionFromRequest(req) {
   if (!session) return null;
 
   if (session.kind === 'share') {
-    const share = loadShareTokens().find(
-      item => item.id === session.shareTokenId && item.agentId === session.agentId
-    );
-    if (!share || share.revokedAt || (share.expiresAt && Number(share.expiresAt) <= Date.now())) {
+    try {
+      const share = await findShareTokenById(session.shareTokenId, session.agentId);
+      if (!isShareTokenActive(share)) return null;
+      session.permission = normalizeSharePermission(share.permission) || 'read';
+    } catch (error) {
+      // Si Neon falla, no damos por válida una sesión compartida usando cachés locales.
+      console.error('[share-tokens] No se pudo validar la sesión compartida:', error.message);
       return null;
     }
-    session.permission = normalizeSharePermission(share.permission) || 'read';
   }
 
   return session;
@@ -864,7 +1012,7 @@ const io = new Server(server, {
   },
 });
 
-io.use((socket, next) => {
+io.use(async (socket, next) => {
   if (!socketConnectionAllowed(socket)) {
     console.warn('[socket] Conexión rechazada por rate limit:', socket.handshake.address);
     return next(new Error('rate_limited'));
@@ -914,6 +1062,21 @@ io.use((socket, next) => {
     if (!session) {
       releaseSocketConnection(socket);
       return next(new Error('unauthorized'));
+    }
+
+    if (session.kind === 'share') {
+      try {
+        const share = await findShareTokenById(session.shareTokenId, session.agentId);
+        if (!isShareTokenActive(share)) {
+          releaseSocketConnection(socket);
+          return next(new Error('unauthorized'));
+        }
+        session.permission = normalizeSharePermission(share.permission) || 'read';
+      } catch (error) {
+        console.error('[share-tokens] socket auth:', error.message);
+        releaseSocketConnection(socket);
+        return next(new Error('share_store_unavailable'));
+      }
     }
 
     socket.data.role = 'panel';
@@ -1002,7 +1165,7 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-app.post('/api/pair', (req, res) => {
+app.post('/api/pair', async (req, res) => {
   if (loginRateLimited(req.ip)) {
     return res.status(429).json({ ok: false, error: 'Demasiados intentos, espera unos minutos.' });
   }
@@ -1013,7 +1176,15 @@ app.post('/api/pair', (req, res) => {
   let sessionOptions = { permission: 'admin', kind: 'owner' };
 
   if (/^MW-SHARE-[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/.test(code)) {
-    share = findShareToken(code);
+    try {
+      share = await findShareToken(code);
+    } catch (error) {
+      console.error('[share-tokens] pair lookup:', error.message);
+      return res.status(503).json({
+        ok: false,
+        error: 'El servicio de autorizaciones no está disponible. Inténtalo de nuevo más tarde.',
+      });
+    }
 
     if (!share) {
       return res.status(401).json({
@@ -1070,23 +1241,24 @@ app.post('/api/pair', (req, res) => {
 /* ══════════════════════════════════════════════
    SHARE TOKENS
    ══════════════════════════════════════════════ */
-app.get('/api/share-tokens', (req, res) => {
-  const session = getSessionFromRequest(req);
+app.get('/api/share-tokens', async (req, res) => {
+  const session = await getSessionFromRequest(req);
 
   if (!canManageShareTokens(session)) {
     return res.status(403).json({ ok: false, error: 'Necesitas el permiso Administrador para gestionar accesos compartidos.' });
   }
 
-  const tokens = loadShareTokens()
-    .filter(item => item.agentId === session.agentId && !item.revokedAt)
-    .filter(item => !item.expiresAt || Number(item.expiresAt) > Date.now())
-    .map(publicShareToken);
-
-  return res.json({ ok: true, tokens });
+  try {
+    const tokens = (await listShareTokensForAgent(session.agentId)).map(publicShareToken);
+    return res.json({ ok: true, tokens });
+  } catch (error) {
+    console.error('[share-tokens] list:', error.message);
+    return res.status(503).json({ ok: false, error: 'Neon no está disponible; no se pudieron consultar los accesos compartidos.' });
+  }
 });
 
-app.post('/api/share-tokens', (req, res) => {
-  const session = getSessionFromRequest(req);
+app.post('/api/share-tokens', async (req, res) => {
+  const session = await getSessionFromRequest(req);
 
   if (!canManageShareTokens(session)) {
     return res.status(403).json({ ok: false, error: 'Necesitas el permiso Administrador para crear accesos compartidos.' });
@@ -1113,7 +1285,7 @@ app.post('/api/share-tokens', (req, res) => {
   const expiresAt = expires === 'never' ? null : Date.now() + expiryMap[expires];
 
   try {
-    const created = createShareToken(
+    const created = await createShareToken(
       session.agentId,
       permission,
       expiresAt,
@@ -1127,12 +1299,12 @@ app.post('/api/share-tokens', (req, res) => {
     });
   } catch (error) {
     console.error('[share-tokens] create:', error.message);
-    return res.status(500).json({ ok: false, error: 'No se pudo guardar el acceso compartido.' });
+    return res.status(503).json({ ok: false, error: 'Neon no está disponible; no se pudo guardar el acceso compartido.' });
   }
 });
 
-app.patch('/api/share-tokens/:id', (req, res) => {
-  const session = getSessionFromRequest(req);
+app.patch('/api/share-tokens/:id', async (req, res) => {
+  const session = await getSessionFromRequest(req);
 
   if (!canManageShareTokens(session)) {
     return res.status(403).json({ ok: false, error: 'Necesitas el permiso Administrador para editar accesos compartidos.' });
@@ -1143,14 +1315,17 @@ app.patch('/api/share-tokens/:id', (req, res) => {
     return res.status(400).json({ ok: false, error: 'Permiso no válido.' });
   }
 
-  const tokens = loadShareTokens();
-  const record = tokens.find(item => item.id === req.params.id && item.agentId === session.agentId);
-  if (!record || record.revokedAt || (record.expiresAt && Number(record.expiresAt) <= Date.now())) {
-    return res.status(404).json({ ok: false, error: 'Acceso compartido no encontrado.' });
+  let record;
+  try {
+    record = await updateShareTokenPermission(req.params.id, session.agentId, permission);
+  } catch (error) {
+    console.error('[share-tokens] update:', error.message);
+    return res.status(503).json({ ok: false, error: 'Neon no está disponible; no se pudo actualizar el acceso compartido.' });
   }
 
-  record.permission = permission;
-  saveShareTokens(tokens);
+  if (!record) {
+    return res.status(404).json({ ok: false, error: 'Acceso compartido no encontrado.' });
+  }
 
   for (const panel of panelSockets) {
     if (panel.data.shareTokenId === record.id) {
@@ -1167,22 +1342,24 @@ app.patch('/api/share-tokens/:id', (req, res) => {
   return res.json({ ok: true, access: publicShareToken(record) });
 });
 
-app.delete('/api/share-tokens/:id', (req, res) => {
-  const session = getSessionFromRequest(req);
+app.delete('/api/share-tokens/:id', async (req, res) => {
+  const session = await getSessionFromRequest(req);
 
   if (!canManageShareTokens(session)) {
     return res.status(403).json({ ok: false, error: 'Necesitas el permiso Administrador para revocar accesos compartidos.' });
   }
 
-  const tokens = loadShareTokens();
-  const record = tokens.find(item => item.id === req.params.id && item.agentId === session.agentId);
-
-  if (!record || record.revokedAt) {
-    return res.status(404).json({ ok: false, error: 'Acceso compartido no encontrado.' });
+  let record;
+  try {
+    record = await revokeShareToken(req.params.id, session.agentId);
+  } catch (error) {
+    console.error('[share-tokens] revoke:', error.message);
+    return res.status(503).json({ ok: false, error: 'Neon no está disponible; no se pudo revocar el acceso compartido.' });
   }
 
-  record.revokedAt = Date.now();
-  saveShareTokens(tokens);
+  if (!record) {
+    return res.status(404).json({ ok: false, error: 'Acceso compartido no encontrado.' });
+  }
 
   for (const panel of panelSockets) {
     if (panel.data.shareTokenId === record.id) {
@@ -2394,7 +2571,7 @@ io.on('connection', socket => {
       expiresAt: socket.data.sessionExp,
     });
 
-    socket.on('rpc', request => {
+    socket.on('rpc', async request => {
       const isUploadChunk = String(request?.path || '').startsWith('/api/files/upload-chunk');
       const rpcLimit = isUploadChunk ? 2000 : 120;
 
@@ -2441,9 +2618,15 @@ io.on('connection', socket => {
       }
 
       if (socket.data.kind === 'share') {
-        const share = loadShareTokens().find(item => item.id === socket.data.shareTokenId && item.agentId === agentId);
+        let share;
+        try {
+          share = await findShareTokenById(socket.data.shareTokenId, agentId);
+        } catch (error) {
+          console.error('[share-tokens] rpc validation:', error.message);
+          return rejectRpc(503, 'No se pudo verificar el acceso compartido en Neon.');
+        }
 
-        if (!share || share.revokedAt || (share.expiresAt && Number(share.expiresAt) <= Date.now())) {
+        if (!isShareTokenActive(share)) {
           socket.emit('share_revoked');
           return socket.disconnect(true);
         }
@@ -2503,7 +2686,7 @@ io.on('connection', socket => {
       agentSocket.emit('rpc', sanitized);
     });
 
-    socket.on('direct_signal', msg => {
+    socket.on('direct_signal', async msg => {
       if (!socketEventAllowed(socket, 'direct_signal', 60)) return;
 
       const agentSocket = agentSockets.get(agentId);
@@ -2513,11 +2696,16 @@ io.on('connection', socket => {
       }
 
       if (socket.data.kind === 'share') {
-        const share = loadShareTokens().find(
-          item => item.id === socket.data.shareTokenId && item.agentId === agentId
-        );
+        let share;
+        try {
+          share = await findShareTokenById(socket.data.shareTokenId, agentId);
+        } catch (error) {
+          console.error('[share-tokens] direct_signal validation:', error.message);
+          socket.emit('share_revoked');
+          return socket.disconnect(true);
+        }
 
-        if (!share || share.revokedAt || (share.expiresAt && Number(share.expiresAt) <= Date.now())) {
+        if (!isShareTokenActive(share)) {
           socket.emit('share_revoked');
           return socket.disconnect(true);
         }
@@ -2679,7 +2867,7 @@ app.post('/api/startup', async (req, res) => {
     serverPort,
   } = req.body || {};
 
-  const session = getSessionFromRequest(req);
+  const session = await getSessionFromRequest(req);
   if (!isOwnerSession(session)) {
     const current = loadStartupConfig();
     const attempted = {
@@ -3504,7 +3692,7 @@ app.get('/api/plugins/versions', async (req, res) => {
 });
 
 app.post('/api/plugins/install', async (req, res) => {
-  const session = getSessionFromRequest(req);
+  const session = await getSessionFromRequest(req);
   if (!isOwnerSession(session)) {
     return res.status(403).json({
       ok: false,
@@ -3561,7 +3749,7 @@ app.get('/api/plugins/installed', async (_req, res) => {
 });
 
 app.delete('/api/plugins/installed/:file', async (req, res) => {
-  const session = getSessionFromRequest(req);
+  const session = await getSessionFromRequest(req);
   if (!isOwnerSession(session)) {
     return res.status(403).json({
       ok: false,
@@ -4012,7 +4200,7 @@ app.get('/api/versions/builds', async (req, res) => {
 });
 
 app.post('/api/versions/install', async (req, res) => {
-  const session = getSessionFromRequest(req);
+  const session = await getSessionFromRequest(req);
   if (!isOwnerSession(session)) {
     return res.status(403).json({
       ok: false,
@@ -4325,7 +4513,7 @@ app.post(
       return fail(res, 'Bloque demasiado grande');
     }
 
-    const session = getSessionFromRequest(req);
+    const session = await getSessionFromRequest(req);
     if (!isOwnerSession(session) && isDangerousUploadPath(rel)) {
       return res.status(403).json({
         ok: false,
@@ -4917,7 +5105,7 @@ app.delete('/api/backups/:name', async (req, res) => {
 });
 
 app.post('/api/backups/:name/restore', async (req, res) => {
-  const session = getSessionFromRequest(req);
+  const session = await getSessionFromRequest(req);
   if (!isOwnerSession(session)) {
     return res.status(403).json({
       ok: false,
@@ -5119,6 +5307,17 @@ function listenWithRetry(basePort, maxAttempts = 10) {
 }
 
 async function start() {
+  removeLegacyShareTokenFiles();
+
+  if (SHARE_TOKEN_DATABASE_URL) {
+    // Si DATABASE_URL está configurada pero Neon no responde, no desplegamos
+    // una versión que pueda operar con un almacén de autorizaciones incompleto.
+    await initializeShareTokenStore();
+    console.log('[share-tokens] Neon conectado; almacenamiento PostgreSQL inicializado.');
+  } else {
+    console.warn('[share-tokens] DATABASE_URL no configurada. Los tokens compartidos quedan deshabilitados; no hay almacenamiento local alternativo.');
+  }
+
   const actualPort = await listenWithRetry(PORT);
   console.log(`MoonWolf Panel → http://${HOST}:${actualPort}`);
 
