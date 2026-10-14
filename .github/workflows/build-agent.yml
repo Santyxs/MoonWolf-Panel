@@ -42,7 +42,7 @@ jobs:
 
       - name: Cache agent node_modules
         id: cache-agent-mods
-        uses: actions/cache@v4
+        uses: actions/cache@v7
         with:
           path: agent/node_modules
           key: agent-mods-${{ runner.os }}-${{ hashFiles('agent/package.json') }}
@@ -238,7 +238,7 @@ jobs:
           if ($size -lt 1MB) { throw 'El ejecutable generado es sospechosamente pequeño.' }
 
       - name: Restore rcedit cache
-        uses: actions/cache@v4
+        uses: actions/cache@v7
         with:
           path: dist/tools/rcedit-x64.exe
           key: rcedit-x64-v2.0.0
@@ -441,8 +441,7 @@ jobs:
               public const ushort LANG_NEUTRAL = 0;
               public const ushort RT_ICON = 3;
               public const ushort RT_GROUP_ICON = 14;
-            }
-            '@
+            } '@
           }
 
           $handle = [MoonWolfResources]::BeginUpdateResource($exe, $false)
