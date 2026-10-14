@@ -427,21 +427,8 @@ jobs:
           }
 
           if (-not ('MoonWolfResources' -as [type])) {
-            Add-Type @'
-            using System;
-            using System.Runtime.InteropServices;
-            public static class MoonWolfResources {
-              [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-              public static extern IntPtr BeginUpdateResource(string pFileName, bool bDeleteExistingResources);
-              [DllImport("kernel32.dll", SetLastError = true)]
-              public static extern bool UpdateResource(IntPtr hUpdate, IntPtr lpType, IntPtr lpName, ushort wLanguage, byte[] lpData, uint cbData);
-              [DllImport("kernel32.dll", SetLastError = true)]
-              public static extern bool EndUpdateResource(IntPtr hUpdate, bool fDiscard);
-              public static IntPtr MAKEINTRESOURCE(ushort value) { return new IntPtr(value); }
-              public const ushort LANG_NEUTRAL = 0;
-              public const ushort RT_ICON = 3;
-              public const ushort RT_GROUP_ICON = 14;
-            } '@
+            $cs = 'using System; using System.Runtime.InteropServices; public static class MoonWolfResources { [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern IntPtr BeginUpdateResource(string pFileName, bool bDeleteExistingResources); [DllImport("kernel32.dll", SetLastError = true)] public static extern bool UpdateResource(IntPtr hUpdate, IntPtr lpType, IntPtr lpName, ushort wLanguage, byte[] lpData, uint cbData); [DllImport("kernel32.dll", SetLastError = true)] public static extern bool EndUpdateResource(IntPtr hUpdate, bool fDiscard); public static IntPtr MAKEINTRESOURCE(ushort value) { return new IntPtr(value); } public const ushort LANG_NEUTRAL = 0; public const ushort RT_ICON = 3; public const ushort RT_GROUP_ICON = 14; }'
+            Add-Type -TypeDefinition $cs
           }
 
           $handle = [MoonWolfResources]::BeginUpdateResource($exe, $false)
