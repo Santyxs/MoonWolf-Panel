@@ -549,6 +549,15 @@ function createTray() {
   }
 }
 
+function executeWebViewScript(script) {
+  if (!webview || typeof webview.evaluateScript !== 'function') {
+    return false;
+  }
+
+  webview.evaluateScript(script);
+  return true;
+}
+
 function createWindow() {
   app = new Application();
 
@@ -654,7 +663,7 @@ function createWindow() {
   });
 
   try {
-    webview.evaluateScript(`
+    executeWebViewScript(`
       (() => {
         const disableContextMenu = event => {
           event.preventDefault();
@@ -722,7 +731,7 @@ function createWindow() {
       'page-load-finished',
       () => {
         try {
-          webview.evaluateScript(`
+          executeWebViewScript(`
             (() => {
               if (window.__moonwolfContextMenuDisabled) {
                 return;
@@ -933,7 +942,7 @@ function notifyStateChanged() {
     `'moonwolf-state', { detail: ${safeJson} }));`;
 
   try {
-    webview.evaluateScript(
+    executeWebViewScript(
       script
     );
   } catch {}
