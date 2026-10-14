@@ -448,6 +448,16 @@ function quitApp() {
 
   isQuitting = true;
 
+  if (notifyTimer !== null) {
+    clearTimeout(notifyTimer);
+    notifyTimer = null;
+  }
+
+  if (initialPaintTimer !== null) {
+    clearTimeout(initialPaintTimer);
+    initialPaintTimer = null;
+  }
+
   try {
     window?.hide();
   } catch {}
@@ -558,6 +568,29 @@ function executeWebViewScript(script) {
   return true;
 }
 
+const WEBVIEW_RESTRICTIONS_SCRIPT = `
+(() => {
+  if (window.__moonwolfRestrictionsInstalled) return;
+  window.__moonwolfRestrictionsInstalled = true;
+
+  document.addEventListener('contextmenu', event => {
+    event.preventDefault();
+  }, true);
+
+  document.addEventListener('selectstart', event => {
+    const target = event.target;
+    if (target && target.closest &&
+        target.closest('button')) {
+      event.preventDefault();
+    }
+  }, true);
+})();
+`;
+
+function installWebViewRestrictions() {
+  executeWebViewScript(WEBVIEW_RESTRICTIONS_SCRIPT);
+}
+
 function createWindow() {
   app = new Application();
 
@@ -663,31 +696,7 @@ function createWindow() {
   });
 
   try {
-    executeWebViewScript(`
-      (() => {
-        const disableContextMenu = event => {
-          event.preventDefault();
-          event.stopPropagation();
-          return false;
-        };
-
-        document.addEventListener(
-          'contextmenu',
-          disableContextMenu,
-          true
-        );
-
-        document.addEventListener(
-          'selectstart',
-          event => {
-            if (event.target?.closest?.('button')) {
-              event.preventDefault();
-            }
-          },
-          true
-        );
-      })();
-    `);
+    installWebViewRestrictions();
   } catch (error) {
     console.warn('[webview] No se pudo desactivar el menú contextual:', error?.message || error);
   }
@@ -731,25 +740,7 @@ function createWindow() {
       'page-load-finished',
       () => {
         try {
-          executeWebViewScript(`
-            (() => {
-              if (window.__moonwolfContextMenuDisabled) {
-                return;
-              }
-
-              window.__moonwolfContextMenuDisabled = true;
-
-              document.addEventListener(
-                'contextmenu',
-                event => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  return false;
-                },
-                true
-              );
-            })();
-          `);
+          installWebViewRestrictions();
         } catch {}
       }
     );
