@@ -159,19 +159,32 @@ jobs:
       - name: Create WebViewJS native shim
         shell: pwsh
         run: |
-          # Colocamos el shim en dist/ (ya creado) para una ruta estable
-          # relativa a la raíz del workspace, que es el cwd de esbuild.
-          $shim = Join-Path (Resolve-Path "dist").Path "webview-native-shim.js"
-          Set-Content -LiteralPath $shim -Value "module.exports = {};" -Encoding ascii -NoNewline
-
-          if (-not (Test-Path -LiteralPath $shim -PathType Leaf)) {
-            throw "No se pudo crear el shim: $shim"
+          # En Windows, esbuild --alias a un .js local falla con
+          # "Cannot read directory". En su lugar sustituimos el entry del
+          # paquete nativo en node_modules por un módulo vacío; el .node real
+          # se carga en runtime vía NAPI_RS_NATIVE_LIBRARY_PATH + process.dlopen.
+          $pkgDir = "agent/node_modules/@webviewjs/webview-win32-x64-msvc"
+          if (-not (Test-Path -LiteralPath $pkgDir)) {
+            throw "No existe el paquete nativo: $pkgDir"
           }
 
-          Write-Host "Shim creado correctamente:"
-          Write-Host (Resolve-Path -LiteralPath $shim)
-          Get-Item -LiteralPath $shim | Format-List FullName, Length
-          Get-Content -LiteralPath $shim
+          $pkgJsonPath = Join-Path $pkgDir "package.json"
+          $pkg = Get-Content -LiteralPath $pkgJsonPath -Raw | ConvertFrom-Json
+          $mainRel = if ($pkg.main) { $pkg.main } else { "index.js" }
+          $mainPath = Join-Path $pkgDir $mainRel
+          $mainDir = Split-Path -Parent $mainPath
+          if ($mainDir -and -not (Test-Path -LiteralPath $mainDir)) {
+            New-Item -ItemType Directory -Force -Path $mainDir | Out-Null
+          }
+
+          Set-Content -LiteralPath $mainPath -Value "module.exports = {};" -Encoding ascii -NoNewline
+          if (-not (Test-Path -LiteralPath $mainPath -PathType Leaf)) {
+            throw "No se pudo escribir el shim en: $mainPath"
+          }
+
+          Write-Host "Shim escrito en el entry del paquete:"
+          Write-Host (Resolve-Path -LiteralPath $mainPath)
+          Get-Content -LiteralPath $mainPath
 
       - name: Patch node-datachannel native binding for esbuild/SEA
         shell: pwsh
@@ -203,20 +216,14 @@ jobs:
         env:
           AGENT_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          # Alias (no --external): en SEA no hay node_modules; el require del
-          # paquete nativo se resuelve al shim vacío y carga vía NAPI_RS.
-          if [ ! -f dist/webview-native-shim.js ]; then
-            echo "Falta dist/webview-native-shim.js" >&2
-            ls -la dist/ || true
-            exit 1
-          fi
-
+          # El entry de @webviewjs/webview-win32-x64-msvc ya es un shim vacío
+          # (paso anterior). esbuild lo embebe en el bundle; el .node real se
+          # extrae de los assets SEA en runtime.
           npx --no-install esbuild agent/index.js \
             --bundle \
             --platform=node \
             --target=node26 \
             --format=cjs \
-            --alias:@webviewjs/webview-win32-x64-msvc=./dist/webview-native-shim.js \
             --define:__AGENT_VERSION__="\"${AGENT_TAG#agent-v}\"" \
             --outfile=dist/agent.cjs \
             --log-level=info
