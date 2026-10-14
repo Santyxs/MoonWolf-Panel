@@ -835,6 +835,12 @@ async function main() {
   let updateNoticeTimer = null;
   let shuttingDown = false;
   let gui = null;
+
+  function notifyGuiState() {
+    try {
+      gui?.update?.();
+    } catch {}
+  }
   let pairingCode = '';
   let pairingExpiresAt = 0;
   let pairingRenewTimer = null;
@@ -865,7 +871,7 @@ async function main() {
       logs.splice(0, logs.length - MAX_LOGS);
     }
 
-    gui?.update();
+    notifyGuiState();
   }
 
   function logError(error, context = 'Error') {
@@ -878,10 +884,10 @@ async function main() {
     clearTimeout(updateNoticeTimer);
     updateNoticeTimer = setTimeout(() => {
       updateNotice = null;
-      gui?.update();
+      notifyGuiState();
     }, ttl);
 
-    gui?.update();
+    notifyGuiState();
   }
 
   const getState = () => ({
@@ -911,14 +917,14 @@ async function main() {
     updateProgress = 0;
     updateError = null;
     updateFilePath = null;
-    gui?.update();
+    notifyGuiState();
 
     addLog(`Descargando actualización v${updateAvailable.version}...`);
 
     try {
       updateFilePath = await downloadUpdate(updateAvailable, progress => {
         updateProgress = progress;
-        gui?.update();
+        notifyGuiState();
       });
 
       updateStatus = 'ready';
@@ -933,7 +939,7 @@ async function main() {
       setUpdateNotice(`Error descargando actualización: ${error.message}`, 'err', 5000);
     }
 
-    gui?.update();
+    notifyGuiState();
   }
 
   async function runUpdateCheck() {
@@ -954,7 +960,7 @@ async function main() {
         addLog(`No hay actualizaciones. Versión actual: v${VERSION}.`);
         setUpdateNotice(`Ya tienes la última versión · v${VERSION}`, 'ok');
 
-        gui?.update();
+        notifyGuiState();
         return;
       }
 
@@ -970,7 +976,7 @@ async function main() {
       updateError = null;
 
       addLog(`Actualización disponible: v${info.version} (actual: v${VERSION}).`);
-      gui?.update();
+      notifyGuiState();
 
       startUpdateDownload();
     } catch (error) {
@@ -978,7 +984,7 @@ async function main() {
       updateError = error.message;
       logError(error, 'Error buscando actualización');
       setUpdateNotice(`Error buscando actualización: ${error.message}`, 'err', 5000);
-      gui?.update();
+      notifyGuiState();
     }
   }
 
@@ -995,7 +1001,7 @@ async function main() {
       updateStatus = 'idle';
       updateError = null;
       updateFilePath = null;
-      gui?.update();
+      notifyGuiState();
 
       await startUpdateDownload();
 
@@ -1008,7 +1014,7 @@ async function main() {
 
     try {
       updateStatus = 'installing';
-      gui?.update();
+      notifyGuiState();
 
       addLog(`Aplicando actualización v${updateAvailable.version}...`);
       setUpdateNotice('Aplicando actualización… el agent se reiniciará', 'info', 3000);
@@ -1016,7 +1022,7 @@ async function main() {
       await Promise.resolve(applyUpdate(updateFilePath));
 
       addLog('Cerrando para aplicar la actualización...');
-      gui?.update();
+      notifyGuiState();
 
       setTimeout(() => {
         try { gui?.close?.(); } catch { try { process.exit(0); } catch {} }
@@ -1028,7 +1034,7 @@ async function main() {
       updateError = error.message;
       logError(error, 'Error aplicando actualización');
       setUpdateNotice(`Error aplicando actualización: ${error.message}`, 'err', 5000);
-      gui?.update();
+      notifyGuiState();
       return { ok: false, error: error.message };
     }
   }
@@ -1091,7 +1097,7 @@ async function main() {
         'Es necesario reiniciar MoonWolf Agent para aplicar el cambio.',
         'warn'
       );
-      gui.update();
+      notifyGuiState();
 
       return {
         ok: true,
@@ -1149,11 +1155,11 @@ async function main() {
     await waitForLocalServer(localUrl);
     localServerReady = true;
     addLog('Servidor local iniciado correctamente.');
-    gui.update();
+    notifyGuiState();
   } catch (error) {
     localServerReady = false;
     logError(error, 'El servidor local no respondió');
-    gui.update();
+    notifyGuiState();
     throw error;
   }
 
@@ -1267,7 +1273,7 @@ async function main() {
     clearTimeout(pairingRenewTimer);
     pairingCode = '';
     pairingExpiresAt = 0;
-    gui?.update();
+    notifyGuiState();
   }
 
   function connectLocalSocket() {
@@ -1346,7 +1352,7 @@ async function main() {
       `pid=${process.pid}, agentId=${config.agentId}, version=${VERSION})...`
     );
     addLog('Conectando con MoonWolf Cloud...');
-    gui.update();
+    notifyGuiState();
 
     cloudSocket = io(PANEL_URL, {
       path: CLOUD_PATH,
@@ -1371,7 +1377,7 @@ async function main() {
       requestPairingCode();
       runUpdateCheck();
       scheduleUpdateCheck();
-      gui.update();
+      notifyGuiState();
     });
 
     cloudSocket.on('pairing_ready', data => {
@@ -1401,7 +1407,7 @@ async function main() {
         Math.max(5000, ttlMs - 20_000)
       );
       addLog(`Código de emparejamiento disponible: ${code}`);
-      gui.update();
+      notifyGuiState();
     });
 
     cloudSocket.on('pairing_consumed', () => {
@@ -1429,7 +1435,7 @@ async function main() {
         'error'
       );
       addLog(`Error de conexión con Cloud: ${error?.message || error}`, 'error');
-      gui.update();
+      notifyGuiState();
     });
 
     cloudSocket.on('disconnect', reason => {
@@ -1442,7 +1448,7 @@ async function main() {
         'warn'
       );
       addLog(`Desconectado de MoonWolf Cloud${reason ? `: ${reason}` : '.'}`, 'warn');
-      gui.update();
+      notifyGuiState();
       scheduleReconnect();
     });
   }
@@ -1466,7 +1472,7 @@ async function main() {
     logError(error, 'Error no controlado');
     addLog('El proceso se cerrará para evitar un estado inconsistente.', 'error');
 
-    try { gui?.update(); } catch {}
+    try { notifyGuiState(); } catch {}
 
     setTimeout(() => {
       try { shutdown(); } catch {}
