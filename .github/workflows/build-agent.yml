@@ -29,7 +29,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: '26'
           cache: npm
           cache-dependency-path: package-lock.json
 
@@ -195,7 +195,16 @@ jobs:
         env:
           AGENT_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          npx --no-install esbuild agent/index.js             --bundle             --platform=node             --target=node24             --format=cjs             --alias:@webviewjs/webview-win32-x64-msvc=./webview-native-shim.js             --define:__AGENT_VERSION__="\"${AGENT_TAG#agent-v}\""             --outfile=dist/agent.cjs             --log-level=info
+          # El shim vive en agent/; esbuild se ejecuta desde la raíz del repo.
+          npx --no-install esbuild agent/index.js \
+            --bundle \
+            --platform=node \
+            --target=node26 \
+            --format=cjs \
+            --alias:@webviewjs/webview-win32-x64-msvc=./agent/webview-native-shim.js \
+            --define:__AGENT_VERSION__="\"${AGENT_TAG#agent-v}\"" \
+            --outfile=dist/agent.cjs \
+            --log-level=info
 
       - name: Verify bundle
         shell: pwsh
@@ -210,7 +219,7 @@ jobs:
             throw "El bundle generado es sospechosamente pequeño."
           }
 
-      - name: Create Node SEA configuration
+      - name: Create SEA configuration
         shell: pwsh
         run: |
           $native = (Resolve-Path `
@@ -218,18 +227,21 @@ jobs:
           $dcNative = (Resolve-Path `
             "agent/node_modules/node-datachannel/build/Release/node_datachannel.node").Path
           $main = (Resolve-Path "dist/agent.cjs").Path
-          $blob = Join-Path (Resolve-Path "dist").Path "sea-prep.blob"
+          $exe = Join-Path (Resolve-Path "dist").Path "MoonWolf-Agent.exe"
           $indexHtml = (Resolve-Path "agent/ui/index.html").Path
           $styleCss = (Resolve-Path "agent/ui/style.css").Path
           $appJs = (Resolve-Path "agent/ui/app.js").Path
 
+          # Node 26+: output apunta al ejecutable final.
+          # --build-sea genera el blob, copia el binario de Node e inyecta
+          # el recurso en un solo paso (sin postject).
           $config = @{
             main = $main
             mainFormat = "commonjs"
-            output = $blob
+            output = $exe
             disableExperimentalSEAWarning = $true
             useSnapshot = $false
-            useCodeCache = $false
+            useCodeCache = $true
             assets = @{
               "ui/index.html" = $indexHtml
               "ui/style.css" = $styleCss
@@ -240,36 +252,31 @@ jobs:
           }
 
           $config | ConvertTo-Json -Depth 10 | Set-Content -Path "dist/sea-config.json" -Encoding utf8
+          Write-Host "sea-config.json:"
+          Get-Content -LiteralPath "dist/sea-config.json" -Raw
 
-      - name: Build Agent executable
+      - name: Build Agent executable (Node --build-sea)
         shell: pwsh
         run: |
-          node --experimental-sea-config dist/sea-config.json
-          if ($LASTEXITCODE -ne 0) { throw "La generación del blob SEA terminó con código $LASTEXITCODE" }
-
-          $blob = (Resolve-Path "dist/sea-prep.blob").Path
+          $config = (Resolve-Path "dist/sea-config.json").Path
           $exe = Join-Path (Resolve-Path "dist").Path "MoonWolf-Agent.exe"
-          $nodePath = (Get-Command node).Source
 
-          if (-not (Test-Path -LiteralPath $blob)) { throw "No se generó $blob" }
-          Copy-Item -LiteralPath $nodePath -Destination $exe -Force
-          if (-not (Test-Path -LiteralPath $exe)) { throw "No se pudo crear $exe" }
+          if (Test-Path -LiteralPath $exe) {
+            Remove-Item -LiteralPath $exe -Force
+          }
 
-          Write-Host "Node executable: $nodePath"
-          Write-Host "SEA blob: $blob"
-          Write-Host "Target executable: $exe"
+          Write-Host "Generando SEA con node --build-sea..."
+          node --build-sea $config
+          if ($LASTEXITCODE -ne 0) {
+            throw "node --build-sea terminó con código $LASTEXITCODE"
+          }
 
-          $binaryBytes = [System.IO.File]::ReadAllBytes($exe)
-          $binaryText = [System.Text.Encoding]::ASCII.GetString($binaryBytes)
-          $sentinelMatch = [regex]::Match($binaryText, 'NODE_SEA_FUSE_[A-Za-z0-9]+')
-          if (-not $sentinelMatch.Success) { throw "No se encontró ningún SEA sentinel fuse dentro de node.exe" }
-          $sentinelFuse = $sentinelMatch.Value
+          if (-not (Test-Path -LiteralPath $exe)) {
+            throw "No se generó $exe"
+          }
 
-          Write-Host "SEA sentinel detectado: $sentinelFuse"
-          npx --yes postject $exe NODE_SEA_BLOB $blob --sentinel-fuse $sentinelFuse --overwrite
-          if ($LASTEXITCODE -ne 0) { throw "postject terminó con código $LASTEXITCODE" }
-          if (-not (Test-Path -LiteralPath $exe)) { throw "No se generó $exe" }
-          Write-Host "MoonWolf-Agent.exe generado correctamente."
+          $size = (Get-Item -LiteralPath $exe).Length
+          Write-Host "MoonWolf-Agent.exe generado: $size bytes"
 
       - name: Hide Windows console
         shell: pwsh
@@ -626,4 +633,7 @@ jobs:
           TAG_NAME: ${{ steps.version.outputs.tag }}
         shell: bash
         run: |
-          gh release create "$TAG_NAME"             dist/MoonWolf-Agent.exe             --title "MoonWolf Agent v${TAG_NAME#agent-v}"             --generate-notes
+          gh release create "$TAG_NAME" \
+            dist/MoonWolf-Agent.exe \
+            --title "MoonWolf Agent v${TAG_NAME#agent-v}" \
+            --generate-notes
