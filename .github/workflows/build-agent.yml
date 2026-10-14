@@ -160,31 +160,28 @@ jobs:
         shell: pwsh
         run: |
           # En Windows, esbuild --alias a un .js local falla con
-          # "Cannot read directory". En su lugar sustituimos el entry del
-          # paquete nativo en node_modules por un módulo vacío; el .node real
-          # se carga en runtime vía NAPI_RS_NATIVE_LIBRARY_PATH + process.dlopen.
+          # "Cannot read directory". El package.json del addon suele tener
+          # "main": "*.node"; esbuild no tiene loader para .node.
+          # Escribimos un shim .js y apuntamos package.json.main a él.
+          # El .node real se carga en runtime vía NAPI_RS + process.dlopen.
           $pkgDir = "agent/node_modules/@webviewjs/webview-win32-x64-msvc"
           if (-not (Test-Path -LiteralPath $pkgDir)) {
             throw "No existe el paquete nativo: $pkgDir"
           }
 
+          $shimRel = "webview-shim.js"
+          $shimPath = Join-Path $pkgDir $shimRel
+          Set-Content -LiteralPath $shimPath -Value "module.exports = {};" -Encoding ascii -NoNewline
+
           $pkgJsonPath = Join-Path $pkgDir "package.json"
           $pkg = Get-Content -LiteralPath $pkgJsonPath -Raw | ConvertFrom-Json
-          $mainRel = if ($pkg.main) { $pkg.main } else { "index.js" }
-          $mainPath = Join-Path $pkgDir $mainRel
-          $mainDir = Split-Path -Parent $mainPath
-          if ($mainDir -and -not (Test-Path -LiteralPath $mainDir)) {
-            New-Item -ItemType Directory -Force -Path $mainDir | Out-Null
-          }
+          $pkg.main = $shimRel
+          $pkg | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $pkgJsonPath -Encoding utf8
 
-          Set-Content -LiteralPath $mainPath -Value "module.exports = {};" -Encoding ascii -NoNewline
-          if (-not (Test-Path -LiteralPath $mainPath -PathType Leaf)) {
-            throw "No se pudo escribir el shim en: $mainPath"
-          }
-
-          Write-Host "Shim escrito en el entry del paquete:"
-          Write-Host (Resolve-Path -LiteralPath $mainPath)
-          Get-Content -LiteralPath $mainPath
+          Write-Host "package.json main -> $shimRel"
+          Write-Host "Shim:"
+          Get-Content -LiteralPath $shimPath
+          Get-Content -LiteralPath $pkgJsonPath
 
       - name: Patch node-datachannel native binding for esbuild/SEA
         shell: pwsh
