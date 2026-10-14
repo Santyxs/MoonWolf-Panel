@@ -159,11 +159,16 @@ jobs:
       - name: Create WebViewJS native shim
         shell: pwsh
         run: |
-          @'
-          module.exports = {};
-          '@ | Set-Content `
-            -Path "agent/webview-native-shim.js" `
-            -Encoding utf8
+          $shim = Join-Path $env:GITHUB_WORKSPACE "agent/webview-native-shim.js"
+          Set-Content -LiteralPath $shim -Value "module.exports = {};" -Encoding ascii
+
+          if (-not (Test-Path -LiteralPath $shim)) {
+            throw "No se pudo crear el shim: $shim"
+          }
+
+          Write-Host "Shim creado correctamente:"
+          Write-Host $shim
+          Get-Content -LiteralPath $shim
 
       - name: Patch node-datachannel native binding for esbuild/SEA
         shell: pwsh
