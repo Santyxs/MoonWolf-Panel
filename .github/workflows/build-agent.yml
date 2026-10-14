@@ -218,6 +218,7 @@ jobs:
           # extrae de los assets SEA en runtime.
           npx --no-install esbuild agent/index.js \
             --bundle \
+            --minify \
             --platform=node \
             --target=node26 \
             --format=cjs \
