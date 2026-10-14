@@ -200,12 +200,15 @@ jobs:
         env:
           AGENT_TAG: ${{ steps.version.outputs.tag }}
         run: |
+          # El shim vive en agent/; esbuild corre desde la raíz del repo.
+          # Alias (no --external): en SEA no hay node_modules; el require del
+          # paquete nativo debe resolverse al shim vacío y cargar vía NAPI_RS.
           npx --no-install esbuild agent/index.js \
             --bundle \
             --platform=node \
             --target=node26 \
             --format=cjs \
-            --external:@webviewjs/webview-win32-x64-msvc \
+            --alias:@webviewjs/webview-win32-x64-msvc=./agent/webview-native-shim.js \
             --define:__AGENT_VERSION__="\"${AGENT_TAG#agent-v}\"" \
             --outfile=dist/agent.cjs \
             --log-level=info
@@ -568,38 +571,38 @@ jobs:
         run: |
           $exe = (Resolve-Path "dist/MoonWolf-Agent.exe").Path
           $version = $env:AGENT_TAG -replace '^agent-v', ''
+          $fileVersion = "$version.0.0"
 
-          # node.exe conserva su propia información de versión ("Node Runtime")
-          # al convertirse en ejecutable SEA. Sobrescribimos los campos que
-          # Windows usa para identificar la aplicación en el Explorador y la
-          # barra de tareas.
-          # rcedit no publica un binario CLI ejecutable en npm. resedit-cli sí
-          # lo hace y conserva el resto de recursos PE (incluido el icono).
-          $patched = Join-Path (Split-Path $exe) "MoonWolf-Agent.metadata.exe"
-          if (Test-Path -LiteralPath $patched) {
-            Remove-Item -LiteralPath $patched -Force
+          # resedit-cli / pe-library no soporta el layout PE de --build-sea
+          # (LIEF). rcedit (Electron) usa Win32 nativo y sí funciona post-SEA.
+          $rceditDir = Join-Path (Resolve-Path "dist").Path "tools"
+          New-Item -ItemType Directory -Force -Path $rceditDir | Out-Null
+          $rcedit = Join-Path $rceditDir "rcedit-x64.exe"
+          $rceditUrl = "https://github.com/electron/rcedit/releases/download/v2.0.0/rcedit-x64.exe"
+
+          Write-Host "Descargando rcedit desde $rceditUrl"
+          Invoke-WebRequest -Uri $rceditUrl -OutFile $rcedit -UseBasicParsing
+          if (-not (Test-Path -LiteralPath $rcedit)) {
+            throw "No se pudo descargar rcedit-x64.exe"
           }
 
-          npx --yes resedit-cli@3.1.1 `
-            --in $exe `
-            --out $patched `
-            --ignore-signed `
-            --file-description "MoonWolf Agent" `
-            --product-name "MoonWolf Agent" `
-            --internal-name "MoonWolf-Agent.exe" `
-            --original-filename "MoonWolf-Agent.exe" `
-            --company-name "MoonWolf" `
-            --file-version "$version.0.0" `
-            --product-version "$version.0.0"
+          & $rcedit $exe `
+            --set-version-string "FileDescription" "MoonWolf Agent" `
+            --set-version-string "ProductName" "MoonWolf Agent" `
+            --set-version-string "InternalName" "MoonWolf-Agent.exe" `
+            --set-version-string "OriginalFilename" "MoonWolf-Agent.exe" `
+            --set-version-string "CompanyName" "MoonWolf" `
+            --set-file-version $fileVersion `
+            --set-product-version $fileVersion
 
-          if ($LASTEXITCODE -ne 0) { throw "No se pudieron actualizar los metadatos de Windows." }
-          if (-not (Test-Path -LiteralPath $patched)) { throw "resedit-cli no generó el ejecutable parcheado." }
-
-          Move-Item -LiteralPath $patched -Destination $exe -Force
+          if ($LASTEXITCODE -ne 0) {
+            throw "rcedit terminó con código $LASTEXITCODE"
+          }
 
           $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
           Write-Host "FileDescription: $($info.FileDescription)"
           Write-Host "ProductName: $($info.ProductName)"
+          Write-Host "FileVersion: $($info.FileVersion)"
           if ($info.FileDescription -ne "MoonWolf Agent" -or $info.ProductName -ne "MoonWolf Agent") {
             throw "Los metadatos no contienen el nombre esperado MoonWolf Agent."
           }
