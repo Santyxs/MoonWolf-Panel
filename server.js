@@ -5310,19 +5310,10 @@ async function start() {
   removeLegacyShareTokenFiles();
 
   if (SHARE_TOKEN_DATABASE_URL) {
-    try {
-      await initializeShareTokenStore();
-      console.log('[share-tokens] Neon conectado; almacenamiento PostgreSQL inicializado.');
-    } catch (error) {
-      // Un fallo de Neon no debe impedir que el panel y el Agent se conecten.
-      // Las operaciones de tokens seguirán fallando de forma cerrada (503) y
-      // nunca recurrirán a un almacenamiento JSON local.
-      console.error('[share-tokens] Neon no está disponible; el panel arrancará con la gestión de tokens deshabilitada:', error.message);
-      try {
-        if (shareTokenSql) await shareTokenSql.end({ timeout: 1 });
-      } catch {}
-      shareTokenSql = null;
-    }
+    // Si DATABASE_URL está configurada pero Neon no responde, no desplegamos
+    // una versión que pueda operar con un almacén de autorizaciones incompleto.
+    await initializeShareTokenStore();
+    console.log('[share-tokens] Neon conectado; almacenamiento PostgreSQL inicializado.');
   } else {
     console.warn('[share-tokens] DATABASE_URL no configurada. Los tokens compartidos quedan deshabilitados; no hay almacenamiento local alternativo.');
   }
