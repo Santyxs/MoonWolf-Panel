@@ -5462,23 +5462,34 @@ function listenWithRetry(basePort, maxAttempts = 10) {
 
 async function start() {
   removeLegacyShareTokenFiles();
-
-  if (SHARE_TOKEN_DATABASE_URL) {
-    await initializeShareTokenStore();
-    console.log('[share-tokens] Neon conectado; almacenamiento PostgreSQL inicializado.');
-  } else {
-    console.warn('[share-tokens] DATABASE_URL no configurada. Los tokens compartidos quedan deshabilitados; no hay almacenamiento local alternativo.');
-  }
-
   const actualPort = await listenWithRetry(PORT);
   console.log(`MoonWolf Panel → http://${HOST}:${actualPort}`);
+
+  if (SHARE_TOKEN_DATABASE_URL) {
+    initializeShareTokenStore()
+      .then(() => {
+        console.log('[share-tokens] Neon conectado; almacenamiento PostgreSQL inicializado.');
+      })
+      .catch(error => {
+        console.error(
+          '[share-tokens] No se pudo inicializar el almacén PostgreSQL:',
+          error?.message || error
+        );
+      });
+  } else {
+    console.warn(
+      '[share-tokens] DATABASE_URL no configurada. Los tokens compartidos quedan deshabilitados; no hay almacenamiento local alternativo.'
+    );
+  }
 
   const cfg = loadStartupConfig();
 
   if (cfg.autoStartOnBoot) {
     broadcastLog('🌙 Arranque automático activado. Iniciando servidor...', 'system');
     broadcastStatus('starting');
-    launchServer().catch(error => broadcastLog(`❌ Error en arranque automático: ${error.message}`, 'error'));
+    launchServer().catch(error =>
+      broadcastLog(`❌ Error en arranque automático: ${error.message}`, 'error')
+    );
   }
 }
 
