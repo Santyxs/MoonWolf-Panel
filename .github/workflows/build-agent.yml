@@ -161,7 +161,7 @@ jobs:
               major=$((major + 1))
               minor=0
             fi
-            next="agent-v\( {major}. \){minor}"
+            -next="agent-v${major}.${minor}"
           fi
 
           echo "Latest version: ${latest:-none}"
@@ -249,7 +249,7 @@ jobs:
           $icon = (Resolve-Path 'agent/assets/MoonWolf-Agent.ico').Path
 
           # CONSOLE → WINDOWS (no console window)
-          \( vswhere = " \){env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           if (-not (Test-Path -LiteralPath $vswhere)) { throw 'vswhere.exe not found' }
 
           $vsInstallPath = & $vswhere -latest -products * `
