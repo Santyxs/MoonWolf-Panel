@@ -38,23 +38,24 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Install root dependencies
-        run: npm ci --include=dev --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Cache agent node_modules
         id: cache-agent-mods
         uses: actions/cache@v6
         with:
           path: agent/node_modules
-          key: agent-mods-${{ runner.os }}-${{ hashFiles('agent/package.json') }}
+          key: agent-mods-${{ hashFiles('agent/package.json') }}
 
       - name: Install Agent dependencies
         if: steps.cache-agent-mods.outputs.cache-hit != 'true'
         working-directory: agent
         run: npm install --no-package-lock --no-audit --no-fund
 
-      - name: Verify native addons
+      - name: Patch natives for SEA + prepare dist
         shell: pwsh
         run: |
+          # Verify native addons exist
           $natives = @(
             'agent/node_modules/@webviewjs/webview-win32-x64-msvc/webview.win32-x64-msvc.node',
             'agent/node_modules/node-datachannel/build/Release/node_datachannel.node'
@@ -66,9 +67,6 @@ jobs:
             Write-Host "OK $(Resolve-Path -LiteralPath $p)"
           }
 
-      - name: Patch natives for SEA + prepare dist
-        shell: pwsh
-        run: |
           # WebViewJS: process.dlopen via NAPI_RS_NATIVE_LIBRARY_PATH
           $bindings = 'agent/node_modules/@webviewjs/webview/js-bindings.js'
           if (-not (Test-Path -LiteralPath $bindings)) {
