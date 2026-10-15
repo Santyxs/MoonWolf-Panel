@@ -161,7 +161,7 @@ jobs:
               major=$((major + 1))
               minor=0
             fi
-            -next="agent-v${major}.${minor}"
+            next="agent-v${major}.${minor}"
           fi
 
           echo "Latest version: ${latest:-none}"
