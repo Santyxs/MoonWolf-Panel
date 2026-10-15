@@ -1849,8 +1849,8 @@ async function resolveJavaForServer(minecraftVersion) {
   return executable;
 }
 
-const PORT = 30000;
 const HOST = '0.0.0.0';
+const PORT = Number(process.env.MOONWOLF_PORT);
 
 const STARTUP_DIR = path.join(BASE_DIR, '.moonwolf');
 const STARTUP_CONFIG_PATH = path.join(STARTUP_DIR, 'startup.json');
