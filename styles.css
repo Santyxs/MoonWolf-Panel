@@ -415,6 +415,34 @@ select:focus:not(:focus-visible) {
   background: rgba(255,68,85,0.06);
 }
 
+/* ── UPLOAD MENU ── */
+.upload-menu { position: relative; display: inline-flex; }
+.upload-menu-trigger { display: inline-flex; align-items: center; gap: 6px; }
+.upload-menu-caret { font-size: 10px; line-height: 1; color: var(--muted); transition: transform var(--t-fast); }
+.upload-menu-trigger[aria-expanded="true"] .upload-menu-caret { transform: rotate(180deg); }
+.upload-menu-trigger[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accentDim);
+}
+.upload-menu-list {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 1200;
+  min-width: 170px; padding: 6px; display: flex; flex-direction: column; gap: 2px;
+  border: 1px solid var(--border2); border-radius: var(--r-md);
+  background: var(--surface2); box-shadow: var(--shadow-lg);
+}
+.upload-menu-list[hidden] { display: none; }
+.upload-menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 8px 10px; border: 0; border-radius: var(--r-sm);
+  background: none; color: var(--textSoft); font-family: inherit;
+  font-size: var(--fs-sm); text-align: left; cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.upload-menu-item:hover, .upload-menu-item:focus-visible {
+  background: var(--accentDim); color: var(--accent); outline: none;
+}
+
 /* ── SERVER CONTROLS ── */
 .controls {
   display: grid;

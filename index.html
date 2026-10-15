@@ -173,8 +173,15 @@
               <span id="crumbTrail"></span>
             </div>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-              <button class="small-btn" id="btnUploadFiles">📄 Subir archivo</button>
-              <button class="small-btn" id="btnUploadFolder">📁 Subir carpeta</button>
+              <div class="upload-menu" id="uploadMenu">
+                <button class="small-btn upload-menu-trigger" id="btnUpload" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="uploadMenuList">
+                  📤 Subir <span class="upload-menu-caret" aria-hidden="true">▾</span>
+                </button>
+                <div class="upload-menu-list" id="uploadMenuList" role="menu" hidden>
+                  <button class="upload-menu-item" type="button" role="menuitem" data-upload-mode="files">📄 Archivos</button>
+                  <button class="upload-menu-item" type="button" role="menuitem" data-upload-mode="folder">📁 Carpeta</button>
+                </div>
+              </div>
               <input id="fileUploadInput" type="file" multiple hidden>
               <input id="folderUploadInput" type="file" webkitdirectory directory multiple hidden>
             </div>

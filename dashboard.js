@@ -4779,12 +4779,37 @@ function bindEvents() {
 
   $('crumbHome')?.addEventListener('click', () => populateFiles(''));
 
-  $('btnUploadFiles')?.addEventListener('click', () => {
-    $('fileUploadInput')?.click();
+  const uploadMenu = $('uploadMenu');
+  const uploadMenuList = $('uploadMenuList');
+  const uploadMenuTrigger = $('btnUpload');
+  const closeUploadMenu = () => {
+    if (!uploadMenuList || uploadMenuList.hidden) return;
+    uploadMenuList.hidden = true;
+    uploadMenuTrigger?.setAttribute('aria-expanded', 'false');
+  };
+  const openUploadMenu = () => {
+    if (!uploadMenuList) return;
+    uploadMenuList.hidden = false;
+    uploadMenuTrigger?.setAttribute('aria-expanded', 'true');
+  };
+  uploadMenuTrigger?.addEventListener('click', event => {
+    event.stopPropagation();
+    if (uploadMenuList?.hidden) openUploadMenu();
+    else closeUploadMenu();
   });
-
-  $('btnUploadFolder')?.addEventListener('click', () => {
-    $('folderUploadInput')?.click();
+  uploadMenu?.querySelectorAll('[data-upload-mode]').forEach(item => {
+    item.addEventListener('click', () => {
+      const mode = item.dataset.uploadMode;
+      closeUploadMenu();
+      if (mode === 'folder') $('folderUploadInput')?.click();
+      else $('fileUploadInput')?.click();
+    });
+  });
+  document.addEventListener('click', event => {
+    if (uploadMenu && !uploadMenu.contains(event.target)) closeUploadMenu();
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') closeUploadMenu();
   });
 
   $('fileUploadInput')?.addEventListener('change', async event => {
