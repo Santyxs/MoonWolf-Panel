@@ -367,7 +367,7 @@ const PANEL_URL = 'https://moonwolf-panel.up.railway.app';
 const CLOUD_PATH = '/socket.io';
 const VERSION = typeof __AGENT_VERSION__ !== 'undefined' ? __AGENT_VERSION__ : 'dev';
 
-const LOCAL_PORT = 1000;
+const LOCAL_PORT = 3000;
 const AGENT_TOKEN_RE = /^[A-Za-z0-9_-]{43,}$/;
 const LOCAL_TOKEN_RE = /^[A-Za-z0-9_-]{43,}$/;
 const PAIRING_CODE_RE = /^MW-P[A-Z2-9]{3}-[A-Z2-9]{4}$/;
