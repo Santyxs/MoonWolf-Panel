@@ -299,9 +299,6 @@ const FORBIDDEN_JVM_ARG_PATTERNS = Object.freeze([
   /^@/,
 ]);
 
-/* Divide una cadena de argumentos respetando comillas simples/dobles, de modo que un
-   valor con espacios (p. ej. -Dworld="Mi Mundo") siga siendo UN solo argumento en vez de
-   partirse en trozos. Antes se usaba split(/\s+/) al validar y al lanzar la JVM. */
 function tokenizeArgs(rawArgs) {
   const input = String(rawArgs || '');
   const tokens = [];
@@ -355,8 +352,6 @@ function tokenizeArgs(rawArgs) {
   return tokens;
 }
 
-/* Re-serializa un token para guardarlo en un unico campo de texto sin perder los
-   espacios internos. */
 function quoteArgToken(token) {
   if (token === '') {
     return '""';
@@ -369,13 +364,10 @@ function quoteArgToken(token) {
   return '"' + token.replace(/(["\\])/g, '\\$1') + '"';
 }
 
-/* Normaliza los argumentos de programa (van DESPUES de -jar, no son flags JVM). */
 function validateProgramArgs(rawArgs) {
   return tokenizeArgs(rawArgs).map(quoteArgToken).join(' ');
 }
 
-/* Igual que tokenizeArgs pero nunca lanza: si la config guardada tiene comillas
-   corruptas se degrada al comportamiento antiguo y se avisa por log. */
 function parseStoredArgs(rawArgs, label) {
   try {
     return tokenizeArgs(rawArgs);
@@ -1178,9 +1170,6 @@ const PUBLIC_ASSETS = [
 
 const ASSET_VERSION_CACHE = new Map();
 
-/* Version de cache derivada del propio archivo: cambia sola cuando cambia dashboard.js
-   o styles.css, de modo que el ?v= del HTML no puede quedar obsoleto (antes era un
-   literal fijo '20261011-direct-2' que sobrevivia a todos los despliegues). */
 function assetVersion(asset) {
   const filePath = path.join(__dirname, asset);
 
@@ -2803,7 +2792,6 @@ io.on('connection', socket => {
         return rejectRpc(429, 'Demasiadas solicitudes pendientes. Espera a que terminen algunas operaciones.');
       }
 
-      // ── Whitelist ────────────────────────────────────
       const sanitized = {
         id,
         method: request.method,
@@ -3435,10 +3423,17 @@ async function launchServerInternal() {
     return false;
   }
 
+  /* ★ FORZAMOS LOS COLORES ANSI ★
+     stdio:'pipe' hace que JAnsi detecte que stdout no es una TTY
+     y desactive los colores automáticamente. Con -Djansi.force=true
+     y -Djansi.passthrough=true forzamos que el server los emita igual,
+     para que el panel pueda renderizarlos como el cliente de Minecraft. */
   const args = [
     `-Xms${cfg.minMemoryMb}M`,
     `-Xmx${cfg.maxMemoryMb}M`,
     '-Djava.awt.headless=true',
+    '-Djansi.force=true',
+    '-Djansi.passthrough=true',
     ...parseStoredArgs(cfg.extraArgs, 'extraArgs'),
     '-jar', cfg.jar,
     ...parseStoredArgs(cfg.programArgs, 'programArgs'),
