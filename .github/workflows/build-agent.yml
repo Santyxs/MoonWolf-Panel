@@ -42,10 +42,10 @@ jobs:
 
       - name: Cache agent node_modules
         id: cache-agent-mods
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: agent/node_modules
-          key: agent-mods-${{ runner.os }}-${{ hashFiles('agent/package.json') }}
+          key: agent-mods-\( {{ runner.os }}- \){{ hashFiles('agent/package.json') }}
 
       - name: Install Agent dependencies
         if: steps.cache-agent-mods.outputs.cache-hit != 'true'
@@ -61,7 +61,7 @@ jobs:
           )
           foreach ($p in $natives) {
             if (-not (Test-Path -LiteralPath $p)) {
-              throw "Addon nativo no encontrado: $p"
+              throw "Native addon not found: $p"
             }
             Write-Host "OK $(Resolve-Path -LiteralPath $p)"
           }
@@ -69,15 +69,15 @@ jobs:
       - name: Patch natives for SEA + prepare dist
         shell: pwsh
         run: |
-          # --- WebViewJS: process.dlopen vía NAPI_RS_NATIVE_LIBRARY_PATH ---
+          # WebViewJS: process.dlopen via NAPI_RS_NATIVE_LIBRARY_PATH
           $bindings = 'agent/node_modules/@webviewjs/webview/js-bindings.js'
           if (-not (Test-Path -LiteralPath $bindings)) {
-            throw "No se encontró js-bindings.js"
+            throw "js-bindings.js not found"
           }
           $content = Get-Content -LiteralPath $bindings -Raw
           $old = 'return require(process.env.NAPI_RS_NATIVE_LIBRARY_PATH);'
           if ($content.Contains('process.dlopen(nativeModule, process.env.NAPI_RS_NATIVE_LIBRARY_PATH')) {
-            Write-Host 'WebViewJS js-bindings ya parcheado (cache).'
+            Write-Host 'WebViewJS js-bindings already patched (cache hit).'
           } elseif ($content.Contains($old)) {
             $new = @(
               'const nativeModule = { exports: {} };'
@@ -85,12 +85,12 @@ jobs:
               'return nativeModule.exports;'
             ) -join "`n"
             Set-Content -LiteralPath $bindings -Value ($content.Replace($old, $new)) -Encoding utf8
-            Write-Host 'WebViewJS js-bindings parcheado.'
+            Write-Host 'WebViewJS js-bindings patched.'
           } else {
-            throw 'No se encontró la línea esperada en js-bindings.js.'
+            throw 'Expected line not found in js-bindings.js.'
           }
 
-          # --- Shim del paquete nativo (esbuild no carga .node; --alias falla en Windows) ---
+          # Shim so esbuild does not load the .node binary
           $pkgDir = 'agent/node_modules/@webviewjs/webview-win32-x64-msvc'
           $shimRel = 'webview-shim.js'
           Set-Content -LiteralPath (Join-Path $pkgDir $shimRel) -Value 'module.exports = {};' -Encoding ascii -NoNewline
@@ -100,9 +100,9 @@ jobs:
           $pkg | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $pkgJsonPath -Encoding utf8
           Write-Host "package.json main -> $shimRel"
 
-          # --- node-datachannel: dlopen vía NODE_DATACHANNEL_NATIVE_PATH ---
+          # node-datachannel: process.dlopen via NODE_DATACHANNEL_NATIVE_PATH
           $pattern = 'require\(\s*[''"][^''"]*node_datachannel\.node[''"]\s*\)'
-          $replacement = '(() => { if (!process.env.NODE_DATACHANNEL_NATIVE_PATH) { throw new Error("NODE_DATACHANNEL_NATIVE_PATH no definido"); } const m = { exports: {} }; process.dlopen(m, process.env.NODE_DATACHANNEL_NATIVE_PATH, 2); return m.exports; })()'
+          $replacement = '(() => { if (!process.env.NODE_DATACHANNEL_NATIVE_PATH) { throw new Error("NODE_DATACHANNEL_NATIVE_PATH is not defined"); } const m = { exports: {} }; process.dlopen(m, process.env.NODE_DATACHANNEL_NATIVE_PATH, 2); return m.exports; })()'
           $patched = 0
           Get-ChildItem -Path 'agent/node_modules/node-datachannel' -Recurse -Include '*.js','*.cjs','*.mjs' -File |
             ForEach-Object {
@@ -117,12 +117,12 @@ jobs:
             $already = Get-ChildItem -Path 'agent/node_modules/node-datachannel' -Recurse -Include '*.js','*.cjs','*.mjs' -File |
               Where-Object { (Get-Content -LiteralPath $_.FullName -Raw) -match 'NODE_DATACHANNEL_NATIVE_PATH' }
             if ($already) {
-              Write-Host "node-datachannel ya parcheado (cache): $($already.Count) archivo(s)."
+              Write-Host "node-datachannel already patched (cache hit): $($already.Count) file(s)."
             } else {
-              throw 'No se encontró el require del binding nativo en node-datachannel'
+              throw 'Native binding require not found in node-datachannel'
             }
           } else {
-            Write-Host "node-datachannel: $patched archivo(s) parcheado(s)."
+            Write-Host "node-datachannel: $patched file(s) patched."
           }
 
           if (Test-Path -LiteralPath 'dist') {
@@ -136,22 +136,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Bump minor; at .99 roll over to next major.0
           latest=$(
             gh release list \
-              --limit 100 \
-              --json tagName,isDraft,isPrerelease \
+              --limit 50 \
+              --exclude-drafts \
+              --exclude-pre-releases \
+              --json tagName \
               --jq '
-                [.[] |
-                  select(.isDraft == false and .isPrerelease == false) |
-                  .tagName |
-                  select(startswith("agent-v")) |
-                  sub("^agent-v"; "") |
-                  split(".") |
-                  map(tonumber)
-                ] |
-                sort |
-                last |
-                if . == null then "" else "agent-v" + (.[0]|tostring) + "." + (.[1]|tostring) end
+                [.[] | .tagName | select(startswith("agent-v"))] |
+                sort_by(sub("^agent-v"; "") | split(".") | map(tonumber)) |
+                last // empty
               '
           )
 
@@ -166,11 +161,11 @@ jobs:
               major=$((major + 1))
               minor=0
             fi
-            next="agent-v${major}.${minor}"
+            next="agent-v\( {major}. \){minor}"
           fi
 
-          echo "Última versión: ${latest:-ninguna}"
-          echo "Nueva versión: $next"
+          echo "Latest version: ${latest:-none}"
+          echo "Next version: $next"
           echo "tag=$next" >> "$GITHUB_OUTPUT"
 
       - name: Bundle Agent
@@ -191,7 +186,7 @@ jobs:
           size=$(wc -c < dist/agent.cjs | tr -d ' ')
           echo "agent.cjs: ${size} bytes"
           if [ "$size" -lt 102400 ]; then
-            echo "El bundle generado es sospechosamente pequeño." >&2
+            echo "Generated bundle is suspiciously small." >&2
             exit 1
           fi
 
@@ -228,17 +223,17 @@ jobs:
 
           if (Test-Path -LiteralPath $exe) { Remove-Item -LiteralPath $exe -Force }
 
-          Write-Host 'Generando SEA con node --build-sea...'
+          Write-Host 'Building SEA with node --build-sea...'
           node --build-sea (Resolve-Path 'dist/sea-config.json').Path
-          if ($LASTEXITCODE -ne 0) { throw "node --build-sea terminó con código $LASTEXITCODE" }
-          if (-not (Test-Path -LiteralPath $exe)) { throw "No se generó $exe" }
+          if ($LASTEXITCODE -ne 0) { throw "node --build-sea exited with code $LASTEXITCODE" }
+          if (-not (Test-Path -LiteralPath $exe)) { throw "Expected output not found: $exe" }
 
           $size = (Get-Item -LiteralPath $exe).Length
-          Write-Host "MoonWolf-Agent.exe generado: $size bytes"
-          if ($size -lt 1MB) { throw 'El ejecutable generado es sospechosamente pequeño.' }
+          Write-Host "MoonWolf-Agent.exe generated: $size bytes"
+          if ($size -lt 1MB) { throw 'Generated executable is suspiciously small.' }
 
       - name: Restore rcedit cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: dist/tools/rcedit-x64.exe
           key: rcedit-x64-v2.0.0
@@ -251,240 +246,46 @@ jobs:
           $exe = (Resolve-Path 'dist/MoonWolf-Agent.exe').Path
           $version = $env:AGENT_TAG -replace '^agent-v', ''
           $fileVersion = "$version.0.0"
+          $icon = (Resolve-Path 'agent/assets/MoonWolf-Agent.ico').Path
 
-          # ---- editbin: ocultar consola ----
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (-not (Test-Path -LiteralPath $vswhere)) { throw 'No se encontró vswhere.exe' }
+          # CONSOLE → WINDOWS (no console window)
+          \( vswhere = " \){env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere)) { throw 'vswhere.exe not found' }
 
           $vsInstallPath = & $vswhere -latest -products * `
             -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
             -property installationPath
           if ([string]::IsNullOrWhiteSpace($vsInstallPath) -or -not (Test-Path -LiteralPath $vsInstallPath)) {
-            throw 'No se encontró la instalación de Visual Studio con herramientas C++.'
+            throw 'Visual Studio installation with C++ tools not found.'
           }
 
           $msvcRoot = Join-Path $vsInstallPath 'VC\Tools\MSVC'
           $msvcVersion = Get-ChildItem -LiteralPath $msvcRoot -Directory |
             Sort-Object { try { [version]$_.Name } catch { [version]'0.0' } } -Descending |
             Select-Object -First 1
-          if ($null -eq $msvcVersion) { throw "No se encontró MSVC en $msvcRoot" }
+          if ($null -eq $msvcVersion) { throw "No MSVC version found under $msvcRoot" }
 
           $editbin = Join-Path $msvcVersion.FullName 'bin\Hostx64\x64\editbin.exe'
-          if (-not (Test-Path -LiteralPath $editbin)) { throw 'No se encontró editbin.exe' }
+          if (-not (Test-Path -LiteralPath $editbin)) { throw 'editbin.exe not found' }
 
           Write-Host "editbin MSVC $($msvcVersion.Name)"
           & $editbin /SUBSYSTEM:WINDOWS $exe
-          if ($LASTEXITCODE -ne 0) { throw "editbin terminó con código $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "editbin exited with code $LASTEXITCODE" }
 
-          # ---- Icono (PNG 32x32 embebido → DIB 16 + 32) ----
-          $pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABNElEQVR42s2XsQ6CMBRF+yf8mAmTq7OrswMxcXBz0w/wC4yzYdLJwbg5MZiIGkjtJWiwgZZC+yrJiaDUe9v32r4yVrmmg3sgiASxgFsmLv87YHWX+CEUJA6EZaAR1olzYsLqsCceDCRFOMq4cE9EzFHCtU5MZtpoOU75Zv7k2/WLz4b9TbQ2ANHrOefpjRfg2cYoaA2gl6d99hUGh11mLQxMJ3455j/iYDFKaQzIPbfde6UBxFgWB0g+EgPVhKuymjzcG8BUqxMnM9A0/GQhgEiTAZIkVBkgmYaqEJAsRKokJFuKm6ah7YQ0XohkYBTvyjsjntvslsZLsc4M2nw+nW1GOtCmba3QaTtWgXdNCpXOBUlTLjiriOpKMoB7fNdnFngvSr2X5X4PJt6PZn9xOPV5PH8DKeu0vPehIOQAAAAASUVORK5CYII='
-          $srcPng = [Convert]::FromBase64String($pngBase64)
-
-          function Decode-PngRgba {
-            param([byte[]]$Png)
-            $sig = [byte[]](0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a)
-            for ($i = 0; $i -lt 8; $i++) {
-              if ($Png[$i] -ne $sig[$i]) { throw 'PNG inválido.' }
-            }
-            $offset = 8
-            $width = 0; $height = 0; $bitDepth = 0; $colorType = 0
-            $idat = New-Object System.Collections.Generic.List[byte[]]
-            while ($offset -lt $Png.Length) {
-              $len = [BitConverter]::ToUInt32(($Png[($offset + 3)..$offset]), 0)
-              $type = [Text.Encoding]::ASCII.GetString($Png, $offset + 4, 4)
-              $dataStart = $offset + 8
-              $data = $Png[$dataStart..($dataStart + $len - 1)]
-              if ($type -eq 'IHDR') {
-                $width = [BitConverter]::ToUInt32(($data[3..0]), 0)
-                $height = [BitConverter]::ToUInt32(($data[7..4]), 0)
-                $bitDepth = $data[8]
-                $colorType = $data[9]
-              } elseif ($type -eq 'IDAT') {
-                $idat.Add($data)
-              } elseif ($type -eq 'IEND') {
-                break
-              }
-              $offset = $dataStart + $len + 4
-            }
-            if ($bitDepth -ne 8 -or $colorType -ne 6) { throw 'Formato PNG no soportado.' }
-
-            $compressed = [byte[]]($idat | ForEach-Object { $_ })
-            $ms = New-Object IO.MemoryStream(, $compressed)
-            $null = $ms.ReadByte(); $null = $ms.ReadByte()
-            $ds = New-Object IO.Compression.DeflateStream($ms, [IO.Compression.CompressionMode]::Decompress)
-            $rawMs = New-Object IO.MemoryStream
-            $ds.CopyTo($rawMs)
-            $raw = $rawMs.ToArray()
-
-            $bpp = 4
-            $stride = $width * $bpp
-            $rgba = New-Object byte[] ($width * $height * 4)
-            $prev = New-Object byte[] $stride
-            $cur = New-Object byte[] $stride
-            $rawOffset = 0
-            $outOffset = 0
-
-            function Paeth($a, $b, $c) {
-              $p = $a + $b - $c
-              $pa = [Math]::Abs($p - $a); $pb = [Math]::Abs($p - $b); $pc = [Math]::Abs($p - $c)
-              if ($pa -le $pb -and $pa -le $pc) { return $a }
-              if ($pb -le $pc) { return $b }
-              return $c
-            }
-
-            for ($y = 0; $y -lt $height; $y++) {
-              $filter = $raw[$rawOffset]; $rawOffset++
-              for ($x = 0; $x -lt $stride; $x++) {
-                $val = $raw[$rawOffset]; $rawOffset++
-                $left = if ($x -ge $bpp) { $cur[$x - $bpp] } else { 0 }
-                $up = $prev[$x]
-                $upLeft = if ($x -ge $bpp) { $prev[$x - $bpp] } else { 0 }
-                $rec = switch ($filter) {
-                  0 { $val }
-                  1 { $val + $left }
-                  2 { $val + $up }
-                  3 { $val + [Math]::Floor(($left + $up) / 2) }
-                  4 { $val + (Paeth $left $up $upLeft) }
-                  default { throw 'Filtro PNG no soportado.' }
-                }
-                $cur[$x] = $rec -band 0xFF
-              }
-              [Array]::Copy($cur, 0, $rgba, $outOffset, $stride)
-              $outOffset += $stride
-              [Array]::Copy($cur, $prev, $stride)
-            }
-            return @{ Width = $width; Height = $height; Rgba = $rgba }
-          }
-
-          function Resize-NearestRgba {
-            param($Decoded, [int]$NewSize)
-            $srcW = $Decoded.Width; $srcH = $Decoded.Height; $src = $Decoded.Rgba
-            $dst = New-Object byte[] ($NewSize * $NewSize * 4)
-            for ($y = 0; $y -lt $NewSize; $y++) {
-              $sy = [Math]::Min($srcH - 1, [int]([Math]::Floor($y * $srcH / $NewSize)))
-              for ($x = 0; $x -lt $NewSize; $x++) {
-                $sx = [Math]::Min($srcW - 1, [int]([Math]::Floor($x * $srcW / $NewSize)))
-                [Array]::Copy($src, ($sy * $srcW + $sx) * 4, $dst, ($y * $NewSize + $x) * 4, 4)
-              }
-            }
-            return $dst
-          }
-
-          function Build-IconImageData {
-            param([byte[]]$Rgba, [int]$Size)
-            $xor = New-Object byte[] ($Size * $Size * 4)
-            $maskRowBytes = [Math]::Ceiling($Size / 32.0) * 4
-            $mask = New-Object byte[] ($maskRowBytes * $Size)
-            for ($y = 0; $y -lt $Size; $y++) {
-              $srcRow = $Size - 1 - $y
-              for ($x = 0; $x -lt $Size; $x++) {
-                $srcOff = ($srcRow * $Size + $x) * 4
-                $dstOff = ($y * $Size + $x) * 4
-                $xor[$dstOff] = $Rgba[$srcOff + 2]
-                $xor[$dstOff + 1] = $Rgba[$srcOff + 1]
-                $xor[$dstOff + 2] = $Rgba[$srcOff]
-                $xor[$dstOff + 3] = $Rgba[$srcOff + 3]
-                if ($Rgba[$srcOff + 3] -lt 8) {
-                  $byteIndex = $y * $maskRowBytes + [Math]::Floor($x / 8)
-                  $mask[$byteIndex] = $mask[$byteIndex] -bor (1 -shl (7 - ($x % 8)))
-                }
-              }
-            }
-            $header = New-Object byte[] 40
-            [BitConverter]::GetBytes([uint32]40).CopyTo($header, 0)
-            [BitConverter]::GetBytes([int32]$Size).CopyTo($header, 4)
-            [BitConverter]::GetBytes([int32]($Size * 2)).CopyTo($header, 8)
-            [BitConverter]::GetBytes([uint16]1).CopyTo($header, 12)
-            [BitConverter]::GetBytes([uint16]32).CopyTo($header, 14)
-            [BitConverter]::GetBytes([uint32]($xor.Length + $mask.Length)).CopyTo($header, 20)
-            $full = New-Object byte[] ($header.Length + $xor.Length + $mask.Length)
-            [Array]::Copy($header, 0, $full, 0, $header.Length)
-            [Array]::Copy($xor, 0, $full, $header.Length, $xor.Length)
-            [Array]::Copy($mask, 0, $full, $header.Length + $xor.Length, $mask.Length)
-            return $full
-          }
-
-          $decoded = Decode-PngRgba -Png $srcPng
-          $images = @()
-          foreach ($size in @(16, 32)) {
-            $rgba = if ($size -eq $decoded.Width) { $decoded.Rgba } else { Resize-NearestRgba -Decoded $decoded -NewSize $size }
-            $images += ,@{ Size = $size; Data = (Build-IconImageData -Rgba $rgba -Size $size) }
-          }
-
-          $group = New-Object byte[] (6 + 14 * $images.Count)
-          [BitConverter]::GetBytes([uint16]0).CopyTo($group, 0)
-          [BitConverter]::GetBytes([uint16]1).CopyTo($group, 2)
-          [BitConverter]::GetBytes([uint16]$images.Count).CopyTo($group, 4)
-          for ($i = 0; $i -lt $images.Count; $i++) {
-            $off = 6 + $i * 14
-            $s = $images[$i].Size
-            $group[$off] = [byte]($s -band 0xFF)
-            $group[$off + 1] = [byte]($s -band 0xFF)
-            [BitConverter]::GetBytes([uint16]1).CopyTo($group, $off + 4)
-            [BitConverter]::GetBytes([uint16]32).CopyTo($group, $off + 6)
-            [BitConverter]::GetBytes([uint32]$images[$i].Data.Length).CopyTo($group, $off + 8)
-            [BitConverter]::GetBytes([uint16]($i + 1)).CopyTo($group, $off + 12)
-          }
-
-          if (-not ('MoonWolfResources' -as [type])) {
-            $cs = 'using System; using System.Runtime.InteropServices; public static class MoonWolfResources { [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern IntPtr BeginUpdateResource(string pFileName, bool bDeleteExistingResources); [DllImport("kernel32.dll", SetLastError = true)] public static extern bool UpdateResource(IntPtr hUpdate, IntPtr lpType, IntPtr lpName, ushort wLanguage, byte[] lpData, uint cbData); [DllImport("kernel32.dll", SetLastError = true)] public static extern bool EndUpdateResource(IntPtr hUpdate, bool fDiscard); public static IntPtr MAKEINTRESOURCE(ushort value) { return new IntPtr(value); } public const ushort LANG_NEUTRAL = 0; public const ushort RT_ICON = 3; public const ushort RT_GROUP_ICON = 14; }'
-            Add-Type -TypeDefinition $cs
-          }
-
-          $handle = [MoonWolfResources]::BeginUpdateResource($exe, $false)
-          if ($handle -eq [IntPtr]::Zero) {
-            throw "BeginUpdateResource falló. Win32Error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
-          }
-          try {
-            for ($i = 0; $i -lt $images.Count; $i++) {
-              $data = $images[$i].Data
-              $ok = [MoonWolfResources]::UpdateResource(
-                $handle,
-                [MoonWolfResources]::MAKEINTRESOURCE([MoonWolfResources]::RT_ICON),
-                [MoonWolfResources]::MAKEINTRESOURCE([uint16]($i + 1)),
-                [MoonWolfResources]::LANG_NEUTRAL,
-                $data,
-                [uint32]$data.Length
-              )
-              if (-not $ok) {
-                throw "UpdateResource(RT_ICON $($i + 1)) falló. Win32Error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
-              }
-            }
-            $ok = [MoonWolfResources]::UpdateResource(
-              $handle,
-              [MoonWolfResources]::MAKEINTRESOURCE([MoonWolfResources]::RT_GROUP_ICON),
-              [MoonWolfResources]::MAKEINTRESOURCE(1),
-              [MoonWolfResources]::LANG_NEUTRAL,
-              $group,
-              [uint32]$group.Length
-            )
-            if (-not $ok) {
-              throw "UpdateResource(RT_GROUP_ICON) falló. Win32Error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
-            }
-            if (-not [MoonWolfResources]::EndUpdateResource($handle, $false)) {
-              throw "EndUpdateResource falló. Win32Error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
-            }
-            $handle = [IntPtr]::Zero
-          } finally {
-            if ($handle -ne [IntPtr]::Zero) {
-              [MoonWolfResources]::EndUpdateResource($handle, $true) | Out-Null
-            }
-          }
-          Write-Host 'Icono incrustado (16x16 + 32x32).'
-
-          # ---- rcedit ----
+          # Icon + version metadata
           $toolsDir = Join-Path (Resolve-Path 'dist').Path 'tools'
           New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
           $rcedit = Join-Path $toolsDir 'rcedit-x64.exe'
           $rceditUrl = 'https://github.com/electron/rcedit/releases/download/v2.0.0/rcedit-x64.exe'
 
           if (-not (Test-Path -LiteralPath $rcedit)) {
-            Write-Host 'Descargando rcedit...'
+            Write-Host 'Downloading rcedit...'
             Invoke-WebRequest -Uri $rceditUrl -OutFile $rcedit -UseBasicParsing
           }
-          if (-not (Test-Path -LiteralPath $rcedit)) { throw 'No se pudo obtener rcedit-x64.exe' }
+          if (-not (Test-Path -LiteralPath $rcedit)) { throw 'Failed to obtain rcedit-x64.exe' }
 
           & $rcedit $exe `
+            --set-icon $icon `
             --set-version-string 'FileDescription' 'MoonWolf Agent' `
             --set-version-string 'ProductName' 'MoonWolf Agent' `
             --set-version-string 'InternalName' 'MoonWolf-Agent.exe' `
@@ -492,18 +293,18 @@ jobs:
             --set-version-string 'CompanyName' 'MoonWolf' `
             --set-file-version $fileVersion `
             --set-product-version $fileVersion
-          if ($LASTEXITCODE -ne 0) { throw "rcedit terminó con código $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "rcedit exited with code $LASTEXITCODE" }
 
           $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
           Write-Host "FileDescription: $($info.FileDescription)"
           Write-Host "ProductName: $($info.ProductName)"
           Write-Host "FileVersion: $($info.FileVersion)"
           if ($info.FileDescription -ne 'MoonWolf Agent' -or $info.ProductName -ne 'MoonWolf Agent') {
-            throw 'Los metadatos no contienen el nombre esperado MoonWolf Agent.'
+            throw 'Metadata does not contain the expected name MoonWolf Agent.'
           }
 
           $size = (Get-Item -LiteralPath $exe).Length
-          Write-Host "MoonWolf-Agent.exe listo: $size bytes"
+          Write-Host "MoonWolf-Agent.exe ready: $size bytes"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
