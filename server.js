@@ -3423,11 +3423,6 @@ async function launchServerInternal() {
     return false;
   }
 
-  /* ★ FORZAMOS LOS COLORES ANSI ★
-     stdio:'pipe' hace que JAnsi detecte que stdout no es una TTY
-     y desactive los colores automáticamente. Con -Djansi.force=true
-     y -Djansi.passthrough=true forzamos que el server los emita igual,
-     para que el panel pueda renderizarlos como el cliente de Minecraft. */
   const args = [
     `-Xms${cfg.minMemoryMb}M`,
     `-Xmx${cfg.maxMemoryMb}M`,
@@ -3623,7 +3618,7 @@ app.post('/api/restart', (_req, res) => {
   ok(res);
 });
 
-app.post('/api/command', (req, res) => {
+app.post('/api/command', async (req, res) => {
   if (!req.body?.cmd) {
     return fail(res, 'Comando vacío');
   }
@@ -3632,9 +3627,45 @@ app.post('/api/command', (req, res) => {
     return fail(res, 'El servidor no está corriendo');
   }
 
-  mcProcess.stdin.write(req.body.cmd + '\n');
-  broadcastLog('/ ' + req.body.cmd, 'cmd');
-  ok(res);
+  const cmd = String(req.body.cmd).trim();
+
+  if (!cmd) {
+    return fail(res, 'Comando vacío');
+  }
+
+  broadcastLog('/ ' + cmd, 'cmd');
+
+  // Intentar por RCON primero: los códigos § de Minecraft sobreviven a RCON
+  // (a diferencia de stdout, donde Paper los borra cuando no hay TTY real).
+  const props = readServerProperties();
+  const rconEnabled = String(props['enable-rcon'] || 'false').toLowerCase() === 'true';
+  const rconPort = validPort(props['rcon.port']) || 25575;
+  const rconPassword = String(props['rcon.password'] || '');
+
+  if (rconEnabled && rconPassword) {
+    try {
+      const rconCmd = cmd.startsWith('/') ? cmd.slice(1) : cmd;
+      const response = await rconClient.exec(rconPort, rconPassword, rconCmd);
+      const text = String(response || '').trim();
+
+      if (text) {
+        broadcastLog(text, 'info');
+      }
+
+      return ok(res, { via: 'rcon', response: text });
+    } catch (error) {
+      console.warn('[command] RCON falló, usando stdin:', error.message);
+    }
+  }
+
+  // Fallback: stdin (sin colores, como antes)
+  try {
+    mcProcess.stdin.write(cmd + '\n');
+  } catch (error) {
+    return fail(res, 'No se pudo enviar el comando: ' + error.message);
+  }
+
+  ok(res, { via: 'stdin' });
 });
 
 /* ══════════════════════════════════════════════
