@@ -1,48 +1,396 @@
 'use strict';
 
-const CLOUD_URL = location.origin;
-const CLOUD_PATH = '/socket.io';
+const express = require('express');
+const compression = require('compression');
+const helmet = require('helmet');
+const http = require('http');
+const crypto = require('crypto');
+const { Server } = require('socket.io');
+const fs = require('fs').promises;
+const fsSync = require('fs');
+const os = require('os');
+const path = require('path');
+const net = require('net');
+const { spawn } = require('child_process');
+const { Transform } = require('stream');
+const { pipeline } = require('stream/promises');
 
-const PAIRING_CODE_RE = /^MW-P[A-Z2-9]{3}-[A-Z2-9]{4}$/;
-const SHARE_TOKEN_RE = /^MW-SHARE-[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/;
-const SESSION_KEY = 'moonwolf_panel_session';
-const AGENT_KEY = 'moonwolf_agent_id';
-const PERMISSION_KEY = 'moonwolf_panel_permission';
-const SESSION_KIND_KEY = 'moonwolf_panel_kind';
+/* ══════════════════════════════════════════════
+   ATOMIC FILE WRITE HELPERS
+   ══════════════════════════════════════════════ */
+function atomicWriteFileSync(filePath, data, options = 'utf8') {
+  const tempPath = `${filePath}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
+  let fd = null;
 
-const $ = id => document.getElementById(id);
+  try {
+    fd = fsSync.openSync(tempPath, 'wx');
+    fsSync.writeFileSync(fd, data, options);
 
-const escHtml = value => String(value ?? '')
-  .replace(/&/g, '&amp;')
-  .replace(/</g, '&lt;')
-  .replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;');
+    try { fsSync.fsyncSync(fd); } catch {}
 
-const AIKAR_FLAGS = '-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch -XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 -XX:G1HeapRegionSize=8M -XX:G1ReservePercent=20 -XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1RSetUpdatingPauseTimePercent=5 -XX:SurvivorRatio=32 -XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1';
+    fsSync.closeSync(fd);
+    fd = null;
 
-const STATUS_LABELS = {
-  online: 'ONLINE',
-  offline: 'OFFLINE',
-  starting: 'STARTING...',
-  restarting: 'RESTARTING...',
-  stopping: 'STOPPING...',
+    fsSync.renameSync(tempPath, filePath);
+  } catch (error) {
+    if (fd !== null) { try { fsSync.closeSync(fd); } catch {} }
+    try { fsSync.rmSync(tempPath, { force: true }); } catch {}
+    throw error;
+  }
+}
+
+async function atomicWriteFile(filePath, data, options = 'utf8') {
+  const tempPath = `${filePath}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
+  let handle = null;
+
+  try {
+    handle = await fs.open(tempPath, 'wx');
+    await handle.writeFile(data, options);
+    try { await handle.sync(); } catch {}
+    await handle.close();
+    handle = null;
+    await fs.rename(tempPath, filePath);
+  } catch (error) {
+    if (handle) { try { await handle.close(); } catch {} }
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+function writeFileWithBackup(filePath, data, options = 'utf8', validate = () => true) {
+  try {
+    if (fsSync.existsSync(filePath)) {
+      const current = fsSync.readFileSync(filePath, options);
+      if (current && String(current).length > 0 && validate(current)) {
+        atomicWriteFileSync(`${filePath}.bak`, current, options);
+      }
+    }
+  } catch {}
+
+  atomicWriteFileSync(filePath, data, options);
+}
+
+function readJsonConfig(filePath) {
+  try {
+    const raw = fsSync.readFileSync(filePath, 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function readJsonConfigWithRecovery(filePath, fallback = null) {
+  const primary = readJsonConfig(filePath);
+  if (primary !== null) return primary;
+
+  const backupPath = `${filePath}.bak`;
+  const backup = readJsonConfig(backupPath);
+  if (backup !== null) {
+    console.warn(`[config] ${filePath} ilegible; recuperado desde ${backupPath}.`);
+    try {
+      atomicWriteFileSync(filePath, JSON.stringify(backup, null, 2), 'utf8');
+    } catch (error) {
+      console.warn(`[config] No se pudo restaurar ${filePath}: ${error?.message || error}`);
+    }
+    return backup;
+  }
+
+  if (fsSync.existsSync(filePath)) {
+    const quarantine = `${filePath}.corrupt-${Date.now()}`;
+    try {
+      fsSync.renameSync(filePath, quarantine);
+      console.warn(
+        `[config] ${filePath} corrupto y sin backup válido; movido a ${quarantine}.`
+      );
+    } catch (error) {
+      console.warn(`[config] No se pudo aislar ${filePath}: ${error?.message || error}`);
+    }
+  }
+
+  return fallback;
+}
+
+function writeJsonConfig(filePath, value, options = 'utf8') {
+  const serialized = JSON.stringify(value, null, 2);
+  writeFileWithBackup(
+    filePath,
+    serialized,
+    options,
+    current => { JSON.parse(current); return true; }
+  );
+}
+
+/* ══════════════════════════════════════════════
+   Environments
+   ══════════════════════════════════════════════ */
+const ENV_PATH = path.join(__dirname, '.env');
+(function loadDotEnv() {
+  if (!fsSync.existsSync(ENV_PATH)) return;
+
+  for (const line of fsSync.readFileSync(ENV_PATH, 'utf8').split(/\r?\n/)) {
+    const m = line.match(/^\s*([\w.-]+)\s*=\s*(.*)\s*$/);
+    if (!m) continue;
+
+    let val = m[2] || '';
+
+    if (
+      (val.startsWith('"') && val.endsWith('"')) ||
+      (val.startsWith("'") && val.endsWith("'"))
+    ) {
+      val = val.slice(1, -1);
+    }
+
+    if (!(m[1] in process.env)) {
+      process.env[m[1]] = val;
+    }
+  }
+})();
+
+/* ══════════════════════════════════════════════
+   AUTHENTICATION / SESSIONS
+   ══════════════════════════════════════════════ */
+const LOCAL_AGENT_TOKEN = process.env.MOONWOLF_LOCAL_AUTH_TOKEN || '';
+
+const SESSION_SECRET = (() => {
+  const envSecret = process.env.MOONWOLF_SESSION_SECRET;
+  if (envSecret && envSecret.length >= 32) return envSecret;
+
+  const appDir = path.join(
+    process.env.APPDATA || path.join(require('os').homedir(), 'AppData', 'Roaming'),
+    'MoonWolf'
+  );
+  const secretPath = path.join(appDir, 'session-secret');
+  const backupPath = `${secretPath}.bak`;
+
+  const readSecret = filePath => {
+    try {
+      const raw = fsSync.readFileSync(filePath, 'utf8').trim();
+      return raw.length >= 32 ? raw : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const fromDisk = readSecret(secretPath);
+  if (fromDisk) return fromDisk;
+
+  const fromBackup = readSecret(backupPath);
+  if (fromBackup) {
+    console.warn(
+      `[session] ${secretPath} ilegible; recuperado desde ${backupPath}. ` +
+      'Las sesiones del panel siguen siendo válidas.'
+    );
+    try {
+      fsSync.mkdirSync(appDir, { recursive: true });
+      atomicWriteFileSync(secretPath, fromBackup, { encoding: 'utf8', mode: 0o600 });
+    } catch (error) {
+      console.warn('[session] No se pudo restaurar el secret:', error.message);
+    }
+    return fromBackup;
+  }
+
+  if (fsSync.existsSync(secretPath)) {
+    const quarantine = `${secretPath}.corrupt-${Date.now()}`;
+    try {
+      fsSync.renameSync(secretPath, quarantine);
+      console.warn(
+        `[session] ${secretPath} corrupto y sin backup válido; movido a ${quarantine}. ` +
+        'Se generará un secret nuevo — las sesiones del panel caducarán.'
+      );
+    } catch (error) {
+      console.warn(`[session] No se pudo aislar ${secretPath}: ${error?.message || error}`);
+    }
+  }
+
+  const secret = crypto.randomBytes(32).toString('hex');
+
+  try {
+    fsSync.mkdirSync(appDir, { recursive: true });
+    atomicWriteFileSync(secretPath, secret, { encoding: 'utf8', mode: 0o600 });
+  } catch (error) {
+    console.warn('[session] No se pudo persistir SESSION_SECRET:', error.message);
+  }
+
+  return secret;
+})();
+
+const PANEL_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const PAIRING_TTL_MS = 5 * 60 * 1000;
+
+const ICE_SERVERS = (() => {
+  try {
+    const parsed = JSON.parse(process.env.MOONWOLF_ICE_SERVERS || '');
+    if (Array.isArray(parsed) && parsed.length) return parsed;
+  } catch {}
+
+  return [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+  ];
+})();
+
+function timingSafeEqualStr(a, b) {
+  const bufA = Buffer.from(String(a ?? ''));
+  const bufB = Buffer.from(String(b ?? ''));
+
+  if (bufA.length !== bufB.length) return false;
+
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function signValue(value) {
+  return crypto
+    .createHmac('sha256', SESSION_SECRET)
+    .update(value)
+    .digest('base64url');
+}
+
+const SHARE_TOKEN_DATABASE_URL = String(process.env.DATABASE_URL || '').trim();
+let shareTokenSql = null;
+
+const PERMISSION_RANK = {
+  read: 1,
+  control: 2,
+  admin: 3,
 };
+const SHARE_PERMISSIONS = new Set(Object.keys(PERMISSION_RANK));
 
-const STATUS_ICONS = {
-  online: '🟢',
-  offline: '🔴',
-  starting: '🟡',
-  restarting: '🟡',
-  stopping: '🟠',
-};
+function permissionAllows(actual, required) {
+  return (PERMISSION_RANK[String(actual || '')] || 0) >= (PERMISSION_RANK[String(required || '')] || 99);
+}
 
-const STATUS_LEVELS = {
-  online: 'ok',
-  offline: 'info',
-  starting: 'info',
-  restarting: 'warn',
-  stopping: 'warn',
-};
+function normalizeSharePermission(permission) {
+  const value = String(permission || '').toLowerCase();
+  return SHARE_PERMISSIONS.has(value) ? value : null;
+}
+
+function canManageShareTokens(session) {
+  return Boolean(session && permissionAllows(session.permission, 'admin'));
+}
+
+/* ══════════════════════════════════════════════
+   OWNER-ONLY OPERATIONS
+   ══════════════════════════════════════════════ */
+
+function isOwnerSession(session) {
+  return Boolean(session && session.kind === 'owner');
+}
+
+const OWNER_ONLY_STARTUP_FIELDS = Object.freeze([
+  'javaMode',
+  'javaOverridePath',
+  'javaPath',
+  'extraArgs',
+  'programArgs',
+]);
+
+const FORBIDDEN_JVM_ARG_PATTERNS = Object.freeze([
+  /^-javaagent[:=]/i,
+  /^-agentlib[:=]/i,
+  /^-agentpath[:=]/i,
+  /^-Xbootclasspath/i,
+  /^-XX:OnError=/i,
+  /^-XX:OnOutOfMemoryError=/i,
+  /^-XX:OnExit=/i,
+  /^-XX:Flags=/i,
+  /^-XX:VMOptionsFile=/i,
+  /^-XX:ErrorFile=/i,
+  /^-XX:HeapDumpPath=/i,
+  /^@/,
+]);
+
+function tokenizeArgs(rawArgs) {
+  const input = String(rawArgs || '');
+  const tokens = [];
+  let current = '';
+  let quote = null;
+  let hasToken = false;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+      } else if (ch === '\\' && quote === '"' && i + 1 < input.length) {
+        i += 1;
+        current += input[i];
+      } else {
+        current += ch;
+      }
+      hasToken = true;
+      continue;
+    }
+
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      hasToken = true;
+      continue;
+    }
+
+    if (/\s/.test(ch)) {
+      if (hasToken) {
+        tokens.push(current);
+        current = '';
+        hasToken = false;
+      }
+      continue;
+    }
+
+    current += ch;
+    hasToken = true;
+  }
+
+  if (quote) {
+    throw new Error('Comillas sin cerrar en los argumentos.');
+  }
+
+  if (hasToken) {
+    tokens.push(current);
+  }
+
+  return tokens;
+}
+
+function quoteArgToken(token) {
+  if (token === '') {
+    return '""';
+  }
+
+  if (!/[\s"']/.test(token)) {
+    return token;
+  }
+
+  return '"' + token.replace(/(["\\])/g, '\\$1') + '"';
+}
+
+function validateProgramArgs(rawArgs) {
+  return tokenizeArgs(rawArgs).map(quoteArgToken).join(' ');
+}
+
+function parseStoredArgs(rawArgs, label) {
+  try {
+    return tokenizeArgs(rawArgs);
+  } catch (error) {
+    console.warn('[args] ' + label + ': ' + error.message + ' Se usara separacion por espacios.');
+    return String(rawArgs || '').split(/\s+/).filter(Boolean);
+  }
+}
+function validateExtraArgs(rawArgs) {
+  const tokens = tokenizeArgs(rawArgs);
+
+  for (const token of tokens) {
+    for (const pattern of FORBIDDEN_JVM_ARG_PATTERNS) {
+      if (pattern.test(token)) {
+        throw new Error(
+          `Flag JVM bloqueado: "${token}". Los flags que cargan código nativo o ejecutan comandos (javaagent, agentlib, OnError, OnOutOfMemoryError, @argfiles…) no están permitidos.`
+        );
+      }
+    }
+  }
+
+  return tokens.map(quoteArgToken).join(' ');
+}
 
 const DANGEROUS_UPLOAD_EXTENSIONS = new Set([
   '.exe', '.com', '.bat', '.cmd', '.ps1', '.psm1', '.vbs', '.vbe',
@@ -51,4974 +399,5087 @@ const DANGEROUS_UPLOAD_EXTENSIONS = new Set([
   '.jar',
 ]);
 
-/* STATE */
-
-let cloudSocket = null;
-let panelSession = sessionStorage.getItem(SESSION_KEY) || '';
-let agentId = sessionStorage.getItem(AGENT_KEY) || '';
-let panelPermission = sessionStorage.getItem(PERMISSION_KEY) || 'admin';
-let panelKind = sessionStorage.getItem(SESSION_KIND_KEY) || 'owner';
-let pairingCode = '';
-
-let requestSequence = 0;
-let connectTimer = null;
-let reconnectDelay = 1000;
-
-let currentStatus = 'offline';
-let agentOnline = false;
-let cloudConnecting = false;
-
-let editor = null;
-let currentFile = null;
-let selectedFilePaths = new Set();
-let lastUploadFiles = [];
-let activeUploadState = null;
-let originalFileContent = '';
-let currentDir = '';
-
-let currentPlugin = null;
-let pluginSource = 'all';
-let priceFilter = 'all';
-
-let versionState = {
-  software: null,
-  softwareLabel: null,
-  version: null,
-  builds: [],
-};
-
-const pending = new Map();
-const activities = [];
-
-let lastAgentActivityState = null;
-let lastStatusActivity = null;
-
-/* ══════════════════════════════════════════════
-   PERMISOS
-   ══════════════════════════════════════════════ */
-
-const PERMISSION_RANK = { read: 1, control: 2, admin: 3 };
-
-function hasPermission(required) {
-  return (PERMISSION_RANK[panelPermission] || 0) >= (PERMISSION_RANK[required] || 99);
-}
-
-function isOwnerSession() {
-  return panelKind === 'owner';
-}
-
-function isDangerousUploadFile(file) {
-  const name = String(file?.name || '').toLowerCase();
-  const ext = name.match(/\.[a-z0-9]+$/)?.[0] || '';
+function isDangerousUploadPath(relPath) {
+  const ext = path.extname(String(relPath || '')).toLowerCase();
   return DANGEROUS_UPLOAD_EXTENSIONS.has(ext);
 }
 
-/* SOCKET.IO */
+const ADMIN_ROUTE_RULES = Object.freeze([
+  {
+    methods: new Set(['GET', 'HEAD']),
+    paths: [
+      '/api/files',
+      '/api/files/content',
+      '/api/files/download',
+      '/api/databases/status',
+      '/api/databases',
+      '/api/backups',
+      '/api/backups/download/:name',
+      '/api/debug/start',
+    ],
+  },
+  {
+    methods: new Set(['POST']),
+    paths: [
+      '/api/files/content',
+      '/api/files/create',
+      '/api/files/rename',
+      '/api/files/copy',
+      '/api/files/move',
+      '/api/files/compress',
+      '/api/files/bulk',
+      '/api/files/delete',
+      '/api/databases',
+      '/api/databases/:name/reset-password',
+      '/api/backups',
+      '/api/backups/:name/restore',
+      '/api/startup',
+      '/api/ports',
+      '/api/plugins/install',
+      '/api/versions/install',
+    ],
+  },
+  {
+    methods: new Set(['DELETE']),
+    paths: [
+      '/api/databases/:name',
+      '/api/backups/:name',
+      '/api/plugins/installed/:file',
+    ],
+  },
+]);
 
-function ensureSocketIo() {
-  if (typeof window.io === 'function') {
-    return Promise.resolve();
-  }
+function routeMatchesPattern(route, pattern) {
+  const routeParts = route.split('/');
+  const patternParts = pattern.split('/');
+  if (routeParts.length !== patternParts.length) return false;
 
-  return new Promise((resolve, reject) => {
-    const existing = document.querySelector('script[data-moonwolf-socketio]');
-
-    if (existing) {
-      existing.addEventListener('load', resolve, { once: true });
-      existing.addEventListener('error', () => reject(new Error('No se pudo cargar Socket.IO.')),
-        { once: true }
-      );
-      return;
-    }
-
-    const script = document.createElement('script');
-
-    script.src = '/socket.io/socket.io.js';
-    script.async = true;
-    script.dataset.moonwolfSocketio = '1';
-
-    script.onload = resolve;
-    script.onerror = () => reject(new Error('No se pudo cargar Socket.IO.'));
-
-    document.head.appendChild(script);
-  });
+  return patternParts.every((part, index) => part.startsWith(':') || part === routeParts[index]);
 }
 
-let codeMirrorPromise = null;
+function requiredPermission(method, pathname) {
+  const verb = String(method || 'GET').toUpperCase();
+  const route = String(pathname || '').split('?')[0];
 
-const CODEMIRROR_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16';
-
-const CODEMIRROR_MODES = {
-  javascript: `${CODEMIRROR_CDN}/mode/javascript/javascript.min.js`,
-  yaml:       `${CODEMIRROR_CDN}/mode/yaml/yaml.min.js`,
-  xml:        `${CODEMIRROR_CDN}/mode/xml/xml.min.js`,
-  properties: `${CODEMIRROR_CDN}/mode/properties/properties.min.js`,
-  shell:      `${CODEMIRROR_CDN}/mode/shell/shell.min.js`,
-  toml:       `${CODEMIRROR_CDN}/mode/toml/toml.min.js`,
-  nginx:      `${CODEMIRROR_CDN}/mode/nginx/nginx.min.js`,
-};
-
-function loadExternalScript(src, dataAttr) {
-  return new Promise((resolve, reject) => {
-    if (dataAttr && document.querySelector(`script[data-cm-asset="${dataAttr}"]`)) {
-      return resolve();
-    }
-    const script = document.createElement('script');
-    script.src = src;
-    if (dataAttr) script.dataset.cmAsset = dataAttr;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error(`No se pudo cargar ${src}`));
-    document.head.appendChild(script);
-  });
+  const isAdminRoute = ADMIN_ROUTE_RULES.some(rule =>
+    rule.methods.has(verb) && rule.paths.some(pattern => routeMatchesPattern(route, pattern))
+  );
+  if (isAdminRoute) return 'admin';
+  if (verb === 'GET' || verb === 'HEAD') return 'read';
+  return 'control';
 }
 
-function loadExternalStylesheet(href, dataAttr) {
-  if (dataAttr && document.querySelector(`link[data-cm-asset="${dataAttr}"]`)) {
-    return;
-  }
-  const link = document.createElement('link');
-  link.rel = 'stylesheet';
-  link.href = href;
-  if (dataAttr) link.dataset.cmAsset = dataAttr;
-  document.head.appendChild(link);
-}
-
-async function ensureCodeMirror(mode) {
-  const modeUrl = CODEMIRROR_MODES[mode];
-
-  if (window.CodeMirror) {
-    if (!modeUrl) return true;
-    try {
-      await loadExternalScript(modeUrl, `mode-${mode}`);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  if (!codeMirrorPromise) {
-    loadExternalStylesheet(`${CODEMIRROR_CDN}/codemirror.min.css`, 'core-css');
-    loadExternalStylesheet(`${CODEMIRROR_CDN}/theme/dracula.min.css`, 'dracula-css');
-
-    codeMirrorPromise = loadExternalScript(`${CODEMIRROR_CDN}/codemirror.min.js`, 'core-js')
-      .catch(error => {
-        codeMirrorPromise = null;
-        throw error;
-      });
-  }
-
-  try {
-    await codeMirrorPromise;
-    if (modeUrl) {
-      await loadExternalScript(modeUrl, `mode-${mode}`);
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/* LOGIN */
-
-function formatLoginCode(raw) {
-  const clean = String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-
-  if (!clean) return '';
-  if (clean === 'M' || clean === 'MW') return clean;
-
-  const body = clean.startsWith('MW') ? clean.slice(2) : clean;
-
-  if (body.startsWith('S')) {
-    const head = body.slice(0, 5);
-    if (body.length <= 5) return `MW-${head}`;
-
-    const rest = body.slice(5).replace(/[^A-Z2-9]/g, '').slice(0, 16);
-    const groups = rest.match(/.{1,4}/g) || [];
-
-    return `MW-${head}${groups.length ? `-${groups.join('-')}` : ''}`;
-  }
-
-  const rest = (body.startsWith('P') ? body.slice(1) : body)
-    .replace(/[^A-Z2-9]/g, '')
-    .slice(0, 7);
-
-  const first = rest.slice(0, 3);
-  const second = rest.slice(3, 7);
-
-  return `MW-P${first}${second ? `-${second}` : ''}`;
-}
-
-function ensureLoginGate() {
-  if ($('loginGate')) return;
-
-  const style = document.createElement('style');
-
-  style.id = 'mw-cloud-login-style';
-
-  style.textContent = `
-    #loginGate{
-      position:fixed;
-      inset:0;
-      z-index:99999;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      background:#0d0f14;
-      font-family:inherit
-    }
-
-    #loginGate.hidden{
-      display:none
-    }
-
-    .mw-cloud-card{
-      width:360px;
-      max-width:90vw;
-      padding:32px 28px;
-      background:#171a21;
-      border:1px solid #2a2e38;
-      border-radius:14px;
-      box-shadow:0 18px 60px rgba(0,0,0,.45);
-      text-align:center
-    }
-
-    .mw-cloud-card h1{
-      font-size:18px;
-      color:#eee;
-      margin:0 0 6px;
-      letter-spacing:.05em
-    }
-
-    .mw-cloud-card p{
-      margin:0 0 18px;
-      color:#888;
-      font-size:12px;
-      line-height:1.5
-    }
-
-    .mw-cloud-card input{
-      width:100%;
-      box-sizing:border-box;
-      padding:12px;
-      background:#0d0f14;
-      border:1px solid #2a2e38;
-      border-radius:9px;
-      color:#eee;
-      font:600 14px/1.2 ui-monospace,monospace;
-      text-align:center;
-      letter-spacing:.12em
-    }
-
-    .mw-cloud-card button{
-      width:100%;
-      margin-top:12px;
-      padding:11px;
-      border:0;
-      border-radius:9px;
-      background:#6c5ce7;
-      color:#fff;
-      font-weight:700;
-      cursor:pointer
-    }
-
-    .mw-cloud-card button:disabled{
-      opacity:.55;
-      cursor:default
-    }
-
-    #mwCloudError{
-      min-height:18px;
-      margin-top:12px;
-      font-size:12px;
-      color:#ff6b6b
-    }
-
-    .mw-cloud-help{
-      margin-top:16px;
-      color:#666;
-      font-size:11px
-    }
-
-    .mw-cloud-help b{
-      color:#aaa
-    }
-  `;
-
-  document.head.appendChild(style);
-
-  const gate = document.createElement('div');
-
-  gate.id = 'loginGate';
-
-  gate.innerHTML = `
-    <div class="mw-cloud-card">
-      <h1>🌙 MOONWOLF CLOUD</h1>
-
-      <p>
-        Introduce el código de emparejamiento que muestra MoonWolf Agent
-        o un token de acceso compartido.
-      </p>
-
-      <input
-        id="loginPassword"
-        type="text"
-        maxlength="28"
-        spellcheck="false"
-        autocomplete="off"
-        placeholder="MW-PXXX-XXXX / MW-SHARE-XXXX-XXXX-XXXX-XXXX"
-      >
-
-      <button id="btnLogin">CONECTAR SERVIDOR</button>
-
-      <div id="mwCloudError"></div>
-
-      <div class="mw-cloud-help">
-        El código de emparejamiento se usa una sola vez. Los tokens compartidos
-        pueden reutilizarse hasta que caduquen o sean revocados.
-      </div>
-    </div>
-  `;
-
-  document.body.prepend(gate);
-
-  $('loginPassword').addEventListener('input', event => {
-    event.target.value = formatLoginCode(event.target.value);
-  });
-
-  $('btnLogin').addEventListener('click', attemptLogin);
-
-  $('loginPassword').addEventListener('keydown', event => {
-    if (event.key === 'Enter') {
-      attemptLogin();
-    }
-  });
-}
-
-function showApp() {
-  ensureLoginGate();
-
-  $('loginGate')?.classList.add('hidden');
-  document.querySelector('.app')?.classList.remove('locked');
-}
-
-function showLogin(message = '') {
-  ensureLoginGate();
-
-  $('loginGate')?.classList.remove('hidden');
-  document.querySelector('.app')?.classList.add('locked');
-
-  if ($('mwCloudError')) {
-    $('mwCloudError').textContent = message;
-  }
-
-  if ($('loginPassword')) {
-    $('loginPassword').value = pairingCode;
-  }
-}
-
-function setSession(session, id, permission = 'admin', kind = 'owner') {
-  panelSession = String(session || '');
-  agentId = String(id || '');
-  panelPermission = String(permission || 'admin');
-  panelKind = String(kind || 'owner');
-
-  if (panelSession) {
-    sessionStorage.setItem(SESSION_KEY, panelSession);
-    sessionStorage.setItem(PERMISSION_KEY, panelPermission);
-    sessionStorage.setItem(SESSION_KIND_KEY, panelKind);
-  } else {
-    sessionStorage.removeItem(SESSION_KEY);
-    sessionStorage.removeItem(PERMISSION_KEY);
-    sessionStorage.removeItem(SESSION_KIND_KEY);
-  }
-
-  if (agentId) {
-    sessionStorage.setItem(AGENT_KEY, agentId);
-  } else {
-    sessionStorage.removeItem(AGENT_KEY);
-  }
-}
-
-function clearSession() {
-  setSession('', '', 'admin', 'owner');
-  pairingCode = '';
-}
-
-async function attemptLogin() {
-  const input = $('loginPassword');
-  const button = $('btnLogin');
-
-  const code = String(input?.value || '')
-    .trim()
-    .toUpperCase();
-
-  if (!PAIRING_CODE_RE.test(code) && !SHARE_TOKEN_RE.test(code)) {
-    if ($('mwCloudError')) {
-      $('mwCloudError').textContent =
-        'Código inválido. Usa MW-PXXX-XXXX o un token MW-SHARE-...';
-    }
-
-    return;
-  }
-
-  button.disabled = true;
-  button.textContent = 'Emparejando...';
-
-  if ($('mwCloudError')) {
-    $('mwCloudError').textContent = '';
-  }
-
-  pairingCode = code;
-
-  try {
-    const response = await fetch('/api/pair', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code }),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok || !data.ok || !data.session || !data.agent?.id) {
-      throw new Error(data.error || 'No se pudo emparejar el panel.');
-    }
-
-    setSession(
-      data.session,
-      data.agent.id,
-      data.permission || 'admin',
-      data.kind || 'owner'
-    );
-    pairingCode = '';
-
-    await connectCloud(true);
-
-    if ($('mwCloudError')) {
-      $('mwCloudError').textContent = '';
-    }
-  } catch (error) {
-    pairingCode = '';
-
-    if ($('mwCloudError')) {
-      $('mwCloudError').textContent = error.message;
-    }
-
-    button.textContent = 'CONECTAR SERVIDOR';
-    button.disabled = false;
-  }
-}
-
-/* CLOUD CONNECTION */
-
-function clearPending(errorMessage) {
-  for (const [, resolve] of pending) {
-    resolve({
-      id: null,
-      ok: false,
-      status: 503,
-      data: {
-        ok: false,
-        error: errorMessage,
-      },
-    });
-  }
-
-  pending.clear();
-}
-
-async function connectCloud(manual = false) {
-  clearTimeout(connectTimer);
-
-  if (!panelSession || !agentId) {
-    showLogin('Empareja este panel con MoonWolf Agent.');
-
-    return Promise.reject(new Error('Código de conexión inválido.'));
-  }
-
-  if (cloudSocket?.connected) {
-    showApp();
-    return;
-  }
-
-  await ensureSocketIo();
-
-  if (cloudSocket) {
-    try {
-      cloudSocket.disconnect();
-    } catch {}
-  }
-
-  cloudConnecting = true;
-  updateAgentUi();
-  updateAgentStatusBadges();
-
-  return new Promise((resolve, reject) => {
-    let settled = false;
-
-    const finish = (fn, value) => {
-      if (settled) return;
-
-      settled = true;
-      fn(value);
-    };
-
-    cloudSocket = io(CLOUD_URL, {
-      autoConnect: false,
-      path: CLOUD_PATH,
-      transports: ['websocket'],
-      reconnection: false,
-
-      auth: callback => {
-        callback({
-          role: 'panel',
-          session: panelSession,
-        });
-      },
-    });
-
-    cloudSocket.once('connect', () => {
-      reconnectDelay = 1000;
-
-      cloudConnecting = false;
-      showApp();
-
-      addActivity('Conectado a MoonWolf Cloud', 'ok', '☁️');
-
-      updateAgentUi();
-      updateAgentStatusBadges();
-
-      finish(resolve);
-    });
-
-    cloudSocket.once('connect_error', error => {
-      cloudConnecting = false;
-      updateAgentUi();
-      updateAgentStatusBadges();
-
-      const message =
-        error?.message || 'No se pudo conectar con MoonWolf Cloud.';
-
-      addActivity(message, 'warn', '⚠️');
-
-      if (/unauthorized/i.test(message)) {
-        clearSession();
-        showLogin('La sesión del panel ha caducado. Introduce un nuevo código.');
-      }
-
-      finish(reject, new Error(message));
-    });
-
-    cloudSocket.on('direct_config', data => {
-      if (Array.isArray(data?.iceServers) && data.iceServers.length) {
-        direct.iceServers = data.iceServers;
-      }
-    });
-
-    cloudSocket.on('direct_signal', async msg => {
-      const pc = direct.pc;
-
-      if (!pc) return;
-
-      try {
-        if (msg?.type === 'answer') {
-          await pc.setRemoteDescription({ type: 'answer', sdp: String(msg.sdp || '') });
-        } else if (msg?.type === 'candidate' && msg.candidate) {
-          await pc.addIceCandidate({ candidate: msg.candidate, sdpMid: msg.sdpMid });
-        } else if (msg?.type === 'unavailable') {
-          closeDirectLink(true);
-        }
-      } catch {}
-    });
-
-    cloudSocket.on('cloud_ready', data => {
-      setAgentOnline(Boolean(data?.agentOnline));
-    });
-
-    cloudSocket.on('agent_status', data => {
-      setAgentOnline(Boolean(data?.online));
-    });
-
-    cloudSocket.on('session_info', data => {
-      panelPermission = String(data?.permission || panelPermission || 'admin');
-      panelKind = String(data?.kind || panelKind || 'owner');
-      sessionStorage.setItem(PERMISSION_KEY, panelPermission);
-      sessionStorage.setItem(SESSION_KIND_KEY, panelKind);
-      renderSettings();
-      renderUsers();
-    });
-
-    cloudSocket.on('share_revoked', () => {
-      clearSession();
-      showLogin('Este acceso compartido ha sido revocado.');
-    });
-
-    cloudSocket.on('status', setStatus);
-    cloudSocket.on('log', appendLog);
-    cloudSocket.on('log_batch', entries => {
-      if (Array.isArray(entries)) entries.forEach(appendLog);
-    });
-
-    cloudSocket.on('history', logs => {
-      const consoleEl = $('console');
-
-      if (!consoleEl) return;
-
-      consoleEl.innerHTML = '';
-      pendingConsoleLogs.length = 0;
-
-      (Array.isArray(logs) ? logs : []).forEach(appendLog);
-    });
-
-    cloudSocket.on('stats', updateStats);
-
-    cloudSocket.on('rpc_result', result => {
-      const resolveRequest = pending.get(result?.id);
-
-      if (!resolveRequest) return;
-
-      pending.delete(result.id);
-      resolveRequest(result);
-    });
-
-    cloudSocket.on('disconnect', reason => {
-      cloudConnecting = false;
-      setAgentOnline(false);
-
-      currentStatus = 'offline';
-      updateStatusUi('offline');
-      updateAgentUi();
-      updateAgentStatusBadges();
-
-      clearPending('Conexión con MoonWolf Cloud perdida.');
-
-      addActivity(`Cloud desconectado (${reason})`, 'warn', '⚠️');
-
-      if (manual) {
-        showLogin(
-          'La conexión se cerró. Comprueba que el Agent esté ejecutándose.'
-        );
-      }
-
-      clearTimeout(connectTimer);
-
-      connectTimer = setTimeout(() => {
-        connectCloud(false).catch(() => {});
-      }, reconnectDelay);
-
-      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
-    });
-
-    cloudSocket.connect();
-  });
-}
-
-/* RPC / API */
-
-async function cloudApi(pathname, init = {}) {
-  const headers = new Headers(init.headers || {});
-  headers.set('Authorization', `Bearer ${panelSession}`);
-  if (init.body !== undefined && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json');
-  }
-
-  const response = await fetch(pathname, { ...init, headers });
-  let data = null;
-
-  try {
-    data = await response.json();
-  } catch {}
-
-  if (!response.ok || !data?.ok) {
-    throw new Error(data?.error || `Error HTTP ${response.status}`);
-  }
-
-  return data;
-}
-
-function rpcCloud(pathname, init = {}) {
-  if (!cloudSocket?.connected) {
-    return Promise.reject(new Error('MoonWolf Cloud no está conectado.'));
-  }
-
-  const id = `${Date.now()}-${++requestSequence}`;
-
-  const request = {
-    id,
-    method: String(init.method || 'GET').toUpperCase(),
-    path: pathname,
-    body: init.body ?? undefined,
-  };
-
-  return new Promise(resolve => {
-    pending.set(id, resolve);
-    cloudSocket.emit('rpc', request);
-  });
-}
-
-/* ══════════════════════════════════════════════
-   CANAL DIRECTO (WebRTC) — Panel ↔ Agent
-   ══════════════════════════════════════════════ */
-const DF = { REQ_HEAD: 1, REQ_BODY: 2, REQ_END: 3, RES_HEAD: 17, RES_BODY: 18, RES_END: 19, RES_ERR: 20 };
-const DIRECT_FRAME_BYTES = 16 * 1024;
-const DIRECT_HIGH_WATER = 4 * 1024 * 1024;
-const DIRECT_OPEN_TIMEOUT_MS = 15_000;
-
-const DIRECT_ROUTES = [
-  ['GET', '/api/files'],
-  ['GET', '/api/files/content'],
-  ['POST', '/api/files/content'],
-  ['GET', '/api/files/download'],
-  ['POST', '/api/files/upload-chunk'],
-  ['GET', '/api/backups/download/:name'],
-];
-
-const direct = {
-  pc: null,
-  dc: null,
-  ready: false,
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-  nextId: 1,
-  reqs: new Map(),
-  waiters: [],
-  retryTimer: null,
-  openTimer: null,
-  failures: 0,
-};
-
-const directReady = () => direct.ready && direct.dc?.readyState === 'open';
-
-function isDirectRoute(method, pathname) {
-  const route = pathname.split('?')[0].split('/');
-
-  return DIRECT_ROUTES.some(([m, pattern]) => {
-    const parts = pattern.split('/');
-
-    return m === method &&
-      parts.length === route.length &&
-      parts.every((part, i) => part.startsWith(':') || part === route[i]);
-  });
-}
-
-function hasResultBody(result) {
-  return result?.bodyBytes !== undefined || result?.bodyBase64 !== undefined;
-}
-
-function wakeDirect() {
-  const waiters = direct.waiters.splice(0);
-  waiters.forEach(resolve => resolve());
-}
-
-function failDirectRequests(error) {
-  for (const req of direct.reqs.values()) req.reject(error);
-  direct.reqs.clear();
-}
-
-function scheduleDirectRetry() {
-  clearTimeout(direct.retryTimer);
-
-  if (!cloudSocket?.connected || !agentOnline) return;
-
-  direct.failures += 1;
-
-  const delay = Math.min(15_000 * 2 ** Math.min(direct.failures - 1, 5), 5 * 60_000);
-
-  direct.retryTimer = setTimeout(startDirectLink, delay);
-}
-
-function closeDirectLink(retry = false) {
-  clearTimeout(direct.openTimer);
-
-  const { pc, dc } = direct;
-  const wasReady = direct.ready;
-
-  direct.pc = null;
-  direct.dc = null;
-  direct.ready = false;
-
-  if (pc) pc.onconnectionstatechange = null;
-  if (dc) dc.onclose = null;
-
-  try { pc?.close(); } catch {}
-
-  failDirectRequests(new Error('Canal directo cerrado'));
-  wakeDirect();
-
-  if (wasReady) {
-    addActivity('Canal directo cerrado; las operaciones de archivos esperan a que se reconecte', 'warn', '⚡');
-    updateAgentStatusBadges();
-  }
-
-  if (retry) scheduleDirectRetry();
-  else clearTimeout(direct.retryTimer);
-}
-
-async function startDirectLink() {
-  if (direct.pc || directReady()) return;
-  if (!cloudSocket?.connected || !agentOnline || typeof RTCPeerConnection === 'undefined') return;
-
-  clearTimeout(direct.retryTimer);
-
-  const pc = new RTCPeerConnection({ iceServers: direct.iceServers });
-  const dc = pc.createDataChannel('moonwolf', { ordered: true });
-
-  dc.binaryType = 'arraybuffer';
-  dc.bufferedAmountLowThreshold = 256 * 1024;
-
-  direct.pc = pc;
-  direct.dc = dc;
-
-  pc.onicecandidate = event => {
-    if (!event.candidate) return;
-
-    cloudSocket?.emit('direct_signal', {
-      type: 'candidate',
-      candidate: event.candidate.candidate,
-      sdpMid: event.candidate.sdpMid,
-    });
-  };
-
-  pc.onconnectionstatechange = () => {
-    if (['failed', 'closed'].includes(pc.connectionState)) closeDirectLink(true);
-  };
-
-  dc.onopen = () => {
-    clearTimeout(direct.openTimer);
-    direct.ready = true;
-    direct.failures = 0;
-    wakeDirect();
-    addActivity('Canal directo con el Agent activo', 'ok', '⚡');
-    updateAgentStatusBadges();
-  };
-
-  dc.onclose = () => closeDirectLink(true);
-  dc.onbufferedamountlow = wakeDirect;
-  dc.onmessage = event => onDirectMessage(event.data);
-
-  direct.openTimer = setTimeout(() => {
-    if (directReady()) return;
-
-    addActivity('No se pudo establecer el canal directo; las operaciones de archivos quedan bloqueadas hasta reconectar', 'warn', '⚡');
-    closeDirectLink(true);
-  }, DIRECT_OPEN_TIMEOUT_MS);
-
-  try {
-    await pc.setLocalDescription(await pc.createOffer());
-    cloudSocket?.emit('direct_signal', { type: 'offer', sdp: pc.localDescription.sdp });
-  } catch {
-    closeDirectLink(true);
-  }
-}
-
-async function sendDirect(type, id, payload = new Uint8Array(0)) {
-  while (directReady() && direct.dc.bufferedAmount > DIRECT_HIGH_WATER) {
-    await new Promise(resolve => {
-      direct.waiters.push(resolve);
-      setTimeout(resolve, 2000);
-    });
-  }
-
-  if (!directReady()) throw new Error('Canal directo no disponible');
-
-  const frame = new Uint8Array(5 + payload.length);
-
-  frame[0] = type;
-  new DataView(frame.buffer).setUint32(1, id);
-  frame.set(payload, 5);
-
-  direct.dc.send(frame);
-}
-
-function onDirectMessage(data) {
-  if (!(data instanceof ArrayBuffer) || data.byteLength < 5) return;
-
-  const view = new DataView(data);
-  const type = view.getUint8(0);
-  const id = view.getUint32(1);
-  const req = direct.reqs.get(id);
-
-  if (!req) return;
-
-  if (type === DF.RES_HEAD) {
-    req.head = JSON.parse(new TextDecoder().decode(new Uint8Array(data, 5)));
-    req.totalSize = Number(req.head?.contentLength || req.head?.size) || 0;
-    if (typeof req.onProgress === 'function') {
-      req.onProgress(0, req.totalSize);
-    }
-  } else if (type === DF.RES_BODY) {
-    const chunk = new Uint8Array(data, 5);
-
-    req.chunks.push(chunk);
-    req.size += chunk.length;
-    if (typeof req.onProgress === 'function') {
-      req.onProgress(req.size, req.totalSize);
-    }
-  } else if (type === DF.RES_END) {
-    direct.reqs.delete(id);
-
-    const bytes = new Uint8Array(req.size);
-    let offset = 0;
-
-    for (const chunk of req.chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    const status = req.head?.status || 502;
-
-    req.resolve({
-      id: null,
-      ok: status >= 200 && status < 300,
-      status,
-      contentType: req.head?.contentType || 'application/octet-stream',
-      bodyBytes: bytes,
-    });
-  } else if (type === DF.RES_ERR) {
-    direct.reqs.delete(id);
-    req.reject(new Error(new TextDecoder().decode(new Uint8Array(data, 5))));
-  }
-}
-
-async function directRequest(method, pathname, body, { onProgress, signal } = {}) {
-  const id = direct.nextId++ >>> 0;
-  const isBinary = body instanceof Uint8Array;
-  const encoder = new TextEncoder();
-
-  if (signal?.aborted) {
-    return Promise.reject(new DOMException('Aborted', 'AbortError'));
-  }
-
-  const payload = body === undefined || body === null
-    ? null
-    : isBinary ? body : encoder.encode(typeof body === 'string' ? body : JSON.stringify(body));
-
-  const done = new Promise((resolve, reject) => {
-    direct.reqs.set(id, { resolve, reject, head: null, chunks: [], size: 0, onProgress, totalSize: 0 });
-  });
-
-  if (signal) {
-    signal.addEventListener('abort', () => {
-      direct.reqs.delete(id);
-      try { sendDirect(DF.REQ_END, id); } catch {}
-    }, { once: true });
-  }
-
-  done.catch(() => {});
-
-  try {
-    await sendDirect(DF.REQ_HEAD, id, encoder.encode(JSON.stringify({
-      method,
-      path: pathname,
-      contentType: isBinary ? 'application/octet-stream' : 'application/json',
-    })));
-
-    if (payload) {
-      for (let off = 0; off < payload.length; off += DIRECT_FRAME_BYTES) {
-        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-        await sendDirect(DF.REQ_BODY, id, payload.subarray(off, off + DIRECT_FRAME_BYTES));
-      }
-    }
-
-    await sendDirect(DF.REQ_END, id);
-  } catch (error) {
-    direct.reqs.delete(id);
+function getShareTokenSql() {
+  if (!SHARE_TOKEN_DATABASE_URL) {
+    const error = new Error('DATABASE_URL no está configurada.');
+    error.code = 'SHARE_TOKEN_STORE_UNAVAILABLE';
     throw error;
   }
 
-  return done;
-}
-
-async function waitForDirectReady(timeoutMs = DIRECT_OPEN_TIMEOUT_MS) {
-  const deadline = Date.now() + timeoutMs;
-
-  while (!directReady()) {
-    if (!cloudSocket?.connected) {
-      throw new Error('MoonWolf Cloud no está conectado. No se ha transferido ningún dato de archivo.');
-    }
-    if (!agentOnline) {
-      throw new Error('MoonWolf Agent está desconectado. No se ha transferido ningún dato de archivo.');
-    }
-    if (typeof RTCPeerConnection === 'undefined') {
-      throw new Error('Este navegador no admite WebRTC. La transferencia por Cloud está desactivada para evitar consumir tráfico.');
-    }
-
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) {
-      throw new Error('Conexión directa no disponible. No se ha transferido ningún dato por MoonWolf Cloud. Espera a que WebRTC se conecte e inténtalo de nuevo.');
-    }
-
-    startDirectLink();
-
-    await new Promise(resolve => {
-      let settled = false;
-      let timer;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        const index = direct.waiters.indexOf(wake);
-        if (index !== -1) direct.waiters.splice(index, 1);
-        resolve();
-      };
-      const wake = () => finish();
-      timer = setTimeout(finish, remaining);
-      direct.waiters.push(wake);
+  if (!shareTokenSql) {
+    const postgres = require('postgres');
+    shareTokenSql = postgres(SHARE_TOKEN_DATABASE_URL, {
+      max: 5,
+      idle_timeout: 20,
+      connect_timeout: 10,
+      ssl: 'require',
+      prepare: false,
+      connection: { application_name: 'moonwolf-panel' },
     });
   }
+
+  return shareTokenSql;
 }
 
-function rpcHttp(pathname, init = {}) {
-  const method = String(init.method || 'GET').toUpperCase();
+async function initializeShareTokenStore() {
+  const sql = getShareTokenSql();
 
-  if (isDirectRoute(method, pathname)) {
-    return waitForDirectReady().then(() =>
-      directRequest(method, pathname, init.body, { onProgress: init.onProgress, signal: init.signal }).catch(error => {
-        if (init.signal?.aborted || error?.name === 'AbortError') throw error;
-        throw new Error(
-          'La conexión directa se ha interrumpido durante la operación. Comprueba WebRTC e inténtalo de nuevo.',
-          { cause: error }
-        );
-      })
-    );
+  await sql`CREATE TABLE IF NOT EXISTS moonwolf_share_tokens (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    token_hash CHAR(64) NOT NULL UNIQUE,
+    label TEXT NOT NULL DEFAULT 'Acceso compartido',
+    permission TEXT NOT NULL CHECK (permission IN ('read', 'control', 'admin')),
+    created_at BIGINT NOT NULL,
+    expires_at BIGINT NULL,
+    revoked_at BIGINT NULL
+  )`;
+
+  await sql`CREATE INDEX IF NOT EXISTS moonwolf_share_tokens_agent_created_idx
+    ON moonwolf_share_tokens (agent_id, created_at DESC)`;
+}
+
+function removeLegacyShareTokenFiles() {
+  const legacyPaths = new Set([
+    path.join(__dirname, '.moonwolf-share-tokens.json'),
+  ]);
+  if (process.env.MOONWOLF_SHARE_STORE) {
+    const configuredPath = path.resolve(process.env.MOONWOLF_SHARE_STORE);
+    if (/share[-_]?tokens?\.json$/i.test(path.basename(configuredPath))) {
+      legacyPaths.add(configuredPath);
+    }
   }
 
-  return rpcCloud(pathname, init);
+  for (const legacyPath of legacyPaths) {
+    const dir = path.dirname(legacyPath);
+    const base = path.basename(legacyPath);
+    const targets = [legacyPath, `${legacyPath}.bak`];
+
+    try {
+      for (const name of fsSync.readdirSync(dir)) {
+        if (name.startsWith(`${base}.corrupt-`) || name.startsWith(`${base}.tmp-`)) {
+          targets.push(path.join(dir, name));
+        }
+      }
+    } catch {}
+
+    for (const target of targets) {
+      try {
+        if (fsSync.existsSync(target)) fsSync.rmSync(target, { force: true });
+      } catch (error) {
+        console.warn(`[share-tokens] No se pudo eliminar el archivo antiguo ${target}: ${error.message}`);
+      }
+    }
+  }
 }
 
-function decodeResultBody(result) {
-  if (result?.bodyBytes) return result.bodyBytes;
+function hashShareToken(token) {
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+}
 
-  if (result?.bodyBase64 === undefined) {
+function makeShareToken() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let raw = '';
+
+  while (raw.length < 16) {
+    for (const byte of crypto.randomBytes(16)) {
+      raw += alphabet[byte % alphabet.length];
+      if (raw.length >= 16) break;
+    }
+  }
+
+  return `MW-SHARE-${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}`;
+}
+
+function shareTokenFromRow(row) {
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    agentId: String(row.agent_id),
+    tokenHash: String(row.token_hash).trim(),
+    label: String(row.label || 'Acceso compartido'),
+    permission: String(row.permission),
+    createdAt: Number(row.created_at),
+    expiresAt: row.expires_at == null ? null : Number(row.expires_at),
+    revokedAt: row.revoked_at == null ? null : Number(row.revoked_at),
+  };
+}
+
+function isShareTokenActive(record) {
+  return Boolean(
+    record &&
+    !record.revokedAt &&
+    (!record.expiresAt || Number(record.expiresAt) > Date.now())
+  );
+}
+
+async function findShareToken(token) {
+  const hash = hashShareToken(token);
+  const sql = getShareTokenSql();
+  const rows = await sql`
+    SELECT id, agent_id, token_hash, label, permission, created_at, expires_at, revoked_at
+    FROM moonwolf_share_tokens
+    WHERE token_hash = ${hash}
+    LIMIT 1
+  `;
+  const record = shareTokenFromRow(rows[0]);
+  return isShareTokenActive(record) ? record : null;
+}
+
+async function findShareTokenById(id, agentId) {
+  if (!id || !agentId) return null;
+  const sql = getShareTokenSql();
+  const rows = await sql`
+    SELECT id, agent_id, token_hash, label, permission, created_at, expires_at, revoked_at
+    FROM moonwolf_share_tokens
+    WHERE id = ${String(id)} AND agent_id = ${String(agentId)}
+    LIMIT 1
+  `;
+  return shareTokenFromRow(rows[0]);
+}
+
+async function listShareTokensForAgent(agentId) {
+  const sql = getShareTokenSql();
+  const rows = await sql`
+    SELECT id, agent_id, token_hash, label, permission, created_at, expires_at, revoked_at
+    FROM moonwolf_share_tokens
+    WHERE agent_id = ${String(agentId)}
+      AND revoked_at IS NULL
+      AND (expires_at IS NULL OR expires_at > ${Date.now()})
+    ORDER BY created_at DESC
+  `;
+  return rows.map(shareTokenFromRow);
+}
+
+async function createShareToken(agentId, permission, expiresAt, label) {
+  const token = makeShareToken();
+  const record = {
+    id: crypto.randomUUID(),
+    agentId: String(agentId),
+    tokenHash: hashShareToken(token),
+    label: String(label || '').trim().slice(0, 60) || 'Acceso compartido',
+    permission,
+    createdAt: Date.now(),
+    expiresAt: expiresAt || null,
+    revokedAt: null,
+  };
+
+  const sql = getShareTokenSql();
+  await sql`
+    INSERT INTO moonwolf_share_tokens
+      (id, agent_id, token_hash, label, permission, created_at, expires_at, revoked_at)
+    VALUES
+      (${record.id}, ${record.agentId}, ${record.tokenHash}, ${record.label},
+       ${record.permission}, ${record.createdAt}, ${record.expiresAt}, NULL)
+  `;
+
+  return { record, token };
+}
+
+async function updateShareTokenPermission(id, agentId, permission) {
+  const sql = getShareTokenSql();
+  const rows = await sql`
+    UPDATE moonwolf_share_tokens
+    SET permission = ${permission}
+    WHERE id = ${String(id)}
+      AND agent_id = ${String(agentId)}
+      AND revoked_at IS NULL
+      AND (expires_at IS NULL OR expires_at > ${Date.now()})
+    RETURNING id, agent_id, token_hash, label, permission, created_at, expires_at, revoked_at
+  `;
+  return shareTokenFromRow(rows[0]);
+}
+
+async function revokeShareToken(id, agentId) {
+  const sql = getShareTokenSql();
+  const rows = await sql`
+    UPDATE moonwolf_share_tokens
+    SET revoked_at = ${Date.now()}
+    WHERE id = ${String(id)}
+      AND agent_id = ${String(agentId)}
+      AND revoked_at IS NULL
+    RETURNING id, agent_id, token_hash, label, permission, created_at, expires_at, revoked_at
+  `;
+  return shareTokenFromRow(rows[0]);
+}
+
+function publicShareToken(record) {
+  return {
+    id: record.id,
+    agentId: record.agentId,
+    label: record.label,
+    permission: record.permission,
+    createdAt: record.createdAt,
+    expiresAt: record.expiresAt || null,
+    revokedAt: record.revokedAt || null,
+  };
+}
+
+async function getSessionFromRequest(req) {
+  if (LOCAL_AGENT_TOKEN) {
+    const localPermission = normalizeSharePermission(req.get('x-moonwolf-permission'));
+
+    return req.get('x-moonwolf-kind') === 'owner' && localPermission
+      ? { kind: 'owner', permission: localPermission }
+      : { kind: 'share', permission: localPermission || 'read' };
+  }
+
+  const auth = String(req.headers.authorization || '');
+
+  if (!auth.startsWith('Bearer ')) return null;
+
+  const session = verifyPanelSession(auth.slice(7).trim());
+  if (!session) return null;
+
+  if (session.kind === 'share') {
+    try {
+      const share = await findShareTokenById(session.shareTokenId, session.agentId);
+      if (!isShareTokenActive(share)) return null;
+      session.permission = normalizeSharePermission(share.permission) || 'read';
+    } catch (error) {
+      console.error('[share-tokens] No se pudo validar la sesión compartida:', error.message);
+      return null;
+    }
+  }
+
+  return session;
+}
+
+function createPanelSession(agentId, options = {}) {
+  const permission = options.permission || 'admin';
+  const kind = options.kind || 'owner';
+  const shareTokenId = options.shareTokenId || null;
+  const requestedExp = Number(options.expiresAt) || 0;
+  const sessionExp = requestedExp > 0
+    ? Math.min(Date.now() + PANEL_SESSION_TTL_MS, requestedExp)
+    : Date.now() + PANEL_SESSION_TTL_MS;
+
+  const payload = Buffer.from(JSON.stringify({
+    agentId,
+    permission,
+    kind,
+    shareTokenId,
+    iat: Date.now(),
+    exp: sessionExp,
+    nonce: crypto.randomBytes(16).toString('hex'),
+  })).toString('base64url');
+
+  return `${payload}.${signValue(payload)}`;
+}
+
+function verifyPanelSession(token) {
+  const [payload, signature] = String(token || '').split('.');
+
+  if (!payload || !signature || !timingSafeEqualStr(signature, signValue(payload))) {
     return null;
   }
 
-  const binary = atob(result.bodyBase64);
-  const bytes = new Uint8Array(binary.length);
-
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-
-  return bytes;
-}
-
-async function api(pathname, init = {}) {
-  const result = await rpcHttp(pathname, init);
-
-  const status = result?.status || 500;
-  const contentType = result?.contentType || 'application/json';
-
-  if (hasResultBody(result)) {
-    const bytes = decodeResultBody(result);
-    const text = new TextDecoder().decode(bytes);
-
-    if (
-      contentType.includes('application/json') ||
-      contentType.includes('text/')
-    ) {
-      try {
-        return JSON.parse(text);
-      } catch {
-        return {
-          ok: status >= 200 && status < 300,
-          status,
-          content: text,
-        };
-      }
-    }
-  }
-
-  return result?.data || {
-    ok: Boolean(result?.ok),
-    status,
-    error: 'Respuesta vacía.',
-  };
-}
-
-function postJSON(pathname, body) {
-  return api(pathname, { method: 'POST', body });
-}
-
-/* AGENT STATUS */
-
-function setAgentOnline(online) {
-  const nextState = Boolean(online);
-
-  if (nextState) startDirectLink();
-  else closeDirectLink(false);
-
-  if (agentOnline === nextState) {
-    updateAgentUi();
-    updateStatusUi(currentStatus);
-    updateAgentStatusBadges();
-    return;
-  }
-
-  agentOnline = nextState;
-  updateAgentUi();
-  updateStatusUi(currentStatus);
-  updateAgentStatusBadges();
-
-  if (nextState) {
-    if (lastAgentActivityState !== true) {
-      addActivity('MoonWolf Agent conectado', 'ok', '🟢');
-    }
-
-    lastAgentActivityState = true;
-  } else {
-    if (lastAgentActivityState !== false) {
-      addActivity('MoonWolf Agent desconectado', 'warn', '🔴');
-    }
-
-    lastAgentActivityState = false;
-  }
-}
-
-function updateAgentUi() {
-  const state = cloudConnecting
-    ? 'connecting'
-    : (agentOnline ? 'online' : 'offline');
-
-  const elements = [
-    $('agentStatus'),
-    $('sbAgentStatus'),
-    $('agentConnectionStatus'),
-  ];
-
-  for (const element of elements) {
-    if (!element) continue;
-
-    element.classList.toggle('online',     state === 'online');
-    element.classList.toggle('offline',    state === 'offline');
-    element.classList.toggle('connecting', state === 'connecting');
-
-    if (element.dataset && element.dataset.agentStatus !== undefined) {
-      element.dataset.agentStatus = state;
-    }
-  }
-
-  const text = {
-    online:     'AGENT ONLINE',
-    offline:    'AGENT OFFLINE',
-    connecting: 'AGENT CONECTANDO...',
-  }[state];
-
-  for (const element of [$('agentStatusText'), $('sbAgentStatusText')]) {
-    if (element) element.textContent = text;
-  }
-}
-
-function updateAgentStatusBadges() {
-  if ($('view-settings')?.classList.contains('active')) {
-    renderSettings();
-  }
-}
-
-/* SERVER / TERMINAL */
-
-function updateStatusUi(status) {
-  status = STATUS_LABELS[status] ? status : 'offline';
-
-  currentStatus = status;
-
-  const statusEl = $('sbStatus');
-
-  if (statusEl) {
-    statusEl.className = `sb-status ${status}`;
-  }
-
-  const statusText = $('sbStatusText');
-
-  if (statusText) {
-    statusText.textContent =
-      STATUS_LABELS[status] || String(status).toUpperCase();
-  }
-
-  const startButton = $('btnStart');
-
-  if (startButton) {
-    startButton.disabled = status !== 'offline' || !agentOnline;
-  }
-
-  const stopButton = $('btnStop');
-
-  if (stopButton) {
-    stopButton.disabled = status !== 'online' || !agentOnline;
-  }
-
-  const restartButton = $('btnRestart');
-
-  if (restartButton) {
-    restartButton.disabled = status !== 'online' || !agentOnline;
-  }
-
-  const stats = $('statsGrid');
-
-  if (stats) {
-    stats.classList.toggle('hidden', status === 'offline');
-    stats.classList.toggle('visible', status !== 'offline');
-  }
-}
-
-function setStatus(status) {
-  updateStatusUi(status);
-
-  const normalized = STATUS_LABELS[status] ? status : 'offline';
-
-  if (lastStatusActivity === normalized) {
-    return;
-  }
-
-  lastStatusActivity = normalized;
-
-  addActivity(
-    STATUS_LABELS[normalized] || normalized,
-    STATUS_LEVELS[normalized] || 'info',
-    STATUS_ICONS[normalized] || '📌'
-  );
-}
-
-function updateStats(stats = {}) {
-  const players = Number(stats.players);
-  const maxPlayers = Number(stats.maxPlayers);
-  const tps = Number(stats.tps);
-  const processMemory = Number(stats.processMemory);
-  const cpuUsage = Number(stats.cpuUsage);
-
-  const safePlayers = Number.isFinite(players) ? players : 0;
-  const safeMaxPlayers = Number.isFinite(maxPlayers) ? maxPlayers : 0;
-  const safeTps = Number.isFinite(tps) ? tps : 20;
-  const safeProcessMemory = Number.isFinite(processMemory) ? processMemory : 0;
-  const safeCpu = Number.isFinite(cpuUsage) ? cpuUsage : 0;
-
-  if ($('statPlayers')) {
-    $('statPlayers').innerHTML = `${safePlayers}<span class="stat-unit">/${safeMaxPlayers}</span>`;
-  }
-
-  const tpsEl = $('statTps');
-
-  if (tpsEl) {
-    tpsEl.className = `stat-value ${
-      safeTps < 15 ? 'tps-bad' : safeTps < 18 ? 'tps-warn' : 'tps-good'
-    }`;
-
-    tpsEl.innerHTML = `${safeTps}<span class="stat-unit"> tps</span>`;
-  }
-
-  if ($('statUptime')) {
-    $('statUptime').textContent = stats.uptime || '0h 0m';
-  }
-
-  if ($('statMemProc')) {
-    $('statMemProc').innerHTML = `${safeProcessMemory}<span class="stat-unit"> MB</span>`;
-  }
-
-  const sys = stats.sysMemory || { used: 0, total: 0 };
-
-  const used = Number(sys.used);
-  const total = Number(sys.total);
-
-  const safeUsed = Number.isFinite(used) ? used : 0;
-  const safeTotal = Number.isFinite(total) ? total : 0;
-
-  if ($('statMemSys')) {
-    $('statMemSys').innerHTML = `${safeUsed}/${safeTotal}<span class="stat-unit"> GB</span>`;
-  }
-
-  if ($('statCpu')) {
-    $('statCpu').innerHTML = `${safeCpu}<span class="stat-unit"> %</span>`;
-  }
-}
-
-/* ══════════════════════════════════════════════
-   FILTRO DE LOGS
-   ══════════════════════════════════════════════ */
-const LOG_IGNORE_PATTERNS = [
-  /Thread RCON Client \/127\.0\.0\.1 (started|shutting down)/i,
-];
-
-function shouldIgnoreLog(line) {
-  const text = String(line || '');
-
-  return LOG_IGNORE_PATTERNS.some(re => re.test(text));
-}
-
-const ANSI_RE = /\x1b\[([0-9;]*)m|§([0-9a-fk-or])/gi;
-const ANSI_COLORS = {
-  30: 'black', 31: 'red', 32: 'green', 33: 'yellow',
-  34: 'blue', 35: 'magenta', 36: 'cyan', 37: 'white',
-  90: 'bright-black', 91: 'bright-red', 92: 'bright-green',
-  93: 'bright-yellow', 94: 'bright-blue', 95: 'bright-magenta',
-  96: 'bright-cyan', 97: 'bright-white',
-};
-const MINECRAFT_COLORS = {
-  0: 'black', 1: 'dark-blue', 2: 'dark-green', 3: 'dark-aqua',
-  4: 'dark-red', 5: 'dark-purple', 6: 'gold', 7: 'gray',
-  8: 'dark-gray', 9: 'blue', a: 'green', b: 'aqua',
-  c: 'red', d: 'light-purple', e: 'yellow', f: 'white',
-};
-
-function renderConsoleText(value) {
-  const text = String(value || '');
-  let html = '';
-  let cursor = 0;
-  let color = '';
-  let bold = false;
-  let match;
-
-  const append = chunk => {
-    if (!chunk) return;
-    const classes = [color && `ansi-${color}`, bold && 'ansi-bold'].filter(Boolean).join(' ');
-    html += classes ? `<span class="${classes}">${escHtml(chunk)}</span>` : escHtml(chunk);
-  };
-
-  while ((match = ANSI_RE.exec(text))) {
-    append(text.slice(cursor, match.index));
-    cursor = match.index + match[0].length;
-
-    if (match[2]) {
-      const code = match[2].toLowerCase();
-      if (MINECRAFT_COLORS[code]) color = MINECRAFT_COLORS[code];
-      else if (code === 'r' || code === 'o') { color = ''; bold = false; }
-      else if (code === 'l') bold = true;
-      continue;
-    }
-
-    const codes = (match[1] || '0').split(';').map(Number);
-    for (const code of codes) {
-      if (code === 0) { color = ''; bold = false; }
-      else if (code === 1) bold = true;
-      else if (ANSI_COLORS[code]) color = ANSI_COLORS[code];
-      else if (code === 39) color = '';
-    }
-  }
-
-  append(text.slice(cursor));
-  ANSI_RE.lastIndex = 0;
-  return html;
-}
-
-const pendingConsoleLogs = [];
-let consoleFlushScheduled = false;
-
-function flushConsoleLogs() {
-  consoleFlushScheduled = false;
-  const consoleEl = $('console');
-  if (!consoleEl || !pendingConsoleLogs.length) return;
-
-  const fragment = document.createDocumentFragment();
-  for (const entry of pendingConsoleLogs.splice(0)) {
-    const div = document.createElement('div');
-    div.className = `log-line ${entry.type || 'info'}`;
-    div.innerHTML =
-      `<span class="log-time">${escHtml(entry.time || '--:--:--')}</span>` +
-      `<span class="log-text">${renderConsoleText(entry.line)}</span>`;
-    fragment.appendChild(div);
-  }
-
-  consoleEl.appendChild(fragment);
-  consoleEl.scrollTop = consoleEl.scrollHeight;
-}
-
-function appendLog(entry) {
-  const consoleEl = $('console');
-
-  if (!consoleEl) return;
-
-  const line = String(entry?.line || '');
-
-  if (shouldIgnoreLog(line)) {
-    return;
-  }
-
-  pendingConsoleLogs.push({
-    line,
-    time: entry?.time || '--:--:--',
-    type: entry?.type || 'info',
-  });
-
-  if (!consoleFlushScheduled) {
-    consoleFlushScheduled = true;
-    requestAnimationFrame(flushConsoleLogs);
-  }
-}
-
-async function startServer() {
-  if (!agentOnline) {
-    toast('MoonWolf Agent no está conectado.', 'err');
-    return;
-  }
-
-  const data = await api('/api/start', { method: 'POST' });
-
-  if (!data.ok) {
-    toast(data.error || 'Error al arrancar', 'err');
-  }
-}
-
-async function stopServer() {
-  if (!agentOnline) {
-    toast('MoonWolf Agent no está conectado.', 'err');
-    return;
-  }
-
-  const data = await api('/api/stop', { method: 'POST' });
-
-  if (!data.ok) {
-    toast(data.error || 'Error al detener', 'err');
-  }
-}
-
-async function restartServer() {
-  if (currentStatus === 'restarting' || currentStatus === 'stopping') {
-    return;
-  }
-
-  if (!agentOnline) {
-    toast('MoonWolf Agent no está conectado.', 'err');
-    return;
-  }
-
-  const data = await api('/api/restart', { method: 'POST' });
-
-  if (!data.ok) {
-    toast(data.error || 'Error al reiniciar', 'err');
-  }
-}
-
-async function sendCmd() {
-  const input = $('cmdInput');
-  const cmd = input?.value.trim();
-
-  if (!cmd) return;
-
-  if (!agentOnline) {
-    toast('MoonWolf Agent no está conectado.', 'err');
-    return;
-  }
-
-  input.value = '';
-
-  const data = await postJSON('/api/command', { cmd });
-
-  if (!data.ok) {
-    toast(data.error || 'Error al enviar comando', 'err');
-  }
-}
-
-/* FILE MANAGER */
-
-function fileIcon(type) {
-  return {
-    dir: '📁',
-    jar: '☕',
-    log: '📋',
-    file: '📄',
-  }[type] || '📄';
-}
-
-function populateFiles(dir = '') {
-  currentDir = dir;
-
-  const list = $('fileList');
-
-  if (!list) return;
-
-  list.innerHTML = `
-    <div class="empty-state">
-      <div class="empty-icon" style="display:inline-block;animation:spin 1s linear infinite">⟳</div>
-      <div class="empty-msg">Cargando...</div>
-    </div>
-  `;
-
-  renderBreadcrumb(dir);
-
-  api(`/api/files?dir=${encodeURIComponent(dir)}`)
-    .then(data => {
-      if (!data.ok) {
-        throw new Error(data.error || 'No se pudo leer la carpeta.');
-      }
-
-      const items = Array.isArray(data.items) ? data.items.slice() : [];
-
-      items.sort(
-        (a, b) =>
-          (a.type === 'dir' ? -1 : 1) - (b.type === 'dir' ? -1 : 1) ||
-          a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
-      );
-
-      if (!items.length) {
-        list.innerHTML = `
-          <div class="empty-state">
-            <div class="empty-icon">📂</div>
-            <div class="empty-msg">Carpeta vacía</div>
-          </div>
-        `;
-
-        return;
-      }
-
-      list.innerHTML = items
-        .map(
-          item => `
-          <div class="file-row" data-name="${escHtml(item.name)}" data-type="${escHtml(item.type)}" data-path="${escHtml(currentDir ? `${currentDir}/${item.name}` : item.name)}">
-            <label class="file-select"><input type="checkbox" aria-label="Seleccionar ${escHtml(item.name)}"></label>
-            <span class="file-name" style="flex:1">
-              ${fileIcon(item.type)}
-              <span>${escHtml(item.name)}</span>
-            </span>
-            <span style="width:90px;text-align:right;color:var(--muted2)">${escHtml(item.size)}</span>
-            <span style="width:140px;text-align:right;color:var(--muted2)">${escHtml(item.date)}</span>
-          </div>
-        `
-        )
-        .join('');
-
-      list.querySelectorAll('.file-row').forEach(row => {
-        const checkbox = row.querySelector('input[type="checkbox"]');
-        if (selectedFilePaths.has(row.dataset.path)) checkbox.checked = true;
-        checkbox?.addEventListener('click', event => event.stopPropagation());
-        checkbox?.addEventListener('change', () => {
-          if (checkbox.checked) selectedFilePaths.add(row.dataset.path);
-          else selectedFilePaths.delete(row.dataset.path);
-          updateBulkBar();
-        });
-        row.addEventListener('dblclick', () => {
-          const name = row.dataset.name;
-          const type = row.dataset.type;
-
-          const rel = currentDir ? `${currentDir}/${name}` : name;
-
-          if (type === 'dir') {
-            populateFiles(rel);
-          } else if (type !== 'jar') {
-            openFile(rel);
-          }
-        });
-
-        row.addEventListener('contextmenu', event =>
-          openFileContext(event, row.dataset.name, row.dataset.type)
-        );
-      });
-    })
-    .catch(error => {
-      list.innerHTML = `
-        <div class="file-load-error" role="alert">
-          <div class="empty-icon">⚠</div>
-          <div class="empty-msg">No se pudo cargar esta carpeta</div>
-          <div class="empty-detail">${escHtml(error.message)}</div>
-          <button class="small-btn" id="btnRetryFiles" type="button">↻ Reintentar</button>
-        </div>
-      `;
-      $('btnRetryFiles')?.addEventListener('click', () => populateFiles(currentDir));
-    });
-}
-
-function updateBulkBar() {
-  const bar = $('filesBulkbar');
-  const count = selectedFilePaths.size;
-  if ($('selectedFilesCount')) $('selectedFilesCount').textContent = count;
-  bar?.classList.toggle('visible', count > 0);
-  const selectAll = $('selectAllFiles');
-  const rows = document.querySelectorAll('#fileList .file-row');
-  if (selectAll) {
-    selectAll.checked = rows.length > 0 && Array.from(rows).every(row => selectedFilePaths.has(row.dataset.path));
-    selectAll.indeterminate = !selectAll.checked && Array.from(rows).some(row => selectedFilePaths.has(row.dataset.path));
-  }
-}
-function clearSelectedFiles() {
-  selectedFilePaths.clear();
-  document.querySelectorAll('#fileList input[type="checkbox"]').forEach(input => { input.checked = false; });
-  updateBulkBar();
-}
-async function runBulkAction(action) {
-  if (action === 'clear') return clearSelectedFiles();
-  const items = Array.from(selectedFilePaths).map(rel => {
-    const row = Array.from(document.querySelectorAll('#fileList .file-row')).find(item => item.dataset.path === rel);
-    return { path: rel, isDir: row?.dataset.type === 'dir' };
-  });
-  if (!items.length) return;
-  if (action === 'download') {
-    const count = items.length;
-    toast(`⬇️ Descargando ${count} elemento${count === 1 ? '' : 's'} seleccionado${count === 1 ? '' : 's'}...`, 'info');
-    for (const item of items) {
-      const name = item.path.split('/').pop();
-      if (item.isDir) {
-        await downloadDirectoryAsZip(item.path, name);
-      } else {
-        await downloadFile(item.path, name);
-      }
-    }
-    return;
-  }
-  let destination;
-  if (action === 'move') {
-    destination = prompt('Carpeta relativa de destino:', currentDir || '');
-    if (destination === null) return;
-    destination = normalizeUploadRelativePath(destination);
-  }
-  if (action === 'delete') {
-    const confirmed = await askFileDeleteConfirm(items);
-    if (confirmed !== 'delete') return;
-  }
   try {
-    const data = await postJSON('/api/files/bulk', { action, items, destination });
-    if (!data.ok) throw new Error(data.error || 'La operación masiva falló');
-    clearSelectedFiles();
-    toast(`✅ ${data.completed || items.length} operación${items.length === 1 ? '' : 'es'} completada${items.length === 1 ? '' : 's'}`, 'ok');
-    if (data.failed) toast(`⚠️ ${data.failed} elemento${data.failed === 1 ? '' : 's'} no se pudo procesar`, 'warn');
-    populateFiles(currentDir);
-  } catch (error) { toast(`❌ ${error.message}`, 'err'); }
-}
-function renderBreadcrumb(dir) {
-  const trail = $('crumbTrail');
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
 
-  if (!trail) return;
+    if (!data?.agentId || !Number.isFinite(data.exp) || data.exp <= Date.now()) {
+      return null;
+    }
 
-  const parts = dir ? dir.split('/').filter(Boolean) : [];
+    data.permission = data.permission || 'admin';
+    data.kind = data.kind || 'owner';
+    data.shareTokenId = data.shareTokenId || null;
 
-  let acc = '';
-
-  trail.innerHTML = parts
-    .map((part, index) => {
-      acc += (index ? '/' : '') + part;
-
-      return `
-        /
-        <span class="crumb" data-path="${escHtml(acc)}">${escHtml(part)}</span>
-      `;
-    })
-    .join('');
-
-  trail.querySelectorAll('.crumb').forEach(crumb => {
-    crumb.addEventListener('click', () => populateFiles(crumb.dataset.path));
-  });
-}
-
-async function downloadDirectoryAsZip(rel, name) {
-  toast(`🗜️ Preparando y comprimiendo "${name}"...`, 'info');
-  try {
-    const data = await postJSON('/api/files/compress', {
-      path: rel,
-      name,
-    });
-    if (!data.ok) throw new Error(data.error || 'No se pudo comprimir la carpeta');
-
-    const zipName = data.zipName || `${name}.zip`;
-    const parentDir = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '';
-    const zipRel = parentDir ? `${parentDir}/${zipName}` : zipName;
-
-    await downloadFile(zipRel, zipName);
-    populateFiles(currentDir);
-  } catch (error) {
-    toast(`❌ ${error.message}`, 'err');
+    return data;
+  } catch {
+    return null;
   }
 }
 
-function openFileContext(event, name, type) {
-  event.preventDefault();
+const AGENT_STORE_PATH =
+  process.env.MOONWOLF_AGENT_STORE ||
+  path.join(__dirname, '.moonwolf-agents.json');
 
-  document.querySelector('.file-ctx-menu')?.remove();
+function verifyOrRegisterAgent(agentId, token) {
+  if (!/^[A-Za-z0-9-]{16,64}$/.test(agentId)) return false;
 
-  const rel = currentDir ? `${currentDir}/${name}` : name;
+  const db = readJsonConfigWithRecovery(AGENT_STORE_PATH, {}) || {};
+  if (typeof db !== 'object' || Array.isArray(db)) return false;
 
-  const menu = document.createElement('div');
+  const hash = hashShareToken(token);
 
-  menu.className = 'file-ctx-menu';
-  menu.style.left = `${event.clientX}px`;
-  menu.style.top = `${event.clientY}px`;
-
-  menu.innerHTML = `
-    ${type !== 'dir' ? '<div class="ctx-item" data-action="open">📂 Abrir</div>' : ''}
-    <div class="ctx-item" data-action="rename">✏️ Renombrar</div>
-    <div class="ctx-item" data-action="copy">📋 Copiar</div>
-    <div class="ctx-item" data-action="move">🔀 Mover</div>
-    ${type !== 'dir'
-      ? '<div class="ctx-item" data-action="download">⬇️ Descargar</div>'
-      : '<div class="ctx-item" data-action="download-folder">⬇️ Descargar (.zip)</div>'}
-    <div class="ctx-item" data-action="compress">🗜️ Comprimir</div>
-    <div class="ctx-sep"></div>
-    <div class="ctx-item danger" data-action="delete">🗑️ Eliminar</div>
-  `;
-
-  document.body.appendChild(menu);
-
-  menu.addEventListener('click', async click => {
-    const action = click.target.closest('.ctx-item')?.dataset.action;
-
-    if (!action) return;
-
-    menu.remove();
+  if (!Object.prototype.hasOwnProperty.call(db, agentId)) {
+    db[agentId] = hash;
 
     try {
-      if (action === 'open') {
-        return openFile(rel);
-      }
-
-      if (action === 'rename') {
-        const newName = prompt(`Nuevo nombre para "${name}":`, name);
-
-        if (!newName || newName === name) {
-          return;
-        }
-
-        const data = await postJSON('/api/files/rename', {
-          path: rel,
-          newName,
-        });
-
-        if (!data.ok) throw new Error(data.error);
-      }
-
-      if (action === 'copy') {
-        const dest = prompt(
-          `Ruta relativa de destino para "${name}":`,
-          currentDir || ''
-        );
-
-        if (dest === null) return;
-
-        const target = dest
-          ? `${dest.replace(/\\/g, '/').replace(/\/$/, '')}/${name}`
-          : name;
-
-        const data = await postJSON('/api/files/copy', {
-          path: rel,
-          dest: target,
-        });
-
-        if (!data.ok) throw new Error(data.error);
-      }
-
-      if (action === 'move') {
-        const dest = prompt(
-          `Carpeta relativa de destino para "${name}":`,
-          currentDir || ''
-        );
-
-        if (dest === null) return;
-
-        const target = dest
-          ? `${dest.replace(/\\/g, '/').replace(/\/$/, '')}/${name}`
-          : name;
-
-        const data = await postJSON('/api/files/move', {
-          path: rel,
-          dest: target,
-        });
-
-        if (!data.ok) throw new Error(data.error);
-      }
-
-      if (action === 'download') {
-        return downloadFile(rel, name);
-      }
-
-      if (action === 'download-folder') {
-        return downloadDirectoryAsZip(rel, name);
-      }
-
-      if (action === 'compress') {
-        const data = await postJSON('/api/files/compress', {
-          path: rel,
-          name,
-        });
-
-        if (!data.ok) throw new Error(data.error);
-      }
-
-      if (action === 'delete') {
-        if (!confirm(`¿Eliminar "${name}"?`)) {
-          return;
-        }
-
-        const data = await postJSON('/api/files/delete', {
-          path: rel,
-          isDir: type === 'dir',
-        });
-
-        if (!data.ok) throw new Error(data.error);
-      }
-
-      toast('✅ Operación completada', 'ok');
-
-      populateFiles(currentDir);
+      writeJsonConfig(AGENT_STORE_PATH, db, { encoding: 'utf8', mode: 0o600 });
+      try { fsSync.chmodSync(AGENT_STORE_PATH, 0o600); } catch {}
     } catch (error) {
-      toast(`❌ ${error.message}`, 'err');
+      console.warn('[agents] No se pudo persistir el registro:', error.message);
     }
-  });
 
-  setTimeout(() => {
-    document.addEventListener('click', () => menu.remove(), { once: true });
-  }, 0);
-}
-
-const FILE_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024;
-const FILE_UPLOAD_PARALLEL_CHUNKS = 4;
-const UPLOAD_MAX_INFLIGHT = 6;
-let uploadInflight = 0;
-const uploadWaiters = [];
-
-async function getFilesFromDataTransfer(dataTransfer) {
-  const items = dataTransfer?.items;
-  if (!items || !items.length) {
-    return Array.from(dataTransfer?.files || []);
+    return true;
   }
 
-  const entries = [];
-  const fallbackFiles = [];
+  return timingSafeEqualStr(db[agentId], hash);
+}
 
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    if (item.kind === 'file') {
-      const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
-      if (entry) {
-        entries.push(entry);
-      } else {
-        const file = item.getAsFile();
-        if (file) fallbackFiles.push(file);
-      }
+const pairingCodes = new Map();
+
+function makePairingCode() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let raw = '';
+
+  for (const byte of crypto.randomBytes(7)) {
+    raw += alphabet[byte % alphabet.length];
+  }
+
+  return `MW-P${raw.slice(0, 3)}-${raw.slice(3, 7)}`;
+}
+
+function createPairingCode(agentId) {
+  for (const [code, pairing] of pairingCodes) {
+    if (pairing.agentId === agentId) {
+      pairingCodes.delete(code);
     }
   }
 
-  if (!entries.length) {
-    return fallbackFiles.length ? fallbackFiles : Array.from(dataTransfer?.files || []);
-  }
+  let code;
 
-  const resultFiles = [];
+  do {
+    code = makePairingCode();
+  } while (pairingCodes.has(code));
 
-  async function traverseEntry(entry, parentPath = '') {
-    if (entry.isFile) {
-      return new Promise(resolve => {
-        entry.file(file => {
-          const rel = parentPath ? `${parentPath}/${file.name}` : file.name;
-          Object.defineProperty(file, 'customRelativePath', {
-            value: rel,
-            configurable: true,
-            writable: true,
-          });
-          resultFiles.push(file);
-          resolve();
-        }, () => resolve());
-      });
-    } else if (entry.isDirectory) {
-      const dirReader = entry.createReader();
-      const nextPath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
-      const readBatch = () => new Promise(resolve => {
-        dirReader.readEntries(entries => resolve(entries || []), () => resolve([]));
-      });
-      while (true) {
-        const batch = await readBatch();
-        if (!batch || !batch.length) break;
-        for (const child of batch) {
-          await traverseEntry(child, nextPath);
-        }
-      }
-    }
-  }
+  const expiresAt = Date.now() + PAIRING_TTL_MS;
 
-  for (const entry of entries) {
-    await traverseEntry(entry);
-  }
+  pairingCodes.set(code, { agentId, expiresAt });
 
-  return resultFiles.length ? resultFiles : fallbackFiles;
+  return { code, expiresAt };
 }
 
-async function acquireUploadSlot() {
-  if (uploadInflight < UPLOAD_MAX_INFLIGHT) {
-    uploadInflight++;
-    return;
+function consumePairingCode(code) {
+  const normalized = String(code || '').trim().toUpperCase();
+  const pairing = pairingCodes.get(normalized);
+
+  if (!pairing) return null;
+
+  pairingCodes.delete(normalized);
+
+  if (pairing.expiresAt <= Date.now()) {
+    return null;
   }
 
-  await new Promise(resolve => uploadWaiters.push(resolve));
+  return pairing;
 }
 
-function releaseUploadSlot() {
-  const next = uploadWaiters.shift();
+const RUNTIME_DIR =
+  process.env.MOONWOLF_SERVER_DIR ||
+  process.env.BASE_DIR ||
+  process.env.MOONWOLF_BASE_DIR ||
+  path.join(process.cwd(), 'mc-server');
 
-  if (next) next();
-  else uploadInflight--;
-}
+const loginAttempts = new Map();
+const apiHits = new Map();
+const operationHits = new Map();
+const API_RATE_LIMIT = 120;
+const API_RATE_WINDOW_MS = 60_000;
+const FILE_UPLOAD_RATE_LIMIT = Math.max(
+  60,
+  Number(process.env.MOONWOLF_UPLOAD_RATE_LIMIT) || 900
+);
+const FILE_UPLOAD_RATE_WINDOW_MS = 60_000;
+const SOCKET_CONNECTION_LIMIT = 20;
+const SOCKET_CONNECTION_WINDOW_MS = 60_000;
+const SOCKET_CONNECTION_ATTEMPTS = 40;
+const socketConnectionAttempts = new Map();
+const socketConnections = new Map();
+const TRUSTED_PROXY_HOPS = Math.max(
+  0,
+  Number(process.env.MOONWOLF_TRUSTED_PROXY_HOPS ?? 1)
+);
 
-function normalizeUploadRelativePath(value) {
-  return String(value || '')
-    .replace(/\\/g, '/')
-    .replace(/^\/+/, '')
-    .split('/')
-    .filter(part => part && part !== '.' && part !== '..')
-    .join('/');
-}
+const OPERATION_RATE_RULES = Object.freeze([
+  { id: 'pair', methods: new Set(['POST']), paths: ['/pair'], limit: 10, windowMs: 5 * 60_000 },
+  { id: 'share-tokens', methods: new Set(['POST', 'PATCH', 'DELETE']), paths: ['/share-tokens', '/share-tokens/:id'], limit: 20, windowMs: 60_000 },
+  { id: 'server-lifecycle', methods: new Set(['POST']), paths: ['/start', '/stop', '/restart'], limit: 20, windowMs: 60_000 },
+  { id: 'server-command', methods: new Set(['POST']), paths: ['/command'], limit: 30, windowMs: 60_000 },
+  { id: 'startup-ports', methods: new Set(['POST']), paths: ['/startup', '/ports'], limit: 20, windowMs: 60_000 },
+  { id: 'file-upload', methods: new Set(['POST']), paths: ['/files/upload-chunk'], limit: FILE_UPLOAD_RATE_LIMIT, windowMs: FILE_UPLOAD_RATE_WINDOW_MS },
+  { id: 'file-mutation', methods: new Set(['POST']), paths: [
+    '/files/content', '/files/create', '/files/rename', '/files/copy',
+    '/files/move', '/files/compress', '/files/bulk', '/files/delete',
+  ], limit: 60, windowMs: 60_000 },
+  { id: 'database-mutation', methods: new Set(['POST', 'DELETE']), paths: [
+    '/databases', '/databases/:name/reset-password', '/databases/:name',
+  ], limit: 10, windowMs: 60_000 },
+  { id: 'installation', methods: new Set(['POST', 'DELETE']), paths: [
+    '/plugins/install', '/plugins/installed/:file', '/versions/install',
+  ], limit: 10, windowMs: 60_000 },
+  { id: 'backup-mutation', methods: new Set(['POST', 'DELETE']), paths: [
+    '/backups', '/backups/:name', '/backups/:name/restore',
+  ], limit: 10, windowMs: 60_000 },
+]);
 
-function formatUploadBytes(value) {
-  const bytes = Math.max(0, Number(value) || 0);
-  if (bytes < 1024) return `${Math.round(bytes)} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let amount = bytes;
-  let index = -1;
-  do { amount /= 1024; index += 1; } while (amount >= 1024 && index < units.length - 1);
-  return `${amount >= 100 ? amount.toFixed(0) : amount >= 10 ? amount.toFixed(1) : amount.toFixed(2)} ${units[index]}`;
-}
-function formatUploadEta(seconds) {
-  if (!Number.isFinite(seconds) || seconds <= 0) return 'Calculando tiempo…';
-  const total = Math.ceil(seconds);
-  if (total < 60) return `${total}s restantes`;
-  const minutes = Math.floor(total / 60);
-  const secs = total % 60;
-  if (minutes < 60) return `${minutes}m ${secs.toString().padStart(2, '0')}s restantes`;
-  const hours = Math.floor(minutes / 60);
-  return `${hours}h ${(minutes % 60).toString().padStart(2, '0')}m restantes`;
-}
-function formatDuration(seconds) {
-  const total = Math.max(1, Math.round(seconds));
-  if (total < 60) return `${total}s`;
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  if (m < 60) return `${m}m ${s}s`;
-  const h = Math.floor(m / 60);
-  return `${h}h ${m % 60}m`;
-}
-function uploadCancelledError() {
-  const error = new Error('Subida cancelada');
-  error.isCancelled = true;
-  return error;
-}
-async function waitForUploadResume(progressState) {
-  if (progressState.cancelled) throw uploadCancelledError();
-  if (!progressState.paused) return;
-  progressState.status = 'Subida pausada';
-  updateUploadProgress(progressState);
-  await new Promise(resolve => { progressState.resumeUpload = resolve; });
-  if (progressState.cancelled) throw uploadCancelledError();
-}
-function setUploadControls(visible) {
-  if ($('uploadProgressPause')) {
-    $('uploadProgressPause').hidden = !visible;
-    $('uploadProgressPause').disabled = false;
-    if (visible && activeUploadState) $('uploadProgressPause').textContent = activeUploadState.paused ? '▶ Reanudar' : 'Ⅱ Pausar';
-  }
-  if ($('uploadProgressCancel')) {
-    $('uploadProgressCancel').hidden = !visible;
-    $('uploadProgressCancel').disabled = false;
-  }
-}
+function loginRateLimited(ip) {
+  const now = Date.now();
+  const rec = loginAttempts.get(ip);
 
-function updateUploadProgress(progressState) {
-  const panel = $('uploadProgressPanel');
-  if (!panel) return;
-
-  if (progressState.finished) return;
-
-  const total = progressState.totalBytes || 0;
-  const done = Math.min(progressState.doneBytes || 0, total);
-  const percent = total ? Math.min(100, Math.round((done / total) * 100)) : 100;
-  const elapsed = Math.max((Date.now() - progressState.startedAt) / 1000, 0.001);
-  const speed = done / elapsed;
-  const eta = speed > 0 ? (total - done) / speed : Infinity;
-  const currentDone = progressState.currentFileDone || 0;
-  const currentTotal = progressState.currentFileSize || 0;
-  const single = progressState.totalFiles === 1;
-
-  panel.hidden = false;
-  setUploadControls(Boolean(activeUploadState && !activeUploadState.finished));
-  panel.classList.remove('upload-progress-error');
-  if ($('uploadProgressError')) $('uploadProgressError').textContent = '';
-  if ($('uploadProgressRetry')) $('uploadProgressRetry').hidden = true;
-  if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = progressState.status || `Subiendo ${progressState.completedFiles + 1}/${progressState.totalFiles}`;
-
-  if ($('uploadProgressCurrent')) {
-    $('uploadProgressCurrent').textContent = progressState.currentFile
-      ? (single
-          ? progressState.currentFile
-          : `${progressState.currentFile} · ${formatUploadBytes(currentDone)} / ${formatUploadBytes(currentTotal)}`)
-      : 'Preparando…';
-  }
-
-  if ($('uploadProgressPercent')) $('uploadProgressPercent').textContent = `${percent}%`;
-  if ($('uploadProgressFill')) $('uploadProgressFill').style.width = `${percent}%`;
-
-  if ($('uploadProgressFiles')) {
-    $('uploadProgressFiles').textContent = single
-      ? ''
-      : `${Math.min(progressState.completedFiles, progressState.totalFiles)}/${progressState.totalFiles} archivos`;
-  }
-
-  if ($('uploadProgressBytes')) {
-    $('uploadProgressBytes').textContent = `${formatUploadBytes(done)} de ${formatUploadBytes(total)}`;
-  }
-
-  if ($('uploadProgressSpeed')) {
-    $('uploadProgressSpeed').textContent = speed > 0 ? `${formatUploadBytes(speed)}/s` : '—';
-  }
-
-  if ($('uploadProgressEta')) {
-    $('uploadProgressEta').textContent = percent >= 100 ? 'Completado' : formatUploadEta(eta);
-  }
-}
-
-function finishUploadProgress(message, isError = false, detail = '', hidePanel = false) {
-  const panel = $('uploadProgressPanel');
-  if (!panel) return;
-
-  if (activeUploadState) activeUploadState.finished = true;
-
-  if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = message;
-  if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = isError ? 'La subida se detuvo' : 'Todos los archivos se han procesado';
-  if ($('uploadProgressError')) $('uploadProgressError').textContent = detail;
-  if ($('uploadProgressRetry')) $('uploadProgressRetry').hidden = !isError || !lastUploadFiles.length;
-  setUploadControls(false);
-  panel.classList.toggle('upload-progress-error', isError);
-  if (hidePanel) panel.hidden = true;
-  if (!isError) setTimeout(() => { panel.hidden = true; }, 3500);
-}
-function askFileConflict(fileName) {
-  const modal = $('fileConflictModal');
-  if (!modal) return Promise.resolve({ choice: 'cancel', applyAll: false });
-  if ($('fileConflictName')) $('fileConflictName').textContent = fileName;
-  if ($('fileConflictMessage')) $('fileConflictMessage').textContent = 'Ya existe un archivo con ese nombre. ¿Qué quieres hacer?';
-  const applyAllInput = $('fileConflictApplyAll');
-  if (applyAllInput) applyAllInput.checked = false;
-
-  modal.hidden = false;
-  return new Promise(resolve => {
-    const finish = choice => {
-      const applyAll = Boolean(applyAllInput?.checked);
-      modal.hidden = true;
-      modal.querySelectorAll('[data-conflict-choice]').forEach(button => {
-        button.removeEventListener('click', button._conflictHandler);
-        delete button._conflictHandler;
-      });
-      resolve({ choice, applyAll });
-    };
-    modal.querySelectorAll('[data-conflict-choice]').forEach(button => {
-      const handler = () => finish(button.dataset.conflictChoice);
-      button._conflictHandler = handler;
-      button.addEventListener('click', handler);
-    });
-  });
-}
-function isFileConflict(error) {
-  return Boolean(error?.isFileConflict || error?.status === 409 || /ya existe un archivo/i.test(error?.message || ''));
-}
-function askFileDeleteConfirm(items) {
-  const modal = $('fileDeleteModal');
-  if (!modal) {
-    const list = items.map(item => `• ${item.path}`).join('\n');
-    const plural = items.length === 1 ? '' : 's';
-    return Promise.resolve(
-      confirm(
-        `¿Eliminar ${items.length} elemento${plural} seleccionado${plural}?\n\n${list}\n\nEsta acción no se puede deshacer.`
-      )
-        ? 'delete'
-        : 'cancel'
-    );
-  }
-  if ($('fileDeleteCount')) $('fileDeleteCount').textContent = items.length;
-  if ($('fileDeleteList')) {
-    $('fileDeleteList').innerHTML = items
-      .map(item => {
-        const label = item.path.split('/').pop() || item.path;
-        return `
-          <li class="file-delete-item">
-            <span class="file-delete-icon">${item.isDir ? '📁' : '📄'}</span>
-            <span class="file-delete-name">${escHtml(label)}</span>
-            <span class="file-delete-path">${escHtml(item.path)}</span>
-          </li>
-        `;
-      })
-      .join('');
-  }
-  modal.hidden = false;
-  return new Promise(resolve => {
-    const finish = choice => {
-      modal.hidden = true;
-      modal.querySelectorAll('[data-delete-choice]').forEach(button => {
-        button.removeEventListener('click', button._deleteHandler);
-        delete button._deleteHandler;
-      });
-      document.removeEventListener('keydown', onKey);
-      resolve(choice);
-    };
-    const onKey = event => {
-      if (event.key === 'Escape') finish('cancel');
-    };
-    modal.querySelectorAll('[data-delete-choice]').forEach(button => {
-      const handler = () => finish(button.dataset.deleteChoice);
-      button._deleteHandler = handler;
-      button.addEventListener('click', handler);
-    });
-    document.addEventListener('keydown', onKey);
-  });
-}
-async function uploadOneFile(file, relativePath, progressState, overwrite = true) {
-  const relCandidate = file.customRelativePath || relativePath || file.webkitRelativePath || file.name;
-  progressState.currentFile = relCandidate;
-  progressState.currentFileSize = file.size;
-  progressState.currentFileDone = 0;
-  updateUploadProgress(progressState);
-
-  const relPath = normalizeUploadRelativePath(relCandidate);
-
-  if (!relPath) {
-    throw new Error(`Nombre de archivo no válido: ${file.name}`);
-  }
-
-  const target = currentDir
-    ? `${currentDir.replace(/\\/g, '/').replace(/\/$/, '')}/${relPath}`
-    : relPath;
-
-  const uploadId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
-  const totalSize = file.size;
-
-  if (totalSize === 0) {
-    await waitForUploadResume(progressState);
-    const data = await postUploadChunk(uploadId, target, 0, totalSize, new Uint8Array(), true, overwrite);
-    if (!data?.ok) {
-      const uploadError = new Error(data?.error || `No se pudo subir ${file.name}`);
-      uploadError.status = data?.status;
-      if (data?.status === 409 || data?.isFileConflict || /ya existe un archivo/i.test(uploadError.message)) {
-        uploadError.isFileConflict = true;
-      }
-      throw uploadError;
-    }
-    progressState.completedFiles += 1;
-    progressState.status = `Subiendo ${progressState.completedFiles}/${progressState.totalFiles}`;
-    updateUploadProgress(progressState);
-    return;
-  }
-
-  const chunkCount = Math.ceil(totalSize / FILE_UPLOAD_CHUNK_SIZE);
-  let nextChunk = 0;
-  let completedChunks = 0;
-
-  const uploadChunkInner = async chunkIndex => {
-    const offset = chunkIndex * FILE_UPLOAD_CHUNK_SIZE;
-    const end = Math.min(offset + FILE_UPLOAD_CHUNK_SIZE, totalSize);
-    const buffer = await file.slice(offset, end).arrayBuffer();
-    const bytes = new Uint8Array(buffer);
-
-    let data;
-    let lastError;
-
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      await waitForUploadResume(progressState);
-
-      try {
-        data = await postUploadChunk(
-          uploadId,
-          target,
-          offset,
-          totalSize,
-          bytes,
-          end >= totalSize,
-          overwrite
-        );
-
-        if (!data?.ok) {
-          const uploadError = new Error(data?.error || `No se pudo subir ${file.name}`);
-          uploadError.status = data?.status;
-          if (data?.status === 409 || data?.isFileConflict || /ya existe un archivo/i.test(uploadError.message)) {
-            uploadError.isFileConflict = true;
-            throw uploadError;
-          }
-          if (data?.status === 429 || /demasiadas/i.test(uploadError.message)) {
-            uploadError.isRateLimited = true;
-          }
-          throw uploadError;
-        }
-
-        break;
-      } catch (error) {
-        lastError = error;
-        if (attempt < 4) {
-          const delay = error?.isRateLimited ? (1500 * (attempt + 1)) : (500 * (attempt + 1));
-          if (error?.isRateLimited) {
-            progressState.status = `Esperando por límite de peticiones (${attempt + 1}/5)…`;
-            updateUploadProgress(progressState);
-          }
-          await new Promise(resolve => setTimeout(resolve, delay));
-        }
-      }
-    }
-
-    if (!data?.ok) {
-      throw lastError || new Error(`No se pudo subir ${file.name}`);
-    }
-
-    completedChunks += 1;
-    progressState.currentFileDone = Math.min(totalSize, (progressState.currentFileDone || 0) + bytes.length);
-    progressState.doneBytes += bytes.length;
-    progressState.status = `Subiendo ${progressState.completedFiles + 1}/${progressState.totalFiles} · ${completedChunks}/${chunkCount} bloques`;
-    updateUploadProgress(progressState);
-  };
-
-  const uploadChunk = async chunkIndex => {
-    await acquireUploadSlot();
-    try {
-      await uploadChunkInner(chunkIndex);
-    } finally {
-      releaseUploadSlot();
-    }
-  };
-
-  const worker = async () => {
-    while (true) {
-      await waitForUploadResume(progressState);
-      if (progressState.cancelled) throw uploadCancelledError();
-
-      const chunkIndex = nextChunk++;
-      if (chunkIndex >= chunkCount) return;
-
-      await uploadChunk(chunkIndex);
-    }
-  };
-
-  await Promise.all(
-    Array.from({ length: Math.min(FILE_UPLOAD_PARALLEL_CHUNKS, chunkCount) }, worker)
-  );
-
-  progressState.currentFileDone = totalSize;
-  progressState.completedFiles += 1;
-  progressState.status = `Subiendo ${progressState.completedFiles}/${progressState.totalFiles}`;
-  updateUploadProgress(progressState);
-}
-
-function postUploadChunk(uploadId, target, offset, totalSize, bytes, final, overwrite) {
-  const params = new URLSearchParams({
-    uploadId,
-    path: target,
-    offset: String(offset),
-    totalSize: String(totalSize),
-    final: final ? '1' : '0',
-    overwrite: overwrite ? '1' : '0',
-  });
-
-  return rpcHttp(`/api/files/upload-chunk?${params.toString()}`, {
-    method: 'POST',
-    body: bytes,
-  }).then(result => {
-    const status = result?.status || 500;
-    let data = result?.data;
-
-    if (hasResultBody(result)) {
-      const bytesResult = decodeResultBody(result);
-      const text = new TextDecoder().decode(bytesResult);
-      try {
-        data = JSON.parse(text);
-      } catch {
-        data = null;
-      }
-    }
-
-    if (!data || typeof data !== 'object') {
-      data = { ok: Boolean(result?.ok), status, error: 'Respuesta vacía.' };
-    }
-
-    return { ...data, status };
-  });
-}
-
-async function uploadSelectedFiles(fileList) {
-  const files = Array.from(fileList || {}).filter(file => file && typeof file.size === 'number');
-
-  if (!files.length) return;
-  if (!isOwnerSession()) {
-    const dangerous = files.filter(isDangerousUploadFile);
-    if (dangerous.length) {
-      toast(
-        `🔒 Bloqueado: ${dangerous.map(file => file.name).join(', ')}. Los accesos compartidos no pueden subir ejecutables.`,
-        'err'
-      );
-      return;
-    }
-  }
-
-  lastUploadFiles = files;
-
-  const progressState = {
-    completedFiles: 0,
-    totalFiles: files.length,
-    totalBytes: files.reduce((sum, file) => sum + file.size, 0),
-    doneBytes: 0,
-    startedAt: Date.now(),
-    status: `Subiendo 1/${files.length}`,
-    paused: false, cancelled: false, finished: false, resumeUpload: null,
-    rememberConflictChoice: null,
-  };
-  activeUploadState = progressState;
-  updateUploadProgress(progressState);
-
-  try {
-    let nextFileIndex = 0;
-    progressState.conflictQueue = Promise.resolve();
-    const uploadFileWithConflict = async file => {
-      const relative = file.customRelativePath || file.webkitRelativePath || file.name;
-      progressState.activeFiles = (progressState.activeFiles || 0) + 1;
-      const parallelLabel = progressState.activeFiles > 1 ? ` · ${progressState.activeFiles} simultáneos` : '';
-      progressState.status = `Subiendo ${Math.min(progressState.completedFiles + 1, progressState.totalFiles)}/${progressState.totalFiles}${parallelLabel}`;
-      try {
-        try {
-          await uploadOneFile(file, relative, progressState, false);
-        } catch (error) {
-          if (!isFileConflict(error)) throw error;
-          let choice = progressState.rememberConflictChoice;
-          if (!choice) {
-            const prompt = progressState.conflictQueue.then(() => askFileConflict(relative));
-            progressState.conflictQueue = prompt.catch(() => ({ choice: 'cancel', applyAll: false }));
-            const res = await prompt;
-            choice = res.choice;
-            if (res.applyAll && (choice === 'replace' || choice === 'keep' || choice === 'numbered')) {
-              progressState.rememberConflictChoice = choice;
-            }
-          }
-          if (choice === 'keep') {
-            progressState.completedFiles += 1;
-            progressState.status = `Omitiendo ${progressState.completedFiles}/${progressState.totalFiles}`;
-            updateUploadProgress(progressState);
-            return;
-          }
-          if (choice === 'cancel') throw Object.assign(new Error('Subida cancelada por conflicto de archivo'), { isCancelled: true });
-
-          if (choice === 'numbered') {
-            let counter = 1;
-            while (true) {
-              const parent = relative.includes('/') ? relative.slice(0, relative.lastIndexOf('/') + 1) : '';
-              const currentFileName = relative.includes('/') ? relative.slice(relative.lastIndexOf('/') + 1) : relative;
-              const dot = currentFileName.lastIndexOf('.');
-              const nameBase = dot > 0 ? currentFileName.slice(0, dot).replace(/\s\(\d+\)$/, '') : currentFileName.replace(/\s\(\d+\)$/, '');
-              const ext = dot > 0 ? currentFileName.slice(dot) : '';
-              const newRelative = `${parent}${nameBase} (${counter})${ext}`;
-              try {
-                await uploadOneFile(file, newRelative, progressState, false);
-                break;
-              } catch (numErr) {
-                if (isFileConflict(numErr)) {
-                  counter++;
-                  continue;
-                }
-                throw numErr;
-              }
-            }
-            return;
-          }
-
-          await uploadOneFile(file, relative, progressState, true);
-        }
-      } finally {
-        progressState.activeFiles = Math.max(0, (progressState.activeFiles || 1) - 1);
-      }
-    };
-    const worker = async () => {
-      while (true) {
-        const fileIndex = nextFileIndex++;
-        if (fileIndex >= files.length) return;
-        await uploadFileWithConflict(files[fileIndex]);
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(3, files.length) }, worker));
-    progressState.doneBytes = progressState.totalBytes;
-    progressState.completedFiles = progressState.totalFiles;
-    updateUploadProgress(progressState);
-    const totalSeconds = (Date.now() - progressState.startedAt) / 1000;
-    finishUploadProgress(`Subida completada en ${formatDuration(totalSeconds)}`);
-    toast(`✅ ${files.length} ${files.length === 1 ? 'archivo subido' : 'archivos subidos'} correctamente`, 'ok');
-    populateFiles(currentDir);
-  } catch (error) {
-    finishUploadProgress(error.isCancelled ? 'Subida cancelada' : 'Subida interrumpida', true, error.message || 'Error desconocido', error.isCancelled);
-    toast(`❌ ${error.message}`, 'err');
-  }
-}
-
-let activeDownloadAbort = null;
-
-async function downloadUrlWithProgress(pathname, filename, title = 'Descargando archivo') {
-  const panel = $('uploadProgressPanel');
-  const startedAt = Date.now();
-  let receivedBytes = 0;
-  let totalBytes = 0;
-
-  activeDownloadAbort = new AbortController();
-
-  if (panel) {
-    panel.hidden = false;
-    panel.classList.remove('upload-progress-error');
-    if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = title;
-    if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = filename;
-    if ($('uploadProgressPercent')) $('uploadProgressPercent').textContent = '0%';
-    if ($('uploadProgressFill')) $('uploadProgressFill').style.width = '0%';
-    if ($('uploadProgressFiles')) $('uploadProgressFiles').textContent = '1 archivo';
-    if ($('uploadProgressBytes')) $('uploadProgressBytes').textContent = 'Iniciando transferencia…';
-    if ($('uploadProgressSpeed')) $('uploadProgressSpeed').textContent = '—';
-    if ($('uploadProgressEta')) $('uploadProgressEta').textContent = 'Calculando tiempo…';
-    if ($('uploadProgressError')) $('uploadProgressError').textContent = '';
-    if ($('uploadProgressRetry')) $('uploadProgressRetry').hidden = true;
-    if ($('uploadProgressPause')) $('uploadProgressPause').hidden = true;
-    if ($('uploadProgressCancel')) {
-      $('uploadProgressCancel').hidden = false;
-      $('uploadProgressCancel').disabled = false;
-    }
-  }
-
-  const onProgress = (done, total) => {
-    receivedBytes = done;
-    if (total) totalBytes = total;
-    if (!panel) return;
-
-    const percent = totalBytes > 0 ? Math.min(100, Math.round((receivedBytes / totalBytes) * 100)) : 0;
-    const elapsed = Math.max((Date.now() - startedAt) / 1000, 0.001);
-    const speed = receivedBytes / elapsed;
-    const eta = (totalBytes > receivedBytes && speed > 0) ? (totalBytes - receivedBytes) / speed : 0;
-
-    if ($('uploadProgressPercent')) $('uploadProgressPercent').textContent = totalBytes > 0 ? `${percent}%` : formatUploadBytes(receivedBytes);
-    if ($('uploadProgressFill')) $('uploadProgressFill').style.width = totalBytes > 0 ? `${percent}%` : '60%';
-    if ($('uploadProgressBytes')) {
-      $('uploadProgressBytes').textContent = totalBytes > 0
-        ? `${formatUploadBytes(receivedBytes)} de ${formatUploadBytes(totalBytes)}`
-        : formatUploadBytes(receivedBytes);
-    }
-    if ($('uploadProgressSpeed')) $('uploadProgressSpeed').textContent = speed > 0 ? `${formatUploadBytes(speed)}/s` : '—';
-    if ($('uploadProgressEta')) {
-      $('uploadProgressEta').textContent = totalBytes > 0 ? (percent >= 100 ? 'Finalizando…' : formatUploadEta(eta)) : 'Descargando…';
-    }
-  };
-
-  try {
-    const result = await rpcHttp(pathname, {
-      onProgress,
-      signal: activeDownloadAbort.signal,
+  if (!rec || now > rec.resetAt) {
+    loginAttempts.set(ip, {
+      count: 1,
+      resetAt: now + 5 * 60 * 1000,
     });
 
-    if (!hasResultBody(result) || result.ok === false) {
-      throw new Error(result?.data?.error || 'No se pudo descargar el archivo.');
-    }
-
-    const bytes = decodeResultBody(result);
-    const blob = new Blob([bytes], {
-      type: result.contentType || 'application/octet-stream',
-    });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = filename;
-    anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 15000);
-
-    const totalSeconds = (Date.now() - startedAt) / 1000;
-    if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = `Descarga completada en ${formatDuration(totalSeconds)}`;
-    if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = filename;
-    if ($('uploadProgressPercent')) $('uploadProgressPercent').textContent = '100%';
-    if ($('uploadProgressFill')) $('uploadProgressFill').style.width = '100%';
-    if ($('uploadProgressCancel')) $('uploadProgressCancel').hidden = true;
-    setTimeout(() => { if (panel && !activeUploadState) panel.hidden = true; }, 3500);
-    toast(`✅ Descargado: ${filename}`, 'ok');
-  } catch (error) {
-    if (activeDownloadAbort?.signal?.aborted) {
-      if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = 'Descarga cancelada';
-      if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = filename;
-      setTimeout(() => { if (panel && !activeUploadState) panel.hidden = true; }, 2000);
-      toast('Descarga cancelada', 'info');
-      return;
-    }
-    if (panel) {
-      panel.classList.add('upload-progress-error');
-      if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = 'Error en la descarga';
-      if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = filename;
-      if ($('uploadProgressError')) $('uploadProgressError').textContent = error.message;
-      if ($('uploadProgressCancel')) $('uploadProgressCancel').hidden = true;
-    }
-    toast(`❌ ${error.message}`, 'err');
-  } finally {
-    activeDownloadAbort = null;
+    return false;
   }
+
+  rec.count++;
+
+  return rec.count > 10;
 }
 
-async function downloadFile(rel, filename) {
-  return downloadUrlWithProgress(
-    `/api/files/download?path=${encodeURIComponent(rel)}`,
-    filename,
-    'Descargando archivo'
-  );
+function apiRateLimited(ip) {
+  const now = Date.now();
+  const rec = apiHits.get(ip);
+
+  if (!rec || now > rec.resetAt) {
+    apiHits.set(ip, {
+      count: 1,
+      resetAt: now + API_RATE_WINDOW_MS,
+    });
+
+    return false;
+  }
+
+  rec.count++;
+
+  return rec.count > API_RATE_LIMIT;
 }
 
-function getEditorContent() {
-  return editor ? editor.getValue() : $('mwEditorArea')?.value || '';
+function operationPathMatches(pathname, pattern) {
+  const pathParts = pathname.split('/');
+  const patternParts = pattern.split('/');
+  if (pathParts.length !== patternParts.length) return false;
+  return patternParts.every((part, index) => part.startsWith(':') || part === pathParts[index]);
 }
-function editorHasUnsavedChanges() {
-  return Boolean(currentFile && getEditorContent() !== originalFileContent);
+
+function operationRateRule(method, pathname) {
+  const verb = String(method || '').toUpperCase();
+  const route = String(pathname || '').split('?')[0];
+  return OPERATION_RATE_RULES.find(rule =>
+    rule.methods.has(verb) && rule.paths.some(pattern => operationPathMatches(route, pattern))
+  ) || null;
 }
-function confirmEditorExit() {
-  if (!editorHasUnsavedChanges()) return true;
-  return window.confirm(`El archivo "${currentFile.split('/').pop()}" tiene cambios sin guardar. ¿Quieres salir del editor y descartarlos?`);
+
+function operationRateLimited(ip, method, pathname) {
+  const rule = operationRateRule(method, pathname);
+  if (!rule) return null;
+
+  const key = `${ip}:${rule.id}`;
+  const now = Date.now();
+  const current = operationHits.get(key);
+  if (!current || now > current.resetAt) {
+    operationHits.set(key, { count: 1, resetAt: now + rule.windowMs });
+    return null;
+  }
+
+  current.count++;
+  if (current.count > rule.limit) {
+    return rule;
+  }
+  return null;
 }
-function closeFileEditor() {
-  if (!confirmEditorExit()) return false;
-  if ($('filesEditorPanel')) $('filesEditorPanel').style.display = 'none';
-  if ($('filesTablePanel')) $('filesTablePanel').style.display = '';
-  if (editor?.toTextArea) editor.toTextArea();
-  editor = null;
-  currentFile = null;
-  originalFileContent = '';
+
+function socketClientIp(socket) {
+  if (TRUSTED_PROXY_HOPS > 0) {
+    const forwarded = String(socket.handshake.headers['x-forwarded-for'] || '');
+    const parts = forwarded.split(',').map(part => part.trim()).filter(Boolean);
+    if (parts.length >= TRUSTED_PROXY_HOPS) {
+      return parts[parts.length - TRUSTED_PROXY_HOPS];
+    }
+  }
+  return String(socket.handshake.address || 'unknown');
+}
+
+function socketConnectionAllowed(socket) {
+  const ip = socketClientIp(socket);
+  const now = Date.now();
+  const attempts = socketConnectionAttempts.get(ip);
+
+  if (!attempts || now > attempts.resetAt) {
+    socketConnectionAttempts.set(ip, {
+      count: 1,
+      resetAt: now + SOCKET_CONNECTION_WINDOW_MS,
+    });
+  } else {
+    attempts.count++;
+    if (attempts.count > SOCKET_CONNECTION_ATTEMPTS) return false;
+  }
+
+  if ((socketConnections.get(ip) || 0) >= SOCKET_CONNECTION_LIMIT) return false;
+
+  socket.data.connectionIp = ip;
+  socketConnections.set(ip, (socketConnections.get(ip) || 0) + 1);
   return true;
 }
-async function openFile(rel) {
-  if (currentFile && currentFile !== rel && !confirmEditorExit()) return;
+
+function releaseSocketConnection(socket) {
+  const ip = socket.data.connectionIp;
+  if (!ip) return;
+
+  const count = (socketConnections.get(ip) || 1) - 1;
+  if (count > 0) socketConnections.set(ip, count);
+  else socketConnections.delete(ip);
+  socket.data.connectionIp = null;
+}
+
+function socketEventAllowed(socket, event, limit, windowMs = 60_000) {
+  const now = Date.now();
+  const current = socket.data.eventLimits?.[event];
+
+  if (!current || now > current.resetAt) {
+    socket.data.eventLimits = socket.data.eventLimits || {};
+    socket.data.eventLimits[event] = { count: 1, resetAt: now + windowMs };
+    return true;
+  }
+
+  current.count++;
+  return current.count <= limit;
+}
+
+setInterval(() => {
+  const now = Date.now();
+
+  for (const [ip, rec] of apiHits) {
+    if (now > rec.resetAt) apiHits.delete(ip);
+  }
+
+  for (const [ip, rec] of socketConnectionAttempts) {
+    if (now > rec.resetAt) socketConnectionAttempts.delete(ip);
+  }
+
+  for (const [ip, rec] of loginAttempts) {
+    if (now > rec.resetAt) loginAttempts.delete(ip);
+  }
+
+  for (const [key, rec] of operationHits) {
+    if (now > rec.resetAt) operationHits.delete(key);
+  }
+
+  for (const [code, pairing] of pairingCodes) {
+    if (pairing.expiresAt <= now) pairingCodes.delete(code);
+  }
+}, 10 * 60 * 1000).unref();
+
+/* ══════════════════════════════════════════════
+   EXPRESS / SOCKET.IO
+   ══════════════════════════════════════════════ */
+const app = express();
+app.set('trust proxy', 1);
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", 'https://cdnjs.cloudflare.com'],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com', 'https://cdnjs.cloudflare.com'],
+      fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+      imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
+      connectSrc: ["'self'", 'https:', 'wss:'],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      frameAncestors: ["'none'"],
+    },
+  },
+}));
+app.use(compression({ threshold: 1024 }));
+const server = http.createServer(app);
+
+const ALLOWED_ORIGIN = 'https://moonwolf-panel.up.railway.app';
+
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Vary', 'Origin');
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+
+const io = new Server(server, {
+  maxHttpBufferSize: 20 * 1024 * 1024,
+  cors: {
+    origin: ALLOWED_ORIGIN,
+    methods: ['GET', 'POST'],
+  },
+});
+
+io.use(async (socket, next) => {
+  if (!socketConnectionAllowed(socket)) {
+    console.warn('[socket] Conexión rechazada por rate limit:', socket.handshake.address);
+    return next(new Error('rate_limited'));
+  }
+
+  const auth = socket.handshake.auth || {};
+  const role = auth.role;
+
+  if (role === 'local-agent') {
+    const token = String(auth.token || '');
+
+    if (!LOCAL_AGENT_TOKEN || !timingSafeEqualStr(token, LOCAL_AGENT_TOKEN)) {
+      console.warn('[socket] local-agent rechazado: token inválido o no configurado');
+      releaseSocketConnection(socket);
+      return next(new Error('unauthorized'));
+    }
+
+    socket.data.role = 'local-agent';
+    return next();
+  }
+
+  if (role === 'agent') {
+    const agentId = String(auth.agentId || '');
+    const token = String(auth.token || '');
+
+    if (!agentId || !token) {
+      console.warn('[socket] agent rechazado: faltan agentId o token');
+      releaseSocketConnection(socket);
+      return next(new Error('unauthorized'));
+    }
+
+    if (agentId.length < 16 || token.length < 32 || !verifyOrRegisterAgent(agentId, token)) {
+      console.warn('[socket] agent rechazado: credenciales inválidas para agentId:', agentId || '(vacío)');
+      releaseSocketConnection(socket);
+      return next(new Error('unauthorized'));
+    }
+
+    socket.data.role = 'agent';
+    socket.data.agentId = agentId;
+    socket.data.agentToken = token;
+    return next();
+  }
+
+  if (role === 'panel') {
+    const session = verifyPanelSession(auth.session);
+
+    if (!session) {
+      releaseSocketConnection(socket);
+      return next(new Error('unauthorized'));
+    }
+
+    if (session.kind === 'share') {
+      try {
+        const share = await findShareTokenById(session.shareTokenId, session.agentId);
+        if (!isShareTokenActive(share)) {
+          releaseSocketConnection(socket);
+          return next(new Error('unauthorized'));
+        }
+        session.permission = normalizeSharePermission(share.permission) || 'read';
+      } catch (error) {
+        console.error('[share-tokens] socket auth:', error.message);
+        releaseSocketConnection(socket);
+        return next(new Error('share_store_unavailable'));
+      }
+    }
+
+    socket.data.role = 'panel';
+    socket.data.agentId = session.agentId;
+    socket.data.sessionExp = session.exp;
+    socket.data.permission = session.permission || 'admin';
+    socket.data.kind = session.kind || 'owner';
+    socket.data.shareTokenId = session.shareTokenId || null;
+    return next();
+  }
+
+  releaseSocketConnection(socket);
+  return next(new Error('Rol no válido.'));
+});
+
+const PUBLIC_ASSETS = [
+  'index.html',
+  'dashboard.js',
+  'styles.css',
+];
+
+const ASSET_VERSION_CACHE = new Map();
+
+function assetVersion(asset) {
+  const filePath = path.join(__dirname, asset);
+
+  let stat;
   try {
-    const data = await api(
-      `/api/files/content?path=${encodeURIComponent(rel)}`
-    );
-
-    if (!data.ok) {
-      throw new Error(data.error);
-    }
-
-    currentFile = rel;
-    originalFileContent = data.content || '';
-    if ($('filesTablePanel')) {
-      $('filesTablePanel').style.display = 'none';
-    }
-
-    if ($('filesEditorPanel')) {
-      $('filesEditorPanel').style.display = '';
-    }
-
-    if ($('editorFileName')) {
-      $('editorFileName').innerHTML = `📄 ${escHtml(
-        data.filename || rel.split('/').pop()
-      )}`;
-    }
-
-    if ($('edSaveMsg')) {
-      $('edSaveMsg').textContent = '';
-    }
-
-    if (editor) {
-      editor.toTextArea?.();
-    }
-
-    $('editorContainer').innerHTML = '<textarea id="mwEditorArea"></textarea>';
-
-    const ext = String(rel.split('.').pop() || '').toLowerCase();
-
-    const mode = {
-      yml: 'yaml',
-      yaml: 'yaml',
-      json: 'javascript',
-      js: 'javascript',
-      xml: 'xml',
-      properties: 'properties',
-      conf: 'properties',
-      cfg: 'properties',
-      sh: 'shell',
-      bat: 'shell',
-      cmd: 'shell',
-      toml: 'toml',
-      nginx: 'nginx',
-    }[ext] || 'text/plain';
-
-    await ensureCodeMirror(mode);
-
-    if (window.CodeMirror) {
-      editor = CodeMirror.fromTextArea($('mwEditorArea'), {
-        lineNumbers: true,
-        mode,
-        theme: 'dracula',
-        lineWrapping: false,
-        viewportMargin: 40,
-      });
-
-      editor.setValue(data.content || '');
-      editor.scrollTo(0, 0);
-      editor.setCursor({ line: 0, ch: 0 });
-
-      editor.on('cursorActivity', updateEditorStatus);
-      editor.on('change', updateEditorDirtyState);
-      updateEditorDirtyState();
-      updateEditorStatus();
-      requestAnimationFrame(() => {
-        if (!editor) return;
-        editor.setSize('100%', '100%');
-        editor.refresh();
-      });
-    } else {
-      $('mwEditorArea').value = data.content || '';
-      $('mwEditorArea')?.addEventListener('input', updateEditorDirtyState);
-      updateEditorDirtyState();
-    }
-  } catch (error) {
-    toast(`❌ ${error.message}`, 'err');
-  }
-}
-
-function updateEditorStatus() {
-  if (!editor) return;
-
-  const cursor = editor.getCursor();
-
-  if ($('edLine')) $('edLine').textContent = cursor.line + 1;
-  if ($('edCol')) $('edCol').textContent = cursor.ch + 1;
-  if ($('edLines')) $('edLines').textContent = editor.lineCount();
-}
-
-function updateEditorDirtyState() {
-  const dirty = editorHasUnsavedChanges();
-  $('btnSaveFile')?.classList.toggle('has-unsaved-changes', dirty);
-  if ($('edSaveMsg')) $('edSaveMsg').textContent = dirty ? 'Cambios sin guardar' : '';
-}
-function refreshEditorLayout() {
-  if (!editor) return;
-
-  requestAnimationFrame(() => {
-    if (!editor) return;
-    editor.setSize('100%', '100%');
-    editor.refresh();
-  });
-}
-
-window.addEventListener('resize', refreshEditorLayout, { passive: true });
-window.visualViewport?.addEventListener('resize', refreshEditorLayout, { passive: true });
-
-async function saveCurrentFile() {
-  if (!currentFile) return;
-
-  const content = getEditorContent();
-
-  const data = await postJSON('/api/files/content', {
-    path: currentFile,
-    content,
-  });
-
-  if (!data.ok) {
-    toast(`❌ ${data.error}`, 'err');
-    return;
-  }
-  originalFileContent = content;
-  updateEditorDirtyState();
-  if ($('edSaveMsg')) {
-    $('edSaveMsg').textContent = 'Guardado';
+    stat = fsSync.statSync(filePath);
+  } catch {
+    return 'unknown';
   }
 
-  toast('💾 Archivo guardado', 'ok');
-}
+  const key = stat.size + ':' + stat.mtimeMs;
+  const cached = ASSET_VERSION_CACHE.get(asset);
 
-/* PLUGINS */
+  if (cached && cached.key === key) {
+    return cached.version;
+  }
 
-async function pluginSearch() {
-  const query = $('plgSearchInput')?.value.trim();
-
-  if (!query) return;
-
-  $('plgResults').innerHTML = `
-    <div class="empty-state">
-      <div style="font-size:32px;animation:spin 1s linear infinite">⟳</div>
-      <div class="empty-msg">Buscando...</div>
-    </div>
-  `;
-
+  let version;
   try {
-    const data = await api(
-      `/api/plugins/search?q=${encodeURIComponent(query)}&source=${encodeURIComponent(pluginSource)}`
-    );
-
-    if (!data.ok) {
-      throw new Error(data.error);
-    }
-
-    let results = data.results || [];
-
-    if (priceFilter === 'free') {
-      results = results.filter(plugin => !plugin.premium);
-    } else if (priceFilter === 'premium') {
-      results = results.filter(plugin => plugin.premium);
-    }
-
-    renderPluginResults(results, data.errors || []);
-  } catch (error) {
-    $('plgResults').innerHTML = `
-      <div class="empty-state">
-        <div class="empty-msg">${escHtml(error.message)}</div>
-      </div>
-    `;
+    version = crypto
+      .createHash('sha1')
+      .update(fsSync.readFileSync(filePath))
+      .digest('hex')
+      .slice(0, 10);
+  } catch {
+    version = 'unknown';
   }
+
+  ASSET_VERSION_CACHE.set(asset, { key: key, version: version });
+  return version;
 }
 
-function renderPluginResults(results, errors) {
-  const formatDownloads = value => {
-    const n = Number(value) || 0;
+function renderIndexHtml() {
+  const html = fsSync.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
 
-    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
-    if (n >= 1000) return `${Math.round(n / 1000)}k`;
-
-    return String(n);
-  };
-
-  const warning = errors.length
-    ? `<div class="plg-warn-bar">⚠ ${errors.map(escHtml).join(' · ')}</div>`
-    : '';
-
-  const cards = results
-    .map((plugin, index) => {
-      const tag = ({ modrinth: 'MODRINTH', spigot: 'SPIGOT', hangar: 'HANGAR' })[plugin.source] || String(plugin.source || '').toUpperCase();
-      const external = plugin.external
-        ? '<span class="plg-src-badge">🔗 EXTERNO</span>'
-        : '';
-      const premium = plugin.premium
-        ? '<span class="plg-src-badge">💰 PREMIUM</span>'
-        : '';
-
-      return `
-        <div class="plg-card" data-index="${index}">
-          <div class="plg-card-top">
-            ${
-              plugin.icon
-                ? `<img class="plg-card-icon" src="${escHtml(plugin.icon)}" width="42" height="42" loading="lazy">`
-                : `<div class="plg-card-icon-placeholder">🧩</div>`
-            }
-            <div class="plg-card-info">
-              <div class="plg-card-name">${escHtml(plugin.name)}</div>
-              <div class="plg-card-tags">
-                <span class="plg-src-badge ${escHtml(plugin.source)}">${tag}</span>
-                ${premium}
-                ${external}
-                <span class="plg-src-badge dl">⬇ ${formatDownloads(plugin.downloads)}</span>
-              </div>
-            </div>
-          </div>
-          <div class="plg-card-desc">${escHtml(plugin.description || '')}</div>
-          <div class="plg-card-footer">
-            <span></span>
-            <button class="plg-versions-btn">Ver versiones →</button>
-          </div>
-        </div>
-      `;
-    })
-    .join('');
-
-  $('plgResults').innerHTML =
-    warning +
-    (cards
-      ? `<div class="plg-grid">${cards}</div>`
-      : `<div class="empty-state"><div class="empty-msg">Sin resultados</div></div>`);
-
-  $('plgResults')
-    .querySelectorAll('.plg-card')
-    .forEach(card => {
-      card.addEventListener('click', () =>
-        openPluginVersions(results[Number(card.dataset.index)])
-      );
-    });
-}
-
-async function openPluginVersions(plugin) {
-  currentPlugin = plugin;
-
-  $('plgVersionModal').style.display = '';
-  $('plgModalIcon').src = plugin.icon || '';
-  $('plgModalName').textContent = plugin.name;
-  $('plgModalMeta').textContent = `${plugin.source.toUpperCase()} · ${plugin.downloads || 0} descargas`;
-
-  $('plgModalBody').innerHTML = `
-    <div class="empty-state">
-      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
-      <div class="empty-msg">Cargando versiones...</div>
-    </div>
-  `;
-
-  try {
-    const data = await api(
-      `/api/plugins/versions?id=${encodeURIComponent(plugin.id)}&source=${encodeURIComponent(plugin.source)}`
-    );
-
-    if (!data.ok) {
-      throw new Error(data.error);
+  return html.replace(
+    /(["'])((?:dashboard\.js|styles\.css))\?v=[^"']*\1/g,
+    function (_match, quote, asset) {
+      return quote + asset + '?v=' + assetVersion(asset) + quote;
     }
+  );
+}
 
-    const versions = data.versions || [];
+app.get('/', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-cache');
+  res.type('html').send(renderIndexHtml());
+});
 
-    if (!versions.length) {
-      $('plgModalBody').innerHTML = '<div class="empty-state"><div class="empty-msg">No hay versiones.</div></div>';
+for (const asset of PUBLIC_ASSETS) {
+  app.get('/' + asset, (req, res) => {
+    if (asset === 'index.html') {
+      res.setHeader('Cache-Control', 'no-cache');
+      res.type('html').send(renderIndexHtml());
       return;
     }
 
-    $('plgModalBody').innerHTML = versions
-      .map((version, index) => {
-        const published = version.published
-          ? new Date(version.published).toLocaleString('es-ES')
-          : '';
-
-        const changelog = version.changelog
-          ? `<div class="plg-ver-changelog">${version.changelogIsHtml
-              ? version.changelog
-              : escHtml(version.changelog)}</div>`
-          : '';
-
-        const action = version.isExternal
-          ? `<a class="plg-dl-btn external" href="${escHtml(version.externalUrl)}" target="_blank" rel="noopener">ABRIR</a>`
-          : `<button class="plg-dl-btn" data-version="${index}">INSTALAR</button>`;
-
-        return `
-          <div class="plg-ver-row">
-            <div class="plg-ver-left">
-              <div class="plg-ver-number">${escHtml(version.versionNumber || version.name || 'Versión')}</div>
-              ${published ? `<div class="plg-ver-meta"><span class="plg-vm">${escHtml(published)}</span></div>` : ''}
-              ${changelog}
-            </div>
-            <div class="plg-ver-right">
-              ${action}
-            </div>
-          </div>
-        `;
-      })
-      .join('');
-
-    $('plgModalBody')
-      .querySelectorAll('[data-version]')
-      .forEach(button => {
-        button.addEventListener('click', () =>
-          installPlugin(versions[Number(button.dataset.version)])
-        );
-      });
-  } catch (error) {
-    $('plgModalBody').innerHTML = `
-      <div class="empty-state">
-        <div class="empty-msg">${escHtml(error.message)}</div>
-      </div>
-    `;
-  }
-}
-
-async function installPlugin(version) {
-  if (!isOwnerSession()) {
-    toast('🔒 Solo el propietario puede instalar plugins.', 'warn');
-    return;
-  }
-
-  const file = (version.files || []).find(item => item.primary) || version.files?.[0];
-
-  if (!file?.url) {
-    toast('Esta versión requiere instalación externa.', 'err');
-    return;
-  }
-
-  const filename =
-    file.filename ||
-    `${String(currentPlugin?.name || 'plugin').replace(/[^a-zA-Z0-9._-]/g, '_')}.jar`;
-
-  const installStatus = document.createElement('div');
-  installStatus.className = 'plg-install-status installing';
-  installStatus.innerHTML = '<span class="plg-install-spinner">⟳</span><strong>Instalando...</strong><span>Descargando y copiando el plugin al servidor</span>';
-  $('plgModalBody')?.prepend(installStatus);
-  const installButtons = $('plgModalBody')?.querySelectorAll('.plg-dl-btn:not(.external)') || [];
-  installButtons.forEach(button => { button.disabled = true; button.classList.add('is-installing'); });
-  try {
-    const data = await postJSON('/api/plugins/install', { url: file.url, filename });
-    if (!data.ok) throw new Error(data.error || 'No se pudo instalar el plugin.');
-    installStatus.className = 'plg-install-status installed';
-    installStatus.innerHTML = `<span>✓</span><strong>Instalado correctamente</strong><span>${escHtml(filename)}</span>`;
-    toast(`✅ ${filename} instalado`, 'ok');
-    loadInstalledPlugins();
-  } catch (error) {
-    installStatus.className = 'plg-install-status failed';
-    installStatus.innerHTML = `<span>⚠</span><strong>Instalación fallida</strong><span>${escHtml(error.message)}</span>`;
-    installButtons.forEach(button => { button.disabled = false; button.classList.remove('is-installing'); });
-    toast(`❌ ${error.message}`, 'err');
-  }
-}
-
-async function loadInstalledPlugins() {
-  const element = $('plgInstalledList');
-
-  if (!element) return;
-
-  element.innerHTML = `
-    <div class="empty-state">
-      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
-      <div class="empty-msg">Cargando...</div>
-    </div>
-  `;
-
-  const data = await api('/api/plugins/installed');
-
-  if (!data.ok) {
-    element.innerHTML = `<div class="empty-state">${escHtml(data.error)}</div>`;
-    return;
-  }
-
-  const owner = isOwnerSession();
-
-  element.innerHTML =
-    (data.plugins || [])
-      .map(
-        plugin => `
-        <div class="installed-plugin-row">
-          <div>
-            <strong>☕ ${escHtml(plugin.filename)}</strong>
-            <div style="font-size:11px;color:var(--muted2)">${escHtml(plugin.size)} · ${escHtml(plugin.modified)}</div>
-          </div>
-          <button class="small-btn danger" data-delete-plugin="${escHtml(plugin.filename)}"
-            ${owner ? '' : 'disabled title="Solo el propietario"'}>Eliminar</button>
-        </div>
-      `
-      )
-      .join('') ||
-    `<div class="empty-state">No hay plugins .jar instalados.</div>`;
-
-  element.querySelectorAll('[data-delete-plugin]').forEach(button => {
-    button.addEventListener('click', async () => {
-      const filename = button.dataset.deletePlugin;
-
-      if (!confirm(`¿Eliminar ${filename}?`)) {
-        return;
-      }
-
-      const data = await api(
-        `/api/plugins/installed/${encodeURIComponent(filename)}`,
-        { method: 'DELETE' }
-      );
-
-      if (!data.ok) {
-        toast(`❌ ${data.error}`, 'err');
-      } else {
-        loadInstalledPlugins();
-      }
-    });
+    res.setHeader(
+      'Cache-Control',
+      req.query.v ? 'public, max-age=31536000, immutable' : 'public, max-age=300'
+    );
+    res.sendFile(path.join(__dirname, asset));
   });
+}
+
+app.use(express.json({ limit: '10mb' }));
+
+/* ══════════════════════════════════════════════
+   RATE LIMIT
+   ══════════════════════════════════════════════ */
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, service: 'moonwolf-local' });
+});
+
+app.use('/api', (req, res, next) => {
+  const isUploadChunk = req.method === 'POST' && (req.path === '/files/upload-chunk' || req.path === '/api/files/upload-chunk');
+
+  if (!isUploadChunk && apiRateLimited(req.ip)) {
+    return res.status(429).json({
+      ok: false,
+      error: 'Demasiadas peticiones, espera un momento.',
+    });
+  }
+
+  const operationRule = operationRateLimited(req.ip, req.method, req.path);
+  if (operationRule) {
+    const current = operationHits.get(`${req.ip}:${operationRule.id}`);
+    const retryAfter = Math.max(1, Math.ceil((current.resetAt - Date.now()) / 1000));
+    res.setHeader('Retry-After', String(retryAfter));
+    return res.status(429).json({
+      ok: false,
+      error: `Límite de operación alcanzado para ${operationRule.id}. Espera unos segundos.`,
+    });
+  }
+
+  next();
+});
+
+/* ══════════════════════════════════════════════
+   PAIRING
+   ══════════════════════════════════════════════ */
+const CLOUD_ONLY_ROUTE = /^\/(pair|share-tokens)(\/|$)/;
+
+app.use('/api', (req, res, next) => {
+  if (LOCAL_AGENT_TOKEN) {
+    if (CLOUD_ONLY_ROUTE.test(req.path)) return res.status(404).json({ ok: false, error: 'No encontrado.' });
+
+    if (!timingSafeEqualStr(req.get('x-moonwolf-token'), LOCAL_AGENT_TOKEN)) {
+      return res.status(401).json({ ok: false, error: 'No autorizado.' });
+    }
+
+    return next();
+  }
+
+  if (!CLOUD_ONLY_ROUTE.test(req.path)) {
+    return res.status(404).json({ ok: false, error: 'No encontrado.' });
+  }
+
+  next();
+});
+
+app.post('/api/pair', async (req, res) => {
+  if (loginRateLimited(req.ip)) {
+    return res.status(429).json({ ok: false, error: 'Demasiados intentos, espera unos minutos.' });
+  }
+
+  const code = String(req.body?.code || '').trim().toUpperCase();
+  let pairing = null;
+  let share = null;
+  let sessionOptions = { permission: 'admin', kind: 'owner' };
+
+  if (/^MW-SHARE-[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/.test(code)) {
+    try {
+      share = await findShareToken(code);
+    } catch (error) {
+      console.error('[share-tokens] pair lookup:', error.message);
+      return res.status(503).json({
+        ok: false,
+        error: 'El servicio de autorizaciones no está disponible. Inténtalo de nuevo más tarde.',
+      });
+    }
+
+    if (!share) {
+      return res.status(401).json({
+        ok: false,
+        error: 'Token compartido inválido, revocado o caducado.',
+      });
+    }
+
+    pairing = { agentId: share.agentId };
+    sessionOptions = {
+      permission: share.permission,
+      kind: 'share',
+      shareTokenId: share.id,
+      expiresAt: share.expiresAt,
+    };
+  } else {
+    pairing = consumePairingCode(code);
+
+    if (!pairing) {
+      return res.status(401).json({
+        ok: false,
+        error: 'Código de emparejamiento inválido o caducado.',
+      });
+    }
+  }
+
+  const agentSocket = agentSockets.get(pairing.agentId);
+
+  if (!agentSocket?.connected) {
+    return res.status(409).json({
+      ok: false,
+      error: 'El MoonWolf Agent ya no está conectado.',
+    });
+  }
+
+  const session = createPanelSession(pairing.agentId, sessionOptions);
+
+  if (!share) {
+    agentSocket.emit('pairing_consumed');
+  }
+
+  return res.json({
+    ok: true,
+    session,
+    permission: sessionOptions.permission,
+    kind: sessionOptions.kind,
+    agent: {
+      id: pairing.agentId,
+      online: true,
+    },
+  });
+});
+
+/* ══════════════════════════════════════════════
+   SHARE TOKENS
+   ══════════════════════════════════════════════ */
+app.get('/api/share-tokens', async (req, res) => {
+  const session = await getSessionFromRequest(req);
+
+  if (!canManageShareTokens(session)) {
+    return res.status(403).json({ ok: false, error: 'Necesitas el permiso Administrador para gestionar accesos compartidos.' });
+  }
+
+  try {
+    const tokens = (await listShareTokensForAgent(session.agentId)).map(publicShareToken);
+    return res.json({ ok: true, tokens });
+  } catch (error) {
+    console.error('[share-tokens] list:', error.message);
+    return res.status(503).json({ ok: false, error: 'Neon no está disponible; no se pudieron consultar los accesos compartidos.' });
+  }
+});
+
+app.post('/api/share-tokens', async (req, res) => {
+  const session = await getSessionFromRequest(req);
+
+  if (!canManageShareTokens(session)) {
+    return res.status(403).json({ ok: false, error: 'Necesitas el permiso Administrador para crear accesos compartidos.' });
+  }
+
+  const permission = normalizeSharePermission(req.body?.permission);
+
+  if (!permission) {
+    return res.status(400).json({ ok: false, error: 'Permiso no válido.' });
+  }
+
+  const expires = String(req.body?.expires || 'never').toLowerCase();
+  const expiryMap = {
+    '1h': 60 * 60 * 1000,
+    '1d': 24 * 60 * 60 * 1000,
+    '7d': 7 * 24 * 60 * 60 * 1000,
+    '30d': 30 * 24 * 60 * 60 * 1000,
+  };
+
+  if (expires !== 'never' && !expiryMap[expires]) {
+    return res.status(400).json({ ok: false, error: 'Caducidad no válida.' });
+  }
+
+  const expiresAt = expires === 'never' ? null : Date.now() + expiryMap[expires];
+
+  try {
+    const created = await createShareToken(
+      session.agentId,
+      permission,
+      expiresAt,
+      req.body?.label
+    );
+
+    return res.json({
+      ok: true,
+      token: created.token,
+      access: publicShareToken(created.record),
+    });
+  } catch (error) {
+    console.error('[share-tokens] create:', error.message);
+    return res.status(503).json({ ok: false, error: 'Neon no está disponible; no se pudo guardar el acceso compartido.' });
+  }
+});
+
+app.patch('/api/share-tokens/:id', async (req, res) => {
+  const session = await getSessionFromRequest(req);
+
+  if (!canManageShareTokens(session)) {
+    return res.status(403).json({ ok: false, error: 'Necesitas el permiso Administrador para editar accesos compartidos.' });
+  }
+
+  const permission = normalizeSharePermission(req.body?.permission);
+  if (!permission) {
+    return res.status(400).json({ ok: false, error: 'Permiso no válido.' });
+  }
+
+  let record;
+  try {
+    record = await updateShareTokenPermission(req.params.id, session.agentId, permission);
+  } catch (error) {
+    console.error('[share-tokens] update:', error.message);
+    return res.status(503).json({ ok: false, error: 'Neon no está disponible; no se pudo actualizar el acceso compartido.' });
+  }
+
+  if (!record) {
+    return res.status(404).json({ ok: false, error: 'Acceso compartido no encontrado.' });
+  }
+
+  for (const panel of panelSockets) {
+    if (panel.data.shareTokenId === record.id) {
+      panel.data.permission = permission;
+      agentSockets.get(record.agentId)?.emit('direct_ctx', { peerId: panel.id, permission });
+      panel.emit('session_info', {
+        permission,
+        kind: panel.data.kind || 'share',
+        expiresAt: panel.data.sessionExp,
+      });
+    }
+  }
+
+  return res.json({ ok: true, access: publicShareToken(record) });
+});
+
+app.delete('/api/share-tokens/:id', async (req, res) => {
+  const session = await getSessionFromRequest(req);
+
+  if (!canManageShareTokens(session)) {
+    return res.status(403).json({ ok: false, error: 'Necesitas el permiso Administrador para revocar accesos compartidos.' });
+  }
+
+  let record;
+  try {
+    record = await revokeShareToken(req.params.id, session.agentId);
+  } catch (error) {
+    console.error('[share-tokens] revoke:', error.message);
+    return res.status(503).json({ ok: false, error: 'Neon no está disponible; no se pudo revocar el acceso compartido.' });
+  }
+
+  if (!record) {
+    return res.status(404).json({ ok: false, error: 'Acceso compartido no encontrado.' });
+  }
+
+  for (const panel of panelSockets) {
+    if (panel.data.shareTokenId === record.id) {
+      panel.emit('share_revoked');
+      panel.disconnect(true);
+    }
+  }
+
+  return res.json({ ok: true });
+});
+
+/* ══════════════════════════════════════════════
+    SERVER
+    ══════════════════════════════════════════════ */
+const BASE_DIR = RUNTIME_DIR;
+
+if (!fsSync.existsSync(BASE_DIR)) {
+  fsSync.mkdirSync(BASE_DIR, { recursive: true });
+}
+
+const PLUGINS_DIR = path.join(BASE_DIR, 'plugins');
+
+/* ══════════════════════════════════════════════
+   JAVA RUNTIMES
+   ══════════════════════════════════════════════ */
+const MOONWOLF_APP_DIR = path.join(
+  process.env.APPDATA || path.join(require('os').homedir(), 'AppData', 'Roaming'),
+  'MoonWolf'
+);
+const JAVA_RUNTIMES_DIR = process.env.MOONWOLF_RUNTIME_DIR || path.join(MOONWOLF_APP_DIR, 'runtimes');
+const JAVA_RUNTIME_VERSIONS = [8, 11, 16, 17, 21, 25];
+const JAVA_DOWNLOAD_API = 'https://api.adoptium.net/v3/assets/latest';
+const javaInstallPromises = new Map();
+const javaPathCache = new Map();
+
+function parseMinecraftVersion(version) {
+  const match = String(version || '').trim().match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2] || 0),
+    patch: Number(match[3] || 0),
+  };
+}
+
+function compareMinecraftVersions(a, b) {
+  const pa = parseMinecraftVersion(a);
+  const pb = parseMinecraftVersion(b);
+  if (!pa || !pb) return null;
+
+  for (const key of ['major', 'minor', 'patch']) {
+    if (pa[key] !== pb[key]) return pa[key] - pb[key];
+  }
+
+  return 0;
+}
+
+function requiredJavaForMinecraft(version) {
+  const parsed = parseMinecraftVersion(version);
+  if (!parsed) return null;
+
+  if (parsed.major >= 26) return 25;
+
+  if (parsed.major === 1) {
+    if (parsed.minor <= 11) return 8;
+    if (parsed.minor === 12 || parsed.minor === 13 || parsed.minor === 14 || parsed.minor === 15) return 11;
+    if (parsed.minor === 16) return parsed.patch >= 5 ? 16 : 11;
+    if (parsed.minor === 17) return 17;
+    if (parsed.minor === 18 || parsed.minor === 19) return 17;
+    if (parsed.minor === 20) return parsed.patch >= 5 ? 21 : 17;
+    if (parsed.minor === 21) return 21;
+  }
+
+  return null;
+}
+
+function javaRuntimeDir(javaMajor) {
+  return path.join(JAVA_RUNTIMES_DIR, `java${javaMajor}`);
+}
+
+function javaExecutablePath(javaMajor) {
+  return path.join(javaRuntimeDir(javaMajor), 'bin', 'java.exe');
+}
+
+function detectMinecraftVersionFromJarName(jarName) {
+  const name = String(jarName || '');
+  const matches = name.match(/(?:^|[-_.])((?:1\.\d+(?:\.\d+)?|2[0-9]+(?:\.\d+){0,2}))(?:[-_.]|$)/gi);
+  if (!matches?.length) return null;
+
+  for (const raw of matches) {
+    const value = raw.replace(/^[-_.]/, '').replace(/[-_.]$/, '');
+    if (/^(?:1\.\d+(?:\.\d+)?|2[0-9]+(?:\.\d+){0,2})$/.test(value)) return value;
+  }
+
+  return null;
+}
+
+function getJavaRuntimeInfo(minecraftVersion) {
+  const javaMajor = requiredJavaForMinecraft(minecraftVersion);
+  if (!javaMajor) {
+    return {
+      minecraftVersion: minecraftVersion || null,
+      javaMajor: null,
+      installed: false,
+      executable: null,
+      supported: false,
+    };
+  }
+
+  const executable = javaExecutablePath(javaMajor);
+
+  return {
+    minecraftVersion: minecraftVersion || null,
+    javaMajor,
+    installed: fsSync.existsSync(executable),
+    executable,
+    supported: true,
+  };
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': 'MoonWolf-Agent',
+      Accept: 'application/json',
+    },
+    signal: AbortSignal.timeout(30_000),
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} al consultar ${url}`);
+  }
+
+  return response.json();
+}
+
+async function downloadToFile(url, destination) {
+  const response = await fetch(url, {
+    headers: { 'User-Agent': 'MoonWolf-Agent' },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(10 * 60 * 1000),
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error(`Descarga de Java fallida (HTTP ${response.status})`);
+  }
+
+  await fs.mkdir(path.dirname(destination), { recursive: true });
+  const file = fsSync.createWriteStream(destination);
+  const reader = response.body.getReader();
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!file.write(Buffer.from(value))) {
+        await new Promise(resolve => file.once('drain', resolve));
+      }
+    }
+  } finally {
+    file.end();
+    await new Promise(resolve => file.once('close', resolve));
+  }
+}
+
+async function verifySha256(filePath, expected) {
+  if (!expected) return true;
+
+  const hash = crypto.createHash('sha256');
+  const stream = fsSync.createReadStream(filePath);
+
+  for await (const chunk of stream) {
+    hash.update(chunk);
+  }
+
+  return hash.digest('hex').toLowerCase() === String(expected).toLowerCase();
+}
+
+async function findJavaExecutable(rootDir) {
+  const direct = path.join(rootDir, 'bin', 'java.exe');
+  if (fsSync.existsSync(direct)) return direct;
+
+  const entries = await fs.readdir(rootDir, { withFileTypes: true });
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    const candidate = path.join(rootDir, entry.name, 'bin', 'java.exe');
+    if (fsSync.existsSync(candidate)) return candidate;
+  }
+
+  return null;
+}
+
+async function ensureJavaRuntime(javaMajor) {
+  if (!JAVA_RUNTIME_VERSIONS.includes(Number(javaMajor))) {
+    throw new Error(`Java ${javaMajor} no está soportado por el gestor de MoonWolf.`);
+  }
+
+  const targetDir = javaRuntimeDir(javaMajor);
+  const executable = javaExecutablePath(javaMajor);
+
+  if (fsSync.existsSync(executable)) return executable;
+
+  if (javaInstallPromises.has(javaMajor)) {
+    return javaInstallPromises.get(javaMajor);
+  }
+
+  const promise = (async () => {
+    await fs.mkdir(JAVA_RUNTIMES_DIR, { recursive: true });
+
+    const metadataUrl =
+      `${JAVA_DOWNLOAD_API}/${javaMajor}/hotspot` +
+      '?architecture=x64&image_type=jdk&os=windows&vendor=eclipse' +
+      '&heap_size=normal&project=jdk&release_type=ga';
+
+    broadcastLog(`☕ Java ${javaMajor} no está instalado. Descargando runtime de MoonWolf...`, 'system');
+
+    const assets = await fetchJson(metadataUrl);
+    const asset = Array.isArray(assets)
+      ? assets.find(item => item?.binary?.package?.link && item?.binary?.package?.checksum)
+      : null;
+
+    if (!asset) {
+      throw new Error(`No se encontró un JDK Temurin ${javaMajor} compatible para Windows x64.`);
+    }
+
+    const archive = path.join(JAVA_RUNTIMES_DIR, `.java${javaMajor}-${Date.now()}.zip`);
+    const staging = path.join(JAVA_RUNTIMES_DIR, `.install-java${javaMajor}-${Date.now()}`);
+
+    try {
+      await downloadToFile(asset.binary.package.link, archive);
+      broadcastLog(`☕ Java ${javaMajor} descargado. Verificando integridad...`, 'system');
+
+      if (!(await verifySha256(archive, asset.binary.package.checksum))) {
+        throw new Error(`La verificación SHA-256 de Java ${javaMajor} ha fallado.`);
+      }
+
+      await fs.rm(staging, { recursive: true, force: true });
+      await fs.mkdir(staging, { recursive: true });
+
+      await new Promise((resolve, reject) => {
+        const psQuote = value => `'${String(value).replace(/'/g, "''")}'`;
+
+        const psCommand =
+          `$ErrorActionPreference='Stop'; ` +
+          `Expand-Archive -LiteralPath ${psQuote(archive)} ` +
+          `-DestinationPath ${psQuote(staging)} -Force`;
+
+        console.log('[java] Expand-Archive →', psCommand);
+
+        const child = spawn(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy', 'Bypass',
+            '-Command',
+            psCommand,
+          ],
+          {
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          }
+        );
+
+        let stderr = '';
+        let stdout = '';
+        child.stderr.on('data', data => { stderr += String(data); });
+        child.stdout.on('data', data => { stdout += String(data); });
+        child.on('error', reject);
+        child.on('close', code => {
+          if (code === 0) return resolve();
+          const detail = (stderr || stdout).trim();
+          console.warn('[java] PowerShell falló:', detail);
+          reject(new Error(detail || `PowerShell terminó con código ${code}`));
+        });
+      });
+
+      const extractedJava = await findJavaExecutable(staging);
+      if (!extractedJava) {
+        throw new Error(`El archivo de Java ${javaMajor} no contiene un bin/java.exe válido.`);
+      }
+
+      await fs.rm(targetDir, { recursive: true, force: true });
+      await fs.mkdir(targetDir, { recursive: true });
+
+      await fs.cp(path.dirname(path.dirname(extractedJava)), targetDir, {
+        recursive: true,
+        force: true,
+      });
+
+      if (!fsSync.existsSync(executable)) {
+        const nested = await findJavaExecutable(targetDir);
+        if (!nested) {
+          throw new Error(`No se pudo preparar correctamente Java ${javaMajor}.`);
+        }
+
+        if (nested !== executable) {
+          const nestedRoot = path.dirname(path.dirname(nested));
+          await fs.rm(targetDir, { recursive: true, force: true });
+          await fs.cp(nestedRoot, targetDir, { recursive: true, force: true });
+        }
+      }
+
+      if (!fsSync.existsSync(executable)) {
+        throw new Error(`No se encontró java.exe después de instalar Java ${javaMajor}.`);
+      }
+
+      broadcastLog(`☕ Java ${javaMajor} listo: ${executable}`, 'success');
+      return executable;
+    } finally {
+      await fs.rm(archive, { force: true }).catch(() => {});
+      await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+    }
+  })();
+
+  javaInstallPromises.set(javaMajor, promise);
+
+  try {
+    return await promise;
+  } finally {
+    javaInstallPromises.delete(javaMajor);
+  }
+}
+
+async function resolveJavaForServer(minecraftVersion) {
+  const javaMajor = requiredJavaForMinecraft(minecraftVersion);
+
+  if (!javaMajor) {
+    throw new Error(
+      `No se puede determinar automáticamente el Java necesario para Minecraft "${minecraftVersion || 'desconocido'}". ` +
+      'Indica una versión de Minecraft válida en Startup.'
+    );
+  }
+
+  const cached = javaPathCache.get(javaMajor);
+  if (cached && fsSync.existsSync(cached)) return cached;
+
+  const executable = await ensureJavaRuntime(javaMajor);
+  javaPathCache.set(javaMajor, executable);
+  return executable;
+}
+
+const HOST = '0.0.0.0';
+const PORT = Number(process.env.MOONWOLF_PORT) || 10000;
+
+const STARTUP_DIR = path.join(BASE_DIR, '.moonwolf');
+const STARTUP_CONFIG_PATH = path.join(STARTUP_DIR, 'startup.json');
+const SERVER_PROPERTIES_PATH = path.join(BASE_DIR, 'server.properties');
+
+const DEFAULT_STARTUP_CONFIG = {
+  jar: 'server.jar',
+  javaPath: 'java',
+  javaMode: 'managed',
+  javaOverridePath: '',
+  minecraftVersion: '',
+  minMemoryMb: 1024,
+  maxMemoryMb: 2048,
+  extraArgs: '',
+  programArgs: '',
+  stopCommand: 'stop',
+  autoRestartOnCrash: false,
+  autoStartOnBoot: false,
+};
+
+function loadStartupConfig() {
+  const raw = readJsonConfigWithRecovery(STARTUP_CONFIG_PATH);
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ...DEFAULT_STARTUP_CONFIG };
+  }
+  return { ...DEFAULT_STARTUP_CONFIG, ...raw };
+}
+
+function saveStartupConfig(partial) {
+  const next = { ...loadStartupConfig(), ...partial };
+
+  if (!fsSync.existsSync(STARTUP_DIR)) {
+    fsSync.mkdirSync(STARTUP_DIR, { recursive: true });
+  }
+
+  writeJsonConfig(STARTUP_CONFIG_PATH, next);
+  return next;
+}
+
+function safeJarName(name) {
+  const value = String(name || '').trim();
+
+  if (
+    !value ||
+    value.includes('/') ||
+    value.includes('\\') ||
+    value.includes('..') ||
+    !value.toLowerCase().endsWith('.jar')
+  ) {
+    return null;
+  }
+
+  return value;
+}
+
+function safeJavaPath(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  if (!path.isAbsolute(raw)) return null;
+
+  const candidate = path.resolve(raw);
+  if (!['java', 'java.exe'].includes(path.basename(candidate).toLowerCase())) return null;
+
+  const comparable = item => process.platform === 'win32'
+    ? path.normalize(item).toLowerCase()
+    : path.normalize(item);
+  const baseResolved = comparable(path.resolve(BASE_DIR));
+  const candidateResolved = comparable(candidate);
+  if (
+    candidateResolved === baseResolved ||
+    candidateResolved.startsWith(baseResolved + path.sep)
+  ) {
+    return null;
+  }
+
+  try {
+    const stats = fsSync.lstatSync(candidate);
+    const realCandidate = fsSync.realpathSync.native(candidate);
+    if (!stats.isFile() || stats.isSymbolicLink() || comparable(realCandidate) !== comparable(candidate)) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  return candidate;
+}
+
+function verifyJavaExecutable(javaBin) {
+  return new Promise(resolve => {
+    let output = '';
+    let settled = false;
+    const child = spawn(javaBin, ['-version'], {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const finish = valid => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(Boolean(valid));
+    };
+    const timeout = setTimeout(() => {
+      child.kill();
+      finish(false);
+    }, 5000);
+    child.stdout.on('data', data => { output += String(data); });
+    child.stderr.on('data', data => { output += String(data); });
+    child.once('error', () => finish(false));
+    child.once('close', code => finish(code === 0 && /\bversion\s+["']?\d/i.test(output)));
+  });
+}
+
+async function validateJavaOverride(value) {
+  const javaBin = safeJavaPath(value);
+  if (!javaBin || !(await verifyJavaExecutable(javaBin))) {
+    throw new Error('La ruta debe apuntar a un ejecutable Java válido (java o java.exe).');
+  }
+  return javaBin;
+}
+
+function readServerPort() {
+  try {
+    const content = fsSync.readFileSync(SERVER_PROPERTIES_PATH, 'utf8');
+    const match = content.match(/^\s*server-port\s*=\s*(\d+)/m);
+    return match ? Number(match[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeServerPort(port) {
+  let content = '';
+
+  try {
+    content = fsSync.readFileSync(SERVER_PROPERTIES_PATH, 'utf8');
+  } catch {}
+
+  if (/^\s*server-port\s*=.*$/m.test(content)) {
+    content = content.replace(/^\s*server-port\s*=.*$/m, `server-port=${port}`);
+  } else {
+    content = (content.length && !content.endsWith('\n') ? content + '\n' : content) + `server-port=${port}\n`;
+  }
+
+  writeFileWithBackup(SERVER_PROPERTIES_PATH, content, 'utf8');
 }
 
 /* ══════════════════════════════════════════════
-   VERSIONS & SOFTWARE
+   PORTS
    ══════════════════════════════════════════════ */
+let serverPropertiesCache = null;
 
-let versionCatalog = [];
-let versionCurrent = {
-  software: '',
-  version: '',
-  build: '',
-};
+function readServerProperties() {
+  try {
+    const stat = fsSync.statSync(SERVER_PROPERTIES_PATH);
+    if (serverPropertiesCache && serverPropertiesCache.mtimeMs === stat.mtimeMs && serverPropertiesCache.size === stat.size) {
+      return serverPropertiesCache.values;
+    }
 
-function versionFindSoftware(id) {
-  return versionCatalog.find(item => item.id === id) || {
-    id,
-    label: id,
-    desc: '',
-  };
+    const content = fsSync.readFileSync(SERVER_PROPERTIES_PATH, 'utf8');
+    const values = {};
+    for (const line of content.split(/\r?\n/)) {
+      if (!line || line.trim().startsWith('#')) continue;
+      const match = line.match(/^\s*([^=:#]+)\s*=\s*(.*?)\s*$/);
+      if (match) values[match[1].trim()] = match[2];
+    }
+    serverPropertiesCache = { mtimeMs: stat.mtimeMs, size: stat.size, values };
+    return values;
+  } catch {
+    serverPropertiesCache = null;
+    return {};
+  }
 }
 
-function versionCategoryName(category) {
-  if (category === 'plugins') return 'Versiones de plugins';
-  if (category === 'mods' || category === 'mod') return 'Versiones de mods';
-  if (category === 'proxy') return 'Versiones de proxy';
-  if (category === 'hybrid') return 'Versiones de híbridos';
-  if (category === 'vanilla') return 'Versiones de Vanilla';
-  return 'Servidores de Minecraft';
-}
+function writeServerProperties(values) {
+  let content = '';
+  try { content = fsSync.readFileSync(SERVER_PROPERTIES_PATH, 'utf8'); } catch {}
 
-function renderVersionSoftwareCard(software) {
-  return `
-    <button type="button" class="ver-software-card" data-software="${escHtml(software.id)}">
-      <div class="ver-software-icon">${software.icon || '📦'}</div>
-      <div class="ver-software-content">
-        <div class="ver-software-name">${escHtml(software.label || software.name || software.id)}</div>
-        <div class="ver-software-desc">${escHtml(software.desc || software.description || '')}</div>
-      </div>
-      <div class="ver-software-arrow">›</div>
-    </button>
-  `;
-}
+  const lines = content.split(/\r?\n/);
+  const updated = new Set();
+  const output = lines.map(line => {
+    const match = line.match(/^\s*([^=:#]+)\s*=\s*(.*?)\s*$/);
+    if (!match) return line;
+    const key = match[1].trim();
+    if (!(key in values)) return line;
+    updated.add(key);
+    return `${key}=${values[key]}`;
+  });
 
-function renderVersionSoftware() {
-  const container = $('versionList');
-  if (!container) return;
-
-  if (!versionCatalog.length) {
-    container.innerHTML = `
-      <div class="ver-empty">
-        <div class="ver-empty-icon">📦</div>
-        <div class="ver-empty-title">No se han podido cargar los servidores</div>
-        <div class="ver-empty-text">Comprueba que el Agent esté conectado y vuelve a intentarlo.</div>
-        <button type="button" class="btn btn-primary ver-retry-btn" id="verRetry">Reintentar</button>
-      </div>
-    `;
-    $('verRetry')?.addEventListener('click', () => loadVersionState());
-    return;
+  for (const [key, value] of Object.entries(values)) {
+    if (!updated.has(key)) {
+      if (output.length && output[output.length - 1] !== '') output.push('');
+      output.push(`${key}=${value}`);
+    }
   }
 
-  const groups = {};
-  for (const item of versionCatalog) {
-    const category = item.category || 'plugins';
-    (groups[category] ||= []).push(item);
-  }
+  writeFileWithBackup(
+    SERVER_PROPERTIES_PATH,
+    output.join('\n').replace(/\n+$/, '') + '\n',
+    'utf8'
+  );
+  serverPropertiesCache = null;
+}
 
-  const categoryOrder = ['plugins', 'mods', 'proxy', 'hybrid', 'vanilla'];
-  const categoryIcon = {
-    plugins: '🧩',
-    mods: '🧵',
-    proxy: '🌐',
-    hybrid: '🔀',
-    vanilla: '🌿',
-  };
-
-  const orderedGroups = categoryOrder
-    .filter(category => groups[category]?.length)
-    .map(category => [category, groups[category]]);
-
-  container.innerHTML = `
-    <div class="ver-hero">
-      <div class="ver-hero-icon">📦</div>
-      <div>
-        <div class="ver-hero-title">Versiones de Minecraft</div>
-        <div class="ver-hero-description">Selecciona una categoría, el software y después la versión que quieres instalar.</div>
-      </div>
-    </div>
-
-    ${orderedGroups.map(([category, items]) => `
-      <section class="ver-category">
-        <div class="ver-category-header">
-          <div class="ver-category-icon">${categoryIcon[category] || '📦'}</div>
-          <div class="ver-category-name">${escHtml(versionCategoryName(category))}</div>
-          <div class="ver-category-count">${items.length} disponibles</div>
-        </div>
-        <div class="ver-software-grid">
-          ${items.map(renderVersionSoftwareCard).join('')}
-        </div>
-      </section>
-    `).join('')}
-  `;
-
-  container.querySelectorAll('[data-software]').forEach(card => {
-    card.addEventListener('click', () => selectVersionSoftware(card.dataset.software));
+function checkLocalPort(port, host = '127.0.0.1') {
+  return new Promise(resolve => {
+    const socket = new net.Socket();
+    let settled = false;
+    const finish = open => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(Boolean(open));
+    };
+    socket.setTimeout(700);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+    socket.connect(port, host);
   });
 }
 
-async function selectVersionSoftware(software) {
-  const item = versionFindSoftware(software);
-  const container = $('versionList');
-  if (!container) return;
-
-  container.innerHTML = `
-    <div class="ver-panel-head">
-      <button type="button" class="btn ver-back-btn" id="verBack">← Volver</button>
-      <div>
-        <div class="ver-panel-title">${item.icon || '📦'} ${escHtml(item.label || software)}</div>
-        <div class="ver-panel-subtitle">${escHtml(item.desc || '')}</div>
-      </div>
-    </div>
-    <div class="ver-loading">Cargando versiones de ${escHtml(item.label || software)}…</div>
-  `;
-
-  $('verBack')?.addEventListener('click', renderVersionSoftware);
-
-  if (item.external && !['paper', 'purpur', 'folia', 'fabric', 'vanilla'].includes(software)) {
-    container.querySelector('.ver-loading').outerHTML = `
-      <div class="ver-empty">
-        <div class="ver-empty-icon">🌐</div>
-        <div class="ver-empty-title">Descarga externa</div>
-        <div class="ver-empty-text">MoonWolf no dispone de una API de versiones para este software.</div>
-        <a class="btn btn-primary" href="${escHtml(item.external)}" target="_blank" rel="noopener noreferrer">Abrir web oficial ↗</a>
-      </div>
-    `;
-    return;
-  }
-
-  try {
-    const data = await api(`/api/versions/list?software=${encodeURIComponent(software)}`);
-
-    if (!data?.ok) {
-      throw new Error(data?.error || 'No se pudieron cargar las versiones.');
-    }
-
-    const versions = Array.isArray(data.versions) ? data.versions : [];
-
-    if (!versions.length) {
-      throw new Error('La API no devolvió ninguna versión disponible.');
-    }
-
-    versionCurrent.software = software;
-
-    container.innerHTML = `
-      <div class="ver-panel-head">
-        <button type="button" class="btn ver-back-btn" id="verBack">← Volver</button>
-        <div>
-          <div class="ver-panel-title">${item.icon || '📦'} ${escHtml(item.label || software)}</div>
-          <div class="ver-panel-subtitle">${escHtml(item.desc || '')}</div>
-        </div>
-      </div>
-
-      <div class="ver-version-header">
-        <div style="padding-left:28px">
-          <div class="ver-section-title">Versiones disponibles</div>
-          <div class="ver-section-subtitle">${versions.length} versiones encontradas</div>
-        </div>
-        <input id="verVersionSearch" class="ver-search" type="search" placeholder="Buscar versión…">
-      </div>
-
-      <div class="ver-version-grid" id="verVersionGrid"></div>
-    `;
-
-    $('verBack')?.addEventListener('click', renderVersionSoftware);
-
-    const grid = $('verVersionGrid');
-
-    const drawVersions = (filter = '') => {
-      const q = filter.trim().toLowerCase();
-      const filtered = versions.filter(v => String(v).toLowerCase().includes(q));
-
-      grid.innerHTML = filtered.map(v => `
-        <button type="button" class="ver-version-card ${String(v) === String(versionCurrent.version) && software === versionCurrent.software ? 'current' : ''}" data-version="${escHtml(v)}">
-          <span>${escHtml(v)}</span>
-          ${String(v) === String(versionCurrent.version) && software === versionCurrent.software ? '<small>ACTUAL</small>' : ''}
-        </button>
-      `).join('') || `<div class="ver-no-results">No hay versiones que coincidan.</div>`;
-
-      grid.querySelectorAll('[data-version]').forEach(btn => {
-        btn.addEventListener('click', () => selectVersionBuilds(software, btn.dataset.version, item));
-      });
-    };
-
-    $('verVersionSearch')?.addEventListener('input', e => drawVersions(e.target.value));
-    drawVersions();
-
-  } catch (error) {
-    const box = container.querySelector('.ver-loading');
-    if (box) {
-      box.className = 'ver-empty';
-      box.innerHTML = `
-        <div class="ver-empty-icon">⚠️</div>
-        <div class="ver-empty-title">No se pudieron cargar las versiones</div>
-        <div class="ver-empty-text">${escHtml(error.message || 'Error desconocido')}</div>
-        <button type="button" class="btn btn-primary" id="verRetrySoftware">Reintentar</button>
-      `;
-      $('verRetrySoftware')?.addEventListener('click', () => selectVersionSoftware(software));
-    }
-  }
+function validPort(value) {
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
 }
 
-async function selectVersionBuilds(software, version, item = versionFindSoftware(software)) {
-  const container = $('versionList');
-  if (!container) return;
+/* ══════════════════════════════════════════════
+   RCON (Minecraft Remote Console)
+   ══════════════════════════════════════════════ */
+class RconClient {
+  constructor() {
+    this.socket = null;
+    this.buffer = Buffer.alloc(0);
+    this.authenticated = false;
+    this.nextId = 1;
+    this.queue = Promise.resolve();
+    this.configKey = '';
+  }
 
-  versionCurrent.software = software;
-  versionCurrent.version = version;
-  versionCurrent.build = '';
+  close() {
+    this.authenticated = false;
+    this.buffer = Buffer.alloc(0);
+    this.socket?.destroy();
+    this.socket = null;
+  }
 
-  container.innerHTML = `
-    <div class="ver-panel-head">
-      <button type="button" class="btn ver-back-btn" id="verBackVersions">← Versiones</button>
-      <div>
-        <div class="ver-panel-title">${item.icon || '📦'} ${escHtml(item.label || software)} ${escHtml(version)}</div>
-        <div class="ver-panel-subtitle">${escHtml(item.desc || '')}</div>
-      </div>
-    </div>
-    <div class="ver-loading">Cargando builds de ${escHtml(version)}…</div>
-  `;
+  packet(id, type, body) {
+    const bodyBuf = Buffer.from(body, 'utf8');
+    const packet = Buffer.alloc(12 + bodyBuf.length + 2);
+    packet.writeInt32LE(10 + bodyBuf.length, 0);
+    packet.writeInt32LE(id, 4);
+    packet.writeInt32LE(type, 8);
+    bodyBuf.copy(packet, 12);
+    return packet;
+  }
 
-  $('verBackVersions')?.addEventListener('click', () => selectVersionSoftware(software));
+  async connect(port, password) {
+    const key = `${port}:${password}`;
+    if (this.socket && this.authenticated && this.configKey === key) return;
 
-  try {
-    const data = await api(
-      `/api/versions/builds?software=${encodeURIComponent(software)}&version=${encodeURIComponent(version)}`
-    );
+    this.close();
+    this.configKey = key;
 
-    if (!data?.ok) {
-      throw new Error(data?.error || 'No se pudieron cargar los builds.');
-    }
+    await new Promise((resolve, reject) => {
+      const socket = new net.Socket();
+      let settled = false;
+      let authBuffer = Buffer.alloc(0);
+      const finish = error => {
+        if (settled) return;
+        settled = true;
+        if (error) {
+          socket.destroy();
+          reject(error);
+        } else {
+          resolve();
+        }
+      };
 
-    const builds = Array.isArray(data.builds) ? data.builds : [];
+      socket.setTimeout(2000);
+      socket.once('timeout', () => finish(new Error('RCON timeout')));
+      socket.once('error', finish);
+      const onAuthData = chunk => {
+        authBuffer = Buffer.concat([authBuffer, chunk]);
+        if (authBuffer.length < 4) return;
+        const size = authBuffer.readInt32LE(0);
+        if (authBuffer.length < 4 + size) return;
+        const id = authBuffer.readInt32LE(4);
+        if (id === -1) return finish(new Error('RCON auth failed'));
+        this.socket = socket;
+        this.authenticated = true;
+        socket.off('data', onAuthData);
+        socket.removeAllListeners('timeout');
+        socket.setTimeout(0);
+        finish();
+      };
+      socket.on('data', onAuthData);
+      socket.connect(port, '127.0.0.1', () => socket.write(this.packet(0, 3, password)));
+    });
+  }
 
-    if (!builds.length) {
-      throw new Error('No hay builds disponibles para esta versión.');
-    }
-
-    versionCurrent.build = builds[0]?.build ?? '';
-
-    container.innerHTML = `
-      <div class="ver-panel-head">
-        <button type="button" class="btn ver-back-btn" id="verBackVersions">← Versiones</button>
-        <div>
-          <div class="ver-panel-title">${item.icon || '📦'} ${escHtml(item.label || software)} ${escHtml(version)}</div>
-          <div class="ver-panel-subtitle">${builds.length} builds disponibles</div>
-        </div>
-      </div>
-
-      <div class="ver-build-list">
-        ${builds.map((b, index) => `
-          <div class="ver-build-item ${index === 0 ? 'selected' : ''}" data-build="${escHtml(b.build)}">
-            <div class="ver-build-main">
-              <div class="ver-build-title">Build ${escHtml(b.build)}</div>
-              <div class="ver-build-meta">
-                <span>${escHtml(b.channel || 'STABLE')}</span>
-                ${b.loaderVersion ? `<span>Loader ${escHtml(b.loaderVersion)}</span>` : ''}
-                ${b.time ? `<span>${escHtml(new Date(b.time).toLocaleString('es-ES'))}</span>` : ''}
-              </div>
-              ${b.changes ? `<div class="ver-build-changes">${escHtml(b.changes)}</div>` : ''}
-              ${b.sha256 ? `<div class="ver-build-sha">SHA-256: ${escHtml(b.sha256)}</div>` : ''}
-            </div>
-            <button type="button" class="btn ${b.installable === false ? '' : 'btn-primary'} ver-install-btn" data-build-index="${index}" ${b.installable === false ? 'disabled' : ''}>
-              ${b.installable === false ? 'Solo información' : (software === 'fabric' || software === 'neoforge' ? 'Preparar instalación' : 'Instalar')}
-            </button>
-          </div>
-        `).join('')}
-      </div>
-    `;
-
-    $('verBackVersions')?.addEventListener('click', () => selectVersionSoftware(software));
-
-    container.querySelectorAll('[data-build-index]').forEach(button => {
-      button.addEventListener('click', () => {
-        const build = builds[Number(button.dataset.buildIndex)];
-        if (build?.installable === false) return;
-        installVersionSelection(software, version, build);
+  exec(port, password, command) {
+    const run = this.queue.then(async () => {
+      await this.connect(port, password);
+      const id = this.nextId++;
+      return new Promise((resolve, reject) => {
+        let buffer = Buffer.alloc(0);
+        const socket = this.socket;
+        const timer = setTimeout(() => {
+          this.close();
+          reject(new Error('RCON timeout'));
+        }, 2000);
+        const onData = chunk => {
+          buffer = Buffer.concat([buffer, chunk]);
+          while (buffer.length >= 4) {
+            const size = buffer.readInt32LE(0);
+            if (buffer.length < 4 + size) return;
+            const packetId = buffer.readInt32LE(4);
+            const body = buffer.slice(12, 4 + size - 2).toString('utf8');
+            buffer = buffer.slice(4 + size);
+            if (packetId !== id) continue;
+            clearTimeout(timer);
+            socket.off('data', onData);
+            resolve(body);
+            return;
+          }
+        };
+        socket.once('error', error => {
+          clearTimeout(timer);
+          socket.off('data', onData);
+          this.close();
+          reject(error);
+        });
+        socket.on('data', onData);
+        socket.write(this.packet(id, 2, command));
       });
     });
-  } catch (error) {
-    const box = container.querySelector('.ver-loading');
-    if (box) {
-      box.className = 'ver-empty';
-      box.innerHTML = `
-        <div class="ver-empty-icon">⚠️</div>
-        <div class="ver-empty-title">No se pudieron cargar los builds</div>
-        <div class="ver-empty-text">${escHtml(error.message || 'Error desconocido')}</div>
-        <button type="button" class="btn btn-primary" id="verRetryBuilds">Reintentar</button>
-      `;
-      $('verRetryBuilds')?.addEventListener('click', () => selectVersionBuilds(software, version, item));
-    }
+    this.queue = run.catch(() => {});
+    return run;
   }
 }
 
-async function installVersionSelection(software, version, build) {
-  if (!isOwnerSession()) {
-    toast('🔒 Solo el propietario puede instalar o reemplazar el servidor.', 'warn');
-    return;
+const rconClient = new RconClient();
+
+async function queryRconStats() {
+  const props = readServerProperties();
+
+  if (String(props['enable-rcon'] || 'false').toLowerCase() !== 'true') {
+    return null;
   }
 
-  const label = versionFindSoftware(software).label || software;
-  const buildLabel = build?.build !== undefined ? `Build ${build.build}` : 'versión seleccionada';
+  const port = validPort(props['rcon.port']) || 25575;
+  const password = String(props['rcon.password'] || '');
 
-  if (!confirm(`¿Quieres instalar ${label} ${version} (${buildLabel})?`)) return;
+  if (!password) return null;
 
   try {
-    toast('⏳ Descargando e instalando...', 'info');
-
-    const data = await postJSON('/api/versions/install', {
-      software,
-      version,
-      build: build?.build ?? '',
-      url: build?.url || '',
-      loaderVersion: build?.loaderVersion || '',
-    });
-
-    if (!data?.ok) {
-      throw new Error(data?.error || 'No se pudo instalar la versión.');
-    }
-
-    if (data.type === 'fabric-installer' || data.type === 'forge-installer' || data.type === 'neoforge-installer') {
-      const name = data.type === 'forge-installer' ? 'Forge' : (data.type === 'neoforge-installer' ? 'NeoForge' : 'Fabric');
-      toast(`⚠️ ${name} preparado. Revisa el comando indicado antes de ejecutarlo.`, 'info');
-      alert(
-        `${name} ${version} preparado.\n\n` +
-        `${data.note || ''}\n\n` +
-        `Comando:\n${data.installCmd || 'No disponible'}`
-      );
-    } else {
-      toast(`✅ ${label} ${version} instalado correctamente.`, 'ok');
-    }
-
-    await loadVersionState();
-  } catch (error) {
-    toast(`❌ ${error.message}`, 'err');
-  }
-}
-
-async function loadVersionState() {
-  const container = $('versionList');
-  if (container) {
-    container.innerHTML = `
-      <div class="ver-loading-page">
-        <div class="ver-loading-spinner">⟳</div>
-        <div>Cargando catálogo de versiones…</div>
-      </div>
-    `;
-  }
-
-  try {
-    const [softwareData, startupData] = await Promise.all([
-      api('/api/versions/software'),
-      api('/api/startup'),
+    const [listRaw, tpsRaw] = await Promise.all([
+      rconClient.exec(port, password, 'list'),
+      rconClient.exec(port, password, 'tps'),
     ]);
 
-    if (!softwareData?.ok) {
-      throw new Error(softwareData?.error || 'No se pudo cargar el catálogo de software.');
+    const clean = value => String(value || '').replace(/§[0-9a-fk-or]/gi, '').trim();
+
+    const listMatch = clean(listRaw).match(/There are (\d+) of a max of (\d+) players online/i);
+    const tpsMatch = clean(tpsRaw).match(/TPS from last [^:]+:\s*([\d.]+)/i);
+
+    return {
+      players: listMatch ? Number(listMatch[1]) : 0,
+      maxPlayers: listMatch ? Number(listMatch[2]) : 0,
+      tps: tpsMatch ? Number(tpsMatch[1]) : 20,
+    };
+  } catch {
+    return null;
+  }
+}
+
+let portsCache = null;
+
+app.get('/api/ports', async (_req, res) => {
+  if (portsCache && Date.now() - portsCache.createdAt < 5000) {
+    return res.json(portsCache.payload);
+  }
+
+  try {
+    const props = readServerProperties();
+    const serverPort = validPort(props['server-port']) || readServerPort() || 25565;
+    const queryEnabled = String(props['enable-query'] || 'false').toLowerCase() === 'true';
+    const queryPort = validPort(props['query.port']) || 25565;
+    const rconEnabled = String(props['enable-rcon'] || 'false').toLowerCase() === 'true';
+    const rconPort = validPort(props['rcon.port']) || 25575;
+
+    const definitions = [
+      {
+        id: 'minecraft',
+        name: 'Minecraft',
+        description: 'Puerto principal usado por los jugadores para conectarse al servidor.',
+        protocol: 'TCP',
+        port: serverPort,
+        enabled: true,
+      },
+      {
+        id: 'query',
+        name: 'Query',
+        description: queryEnabled
+          ? 'Game Query de Minecraft habilitado.'
+          : 'Game Query deshabilitado en server.properties.',
+        protocol: 'UDP',
+        port: queryPort,
+        enabled: queryEnabled,
+      },
+      {
+        id: 'rcon',
+        name: 'RCON',
+        description: rconEnabled
+          ? 'Control remoto de consola habilitado.'
+          : 'RCON deshabilitado en server.properties.',
+        protocol: 'TCP',
+        port: rconPort,
+        enabled: rconEnabled,
+      },
+    ];
+
+    const ports = await Promise.all(definitions.map(async item => ({
+      ...item,
+      state: !item.enabled
+        ? 'disabled'
+        : item.protocol === 'TCP'
+          ? (await checkLocalPort(item.port) ? 'open' : 'closed')
+          : 'configured',
+    })));
+
+    const payload = {
+      ok: true,
+      ports,
+      properties: {
+        enableQuery: queryEnabled,
+        enableRcon: rconEnabled,
+        serverPort,
+        queryPort,
+        rconPort,
+        hasRconPassword: Boolean(String(props['rcon.password'] || '')),
+      },
+    };
+    portsCache = { createdAt: Date.now(), payload };
+    res.json(payload);
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
+
+app.post('/api/ports', (req, res) => {
+  portsCache = null;
+  const body = req.body || {};
+  const serverPort = validPort(body.serverPort);
+  const queryPort = validPort(body.queryPort);
+  const rconPort = validPort(body.rconPort);
+
+  if (!serverPort || !queryPort || !rconPort) {
+    return fail(res, 'Todos los puertos deben estar entre 1 y 65535');
+  }
+
+  const enableQuery = Boolean(body.enableQuery);
+  const enableRcon = Boolean(body.enableRcon);
+  const current = readServerProperties();
+  const newPassword = String(body.rconPassword || '').trim();
+  const rconPassword = newPassword || String(current['rcon.password'] || '');
+
+  if (enableRcon && !rconPassword) {
+    return fail(res, 'Debes indicar una contraseña para activar RCON');
+  }
+
+  try {
+    writeServerProperties({
+      'server-port': serverPort,
+      'query.port': queryPort,
+      'enable-query': enableQuery,
+      'rcon.port': rconPort,
+      'enable-rcon': enableRcon,
+      ...(rconPassword ? { 'rcon.password': rconPassword } : {}),
+    });
+
+    ok(res, {
+      serverPort,
+      queryPort,
+      rconPort,
+      enableQuery,
+      enableRcon,
+      restartRequired: true,
+    });
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
+
+function safePath(rel) {
+  if (typeof rel !== 'string') return null;
+
+  let base;
+  try {
+    base = fsSync.realpathSync.native(path.resolve(BASE_DIR));
+  } catch {
+    return null;
+  }
+
+  const comparable = value => process.platform === 'win32'
+    ? path.normalize(value).toLowerCase()
+    : path.normalize(value);
+  const comparableBase = comparable(base);
+  const full = path.resolve(path.join(base, rel));
+  const comparableFull = comparable(full);
+  if (!(comparableFull.startsWith(comparableBase + path.sep) || comparableFull === comparableBase)) {
+    return null;
+  }
+
+  let current = base;
+  const relative = path.relative(base, full);
+  for (const part of relative ? relative.split(path.sep) : []) {
+    current = path.join(current, part);
+    try {
+      const stats = fsSync.lstatSync(current);
+      const realCurrent = fsSync.realpathSync.native(current);
+
+      if (stats.isSymbolicLink() || comparable(realCurrent) !== comparable(current)) return null;
+    } catch (error) {
+      if (error?.code === 'ENOENT') break;
+      return null;
+    }
+  }
+  return full;
+}
+
+function safePluginPath(filename) {
+  if (filename.includes('/') || filename.includes('\\') || filename.includes('..')) {
+    return null;
+  }
+
+  return path.join(PLUGINS_DIR, filename);
+}
+
+const ok = (res, data = {}) => res.json({ ok: true, ...data });
+const fail = (res, error) => res.json({ ok: false, error });
+
+async function apiFetch(url) {
+  const { default: fetch } = await import('node-fetch');
+  const res = await fetch(url, { headers: { 'User-Agent': 'MoonWolfPanel/2.0 (contact@moonwolf.local)' } });
+
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} -> ${url}`);
+  }
+
+  return res.json();
+}
+
+async function apiFetchText(url) {
+  const { default: fetch } = await import('node-fetch');
+  const res = await fetch(url, { headers: { 'User-Agent': 'MoonWolfPanel/2.0 (contact@moonwolf.local)' } });
+
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} -> ${url}`);
+  }
+
+  return res.text();
+}
+
+function xmlValues(xml, tag) {
+  return [...String(xml).matchAll(new RegExp(`<${tag}>([^<]+)</${tag}>`, 'g'))]
+    .map(match => match[1].trim())
+    .filter(Boolean);
+}
+
+const DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024;
+const DOWNLOAD_MAX_REDIRECTS = 5;
+const DOWNLOAD_ALLOWED_HOSTS = Object.freeze([
+  'api.modrinth.com',
+  'modrinth.com',
+  'spiget.org',
+  'papermc.io',
+  'purpurmc.org',
+  'leafmc.one',
+  'leavesmc.org',
+  'magmafoundation.org',
+  'neoforged.net',
+  'minecraftforge.net',
+  'fabricmc.net',
+  'mojang.com',
+  'github.com',
+  'githubusercontent.com',
+  'spigotmc.org',
+]);
+
+function isAllowedDownloadUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(String(value));
+  } catch {
+    return null;
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  const allowedHost = DOWNLOAD_ALLOWED_HOSTS.some(host => hostname === host || hostname.endsWith(`.${host}`));
+  if (parsed.protocol !== 'https:' || !allowedHost || parsed.username || parsed.password) return null;
+  if (parsed.port && parsed.port !== '443') return null;
+  return parsed;
+}
+
+function safeDownloadDestination(dest) {
+  const relative = path.relative(BASE_DIR, path.resolve(String(dest || '')));
+  const safe = safePath(relative);
+  if (!safe || path.resolve(safe) !== path.resolve(dest)) return null;
+  return safe;
+}
+
+async function downloadFile(url, dest) {
+  const { default: fetch } = await import('node-fetch');
+  const finalDest = safeDownloadDestination(dest);
+  if (!finalDest) throw new Error('Destino de descarga no permitido.');
+
+  let currentUrl = isAllowedDownloadUrl(url);
+  if (!currentUrl) throw new Error('URL de descarga no permitida.');
+
+  let response;
+  for (let redirect = 0; redirect <= DOWNLOAD_MAX_REDIRECTS; redirect++) {
+    response = await fetch(currentUrl, {
+      headers: { 'User-Agent': 'MoonWolfPanel/2.0 (contact@moonwolf.local)' },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(10 * 60 * 1000),
+    });
+    if (![301, 302, 303, 307, 308].includes(response.status)) break;
+    const location = response.headers.get('location');
+    if (!location || redirect === DOWNLOAD_MAX_REDIRECTS) {
+      throw new Error('Demasiadas redirecciones o redirección inválida.');
+    }
+    currentUrl = isAllowedDownloadUrl(new URL(location, currentUrl).toString());
+    if (!currentUrl) throw new Error('Redirección de descarga no permitida.');
+  }
+
+  if (!response?.ok || !response.body) {
+    throw new Error(`Download failed: ${response?.status || 0} ${response?.statusText || ''}`.trim());
+  }
+
+  const contentLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(contentLength) && contentLength > DOWNLOAD_MAX_BYTES) {
+    throw new Error('La descarga supera el tamaño máximo permitido.');
+  }
+
+  const contentType = (response.headers.get('content-type') || '').toLowerCase();
+  if (contentType.includes('text/html')) {
+    throw new Error('La descarga devolvió HTML en lugar de un archivo. Instálalo manualmente desde su página de recursos.');
+  }
+
+  const tempDest = `${finalDest}.download-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
+  let bytes = 0;
+  let head = Buffer.alloc(0);
+  const limiter = new Transform({
+    transform(chunk, _encoding, callback) {
+      bytes += chunk.length;
+      head = Buffer.concat([head, chunk.subarray(0, Math.max(0, 512 - head.length))]);
+      if (bytes > DOWNLOAD_MAX_BYTES) {
+        return callback(new Error('La descarga supera el tamaño máximo permitido.'));
+      }
+      callback(null, chunk);
+    },
+    flush(callback) {
+      const textHead = head.toString('utf8').trim().toLowerCase();
+      if (textHead.startsWith('<!doctype html') || textHead.startsWith('<html') || textHead.startsWith('<head')) {
+        return callback(new Error('La descarga devolvió HTML en lugar de un archivo. Instálalo manualmente desde su página de recursos.'));
+      }
+      callback();
+    },
+  });
+
+  try {
+    await pipeline(response.body, limiter, fsSync.createWriteStream(tempDest, { flags: 'wx' }));
+    await fs.rename(tempDest, finalDest);
+  } catch (error) {
+    await fs.rm(tempDest, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+function semverCmp(a, b) {
+  const pa = String(a).split('.').map(n => parseInt(n, 10));
+  const pb = String(b).split('.').map(n => parseInt(n, 10));
+
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const na = Number.isNaN(pa[i]) ? 0 : pa[i] || 0;
+    const nb = Number.isNaN(pb[i]) ? 0 : pb[i] || 0;
+
+    if (na !== nb) {
+      return na - nb;
+    }
+  }
+
+  return 0;
+}
+
+/* ══════════════════════════════════════════════
+    CLOUD / AGENT
+    ══════════════════════════════════════════════ */
+const agentSockets = new Map();
+const panelSockets = new Set();
+const agentCache = new Map();
+const AGENT_EVENTS = new Set(['status', 'log', 'log_batch', 'stats']);
+
+const LOCAL_AGENT_ROOM = 'local-agent';
+const LOG_BATCH_DELAY_MS = 50;
+let pendingLogBatch = [];
+let logBatchTimer = null;
+const agentRoom  = id => `agent:${id}`;
+const panelsRoom = id => `panels:${id}`;
+
+function emitToAgentPanels(agentId, event, payload) {
+  io.to(panelsRoom(agentId)).emit(event, payload);
+}
+
+function agentIsOnline(agentId) {
+  return Boolean(agentSockets.get(agentId)?.connected);
+}
+
+io.on('connection', socket => {
+  console.log('Cliente conectado:', socket.id, socket.data.role, socket.data.agentId || '');
+
+  if (socket.data.role === 'local-agent') {
+    socket.join(LOCAL_AGENT_ROOM);
+    socket.emit('status', lastStatus);
+    socket.once('disconnect', () => releaseSocketConnection(socket));
+    console.log('🖥️ Agent local conectado:', socket.id);
+    return;
+  }
+
+  if (socket.data.role === 'agent') {
+    const agentId = socket.data.agentId;
+    const previous = agentSockets.get(agentId);
+
+    if (previous && previous !== socket) {
+      console.warn(
+        '[socket] Colisión de agentId: expulsando conexión anterior',
+        agentId,
+        'anterior=', previous.id,
+        'nueva=', socket.id
+      );
+      previous.disconnect(true);
     }
 
-    versionCatalog = Array.isArray(softwareData.software)
-      ? softwareData.software.map(item => ({
-          ...item,
-          icon:
-            item.id === 'paper' ? '📄' :
-            item.id === 'purpur' ? '🟣' :
-            item.id === 'folia' ? '🌲' :
-            item.id === 'fabric' ? '🧵' :
-            item.id === 'forge' ? '🔨' :
-            item.id === 'leaf' ? '🍁' :
-            item.id === 'leaves' ? '🍃' :
-            item.id === 'spigot' ? '🧱' :
-            item.id === 'bukkit' ? '🧺' :
-            item.id === 'magma' ? '🌋' :
-            item.id === 'arclight' ? '💡' :
-            item.id === 'sponge' ? '🧽' :
-            item.id === 'mohist' ? '⚗️' :
-            item.id === 'gale' ? '🌬️' :
-            item.id === 'pufferfish' ? '🐡' :
-            item.id === 'quilt' ? '🧶' :
-            item.id === 'neoforge' ? '⚒️' :
-            item.id === 'vanilla' ? '🌿' :
-            item.id === 'velocity' ? '⚡' :
-            item.id === 'waterfall' ? '🌊' :
-            item.id === 'bungeecord' ? '🔗' : '📦',
-        }))
-      : [];
+    agentSockets.set(agentId, socket);
+    socket.join(agentRoom(agentId));
+    console.log('🌙 MoonWolf Agent conectado:', agentId, socket.id);
 
-    versionCurrent = {
-      software: '',
-      version: startupData?.config?.minecraftVersion || '',
-      build: '',
+    socket.on('pairing_create', () => {
+      if (!socketEventAllowed(socket, 'pairing_create', 6)) return;
+      const pairing = createPairingCode(agentId);
+      console.log(
+        '[pairing] Código creado:',
+        agentId,
+        'socket=', socket.id,
+        'expira=', new Date(pairing.expiresAt).toISOString()
+      );
+      socket.emit('pairing_ready', {
+        ...pairing,
+        ttlMs: PAIRING_TTL_MS,
+      });
+    });
+
+    socket.on('event', event => {
+      if (!socketEventAllowed(socket, 'event', 240)) return;
+      if (!event?.name) return;
+      if (!AGENT_EVENTS.has(event.name)) return;
+
+      const cache = agentCache.get(agentId) || { status: null, stats: null, logs: [] };
+
+      if (event.name === 'status') cache.status = event.payload;
+      else if (event.name === 'stats') cache.stats = event.payload;
+      else {
+        const entries = event.name === 'log_batch' && Array.isArray(event.payload)
+          ? event.payload
+          : [event.payload];
+        cache.logs.push(...entries);
+        if (cache.logs.length > 300) cache.logs.splice(0, cache.logs.length - 300);
+      }
+
+      agentCache.set(agentId, cache);
+      emitToAgentPanels(agentId, event.name, event.payload);
+    });
+
+    socket.on('rpc_result', result => {
+      if (!socketEventAllowed(socket, 'rpc_result', 240)) return;
+      if (!result?.id) return;
+
+      for (const panel of panelSockets) {
+        if (
+          panel.data.agentId === agentId &&
+          panel.data.pendingRpc?.has(result.id)
+        ) {
+          panel.data.pendingRpc.delete(result.id);
+          panel.emit('rpc_result', result);
+          break;
+        }
+      }
+    });
+
+    socket.on('direct_signal', msg => {
+      if (!socketEventAllowed(socket, 'direct_signal', 240)) return;
+      if (!['answer', 'candidate'].includes(msg?.type)) return;
+
+      const panel = io.sockets.sockets.get(String(msg.peerId || ''));
+      if (!panel || panel.data.role !== 'panel' || panel.data.agentId !== agentId) return;
+
+      panel.emit('direct_signal', {
+        type: msg.type,
+        sdp: msg.type === 'answer' ? String(msg.sdp || '').slice(0, 32768) : undefined,
+        candidate: msg.type === 'candidate' ? String(msg.candidate || '').slice(0, 2048) : undefined,
+        sdpMid: msg.sdpMid === undefined ? undefined : String(msg.sdpMid).slice(0, 64),
+      });
+    });
+
+    const notifyAgentState = online => {
+      emitToAgentPanels(agentId, 'cloud_ready', { agentOnline: online });
+      emitToAgentPanels(agentId, 'agent_status', { online });
     };
 
-    renderVersionSoftware();
-  } catch (error) {
-    versionCatalog = [];
-    renderVersionSoftware();
-    toast(`❌ ${error.message}`, 'err');
-  }
-}
+    notifyAgentState(true);
 
-function renderBuildsSelect() {}
-async function changeSoftwareOrVersion() {}
-async function installSelectedVersion() {
-  if (versionCurrent.software && versionCurrent.version) {
-    await selectVersionBuilds(
-      versionCurrent.software,
-      versionCurrent.version,
-      versionFindSoftware(versionCurrent.software)
-    );
-  } else {
-    toast('Selecciona un servidor y una versión primero.', 'warn');
-  }
-}
-
-/* DATABASES (MySQL / MariaDB) */
-
-function showDbCredentials(creds) {
-  const text =
-    `Host: ${creds.host}:${creds.port}\n` +
-    `Base de datos: ${creds.database}\n` +
-    `Usuario: ${creds.user}\n` +
-    `Contraseña: ${creds.password}`;
-
-  try {
-    navigator.clipboard?.writeText(text);
-  } catch {}
-
-  alert(
-    `Credenciales de la base de datos (copiadas al portapapeles):\n\n${text}\n\n⚠️ Esta contraseña no se volverá a mostrar.`
-  );
-}
-
-async function createDatabase() {
-  const name = prompt(
-    'Nombre de la nueva base de datos (letras, números y guion bajo, máx. 48 caracteres):'
-  );
-
-  if (!name) return;
-
-  const data = await postJSON('/api/databases', {
-    name: name.trim(),
-    createUser: true,
-  });
-
-  if (!data.ok) {
-    toast(`❌ ${data.error}`, 'err');
-    return;
-  }
-
-  toast('✅ Base de datos creada', 'ok');
-
-  if (data.credentials) {
-    showDbCredentials(data.credentials);
-  }
-
-  loadDatabases();
-}
-
-async function loadDatabases() {
-  const container = $('dbList');
-
-  if (!container) return;
-
-  container.innerHTML = `
-    <div class="empty-state">
-      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
-      <div class="empty-msg">Conectando con MySQL...</div>
-    </div>
-  `;
-
-  let status = { connected: false };
-
-  try {
-    status = await api('/api/databases/status');
-  } catch (error) {
-    container.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-msg">${escHtml(error.message)}</div>
-      </div>
-    `;
-    return;
-  }
-
-  if (!status.connected) {
-    container.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-icon" style="color:var(--red)">⚠</div>
-        <div class="empty-msg">
-          No se pudo conectar con MySQL (${escHtml(status.host || '')}:${escHtml(String(status.port || ''))}).<br>
-          <span style="font-size:11px;color:var(--muted)">
-            ${escHtml(status.error || 'Configura MOONWOLF_MYSQL_HOST / MOONWOLF_MYSQL_USER / MOONWOLF_MYSQL_PASSWORD en el .env del servidor.')}
-          </span>
-        </div>
-      </div>
-    `;
-    return;
-  }
-
-  const data = await api('/api/databases');
-
-  if (!data.ok) {
-    container.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-msg">${escHtml(data.error)}</div>
-      </div>
-    `;
-    return;
-  }
-
-  const databases = data.databases || [];
-
-  container.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 4px 14px">
-      <span style="font-size:11px;color:var(--muted2)">
-        🟢 Conectado a MySQL — ${escHtml(status.host)}:${escHtml(String(status.port))}
-      </span>
-      <button class="small-btn" id="btnNewDatabase">➕ Nueva base de datos</button>
-    </div>
-
-    ${
-      databases.length
-        ? databases
-            .map(
-              db => `
-          <div class="backup-row">
-            <span class="bk-icon">🗄️</span>
-            <span class="bk-name">
-              ${escHtml(db.name)}
-              <small>${escHtml(db.tables)} tablas · ${escHtml(db.user || 'sin usuario dedicado')}</small>
-            </span>
-            <span class="bk-size">${escHtml(db.sizeMb)} MB</span>
-            <span class="bk-actions">
-              ${
-                db.user
-                  ? `<button class="icon-btn edit" data-reset-db="${escHtml(db.name)}" title="Restablecer contraseña">🔑</button>`
-                  : ''
-              }
-              <button class="icon-btn" data-delete-db="${escHtml(db.name)}" title="Eliminar">🗑️</button>
-            </span>
-          </div>
-        `
-            )
-            .join('')
-        : '<div class="empty-state"><div class="empty-msg">No hay bases de datos todavía.</div></div>'
-    }
-  `;
-
-  $('btnNewDatabase')?.addEventListener('click', createDatabase);
-
-  container.querySelectorAll('[data-delete-db]').forEach(button => {
-    button.addEventListener('click', async () => {
-      const name = button.dataset.deleteDb;
-
-      if (
-        !confirm(
-          `Eliminar la base de datos "${name}"? Esta acción no se puede deshacer.`
-        )
-      ) {
-        return;
+    socket.on('disconnect', reason => {
+      releaseSocketConnection(socket);
+      if (agentSockets.get(agentId) === socket) {
+        agentSockets.delete(agentId);
+        notifyAgentState(false);
       }
 
-      const data = await api(`/api/databases/${encodeURIComponent(name)}`, {
-        method: 'DELETE',
+      console.log('🌙 MoonWolf Agent desconectado:', agentId, socket.id, 'motivo=', reason || 'sin-motivo');
+    });
+
+    return;
+  }
+
+  if (socket.data.role === 'panel') {
+    socket.data.pendingRpc = new Set();
+    panelSockets.add(socket);
+    socket.join(panelsRoom(socket.data.agentId));
+
+    const agentId = socket.data.agentId;
+    const online = agentIsOnline(agentId);
+    const sessionTimer = setTimeout(() => {
+      socket.disconnect(true);
+    }, Math.max(1000, socket.data.sessionExp - Date.now()));
+
+    console.log('🖥️ Panel conectado:', socket.id, '->', agentId);
+
+    socket.emit('direct_config', { iceServers: ICE_SERVERS });
+    socket.emit('cloud_ready', { agentOnline: online });
+    socket.emit('agent_status', { online });
+
+    const cached = online ? agentCache.get(agentId) : null;
+
+    if (cached) {
+      socket.emit('history', cached.logs);
+      if (cached.status) socket.emit('status', cached.status);
+      if (cached.stats) socket.emit('stats', cached.stats);
+    }
+    socket.emit('session_info', {
+      permission: socket.data.permission || 'admin',
+      kind: socket.data.kind || 'owner',
+      expiresAt: socket.data.sessionExp,
+    });
+
+    socket.on('rpc', async request => {
+      const isUploadChunk = String(request?.path || '').startsWith('/api/files/upload-chunk');
+      const rpcLimit = isUploadChunk ? 2000 : 120;
+
+      if (!socketEventAllowed(socket, 'rpc', rpcLimit)) {
+        return socket.emit('rpc_result', {
+          id: request?.id || null,
+          ok: false,
+          status: 429,
+          contentType: 'application/json',
+          bodyBase64: Buffer.from(JSON.stringify({
+            ok: false,
+            error: 'Demasiadas solicitudes en tiempo real. Espera un momento.',
+          })).toString('base64'),
+        });
+      }
+
+      const rejectRpc = (status, message) => socket.emit('rpc_result', {
+        id: request?.id || null,
+        ok: false,
+        status,
+        contentType: 'application/json',
+        bodyBase64: Buffer.from(JSON.stringify({ ok: false, error: message })).toString('base64'),
       });
 
-      if (!data.ok) {
-        toast(`❌ ${data.error}`, 'err');
-        return;
+      if (!request || typeof request !== 'object') return;
+
+      let rpcUrl;
+
+      try {
+        rpcUrl = new URL(String(request.path || ''), 'http://moonwolf.invalid');
+      } catch {
+        return rejectRpc(400, 'Petición no válida.');
       }
 
-      toast('✅ Base de datos eliminada', 'ok');
-      loadDatabases();
-    });
-  });
-
-  container.querySelectorAll('[data-reset-db]').forEach(button => {
-    button.addEventListener('click', async () => {
-      const name = button.dataset.resetDb;
-
-      if (!confirm(`Restablecer la contraseña del usuario de "${name}"?`)) {
-        return;
+      if (rpcUrl.origin !== 'http://moonwolf.invalid' || !rpcUrl.pathname.startsWith('/api/')) {
+        return rejectRpc(400, 'Ruta no válida.');
       }
 
-      const data = await postJSON(
-        `/api/databases/${encodeURIComponent(name)}/reset-password`,
-        {}
-      );
+      request.path = rpcUrl.pathname + rpcUrl.search;
+      request.method = String(request.method || 'GET').toUpperCase();
 
-      if (!data.ok) {
-        toast(`❌ ${data.error}`, 'err');
-        return;
+      if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) {
+        return rejectRpc(400, 'Método no válido.');
       }
 
-      showDbCredentials(data.credentials);
-    });
-  });
-}
-
-/* BACKUPS */
-
-async function loadBackups() {
-  const container = $('backupList');
-
-  if (!container) return;
-
-  container.innerHTML = `
-    <div class="empty-state">
-      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
-      <div class="empty-msg">Cargando copias de seguridad...</div>
-    </div>
-  `;
-
-  const data = await api('/api/backups');
-
-  if (!data.ok) {
-    container.innerHTML = `<div class="empty-state"><div class="empty-msg">${escHtml(data.error)}</div></div>`;
-    return;
-  }
-
-  const backups = data.backups || [];
-  const owner = isOwnerSession();
-
-  container.innerHTML = backups.length
-    ? backups
-        .map(
-          backup => `
-        <div class="backup-row">
-          <span class="bk-icon">🗄️</span>
-          <span class="bk-name">
-            ${escHtml(backup.name)}
-            <small>${escHtml(backup.date)}</small>
-          </span>
-          <span class="bk-size">${escHtml(backup.sizeMb)} MB</span>
-          <span class="bk-actions">
-            <button class="icon-btn edit" data-download-backup="${escHtml(backup.name)}" title="Descargar">⬇️</button>
-            <button class="icon-btn warn" data-restore-backup="${escHtml(backup.name)}"
-              title="${owner ? 'Restaurar' : 'Solo el propietario'}"
-              ${owner ? '' : 'disabled'}>♻️</button>
-            <button class="icon-btn" data-delete-backup="${escHtml(backup.name)}" title="Eliminar">🗑️</button>
-          </span>
-        </div>
-      `
-        )
-        .join('')
-    : '<div class="empty-state"><div class="empty-msg">No hay copias de seguridad todavía.</div></div>';
-
-  container.querySelectorAll('[data-download-backup]').forEach(button => {
-    button.addEventListener('click', () =>
-      downloadBackup(button.dataset.downloadBackup)
-    );
-  });
-
-  container.querySelectorAll('[data-restore-backup]').forEach(button => {
-    button.addEventListener('click', () =>
-      restoreBackup(button.dataset.restoreBackup)
-    );
-  });
-
-  container.querySelectorAll('[data-delete-backup]').forEach(button => {
-    button.addEventListener('click', async () => {
-      const name = button.dataset.deleteBackup;
-
-      if (
-        !confirm(
-          `¿Eliminar la copia de seguridad "${name}"? Esta acción no se puede deshacer.`
-        )
-      ) {
-        return;
-      }
-
-      const result = await api(`/api/backups/${encodeURIComponent(name)}`, {
-        method: 'DELETE',
-      });
-
-      if (!result.ok) {
-        toast(`❌ ${result.error}`, 'err');
-        return;
-      }
-
-      toast('✅ Copia de seguridad eliminada', 'ok');
-      loadBackups();
-    });
-  });
-}
-
-async function createBackup() {
-  const name = prompt('Nombre para la copia de seguridad (opcional):', '');
-  if (name === null) return;
-
-  const button = $('btnNewBackup');
-
-  if (button) {
-    button.disabled = true;
-    button.textContent = '⏳ Creando...';
-  }
-
-  try {
-    const data = await postJSON('/api/backups', { name: name.trim() });
-
-    if (!data.ok) {
-      toast(`❌ ${data.error}`, 'err');
-      return;
-    }
-
-    toast(
-      data.warning
-        ? `⚠️ ${data.warning}`
-        : `✅ Copia de seguridad creada (${data.sizeMb} MB)`,
-      data.warning ? 'warn' : 'ok'
-    );
-
-    loadBackups();
-  } catch (error) {
-    toast(`❌ ${error.message}`, 'err');
-  } finally {
-    if (button) {
-      button.disabled = false;
-      button.textContent = '➕ Nueva copia';
-    }
-  }
-}
-
-async function downloadBackup(name) {
-  return downloadUrlWithProgress(
-    `/api/backups/download/${encodeURIComponent(name)}`,
-    name,
-    'Descargando copia de seguridad'
-  );
-}
-
-async function restoreBackup(name) {
-  if (!isOwnerSession()) {
-    toast('🔒 Solo el propietario puede restaurar copias.', 'warn');
-    return;
-  }
-
-  const typed = prompt(
-    `⚠️ RESTAURAR "${name}"\n\n` +
-    'Esto reemplazará TODOS los archivos actuales del servidor (mundos, plugins, configs).\n' +
-    'Los directorios internos .moonwolf y .moonwolf-uploads NO se tocan.\n' +
-    'Si el servidor está corriendo, se detendrá y se reiniciará automáticamente.\n\n' +
-    'Escribe RESTAURAR en mayúsculas para confirmar:'
-  );
-
-  if (typed !== 'RESTAURAR') {
-    if (typed !== null) toast('Restauración cancelada.', 'warn');
-    return;
-  }
-
-  const button = document.querySelector(`[data-restore-backup="${CSS.escape(name)}"]`);
-  if (button) { button.disabled = true; }
-
-  toast('⏳ Restaurando copia... el servidor puede tardar en reiniciar.', 'info');
-
-  try {
-    const data = await postJSON(
-      `/api/backups/${encodeURIComponent(name)}/restore`,
-      {}
-    );
-
-    if (!data.ok) {
-      throw new Error(data.error || 'No se pudo restaurar la copia.');
-    }
-
-    toast(
-      data.wasRunning
-        ? '✅ Copia restaurada. El servidor se está reiniciando.'
-        : '✅ Copia restaurada.',
-      'ok'
-    );
-    addActivity(`Copia restaurada: ${name}`, 'ok', '♻️');
-    loadBackups();
-  } catch (error) {
-    toast(`❌ ${error.message}`, 'err');
-    if (button) { button.disabled = false; }
-  }
-}
-
-/* PORTS */
-
-async function loadPorts() {
-  const element = $('portList');
-  if (!element) return;
-
-  element.innerHTML =
-    '<div class="empty-state"><div style="animation:spin 1s linear infinite;font-size:28px">⟳</div><div class="empty-msg">Comprobando puertos...</div></div>';
-
-  try {
-    const data = await api('/api/ports');
-    if (!data.ok) throw new Error(data.error || 'No se pudieron cargar los puertos');
-
-    const props = data.properties || {};
-    const ports = Array.isArray(data.ports) ? data.ports : [];
-
-    element.innerHTML = `
-      <div class="ports-toolbar">
-        <div>
-          <div class="panel-title"><span>🔌</span> PUERTOS DEL SERVIDOR</div>
-          <div class="port-toolbar-sub">Configura los puertos de Minecraft, Query y RCON. Los cambios requieren reiniciar el servidor.</div>
-        </div>
-        <button class="small-btn" id="btnRefreshPorts">↺ Comprobar</button>
-      </div>
-
-      <div class="ports-grid">
-        ${ports
-          .map(
-            port => `
-          <div class="port-row">
-            <div class="port-num">${escHtml(port.port)}</div>
-            <div class="port-info">
-              <div class="port-name">${escHtml(port.name)}</div>
-              <div class="port-desc">${escHtml(port.description)}</div>
-            </div>
-            <span class="port-proto">${escHtml(port.protocol)}</span>
-            <span class="port-state ${escHtml(port.state)}">
-              ${
-                port.state === 'open'
-                  ? '● ABIERTO'
-                  : port.state === 'closed'
-                    ? '● CERRADO'
-                    : port.state === 'disabled'
-                      ? '● DESACTIVADO'
-                      : '● CONFIGURADO'
-              }
-            </span>
-          </div>
-        `
-          )
-          .join('')}
-      </div>
-
-      <div class="panel ports-config-panel">
-        <div class="panel-header">
-          <div>
-            <div class="panel-title"><span>⚙️</span> CONFIGURACIÓN</div>
-            <div class="port-toolbar-sub">Los valores se escriben directamente en server.properties.</div>
-          </div>
-        </div>
-
-        <div class="ports-form">
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">Puerto de Minecraft</label>
-              <input id="portMinecraft" class="form-input" type="number" min="1" max="65535" value="${escHtml(props.serverPort ?? 25565)}">
-            </div>
-            <div class="form-group">
-              <label class="form-label">Puerto Query</label>
-              <input id="portQuery" class="form-input" type="number" min="1" max="65535" value="${escHtml(props.queryPort ?? 25565)}">
-            </div>
-          </div>
-
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">Puerto RCON</label>
-              <input id="portRcon" class="form-input" type="number" min="1" max="65535" value="${escHtml(props.rconPort ?? 25575)}">
-            </div>
-            <div class="form-group">
-              <label class="form-label">Contraseña RCON</label>
-              <input id="portRconPassword" class="form-input" type="password" placeholder="${props.hasRconPassword ? 'Dejar vacío para conservarla' : 'Contraseña nueva'}" autocomplete="new-password">
-            </div>
-          </div>
-
-          <div class="startup-toggles">
-            <label class="startup-toggle" for="portEnableQuery">
-              <div class="startup-toggle-icon">📡</div>
-              <div class="startup-toggle-info">
-                <div class="startup-toggle-title">Game Query</div>
-                <div class="startup-toggle-desc">Permite consultar información del servidor mediante el protocolo Query (jugadores, MOTD...).</div>
-              </div>
-              <span class="toggle">
-                <input type="checkbox" id="portEnableQuery" ${props.enableQuery ? 'checked' : ''}>
-                <span class="toggle-slider"></span>
-              </span>
-            </label>
-
-            <label class="startup-toggle" for="portEnableRcon">
-              <div class="startup-toggle-icon">🎛️</div>
-              <div class="startup-toggle-info">
-                <div class="startup-toggle-title">RCON</div>
-                <div class="startup-toggle-desc">Consola remota. Usa una contraseña fuerte y no expongas este puerto innecesariamente a Internet.</div>
-              </div>
-              <span class="toggle">
-                <input type="checkbox" id="portEnableRcon" ${props.enableRcon ? 'checked' : ''}>
-                <span class="toggle-slider"></span>
-              </span>
-            </label>
-          </div>
-
-          <button class="save-btn" id="btnSavePorts">💾 GUARDAR PUERTOS</button>
-        </div>
-      </div>
-    `;
-
-    $('btnRefreshPorts')?.addEventListener('click', loadPorts);
-    $('btnSavePorts')?.addEventListener('click', savePorts);
-  } catch (error) {
-    element.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-msg">${escHtml(error.message)}</div><button class="small-btn" id="btnRetryPorts">↺ Reintentar</button></div>`;
-    $('btnRetryPorts')?.addEventListener('click', loadPorts);
-  }
-}
-
-async function savePorts() {
-  const body = {
-    serverPort: Number($('portMinecraft')?.value),
-    queryPort: Number($('portQuery')?.value),
-    rconPort: Number($('portRcon')?.value),
-    enableQuery: Boolean($('portEnableQuery')?.checked),
-    enableRcon: Boolean($('portEnableRcon')?.checked),
-    rconPassword: $('portRconPassword')?.value || '',
-  };
-
-  const button = $('btnSavePorts');
-  if (button) {
-    button.disabled = true;
-    button.textContent = 'GUARDANDO...';
-  }
-
-  try {
-    const data = await postJSON('/api/ports', body);
-    if (!data.ok) {
-      toast(`❌ ${data.error}`, 'err');
-      return;
-    }
-
-    toast('✅ Puertos guardados. Reinicia el servidor para aplicar los cambios.', 'ok');
-    addActivity('Configuración de puertos actualizada', 'ok', '🔌');
-    await loadPorts();
-  } catch (error) {
-    toast(error.message, 'err');
-  } finally {
-    if (button) {
-      button.disabled = false;
-      button.textContent = '💾 GUARDAR PUERTOS';
-    }
-  }
-}
-
-/* STARTUP */
-
-function requiredJavaLabel(version) {
-  const match = String(version || '').trim().match(/^(\d+)\.(\d+)(?:\.(\d+))?/);
-  if (!match) return 'Java se seleccionará automáticamente';
-
-  const major = Number(match[1]);
-  const minor = Number(match[2]);
-  const patch = Number(match[3] || 0);
-  let java = null;
-
-  if (major >= 26) java = 25;
-  else if (major === 1) {
-    if (minor <= 11) java = 8;
-    else if (minor >= 12 && minor <= 15) java = 11;
-    else if (minor === 16) java = patch >= 5 ? 16 : 11;
-    else if (minor >= 17 && minor <= 19) java = 17;
-    else if (minor >= 20 && minor <= 21) java = 21;
-  }
-
-  return java ? `Java ${java} · gestionado por MoonWolf` : 'Versión no reconocida';
-}
-
-async function loadStartup() {
-  const element = $('startupList');
-
-  if (!element) return;
-
-  element.innerHTML = `
-    <div class="empty-state">
-      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
-      <div class="empty-msg">Cargando configuración...</div>
-    </div>
-  `;
-
-  const data = await api('/api/startup');
-
-  if (!data.ok) {
-    element.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-msg">${escHtml(data.error)}</div>
-      </div>
-    `;
-
-    return;
-  }
-
-  const cfg = data.config || {};
-  const jars = Array.isArray(data.jars) ? data.jars : [];
-  const hasCurrentJar = jars.includes(cfg.jar);
-  const port = data.serverPort;
-  const owner = isOwnerSession();
-
-  element.innerHTML = `
-    <div class="startup-form">
-
-      <div class="form-group">
-        <label class="form-label">Archivo .jar del servidor</label>
-        ${
-          jars.length
-            ? `
-              <select id="stJar" class="form-select">
-                ${jars
-                  .map(
-                    jar => `
-                  <option value="${escHtml(jar)}" ${jar === cfg.jar ? 'selected' : ''}>${escHtml(jar)}</option>
-                `
-                  )
-                  .join('')}
-              </select>
-              <div class="form-hint">
-                Se lanzará este archivo al pulsar ARRANCAR.
-                ${!hasCurrentJar ? ` El configurado actualmente ("${escHtml(cfg.jar)}") no está en la carpeta — elige uno de la lista y guarda.` : ''}
-              </div>
-            `
-            : `
-              <div class="form-hint" style="color:var(--red)">
-                No se encontró ningún .jar en la carpeta del servidor. Sube uno desde Archivos o instala uno desde Versiones.
-              </div>
-            `
-        }
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">Versión de Minecraft</label>
-        <input id="stMinecraftVersion" class="form-input" type="text" placeholder="Ej. 1.21.11" value="${escHtml(cfg.minecraftVersion || '')}">
-        <div class="form-hint">MoonWolf usa esta versión para seleccionar automáticamente el Java compatible. Si instalaste el servidor desde Versiones, se rellena automáticamente.</div>
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">
-          Java
-          ${owner ? '' : '<span class="owner-lock">🔒 Solo el propietario</span>'}
-        </label>
-        <div class="startup-java-card">
-          <span style="font-size:18px">☕</span>
-          <div style="flex:1;min-width:220px">
-            <div style="font-weight:700" id="stJavaManagedLabel">
-              ${
-                data.javaRuntime?.javaMajor
-                  ? `Java ${escHtml(data.javaRuntime.javaMajor)} ${data.javaRuntime.installed ? '✓ instalado' : '↓ se descargará automáticamente'}`
-                  : 'Java se seleccionará automáticamente'
-              }
-            </div>
-            <div class="form-hint" style="margin-top:3px">
-              ${
-                data.javaRuntime?.javaMajor
-                  ? `Runtime gestionado por MoonWolf · ${data.javaRuntime.installed ? 'listo para usar' : 'se instalará al arrancar'}`
-                  : 'Indica una versión de Minecraft válida para calcular el runtime.'
-              }
-            </div>
-          </div>
-        </div>
-
-        <div style="margin-top:10px">
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
-            <input id="stJavaOverride" type="checkbox"
-              ${cfg.javaMode === 'override' ? 'checked' : ''}
-              ${owner ? '' : 'disabled'}>
-            Usar un Java personalizado (avanzado)
-          </label>
-          <input id="stJavaOverridePath" class="form-input" type="text"
-            style="margin-top:8px;display:${cfg.javaMode === 'override' ? 'block' : 'none'}"
-            placeholder="C:\\Program Files\\Java\\jdk-21\\bin\\java.exe"
-            value="${escHtml(cfg.javaOverridePath || cfg.javaPath || '')}"
-            ${owner ? '' : 'readonly'}>
-          <div class="form-hint">
-            Normalmente no necesitas tocar esto.
-            ${owner ? '' : ' Solo el propietario puede modificar la ruta de Java.'}
-          </div>
-        </div>
-      </div>
-
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label">Memoria mínima (MB)</label>
-          <input id="stMinMem" class="form-input" type="number" min="256" step="256" value="${escHtml(cfg.minMemoryMb ?? 1024)}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Memoria máxima (MB)</label>
-          <input id="stMaxMem" class="form-input" type="number" min="256" step="256" value="${escHtml(cfg.maxMemoryMb ?? 2048)}">
-        </div>
-      </div>
-
-      <div class="form-group">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
-          <label class="form-label" style="margin-bottom:0">
-            Argumentos JVM extra (antes de "-jar")
-            ${owner ? '' : '<span class="owner-lock">🔒 Solo el propietario</span>'}
-          </label>
-          ${
-            owner
-              ? `<button type="button" class="small-btn" id="btnAikarFlags" style="font-size:10px;padding:4px 9px;flex-shrink:0">⚡ Usar Aikar's Flags</button>`
-              : ''
-          }
-        </div>
-        <input id="stArgs" class="form-input" type="text"
-          placeholder="-XX:+UseG1GC"
-          value="${escHtml(cfg.extraArgs || '')}"
-          ${owner ? '' : 'readonly'}>
-        <div class="form-hint">
-          Flags de la JVM (recolector de basura, memoria avanzada...). Se insertan justo antes de "-jar".
-          ${owner
-            ? ' Los flags que cargan código (javaagent, agentlib, OnError...) están bloqueados por seguridad.'
-            : ' Solo el propietario puede modificarlos.'}
-        </div>
-      </div>
-
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label">Puerto del servidor</label>
-          <input id="stPort" class="form-input" type="number" min="1" max="65535" placeholder="25565" value="${port ?? ''}">
-          <div class="form-hint">Se guarda como server-port en server.properties.</div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Comando de parada</label>
-          <input id="stStopCmd" class="form-input" type="text" placeholder="stop" value="${escHtml(cfg.stopCommand || 'stop')}">
-        </div>
-      </div>
-
-      <div class="startup-toggles">
-        <label class="startup-toggle" for="stAutoRestart">
-          <div class="startup-toggle-icon">🔄</div>
-          <div class="startup-toggle-info">
-            <div class="startup-toggle-title">Reinicio automático si se cae</div>
-            <div class="startup-toggle-desc">Relanza el servidor si el proceso termina de forma inesperada. No cuenta si pulsas DETENER.</div>
-          </div>
-          <span class="toggle">
-            <input type="checkbox" id="stAutoRestart" ${cfg.autoRestartOnCrash ? 'checked' : ''}>
-            <span class="toggle-slider"></span>
-          </span>
-        </label>
-
-        <label class="startup-toggle" for="stAutoStart">
-          <div class="startup-toggle-icon">🚀</div>
-          <div class="startup-toggle-info">
-            <div class="startup-toggle-title">Arranque automático</div>
-            <div class="startup-toggle-desc">Inicia el servidor en cuanto MoonWolf Panel/Agent se ponga en marcha.</div>
-          </div>
-          <span class="toggle">
-            <input type="checkbox" id="stAutoStart" ${cfg.autoStartOnBoot ? 'checked' : ''}>
-            <span class="toggle-slider"></span>
-          </span>
-        </label>
-      </div>
-
-      <button class="save-btn" id="btnSaveStartup" ${jars.length ? '' : 'disabled'}>💾 GUARDAR</button>
-    </div>
-  `;
-
-  $('btnSaveStartup')?.addEventListener('click', saveStartup);
-
-  $('stJavaOverride')?.addEventListener('change', event => {
-    const input = $('stJavaOverridePath');
-    if (input) {
-      input.style.display = event.target.checked ? 'block' : 'none';
-    }
-  });
-
-  $('stMinecraftVersion')?.addEventListener('input', event => {
-    const version = event.target.value.trim();
-    const runtime = requiredJavaLabel(version);
-    const label = $('stJavaManagedLabel');
-    if (label) label.textContent = runtime;
-  });
-
-  $('btnAikarFlags')?.addEventListener('click', () => {
-    const input = $('stArgs');
-
-    if (!input) return;
-
-    input.value = AIKAR_FLAGS;
-    toast('⚡ Flags de Aikar aplicados — recuerda GUARDAR', 'ok');
-  });
-}
-
-async function saveStartup() {
-  const jarSelect = $('stJar');
-
-  if (!jarSelect || !jarSelect.value) {
-    toast('❌ No hay ningún .jar seleccionable', 'err');
-    return;
-  }
-
-  const portValue = $('stPort')?.value.trim();
-  const owner = isOwnerSession();
-
-  const body = {
-    jar: jarSelect.value,
-    minecraftVersion: $('stMinecraftVersion')?.value.trim() || '',
-    minMemoryMb: Number($('stMinMem')?.value) || 1024,
-    maxMemoryMb: Number($('stMaxMem')?.value) || 2048,
-    stopCommand: $('stStopCmd')?.value.trim() || 'stop',
-    autoRestartOnCrash: Boolean($('stAutoRestart')?.checked),
-    autoStartOnBoot: Boolean($('stAutoStart')?.checked),
-    serverPort: portValue ? Number(portValue) : undefined,
-  };
-
-  if (owner) {
-    body.javaPath = $('stJavaOverridePath')?.value.trim() || '';
-    body.javaMode = Boolean($('stJavaOverride')?.checked) ? 'override' : 'managed';
-    body.javaOverridePath = $('stJavaOverride')?.checked
-      ? ($('stJavaOverridePath')?.value.trim() || '')
-      : '';
-    body.extraArgs = $('stArgs')?.value.trim() || '';
-  }
-
-  const button = $('btnSaveStartup');
-
-  if (button) {
-    button.disabled = true;
-    button.textContent = 'GUARDANDO...';
-  }
-
-  const data = await postJSON('/api/startup', body);
-
-  if (button) {
-    button.disabled = false;
-    button.textContent = '💾 GUARDAR';
-  }
-
-  if (!data.ok) {
-    toast(`❌ ${data.error}`, 'err');
-    return;
-  }
-
-  toast('✅ Configuración de arranque guardada', 'ok');
-  loadStartup();
-}
-
-/* NAVIGATION */
-
-function switchView(id) {
-  const editorOpen = Boolean(currentFile && $('filesEditorPanel')?.style.display !== 'none');
-  if (editorOpen && id !== 'files' && !closeFileEditor()) return;
-  document.querySelectorAll('.view').forEach(view => view.classList.remove('active'));
-  document.querySelectorAll('.sb-item').forEach(item => item.classList.remove('active'));
-
-  $(`view-${id}`)?.classList.add('active');
-
-  document
-    .querySelector(`.sb-item[data-view="${id}"]`)
-    ?.classList.add('active');
-
-  switch (id) {
-    case 'files':
-      populateFiles(currentDir);
-      break;
-
-    case 'versions':
-      loadVersionState().catch(error => toast(error.message, 'err'));
-      break;
-
-    case 'plugins':
-      loadInstalledPlugins();
-      break;
-
-    case 'databases':
-      loadDatabases();
-      break;
-
-    case 'users':
-      renderUsers();
-      break;
-
-    case 'backups':
-      loadBackups();
-      break;
-
-    case 'ports':
-      loadPorts();
-      break;
-
-    case 'startup':
-      loadStartup();
-      break;
-
-    case 'activitylog':
-      renderActivity();
-      break;
-
-    case 'settings':
-      renderSettings();
-      break;
-  }
-}
-
-/* ACTIVITY */
-
-function addActivity(message, level = 'info', icon = '📌') {
-  activities.push({
-    message,
-    level,
-    icon,
-    time: new Date().toLocaleTimeString('es-ES'),
-  });
-
-  if (activities.length > 200) {
-    activities.shift();
-  }
-
-  if ($('view-activitylog')?.classList.contains('active')) {
-    renderActivity();
-  }
-}
-
-function renderActivity() {
-  const element = $('activityList');
-
-  if (!element) return;
-
-  if (!activities.length) {
-    element.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-icon">📭</div>
-        <div class="empty-msg">No hay actividad todavía</div>
-      </div>
-    `;
-    return;
-  }
-
-  const counts = activities.reduce((acc, item) => {
-    const level = item.level || 'info';
-    acc[level] = (acc[level] || 0) + 1;
-    return acc;
-  }, {});
-
-  const toolbar = `
-    <div class="activity-toolbar">
-      <div class="activity-counter">
-        <span class="activity-counter-num">${activities.length}</span>
-        <span class="activity-counter-label">eventos</span>
-      </div>
-      <div class="activity-filters">
-        ${counts.info  ? `<span class="activity-filter info">${counts.info} info</span>` : ''}
-        ${counts.ok    ? `<span class="activity-filter ok">${counts.ok} ok</span>` : ''}
-        ${counts.warn  ? `<span class="activity-filter warn">${counts.warn} aviso</span>` : ''}
-        ${counts.error ? `<span class="activity-filter error">${counts.error} error</span>` : ''}
-      </div>
-    </div>
-  `;
-
-  const items = activities
-    .slice()
-    .reverse()
-    .map(item => {
-      const level = String(item.level || 'info').toLowerCase();
-      const safeLevel = ['info', 'ok', 'warn', 'error'].includes(level) ? level : 'info';
-      const label = { info: 'INFO', ok: 'OK', warn: 'AVISO', error: 'ERROR' }[safeLevel];
-
-      return `
-        <div class="activity-item ${safeLevel}">
-          <div class="activity-icon">${escHtml(item.icon || '📌')}</div>
-          <div class="activity-body">
-            <div class="activity-msg">${escHtml(item.message)}</div>
-            <div class="activity-time">${escHtml(item.time || '--:--:--')}</div>
-          </div>
-          <span class="activity-badge ${safeLevel}">${label}</span>
-        </div>
-      `;
-    })
-    .join('');
-
-  element.innerHTML = toolbar + `<div class="activity-feed">${items}</div>`;
-}
-
-/* USERS */
-const SHARE_PERMISSION_LABELS = {
-  read: '👁️ Solo lectura',
-  control: '🎮 Control',
-  admin: '🛡️ Administrador',
-};
-function sharePermissionLabel(permission) {
-  return SHARE_PERMISSION_LABELS[String(permission || '').toLowerCase()] || SHARE_PERMISSION_LABELS.read;
-}
-async function loadShareTokens() {
-  if (panelPermission !== 'admin') return;
-
-  const list = $('shareTokenList');
-  if (!list) return;
-
-  try {
-    const data = await cloudApi('/api/share-tokens');
-    const tokens = Array.isArray(data.tokens) ? data.tokens : [];
-
-    const control = tokens.filter(token => token.permission === 'control').length;
-    const read = tokens.filter(token => token.permission === 'read').length;
-    const admin = tokens.filter(token => token.permission === 'admin').length;
-
-    if ($('userStatTotal')) $('userStatTotal').textContent = tokens.length;
-    if ($('userStatControl')) $('userStatControl').textContent = control;
-    if ($('userStatRead')) $('userStatRead').textContent = read;
-    if ($('userStatAdmin')) $('userStatAdmin').textContent = admin;
-
-    list.innerHTML = tokens.length
-      ? tokens
-          .map(token => {
-            const expiry = token.expiresAt
-              ? new Date(token.expiresAt).toLocaleString('es-ES')
-              : 'Nunca';
-            return `
-            <div class="user-row">
-              <div class="user-avatar">👤</div>
-              <div class="user-row-main">
-                <strong>${escHtml(token.label || 'Usuario')}</strong>
-                <div class="user-row-meta">
-                  <select class="form-input user-permission-select ${escHtml(token.permission)}" data-edit-permission="${escHtml(token.id)}">
-                    <option value="read" ${token.permission === 'read' ? 'selected' : ''}>${SHARE_PERMISSION_LABELS.read}</option>
-                    <option value="control" ${token.permission === 'control' ? 'selected' : ''}>${SHARE_PERMISSION_LABELS.control}</option>
-                    <option value="admin" ${token.permission === 'admin' ? 'selected' : ''}>${SHARE_PERMISSION_LABELS.admin}</option>
-                  </select>
-                  <span>Caduca: ${escHtml(expiry)}</span>
-                </div>
-              </div>
-              <button class="small-btn user-revoke-btn" data-revoke-share="${escHtml(token.id)}">Revocar</button>
-            </div>
-          `;
-          })
-          .join('')
-      : '<div class="empty-state"><div class="empty-icon">👥</div><div class="empty-msg">No hay usuarios con acceso.</div></div>';
-
-    list.querySelectorAll('[data-revoke-share]').forEach(button => {
-      button.addEventListener('click', async () => {
-        button.disabled = true;
+      if (socket.data.kind === 'share') {
+        let share;
         try {
-          await cloudApi(
-            `/api/share-tokens/${encodeURIComponent(button.dataset.revokeShare)}`,
-            { method: 'DELETE' }
-          );
-          toast('Acceso revocado.', 'ok');
-          await loadShareTokens();
+          share = await findShareTokenById(socket.data.shareTokenId, agentId);
         } catch (error) {
-          toast(error.message, 'err');
-          button.disabled = false;
+          console.error('[share-tokens] rpc validation:', error.message);
+          return rejectRpc(503, 'No se pudo verificar el acceso compartido en Neon.');
         }
-      });
-    });
-    list.querySelectorAll('[data-edit-permission]').forEach(select => {
-      select.dataset.previousPermission = select.value;
-      select.addEventListener('change', async () => {
-        const previous = select.dataset.previousPermission;
-        select.disabled = true;
-        try {
-          await cloudApi(`/api/share-tokens/${encodeURIComponent(select.dataset.editPermission)}`, {
-            method: 'PATCH',
-            body: JSON.stringify({ permission: select.value }),
+
+        if (!isShareTokenActive(share)) {
+          socket.emit('share_revoked');
+          return socket.disconnect(true);
+        }
+
+        socket.data.permission = normalizeSharePermission(share.permission) || 'read';
+        if (!permissionAllows(socket.data.permission, requiredPermission(request?.method, request?.path))) {
+          return socket.emit('rpc_result', {
+            id: request?.id || null,
+            ok: false,
+            status: 403,
+            contentType: 'application/json',
+            bodyBase64: Buffer.from(JSON.stringify({
+              ok: false,
+              error: 'No tienes permisos para realizar esta acción.',
+            })).toString('base64'),
           });
-          select.dataset.previousPermission = select.value;
-          toast(`Permiso actualizado: ${sharePermissionLabel(select.value)}.`, 'ok');
-          await loadShareTokens();
-        } catch (error) {
-          select.value = previous;
-          select.disabled = false;
-          toast(error.message, 'err');
         }
-      });
+      }
+
+      const agentSocket = agentSockets.get(agentId);
+
+      if (!agentSocket?.connected) {
+        return socket.emit('rpc_result', {
+          id: request?.id || null,
+          ok: false,
+          status: 503,
+          contentType: 'application/json',
+          bodyBase64: Buffer.from(JSON.stringify({
+            ok: false,
+            error: 'MoonWolf Agent no está conectado.',
+          })).toString('base64'),
+        });
+      }
+
+      const id = request?.id;
+      if (!id) return;
+      if (socket.data.pendingRpc.size >= 100) {
+        return rejectRpc(429, 'Demasiadas solicitudes pendientes. Espera a que terminen algunas operaciones.');
+      }
+
+      const sanitized = {
+        id,
+        method: request.method,
+        path: request.path,
+        ctx: {
+          kind: socket.data.kind || 'owner',
+          permission: socket.data.permission || 'admin',
+        },
+      };
+
+      if (request.body !== undefined) {
+        sanitized.body = request.body;
+      }
+
+      socket.data.pendingRpc.add(id);
+      agentSocket.emit('rpc', sanitized);
     });
-  } catch (error) {
-    list.innerHTML = `<div class="empty-state">${escHtml(error.message)}</div>`;
-  }
-}
 
-function renderUsers() {
-  const element = $('userList');
-  if (!element) return;
+    socket.on('direct_signal', async msg => {
+      if (!socketEventAllowed(socket, 'direct_signal', 60)) return;
 
-  const canManageUsers = isOwnerSession() && panelPermission === 'admin';
+      const agentSocket = agentSockets.get(agentId);
 
-  if (!canManageUsers) {
-    element.innerHTML = `
-      <div class="user-access-grid">
-        <div class="panel user-access-card">
-          <div class="panel-header">
-            <div class="panel-title"><span>👤</span> TU ACCESO</div>
-          </div>
-          <div class="user-access-body">
-            <div class="user-profile-icon">👤</div>
-            <div>
-              <div class="user-profile-title">Acceso compartido</div>
-              <div class="user-profile-sub">Este panel te ha sido compartido por el propietario.</div>
-            </div>
-          </div>
-          <div class="user-permission-row">
-            <span>Permiso</span>
-            <strong>${escHtml(sharePermissionLabel(panelPermission))}</strong>
-          </div>
-          <div class="user-info-note">
-            Tu acceso está limitado a los permisos asignados por el propietario.
-            Las operaciones que permiten ejecutar código en el host (instalar plugins,
-            cambiar flags JVM, restaurar backups) están reservadas al propietario.
-          </div>
-        </div>
-      </div>
-    `;
+      if (!agentSocket?.connected) {
+        return socket.emit('direct_signal', { type: 'unavailable' });
+      }
+
+      if (socket.data.kind === 'share') {
+        let share;
+        try {
+          share = await findShareTokenById(socket.data.shareTokenId, agentId);
+        } catch (error) {
+          console.error('[share-tokens] direct_signal validation:', error.message);
+          socket.emit('share_revoked');
+          return socket.disconnect(true);
+        }
+
+        if (!isShareTokenActive(share)) {
+          socket.emit('share_revoked');
+          return socket.disconnect(true);
+        }
+
+        socket.data.permission = normalizeSharePermission(share.permission) || 'read';
+      }
+
+      if (msg?.type === 'offer') {
+        agentSocket.emit('direct_signal', {
+          peerId: socket.id,
+          type: 'offer',
+          sdp: String(msg.sdp || '').slice(0, 32768),
+          iceServers: ICE_SERVERS,
+          ctx: {
+            kind: socket.data.kind || 'owner',
+            permission: socket.data.permission || 'admin',
+            expiresAt: socket.data.sessionExp,
+          },
+        });
+      } else if (msg?.type === 'candidate') {
+        agentSocket.emit('direct_signal', {
+          peerId: socket.id,
+          type: 'candidate',
+          candidate: String(msg.candidate || '').slice(0, 2048),
+          sdpMid: String(msg.sdpMid ?? '0').slice(0, 64),
+        });
+      }
+    });
+
+    socket.on('disconnect', () => {
+      releaseSocketConnection(socket);
+      clearTimeout(sessionTimer);
+      agentSockets.get(agentId)?.emit('direct_close', { peerId: socket.id });
+      panelSockets.delete(socket);
+      socket.data.pendingRpc?.clear();
+      console.log('🖥️ Panel desconectado:', socket.id);
+    });
+
     return;
   }
 
-  element.innerHTML = `
-    <div class="user-stats-grid">
-      <div class="user-stat-card">
-        <span class="user-stat-icon">👥</span>
-        <div><span class="user-stat-label">Accesos activos</span><strong id="userStatTotal">—</strong></div>
-      </div>
-      <div class="user-stat-card">
-        <span class="user-stat-icon">👁️</span>
-        <div><span class="user-stat-label">Solo lectura</span><strong id="userStatRead">—</strong></div>
-      </div>
-      <div class="user-stat-card">
-        <span class="user-stat-icon">🎮</span>
-        <div><span class="user-stat-label">Con control</span><strong id="userStatControl">—</strong></div>
-      </div>
-      <div class="user-stat-card">
-        <span class="user-stat-icon">🛡️</span>
-        <div><span class="user-stat-label">Administradores</span><strong id="userStatAdmin">—</strong></div>
-      </div>
-    </div>
+  socket.on('disconnect', () => {
+    releaseSocketConnection(socket);
+    console.log('Cliente desconectado:', socket.id);
+  });
+});
 
-    <div class="panel">
-      <div class="panel-header">
-        <div>
-          <div class="panel-title"><span>➕</span> NUEVO USUARIO</div>
-          <div class="user-panel-subtitle">Crea un acceso independiente.</div>
-        </div>
-      </div>
-      <div class="user-create-form">
-        <input id="shareLabel" class="form-input" placeholder="Nombre (ej. Paco)" maxlength="60">
-        <select id="sharePermission" class="form-input">
-          <option value="read">👁️ Solo lectura</option>
-          <option value="control">🎮 Control</option>
-          <option value="admin">🛡️ Administrador</option>
-        </select>
-        <select id="shareExpiry" class="form-input">
-          <option value="never">Sin caducidad</option>
-          <option value="1h">1 hora</option>
-          <option value="1d">1 día</option>
-          <option value="7d">7 días</option>
-          <option value="30d">30 días</option>
-        </select>
-        <button class="small-btn user-create-btn" id="btnCreateShare">Crear acceso</button>
-      </div>
-    </div>
+/* ══════════════════════════════════════════════
+    FILES
+    ══════════════════════════════════════════════ */
+app.get('/api/files', async (req, res) => {
+  const fullPath = safePath(req.query.dir || '');
 
-    <div id="shareCreatedBox" class="panel user-token-panel" style="display:none">
-      <div class="user-token-title">🔐 ACCESO CREADO</div>
-      <div class="user-token-sub">Este token se muestra una sola vez. Entrégaselo a la persona que va a usar el panel.</div>
-      <div class="user-token-row">
-        <code id="shareCreatedToken"></code>
-        <button class="small-btn" id="btnCopyShareToken">Copiar</button>
-      </div>
-    </div>
+  if (!fullPath) {
+    return fail(res, 'Ruta no permitida');
+  }
 
-    <div class="panel">
-      <div class="panel-header">
-        <div>
-          <div class="panel-title"><span>👥</span> USUARIOS CON ACCESO</div>
-          <div class="user-panel-subtitle">Puedes revocar cualquier acceso inmediatamente.</div>
-        </div>
-        <button class="small-btn" id="btnRefreshUsers">↺ Actualizar</button>
-      </div>
-      <div id="shareTokenList"></div>
-    </div>
-  `;
+  try {
+    const entries = await fs.readdir(fullPath, { withFileTypes: true });
+    const items = await Promise.all(
+      entries
+        .filter(entry => !entry.name.startsWith('.'))
+        .map(async entry => {
+          const stats = await fs.stat(path.join(fullPath, entry.name));
 
-  bindShareSettings();
-  $('btnRefreshUsers')?.addEventListener('click', loadShareTokens);
+          return {
+            name: entry.name,
+            type: entry.isDirectory() ? 'dir' : entry.name.endsWith('.jar') ? 'jar' : entry.name.endsWith('.log') ? 'log' : 'file',
+            size: stats.isDirectory() ? '-' : (stats.size / 1024 / 1024).toFixed(2) + ' MB',
+            date: stats.mtime.toLocaleString('es-ES'),
+          };
+        })
+    );
+
+    ok(res, { items });
+  } catch {
+    fail(res, 'No se puede acceder a la carpeta');
+  }
+});
+
+app.get('/api/files/content', async (req, res) => {
+  const full = safePath(req.query.path || '');
+
+  if (!full) {
+    return fail(res, 'Ruta no permitida');
+  }
+
+  try {
+    ok(res, { content: await fs.readFile(full, 'utf-8'), filename: path.basename(full) });
+  } catch {
+    fail(res, 'No se puede leer el archivo');
+  }
+});
+
+app.post('/api/files/content', async (req, res) => {
+  const { path: rel, content } = req.body;
+
+  if (!rel || content === undefined) {
+    return fail(res, 'Parámetros requeridos');
+  }
+
+  const full = safePath(rel);
+  if (!full) {
+    return fail(res, 'Ruta no permitida');
+  }
+
+  try {
+    await atomicWriteFile(full, content, 'utf-8');
+    ok(res);
+  } catch {
+    fail(res, 'No se puede guardar');
+  }
+});
+
+/* ═════════════
+    STARTUP
+    ════════════ */
+app.get('/api/startup', async (_req, res) => {
+  try {
+    const entries = await fs.readdir(BASE_DIR, { withFileTypes: true });
+    const jars = entries
+      .filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.jar'))
+      .map(entry => entry.name)
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+    const config = loadStartupConfig();
+    const detectedVersion =
+      config.minecraftVersion ||
+      detectMinecraftVersionFromJarName(config.jar) ||
+      detectMinecraftVersionFromJarName(jars.find(jar => jar === config.jar));
+
+    const runtime = getJavaRuntimeInfo(detectedVersion);
+
+    ok(res, {
+      config: { ...config, minecraftVersion: detectedVersion || '' },
+      jars,
+      serverPort: readServerPort(),
+      javaRuntime: runtime,
+    });
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
+
+app.post('/api/startup', async (req, res) => {
+  const {
+    jar,
+    javaPath,
+    javaMode,
+    javaOverridePath,
+    minecraftVersion,
+    minMemoryMb,
+    maxMemoryMb,
+    extraArgs,
+    programArgs,
+    stopCommand,
+    autoRestartOnCrash,
+    autoStartOnBoot,
+    serverPort,
+  } = req.body || {};
+
+  const session = await getSessionFromRequest(req);
+  if (!isOwnerSession(session)) {
+    const current = loadStartupConfig();
+    const attempted = {
+      javaMode:         String(javaMode || ''),
+      javaOverridePath: String(javaOverridePath || ''),
+      javaPath:         String(javaPath || ''),
+      extraArgs:        String(extraArgs || ''),
+      programArgs:      String(programArgs || ''),
+    };
+    for (const field of OWNER_ONLY_STARTUP_FIELDS) {
+      const nextValue = attempted[field] ?? '';
+      const prevValue = String(current[field] ?? '');
+      if (nextValue !== prevValue) {
+        return res.status(403).json({
+          ok: false,
+          error: `Solo el propietario puede modificar "${field}". Los accesos compartidos no pueden cambiar cómo se lanza la JVM.`,
+        });
+      }
+    }
+  }
+
+  let safeExtraArgs;
+  try {
+    safeExtraArgs = validateExtraArgs(extraArgs);
+  } catch (error) {
+    return fail(res, error.message);
+  }
+
+  let safeProgramArgs;
+  try {
+    safeProgramArgs = programArgs === undefined
+      ? loadStartupConfig().programArgs
+      : validateProgramArgs(programArgs);
+  } catch (error) {
+    return fail(res, error.message);
+  }
+
+  const safeJar = safeJarName(jar);
+  if (!safeJar) {
+    return fail(res, 'Nombre de archivo .jar no válido');
+  }
+
+  if (!fsSync.existsSync(path.join(BASE_DIR, safeJar))) {
+    return fail(res, `No se encontró "${safeJar}" en la carpeta del servidor`);
+  }
+
+  const min = Number(minMemoryMb);
+  const max = Number(maxMemoryMb);
+
+  if (!Number.isFinite(min) || min < 256 || !Number.isFinite(max) || max < min) {
+    return fail(res, 'Valores de memoria no válidos');
+  }
+
+  let portNum = null;
+
+  if (serverPort !== undefined && serverPort !== null && String(serverPort).trim() !== '') {
+    portNum = Number(serverPort);
+
+    if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+      return fail(res, 'Puerto del servidor no válido (1-65535)');
+    }
+  }
+
+  try {
+    const mode = String(javaMode || '').trim() === 'override' ? 'override' : 'managed';
+    const configuredJava = mode === 'override'
+      ? await validateJavaOverride(javaOverridePath || javaPath)
+      : 'java';
+    const config = saveStartupConfig({
+      jar: safeJar,
+      javaPath: configuredJava,
+      javaMode: mode,
+      javaOverridePath: mode === 'override' ? configuredJava : '',
+      minecraftVersion: String(minecraftVersion || '').trim(),
+      minMemoryMb: Math.round(min),
+      maxMemoryMb: Math.round(max),
+      extraArgs: safeExtraArgs,
+      programArgs: safeProgramArgs,
+      stopCommand: String(stopCommand || '').trim() || 'stop',
+      autoRestartOnCrash: Boolean(autoRestartOnCrash),
+      autoStartOnBoot: Boolean(autoStartOnBoot),
+    });
+
+    if (portNum !== null) {
+      writeServerPort(portNum);
+    }
+
+    ok(res, { config, serverPort: readServerPort() });
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
+
+/* ═════════════════════════════════════
+    DATABASE (MySQL / MariaDB)
+    ════════════════════════════════════ */
+let mysql = null;
+
+function getMysql() {
+  return mysql || (mysql = require('mysql2/promise'));
 }
 
-function bindShareSettings() {
-  if (panelPermission !== 'admin') return;
+const MYSQL_HOST = process.env.MOONWOLF_MYSQL_HOST || 'localhost';
+const MYSQL_PORT = Number(process.env.MOONWOLF_MYSQL_PORT || 3306);
+const MYSQL_ROOT_USER = process.env.MOONWOLF_MYSQL_USER || 'root';
+const MYSQL_ROOT_PASSWORD = process.env.MOONWOLF_MYSQL_PASSWORD || '';
 
-  $('btnCreateShare')?.addEventListener('click', async () => {
-    const button = $('btnCreateShare');
-    button.disabled = true;
+const DATABASES_STORE_PATH = path.join(STARTUP_DIR, 'databases.json');
+const MYSQL_SYSTEM_DBS = new Set(['information_schema', 'mysql', 'performance_schema', 'sys']);
+const DB_NAME_RE = /^[A-Za-z0-9_]{1,48}$/;
+
+let mysqlPool = null;
+
+function getMysqlPool() {
+  if (mysqlPool) return mysqlPool;
+
+  mysqlPool = getMysql().createPool({
+    host: MYSQL_HOST,
+    port: MYSQL_PORT,
+    user: MYSQL_ROOT_USER,
+    password: MYSQL_ROOT_PASSWORD,
+    waitForConnections: true,
+    connectionLimit: 5,
+  });
+
+  return mysqlPool;
+}
+
+function loadDatabasesStore() {
+  const data = readJsonConfigWithRecovery(DATABASES_STORE_PATH, []);
+  return Array.isArray(data) ? data : [];
+}
+
+function saveDatabasesStore(list) {
+  if (!fsSync.existsSync(STARTUP_DIR)) {
+    fsSync.mkdirSync(STARTUP_DIR, { recursive: true });
+  }
+
+  writeJsonConfig(DATABASES_STORE_PATH, list);
+}
+
+function generateDbPassword() {
+  return crypto.randomBytes(18).toString('base64').replace(/[+/=]/g, '').slice(0, 20);
+}
+
+app.get('/api/databases/status', async (_req, res) => {
+  try {
+    const pool = getMysqlPool();
+    await pool.query('SELECT 1');
+    ok(res, { connected: true, host: MYSQL_HOST, port: MYSQL_PORT });
+  } catch (e) {
+    ok(res, { connected: false, error: e.message, host: MYSQL_HOST, port: MYSQL_PORT });
+  }
+});
+
+app.get('/api/databases', async (_req, res) => {
+  try {
+    const pool = getMysqlPool();
+    const [rows] = await pool.query(
+      `SELECT
+         s.SCHEMA_NAME AS name,
+         COALESCE(SUM(t.DATA_LENGTH + t.INDEX_LENGTH), 0) AS sizeBytes,
+         COUNT(t.TABLE_NAME) AS tableCount
+       FROM information_schema.SCHEMATA s
+       LEFT JOIN information_schema.TABLES t ON t.TABLE_SCHEMA = s.SCHEMA_NAME
+       GROUP BY s.SCHEMA_NAME
+       ORDER BY s.SCHEMA_NAME`
+    );
+
+    const store = loadDatabasesStore();
+    const databases = rows
+      .filter(row => !MYSQL_SYSTEM_DBS.has(row.name))
+      .map(row => {
+        const meta = store.find(item => item.database === row.name);
+
+        return {
+          name: row.name,
+          sizeMb: (Number(row.sizeBytes) / 1024 / 1024).toFixed(2),
+          tables: Number(row.tableCount),
+          user: meta?.user || null,
+          createdAt: meta?.createdAt || null,
+        };
+      });
+
+    ok(res, { databases });
+  } catch (e) {
+    fail(res, `No se pudo conectar a MySQL: ${e.message}`);
+  }
+});
+
+app.post('/api/databases', async (req, res) => {
+  const name = String(req.body?.name || '').trim();
+  const createUser = req.body?.createUser !== false;
+
+  if (!DB_NAME_RE.test(name)) {
+    return fail(res, 'Nombre no válido. Usa solo letras, números y guion bajo (máx. 48 caracteres).');
+  }
+
+  if (MYSQL_SYSTEM_DBS.has(name.toLowerCase())) {
+    return fail(res, 'Ese nombre está reservado para MySQL.');
+  }
+
+  try {
+    const pool = getMysqlPool();
+    const [existing] = await pool.query('SHOW DATABASES LIKE ?', [name]);
+
+    if (existing.length) {
+      return fail(res, 'Ya existe una base de datos con ese nombre.');
+    }
+
+    await pool.query(`CREATE DATABASE \`${name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
+
+    let credentials = null;
+
+    if (createUser) {
+      const username = name.slice(0, 32);
+      const password = generateDbPassword();
+
+      await pool.query('CREATE USER IF NOT EXISTS ?@\'%\' IDENTIFIED BY ?', [username, password]);
+      await pool.query("ALTER USER ?@'%' IDENTIFIED BY ?", [username, password]);
+      await pool.query(`GRANT ALL PRIVILEGES ON \`${name}\`.* TO ?@'%'`, [username]);
+      await pool.query('FLUSH PRIVILEGES');
+
+      credentials = { user: username, password, host: MYSQL_HOST, port: MYSQL_PORT, database: name };
+
+      const store = loadDatabasesStore();
+      store.push({ database: name, user: username, createdAt: Date.now() });
+      saveDatabasesStore(store);
+    }
+
+    ok(res, { name, credentials });
+  } catch (e) {
+    fail(res, `No se pudo crear la base de datos: ${e.message}`);
+  }
+});
+
+app.post('/api/databases/:name/reset-password', async (req, res) => {
+  const name = String(req.params.name || '').trim();
+
+  if (!DB_NAME_RE.test(name)) {
+    return fail(res, 'Nombre no válido.');
+  }
+
+  const store = loadDatabasesStore();
+  const record = store.find(item => item.database === name);
+
+  if (!record?.user) {
+    return fail(res, 'Esta base de datos no tiene un usuario asociado creado por el panel.');
+  }
+
+  try {
+    const pool = getMysqlPool();
+    const password = generateDbPassword();
+
+    await pool.query('ALTER USER ?@\'%\' IDENTIFIED BY ?', [record.user, password]);
+    await pool.query('FLUSH PRIVILEGES');
+
+    ok(res, { credentials: { user: record.user, password, host: MYSQL_HOST, port: MYSQL_PORT, database: name } });
+  } catch (e) {
+    fail(res, `No se pudo restablecer la contraseña: ${e.message}`);
+  }
+});
+
+app.delete('/api/databases/:name', async (req, res) => {
+  const name = String(req.params.name || '').trim();
+
+  if (!DB_NAME_RE.test(name) || MYSQL_SYSTEM_DBS.has(name.toLowerCase())) {
+    return fail(res, 'Nombre no válido.');
+  }
+
+  try {
+    const pool = getMysqlPool();
+    await pool.query(`DROP DATABASE \`${name}\``);
+
+    const store = loadDatabasesStore();
+    const record = store.find(item => item.database === name);
+
+    if (record?.user) {
+      try {
+        await pool.query('DROP USER IF EXISTS ?@\'%\'', [record.user]);
+        await pool.query('FLUSH PRIVILEGES');
+      } catch {}
+    }
+
+    saveDatabasesStore(store.filter(item => item.database !== name));
+
+    ok(res);
+  } catch (e) {
+    fail(res, `No se pudo eliminar la base de datos: ${e.message}`);
+  }
+});
+
+/* ══════════════════════════════════════════════
+    MINECRAFT PROCESS
+    ══════════════════════════════════════════════ */
+const MC_STOP_TIMEOUT_MS = Math.max(
+  5_000,
+  Number(process.env.MOONWOLF_STOP_TIMEOUT_MS || 30_000)
+);
+
+const DONE_RE = /Done \([\d.,]+s\)!|Listening on /;
+let mcProcess = null;
+let launchPromise = null;
+let startTime = null;
+let statsTimer = null;
+let restarting = false;
+let stopRequested = false;
+let crashCount = 0;
+let lastCrashTime = 0;
+let statsBusy = false;
+let previousCpuSnapshot = null;
+
+let lastStatus = 'offline';
+
+function getCpuSnapshot() {
+  return os.cpus().reduce((snapshot, cpu) => {
+    const times = cpu.times || {};
+    const idle = Number(times.idle) || 0;
+    const total = Object.values(times).reduce((sum, value) => sum + (Number(value) || 0), 0);
+
+    snapshot.idle += idle;
+    snapshot.total += total;
+    return snapshot;
+  }, { idle: 0, total: 0 });
+}
+
+function getCpuUsage() {
+  const current = getCpuSnapshot();
+
+  if (!previousCpuSnapshot) {
+    previousCpuSnapshot = current;
+    return 0;
+  }
+
+  const idleDelta = current.idle - previousCpuSnapshot.idle;
+  const totalDelta = current.total - previousCpuSnapshot.total;
+  previousCpuSnapshot = current;
+
+  if (totalDelta <= 0) return 0;
+
+  return Math.round(Math.max(0, Math.min(100, (1 - idleDelta / totalDelta) * 100)) * 10) / 10;
+}
+
+function broadcastStatus(s) {
+  lastStatus = s;
+  io.to(LOCAL_AGENT_ROOM).emit('status', s);
+}
+
+function broadcastLog(line, type = 'info') {
+  pendingLogBatch.push({
+    line,
+    time: new Date().toLocaleTimeString('es-ES'),
+    type,
+  });
+
+  if (logBatchTimer) return;
+  logBatchTimer = setTimeout(() => {
+    const batch = pendingLogBatch;
+    pendingLogBatch = [];
+    logBatchTimer = null;
+    if (batch.length === 1) io.to(LOCAL_AGENT_ROOM).emit('log', batch[0]);
+    else if (batch.length) io.to(LOCAL_AGENT_ROOM).emit('log_batch', batch);
+  }, LOG_BATCH_DELAY_MS);
+}
+
+function startStatsTimer() {
+  if (statsTimer) {
+    clearInterval(statsTimer);
+  }
+
+  previousCpuSnapshot = getCpuSnapshot();
+
+  statsTimer = setInterval(async () => {
+    if (statsBusy) return;
+    if (!mcProcess || mcProcess.exitCode !== null) return;
+
+    statsBusy = true;
 
     try {
-      const data = await cloudApi('/api/share-tokens', {
-        method: 'POST',
-        body: JSON.stringify({
-          label: $('shareLabel')?.value || '',
-          permission: $('sharePermission')?.value || 'read',
-          expires: $('shareExpiry')?.value || 'never',
-        }),
-      });
+      const uptimeSec = Math.floor((Date.now() - startTime) / 1000);
+      const mem = process.memoryUsage();
+      const rcon = await queryRconStats();
+      const cpuUsage = getCpuUsage();
 
-      const token = data.token;
-      let copied = false;
+      io.to(LOCAL_AGENT_ROOM).emit('stats', {
+        players: rcon?.players ?? 0,
+        maxPlayers: rcon?.maxPlayers ?? 0,
+        tps: rcon?.tps ?? 0,
+        rconAvailable: Boolean(rcon),
+        uptime: `${Math.floor(uptimeSec / 3600)}h ${Math.floor((uptimeSec % 3600) / 60)}m`,
+        processMemory: Math.round(mem.rss / 1024 / 1024),
+        sysMemory: {
+          used: (mem.rss / 1024 / 1024 / 1024).toFixed(2),
+          total: '16.00',
+        },
+        cpuUsage,
+      });
+    } finally {
+      statsBusy = false;
+    }
+  }, 5000);
+}
+
+async function launchServerInternal() {
+  const cfg = loadStartupConfig();
+  const jarPath = path.join(BASE_DIR, cfg.jar);
+
+  if (!fsSync.existsSync(jarPath)) {
+    broadcastLog(`❌ No se encontró "${cfg.jar}" en: ${BASE_DIR}. Configúralo en Startup.`, 'error');
+    broadcastStatus('offline');
+    return false;
+  }
+
+  const minecraftVersion =
+    String(cfg.minecraftVersion || '').trim() ||
+    detectMinecraftVersionFromJarName(cfg.jar);
+
+  let javaBin;
+
+  try {
+    if (cfg.javaMode === 'override' && String(cfg.javaOverridePath || '').trim()) {
+      javaBin = await validateJavaOverride(cfg.javaOverridePath);
+    } else {
+      javaBin = await resolveJavaForServer(minecraftVersion);
+    }
+  } catch (error) {
+    broadcastLog(`❌ No se pudo preparar Java: ${error.message}`, 'error');
+    broadcastStatus('offline');
+    return false;
+  }
+
+  /* ★ FORZAMOS LOS COLORES ANSI ★
+     stdio:'pipe' hace que JAnsi detecte que stdout no es una TTY
+     y desactive los colores automáticamente. Con -Djansi.force=true
+     y -Djansi.passthrough=true forzamos que el server los emita igual,
+     para que el panel pueda renderizarlos como el cliente de Minecraft. */
+  const args = [
+    `-Xms${cfg.minMemoryMb}M`,
+    `-Xmx${cfg.maxMemoryMb}M`,
+    '-Djava.awt.headless=true',
+    '-Djansi.force=true',
+    '-Djansi.passthrough=true',
+    ...parseStoredArgs(cfg.extraArgs, 'extraArgs'),
+    '-jar', cfg.jar,
+    ...parseStoredArgs(cfg.programArgs, 'programArgs'),
+  ];
+
+  stopRequested = false;
+
+  broadcastLog(`▶ Lanzando: ${javaBin}`, 'system');
+
+  mcProcess = spawn(javaBin, args, {
+    cwd: BASE_DIR,
+    windowsHide: true,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  startTime = Date.now();
+
+  mcProcess.stdin.on('error', () => {});
+
+  mcProcess.stdout.on('data', data => {
+    String(data).split(/\r?\n/).filter(Boolean).forEach(line => {
+      const type = /WARN/i.test(line) ? 'warn' : /ERROR/i.test(line) ? 'error' : DONE_RE.test(line) ? 'success' : 'info';
+      broadcastLog(line, type);
+
+      if (DONE_RE.test(line)) {
+        broadcastStatus('online');
+        startStatsTimer();
+      }
+    });
+  });
+
+  mcProcess.stderr.on('data', data => {
+    String(data).split(/\r?\n/).filter(Boolean).forEach(line => broadcastLog(line, 'warn'));
+  });
+
+  mcProcess.on('error', err => {
+    broadcastLog(`❌ Error al lanzar "${javaBin}": ` + err.message, 'error');
+    broadcastStatus('offline');
+    mcProcess = null;
+  });
+
+  mcProcess.on('close', code => {
+    broadcastLog(`⏹ Servidor detenido (código ${code})`, 'system');
+    rconClient.close();
+
+    if (statsTimer) {
+      clearInterval(statsTimer);
+      statsTimer = null;
+    }
+
+    mcProcess = null;
+
+    if (restarting) {
+      restarting = false;
+      broadcastLog('↺ Relanzando servidor...', 'system');
+      setTimeout(() => {
+        broadcastStatus('starting');
+        launchServer().catch(error => broadcastLog(`❌ Error relanzando servidor: ${error.message}`, 'error'));
+      }, 2000);
+      return;
+    }
+
+    const liveCfg = loadStartupConfig();
+
+    if (!stopRequested && liveCfg.autoRestartOnCrash) {
+      const now = Date.now();
+
+      if (now - lastCrashTime < 60_000) {
+        crashCount++;
+      } else {
+        crashCount = 1;
+      }
+
+      lastCrashTime = now;
+
+      if (crashCount > 3) {
+        broadcastLog('❌ El servidor se ha caído varias veces en poco tiempo. Reinicio automático desactivado temporalmente.', 'error');
+        broadcastStatus('offline');
+      } else {
+        broadcastLog('⚠️ El servidor se cerró inesperadamente. Reiniciando automáticamente en 5s...', 'warn');
+        broadcastStatus('starting');
+        setTimeout(() => launchServer().catch(error => broadcastLog(`❌ Error en reinicio automático: ${error.message}`, 'error')), 5000);
+      }
+
+      return;
+    }
+
+    broadcastStatus('offline');
+  });
+
+  return true;
+}
+
+function launchServer() {
+  if (launchPromise) return launchPromise;
+
+  launchPromise = launchServerInternal().finally(() => {
+    launchPromise = null;
+  });
+
+  return launchPromise;
+}
+
+app.post('/api/start', (_req, res) => {
+  if (launchPromise || (mcProcess && mcProcess.exitCode === null)) {
+    return fail(res, 'El servidor ya está en marcha');
+  }
+
+  broadcastStatus('starting');
+  broadcastLog('🌙 Arrancando servidor...', 'system');
+
+  launchServer().catch(error => {
+    broadcastLog(`❌ Error al arrancar: ${error.message}`, 'error');
+  });
+
+  ok(res);
+});
+
+app.post('/api/stop', (_req, res) => {
+  if (!mcProcess || mcProcess.exitCode !== null) {
+    return fail(res, 'El servidor no está corriendo');
+  }
+  if (stopRequested) {
+    return fail(res, 'El servidor ya se está deteniendo');
+  }
+
+  stopRequested = true;
+  broadcastStatus('stopping');
+  broadcastLog('⏹ Enviando comando de parada...', 'system');
+
+  const proc = mcProcess;
+  const killTimer = setTimeout(() => {
+    if (proc.exitCode === null) {
+      broadcastLog(
+        `⚠️ El servidor no se detuvo en ${Math.round(MC_STOP_TIMEOUT_MS / 1000)}s. Forzando cierre del proceso.`,
+        'warn'
+      );
+      try { proc.kill('SIGKILL'); } catch {}
+    }
+  }, MC_STOP_TIMEOUT_MS);
+
+  proc.once('close', () => clearTimeout(killTimer));
+
+  try {
+    proc.stdin.write(`${loadStartupConfig().stopCommand || 'stop'}\n`);
+  } catch (error) {
+    broadcastLog(`⚠️ No se pudo enviar el comando por stdin (${error.message}). Forzando cierre...`, 'warn');
+    try { proc.kill(); } catch {}
+  }
+
+  ok(res);
+});
+
+app.post('/api/restart', (_req, res) => {
+  if (!mcProcess || mcProcess.exitCode !== null) {
+    return fail(res, 'El servidor no está corriendo');
+  }
+  if (stopRequested) {
+    return fail(res, 'El servidor ya se está deteniendo o reiniciando');
+  }
+
+  stopRequested = true;
+  restarting = true;
+  broadcastStatus('restarting');
+  broadcastLog('↺ Reiniciando servidor...', 'system');
+
+  const proc = mcProcess;
+  const killTimer = setTimeout(() => {
+    if (proc.exitCode === null) {
+      broadcastLog(
+        `⚠️ El servidor no se detuvo en ${Math.round(MC_STOP_TIMEOUT_MS / 1000)}s. Forzando cierre para reiniciar.`,
+        'warn'
+      );
+      try { proc.kill('SIGKILL'); } catch {}
+    }
+  }, MC_STOP_TIMEOUT_MS);
+
+  proc.once('close', () => clearTimeout(killTimer));
+
+  try {
+    proc.stdin.write(`${loadStartupConfig().stopCommand || 'stop'}\n`);
+  } catch (error) {
+    broadcastLog(`⚠️ No se pudo enviar el comando por stdin (${error.message}). Forzando cierre...`, 'warn');
+    try { proc.kill(); } catch {}
+  }
+
+  ok(res);
+});
+
+app.post('/api/command', (req, res) => {
+  if (!req.body?.cmd) {
+    return fail(res, 'Comando vacío');
+  }
+
+  if (!mcProcess || mcProcess.exitCode !== null) {
+    return fail(res, 'El servidor no está corriendo');
+  }
+
+  mcProcess.stdin.write(req.body.cmd + '\n');
+  broadcastLog('/ ' + req.body.cmd, 'cmd');
+  ok(res);
+});
+
+/* ══════════════════════════════════════════════
+    PLUGINS
+    ══════════════════════════════════════════════ */
+app.get('/api/plugins/search', async (req, res) => {
+  const q = (req.query.q || '').trim();
+  const source = req.query.source || 'all';
+
+  if (!q) {
+    return fail(res, 'Query vacía');
+  }
+
+  const results = [];
+  const errors = [];
+
+  if (source === 'all' || source === 'modrinth') {
+    try {
+      const { default: fetch } = await import('node-fetch');
+      const r = await fetch(`https://api.modrinth.com/v2/search?query=${encodeURIComponent(q)}&limit=10`);
+      const d = await r.json();
+
+      results.push(...d.hits.map(p => ({
+        id: p.project_id,
+        name: p.title,
+        description: p.description,
+        icon: p.icon_url,
+        downloads: p.downloads,
+        source: 'modrinth',
+        gameVersions: p.game_versions || [],
+        categories: p.categories || [],
+      })));
+    } catch {
+      errors.push('Modrinth no disponible');
+    }
+  }
+
+  if (source === 'all' || source === 'spigot') {
+    try {
+      const list = await apiFetch(`https://api.spiget.org/v2/search/resources/${encodeURIComponent(q)}?size=10&field=name`);
+      (Array.isArray(list) ? list : []).forEach(p => {
+        results.push({
+          id: String(p.id),
+          name: p.name,
+          description: p.tag || 'Plugin desde SpigotMC.',
+          icon: `https://api.spiget.org/v2/resources/${p.id}/icon`,
+          downloads: p.downloads || 0,
+          source: 'spigot',
+          external: !!p.external,
+          premium: !!p.premium,
+          gameVersions: [],
+          categories: [],
+        });
+      });
+    } catch {
+      errors.push('SpigotMC (Spiget) no disponible');
+    }
+  }
+
+  if (source === 'all' || source === 'hangar') {
+    try {
+      const d = await apiFetch(`https://hangar.papermc.io/api/v1/projects?limit=10&offset=0&q=${encodeURIComponent(q)}&sort=-stars`);
+      (d.result || []).forEach(p => {
+        results.push({
+          id: `${p.namespace.owner}/${p.namespace.slug}`,
+          name: p.name,
+          description: p.description || '',
+          icon: p.avatarUrl,
+          downloads: p.stats?.downloads || 0,
+          source: 'hangar',
+          gameVersions: [],
+          categories: p.category ? [p.category] : [],
+        });
+      });
+    } catch {
+      errors.push('Hangar no disponible');
+    }
+  }
+
+  ok(res, { results, errors });
+});
+
+app.get('/api/plugins/versions', async (req, res) => {
+  const { id, source } = req.query;
+
+  if (!id || !source) {
+    return fail(res, 'Parámetros requeridos');
+  }
+
+  try {
+    if (source === 'modrinth') {
+      const { default: fetch } = await import('node-fetch');
+      const r = await fetch(`https://api.modrinth.com/v2/project/${id}/version`);
+      const versions = await r.json();
+
+      return ok(res, { versions: versions.map(v => ({ versionId: v.id, versionNumber: v.version_number, name: v.name, downloads: v.downloads, published: v.date_published, gameVersions: v.game_versions, loaders: v.loaders, changelog: v.changelog, files: v.files })) });
+    }
+
+    if (source === 'spigot') {
+      const resource = await apiFetch(`https://api.spiget.org/v2/resources/${encodeURIComponent(id)}`);
+      const canDownload = !resource.premium && !resource.external;
+      const resourcePage = `https://www.spigotmc.org/resources/${encodeURIComponent(id)}/`;
+      const rawVersions = await apiFetch(`https://api.spiget.org/v2/resources/${encodeURIComponent(id)}/versions?size=20&sort=-releaseDate`);
+      const safeName = (resource.name || 'plugin').replace(/[^a-zA-Z0-9._-]/g, '_');
+      let updates = [];
+
       try {
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(token);
-          copied = true;
-        }
+        updates = await apiFetch(`https://api.spiget.org/v2/resources/${encodeURIComponent(id)}/updates?size=20&sort=-date`);
+        if (!Array.isArray(updates)) updates = [];
       } catch {}
 
-      $('shareCreatedToken').textContent = token;
-      $('shareCreatedBox').style.display = '';
-      $('shareLabel').value = '';
-      toast(
-        copied
-          ? 'Token creado y copiado al portapapeles.'
-          : 'Token creado. Cópialo antes de cerrar esta pantalla.',
-        'ok'
-      );
-      await loadShareTokens();
-    } catch (error) {
-      toast(error.message, 'err');
-    } finally {
-      button.disabled = false;
+      const findChangelog = releaseDateSec => {
+        if (!releaseDateSec || !updates.length) return null;
+
+        let best = null;
+        let bestDiff = Infinity;
+
+        for (const u of updates) {
+          if (!u.date) continue;
+          const diff = Math.abs(u.date - releaseDateSec);
+          if (diff < bestDiff) {
+            bestDiff = diff;
+            best = u;
+          }
+        }
+
+        return best && bestDiff <= 7 * 86400 ? best.description : null;
+      };
+
+      const versions = (Array.isArray(rawVersions) ? rawVersions : []).map(v => {
+        const versionLabel = v.name || `#${v.id}`;
+
+        return {
+          versionId: v.id,
+          versionNumber: versionLabel,
+          published: v.releaseDate ? v.releaseDate * 1000 : null,
+          downloads: v.downloads,
+          isExternal: !canDownload,
+          externalUrl: !canDownload ? resourcePage : undefined,
+          changelog: findChangelog(v.releaseDate),
+          changelogIsHtml: true,
+          files: canDownload ? [{ primary: true, url: `https://api.spiget.org/v2/resources/${encodeURIComponent(id)}/versions/${v.id}/download`, filename: `${safeName}-${String(versionLabel).replace(/[^a-zA-Z0-9._-]/g, '_')}.jar` }] : [],
+        };
+      });
+
+      if (!versions.length) {
+        versions.push({ versionId: 'external', versionNumber: 'Ver en SpigotMC', isExternal: true, externalUrl: resourcePage });
+      }
+
+      return ok(res, { versions, isExternal: !canDownload });
     }
-  });
 
-  $('btnCopyShareToken')?.addEventListener('click', async event => {
-    const token = $('shareCreatedToken')?.textContent || '';
-    try {
-      await navigator.clipboard.writeText(token);
-      flashButton(event.currentTarget, 'Copiado');
-    } catch {
-      toast('No se pudo copiar el token.', 'err');
+    if (source === 'hangar') {
+      const [owner, slug] = String(id).split('/');
+      if (!owner || !slug) {
+        return fail(res, 'ID de Hangar inválido');
+      }
+
+      const projectPage = `https://hangar.papermc.io/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}`;
+      const rawVersions = await apiFetch(`https://hangar.papermc.io/api/v1/projects/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}/versions?limit=20&offset=0`);
+      const list = Array.isArray(rawVersions.result) ? rawVersions.result : [];
+
+      const versions = list.map(v => {
+        const platforms = Object.keys(v.downloads || {});
+        const platform = platforms.includes('PAPER') ? 'PAPER' : platforms[0];
+        const platDL = platform ? v.downloads[platform] : null;
+        const totalDownloads = Object.values(v.downloads || {}).reduce((a, p) => a + (p?.downloads || 0), 0);
+        const isExternal = !platform || !!platDL?.externalUrl;
+
+        return {
+          versionId: v.name,
+          versionNumber: v.name,
+          published: v.createdAt ? new Date(v.createdAt).getTime() : null,
+          downloads: totalDownloads,
+          isExternal,
+          externalUrl: isExternal ? (platDL?.externalUrl || `${projectPage}/versions/${encodeURIComponent(v.name)}`) : undefined,
+          changelog: v.description || null,
+          changelogIsHtml: false,
+          files: !isExternal && platform ? [{ primary: true, url: `https://hangar.papermc.io/api/v1/projects/${encodeURIComponent(owner)}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(v.name)}/${platform}/download`, filename: `${slug}-${v.name}.jar` }] : [],
+        };
+      });
+
+      if (!versions.length) {
+        versions.push({ versionId: 'external', versionNumber: 'Ver en Hangar', isExternal: true, externalUrl: projectPage });
+      }
+
+      return ok(res, { versions });
     }
-  });
 
-  loadShareTokens();
-}
+    ok(res, { versions: [], isExternal: true });
+  } catch (e) {
+    console.error('[plugins/versions]', e.message);
+    fail(res, e.message);
+  }
+});
 
-/* SETTINGS */
-
-function renderSettings() {
-  const element = $('settingsList');
-
-  if (!element) return;
-
-  const cloudConnected = Boolean(cloudSocket?.connected);
-
-  let cloudCls, cloudText;
-  if (cloudConnecting) {
-    cloudCls = 'connecting'; cloudText = '● CONECTANDO...';
-  } else if (cloudConnected) {
-    cloudCls = 'online';     cloudText = '● ONLINE';
-  } else {
-    cloudCls = 'offline';    cloudText = '● OFFLINE';
+app.post('/api/plugins/install', async (req, res) => {
+  const session = await getSessionFromRequest(req);
+  if (!isOwnerSession(session)) {
+    return res.status(403).json({
+      ok: false,
+      error: 'Solo el propietario puede instalar plugins: los plugins son código que se ejecuta en la máquina del servidor.',
+    });
   }
 
-  let agentCls, agentText;
-  if (cloudConnecting) {
-    agentCls = 'connecting'; agentText = '● CONECTANDO...';
-  } else if (cloudConnected && agentOnline) {
-    agentCls = 'online';     agentText = '● CONECTADO';
-  } else {
-    agentCls = 'offline';    agentText = '● DESCONECTADO';
+  const { url, filename } = req.body;
+
+  if (!url || !filename) {
+    return fail(res, 'Parámetros requeridos');
   }
 
-  element.innerHTML = `
-    <div class="settings-group">
-      <div class="settings-group-header">
-        <div class="settings-group-icon">☁️</div>
-        <div class="settings-group-info">
-          <div class="settings-group-title">MoonWolf Cloud</div>
-          <div class="settings-group-sub">Conexión WebSocket con el panel remoto</div>
-        </div>
-        <span class="settings-status ${cloudCls}">${cloudText}</span>
-      </div>
-    </div>
+  const dest = safePluginPath(filename);
+  if (!dest) {
+    return fail(res, 'Nombre no válido');
+  }
 
-    <div class="settings-group">
-      <div class="settings-group-header">
-        <div class="settings-group-icon">🛰️</div>
-        <div class="settings-group-info">
-          <div class="settings-group-title">MoonWolf Agent</div>
-          <div class="settings-group-sub">Identificador único de esta instalación</div>
-        </div>
-        <span class="settings-status ${agentCls}">${agentText}</span>
-      </div>
-      <div class="settings-group-body">
-        <div class="settings-field">
-          <code class="settings-field-value" title="${escHtml(agentId || '—')}">${escHtml(agentId || '—')}</code>
-          <button class="small-btn" id="btnCopyAgentId">Copiar</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="settings-group">
-      <div class="settings-group-header">
-        <div class="settings-group-icon">⚡</div>
-        <div class="settings-group-info">
-          <div class="settings-group-title">Canal directo</div>
-          <div class="settings-group-sub">Transferencias de archivos por WebRTC; sin fallback de archivos por Cloud</div>
-        </div>
-        <span class="settings-status ${directReady() ? 'online' : 'connecting'}">${directReady() ? '● DIRECTO' : '● ESPERANDO'}</span>
-      </div>
-    </div>
-
-    <div class="settings-danger">
-      <div class="settings-danger-info">
-        <div class="settings-danger-title">⚠️ Desconectar del Cloud</div>
-        <div class="settings-danger-sub">
-          Cerrará la sesión actual del panel. Necesitarás un nuevo código de emparejamiento para reconectar.
-        </div>
-      </div>
-      <button class="settings-danger-btn" id="btnDisconnectCloud">Desconectar</button>
-    </div>
-  `;
-
-  $('btnCopyAgentId')?.addEventListener('click', async event => {
-    if (!agentId) return;
-
-    try {
-      await navigator.clipboard.writeText(agentId);
-      flashButton(event.currentTarget, 'Copiado');
-    } catch {
-      toast('No se pudo copiar.', 'err');
+  try {
+    if (!fsSync.existsSync(PLUGINS_DIR)) {
+      fsSync.mkdirSync(PLUGINS_DIR, { recursive: true });
     }
-  });
 
-  $('btnDisconnectCloud')?.addEventListener('click', () => {
-    cloudSocket?.disconnect();
-    setAgentOnline(false);
-    currentStatus = 'offline';
-    updateStatusUi('offline');
-    clearSession();
-    showLogin('Desconectado.');
-  });
-}
+    await downloadFile(url, dest);
+    const stats = await fs.stat(dest);
 
-/* TOAST & HELPERS */
+    ok(res, { filename, size: (stats.size / 1024 / 1024).toFixed(2) + ' MB' });
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
 
-function toast(message, type = 'info') {
-  const element = $('toast');
-
-  if (!element) return;
-
-  element.textContent = message;
-  element.className = `toast show ${type}`;
-
-  clearTimeout(toast.timer);
-
-  toast.timer = setTimeout(() => {
-    element.className = 'toast';
-  }, 3000);
-}
-
-function flashButton(button, label, duration = 1200) {
-  if (!button) return;
-
-  const original = button.textContent;
-
-  button.textContent = label;
-  button.disabled = true;
-
-  setTimeout(() => {
-    button.textContent = original;
-    button.disabled = false;
-  }, duration);
-}
-
-/* EVENTS */
-
-function bindEvents() {
-  ensureLoginGate();
-
-  document.querySelectorAll('.sb-item').forEach(item => {
-    item.addEventListener('click', () => switchView(item.dataset.view));
-  });
-
-  $('btnStart')?.addEventListener('click', startServer);
-  $('btnStop')?.addEventListener('click', stopServer);
-  $('btnRestart')?.addEventListener('click', restartServer);
-  $('btnSendCmd')?.addEventListener('click', sendCmd);
-
-  $('cmdInput')?.addEventListener('keydown', event => {
-    if (event.key === 'Enter') {
-      sendCmd();
+app.get('/api/plugins/installed', async (_req, res) => {
+  try {
+    if (!fsSync.existsSync(PLUGINS_DIR)) {
+      return ok(res, { plugins: [] });
     }
-  });
 
-  document.querySelectorAll('.quick-btn').forEach(button => {
-    button.addEventListener('click', () => {
-      const input = $('cmdInput');
-
-      if (!input) return;
-
-      input.value = button.dataset.cmd || '';
-      sendCmd();
-    });
-  });
-
-  $('btnClearConsole')?.addEventListener('click', () => {
-    if ($('console')) {
-      $('console').innerHTML = '';
-      pendingConsoleLogs.length = 0;
-    }
-  });
-
-  $('crumbHome')?.addEventListener('click', () => populateFiles(''));
-
-  const uploadMenu = $('uploadMenu');
-  const uploadMenuList = $('uploadMenuList');
-  const uploadMenuTrigger = $('btnUpload');
-  const closeUploadMenu = () => {
-    if (!uploadMenuList || uploadMenuList.hidden) return;
-    uploadMenuList.hidden = true;
-    uploadMenuTrigger?.setAttribute('aria-expanded', 'false');
-  };
-  const openUploadMenu = () => {
-    if (!uploadMenuList) return;
-    uploadMenuList.hidden = false;
-    uploadMenuTrigger?.setAttribute('aria-expanded', 'true');
-  };
-  uploadMenuTrigger?.addEventListener('click', event => {
-    event.stopPropagation();
-    if (uploadMenuList?.hidden) openUploadMenu();
-    else closeUploadMenu();
-  });
-  uploadMenu?.querySelectorAll('[data-upload-mode]').forEach(item => {
-    item.addEventListener('click', () => {
-      const mode = item.dataset.uploadMode;
-      closeUploadMenu();
-      if (mode === 'folder') $('folderUploadInput')?.click();
-      else $('fileUploadInput')?.click();
-    });
-  });
-  document.addEventListener('click', event => {
-    if (uploadMenu && !uploadMenu.contains(event.target)) closeUploadMenu();
-  });
-  document.addEventListener('keydown', event => {
-    if (event.key === 'Escape') closeUploadMenu();
-  });
-
-  $('fileUploadInput')?.addEventListener('change', async event => {
-    await uploadSelectedFiles(event.target.files);
-    event.target.value = '';
-  });
-
-  $('folderUploadInput')?.addEventListener('change', async event => {
-    await uploadSelectedFiles(event.target.files);
-    event.target.value = '';
-  });
-  $('selectAllFiles')?.addEventListener('change', event => {
-    document.querySelectorAll('#fileList .file-row').forEach(row => {
-      const checkbox = row.querySelector('input[type="checkbox"]');
-      checkbox.checked = event.target.checked;
-      if (checkbox.checked) selectedFilePaths.add(row.dataset.path);
-      else selectedFilePaths.delete(row.dataset.path);
-    });
-    updateBulkBar();
-  });
-  document.querySelectorAll('[data-bulk-action]').forEach(button => {
-    button.addEventListener('click', () => runBulkAction(button.dataset.bulkAction));
-  });
-  const filesView = $('view-files');
-  const filesLayout = filesView?.querySelector('.files-layout');
-  if (filesView && filesLayout) {
-    ['dragenter', 'dragover'].forEach(type => filesView.addEventListener(type, event => {
-      event.preventDefault();
-      event.dataTransfer.dropEffect = 'copy';
-      filesLayout.classList.add('is-dragging');
+    const entries = await fs.readdir(PLUGINS_DIR, { withFileTypes: true });
+    const jarFiles = entries.filter(e => e.isFile() && e.name.toLowerCase().endsWith('.jar'));
+    const plugins = await Promise.all(jarFiles.map(async e => {
+      const s = await fs.stat(path.join(PLUGINS_DIR, e.name));
+      return {
+        filename: e.name,
+        size: (s.size / 1024 / 1024).toFixed(2) + ' MB',
+        modified: s.mtime.toLocaleString('es-ES'),
+      };
     }));
-    filesView.addEventListener('dragleave', event => {
-      if (!filesView.contains(event.relatedTarget)) filesLayout.classList.remove('is-dragging');
-    });
-    filesView.addEventListener('drop', async event => {
-      event.preventDefault();
-      filesLayout.classList.remove('is-dragging');
-      const files = await getFilesFromDataTransfer(event.dataTransfer);
-      if (files?.length) await uploadSelectedFiles(files);
+
+    ok(res, { plugins });
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
+
+app.delete('/api/plugins/installed/:file', async (req, res) => {
+  const session = await getSessionFromRequest(req);
+  if (!isOwnerSession(session)) {
+    return res.status(403).json({
+      ok: false,
+      error: 'Solo el propietario puede eliminar plugins.',
     });
   }
 
-  $('uploadProgressPause')?.addEventListener('click', () => {
-    const upload = activeUploadState;
-    if (!upload || upload.finished) return;
-    upload.paused = !upload.paused;
-    if (upload.paused) {
-      upload.status = 'Subida pausada';
-      $('uploadProgressPause').textContent = '▶ Reanudar';
-      updateUploadProgress(upload);
+  const dest = safePluginPath(req.params.file);
+
+  if (!dest) {
+    return fail(res, 'Nombre no válido');
+  }
+
+  try {
+    const stat = await fs.stat(dest);
+    if (!stat.isFile()) {
+      return fail(res, 'Solo se pueden eliminar archivos de plugin (.jar)');
+    }
+
+    await fs.unlink(dest);
+    ok(res);
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
+
+/* ══════════════════════════════════════════════
+    SOFTWARE
+    ══════════════════════════════════════════════ */
+app.get('/api/versions/software', (_req, res) => {
+  ok(res, {
+    software: [
+      { id: 'paper', label: 'Paper', category: 'plugins', color: '#00c8ff', desc: 'Servidor de alto rendimiento compatible con plugins.' },
+      { id: 'purpur', label: 'Purpur', category: 'plugins', color: '#aa88ff', desc: 'Fork de Paper con configuración avanzada y soporte de plugins. 1.16+' },
+      { id: 'folia', label: 'Folia', category: 'plugins', color: '#00ff88', desc: 'Fork de Paper con multithreading regional y soporte de plugins. 1.20+' },
+      { id: 'fabric', label: 'Fabric', category: 'mods', color: '#d4aa70', desc: 'Loader ligero y moderno para servidores con mods. 1.14+' },
+      { id: 'velocity', label: 'Velocity', category: 'proxy', color: '#ffcc00', desc: 'Proxy moderno para conectar múltiples servidores.' },
+      { id: 'waterfall', label: 'Waterfall', category: 'proxy', color: '#ff8844', desc: 'Proxy basado en BungeeCord.' },
+      { id: 'bungeecord', label: 'BungeeCord', category: 'proxy', color: '#ff4455', desc: 'Proxy clásico para redes de servidores.' },
+      { id: 'forge', label: 'Forge', category: 'mods', color: '#c0873f', desc: 'Loader clásico para servidores con mods. 1.1+' },
+      { id: 'leaf', label: 'Leaf', category: 'plugins', color: '#7bd88f', desc: 'Fork de Paper orientado a rendimiento y estabilidad.' },
+      { id: 'leaves', label: 'Leaves', category: 'plugins', color: '#a5d66a', desc: 'Fork experimental de Paper con mejoras de rendimiento.' },
+      { id: 'spigot', label: 'Spigot', category: 'plugins', color: '#f0a24b', desc: 'Servidor compatible con plugins; se compila mediante BuildTools.' },
+      { id: 'bukkit', label: 'Bukkit', category: 'plugins', color: '#e2b66d', desc: 'API histórica de plugins. Catálogo de versiones legado, sin JAR ejecutable oficial.' },
+      { id: 'magma', label: 'Magma', category: 'hybrid', color: '#d66bff', desc: 'Servidor híbrido con soporte para mods NeoForge y plugins.' },
+      { id: 'arclight', label: 'Arclight', category: 'hybrid', color: '#ff8f70', desc: 'Servidor híbrido con loaders Fabric y NeoForge.' },
+      { id: 'sponge', label: 'Sponge', category: 'hybrid', color: '#8bd3dd', desc: 'Plataforma híbrida para mods y plugins mediante SpongeVanilla.', external: 'https://spongepowered.org/downloads/spongevanilla' },
+      { id: 'mohist', label: 'Mohist', category: 'hybrid', color: '#f08a5d', desc: 'Servidor híbrido con soporte para mods Forge y plugins Bukkit.', external: 'https://mohistmc.com/download' },
+      { id: 'gale', label: 'Gale', category: 'plugins', color: '#8ecae6', desc: 'Fork de Paper centrado en rendimiento y estabilidad.' },
+      { id: 'pufferfish', label: 'Pufferfish', category: 'plugins', color: '#f6bd60', desc: 'Fork de Paper con optimizaciones adicionales.' },
+      { id: 'quilt', label: 'Quilt', category: 'mods', color: '#d8a7ff', desc: 'Loader moderno y comunitario para mods.' },
+      { id: 'neoforge', label: 'NeoForge', category: 'mods', color: '#ff6d5a', desc: 'Loader moderno para servidores con mods.' },
+      { id: 'vanilla', label: 'Vanilla', category: 'vanilla', color: '#c9d8e8', desc: 'Servidor oficial de Mojang sin plugins ni mods. 1.0+' },
+    ],
+  });
+});
+
+app.get('/api/versions/list', async (req, res) => {
+  const sw = req.query.software || '';
+  if (!sw) {
+    return fail(res, 'software requerido');
+  }
+
+  try {
+    if (['paper', 'folia', 'velocity', 'waterfall'].includes(sw)) {
+      const data = await apiFetch(`https://fill.papermc.io/v3/projects/${sw}`);
+      const all = [];
+
+      for (const group of Object.values(data.versions || {})) {
+        all.push(...group);
+      }
+
+      all.sort((a, b) => semverCmp(b, a));
+      return ok(res, { versions: all });
+    }
+
+    if (sw === 'purpur') {
+      const data = await apiFetch('https://api.purpurmc.org/v2/purpur');
+      return ok(res, { versions: (data.versions || []).slice().reverse() });
+    }
+
+    if (sw === 'fabric') {
+      const data = await apiFetch('https://meta.fabricmc.net/v2/versions/game');
+      return ok(res, { versions: data.filter(v => v.stable).map(v => v.version) });
+    }
+
+    if (sw === 'forge') {
+      const data = await apiFetch('https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json');
+      const versions = Object.keys(data || {}).sort((a, b) => semverCmp(b, a));
+      return ok(res, { versions });
+    }
+
+    if (sw === 'leaf' || sw === 'leaves') {
+      const project = sw === 'leaf' ? 'leaf' : 'leaves';
+      const data = await apiFetch(`https://api.${sw === 'leaf' ? 'leafmc.one' : 'leavesmc.org'}/v2/projects/${project}`);
+      return ok(res, { versions: Object.keys(data.versions || {}).flatMap(key => data.versions[key]).sort((a, b) => semverCmp(b, a)) });
+    }
+
+    if (sw === 'magma') {
+      const data = await apiFetch('https://magmafoundation.org/api/versions?limit=0');
+      return ok(res, { versions: (data.versions || data || []).map(item => item.version || item).filter(Boolean) });
+    }
+
+    if (sw === 'neoforge') {
+      const xml = await apiFetchText('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml');
+      return ok(res, { versions: xmlValues(xml, 'version').reverse() });
+    }
+
+    if (sw === 'spigot') {
+      const html = await apiFetchText('https://hub.spigotmc.org/versions/');
+      const versions = [...html.matchAll(/href=\"(1\.\d+(?:\.\d+)?\.json)\"/g)]
+        .map(match => match[1].replace(/\.json$/, ''))
+        .filter((value, index, values) => values.indexOf(value) === index)
+        .sort((a, b) => semverCmp(b, a));
+      return ok(res, { versions });
+    }
+
+    if (sw === 'bukkit') {
+      const tags = await apiFetch('https://api.github.com/repos/Bukkit/Bukkit/tags?per_page=100');
+      return ok(res, { versions: (tags || []).map(tag => tag.name).filter(Boolean) });
+    }
+
+    if (sw === 'arclight') {
+      const releases = await apiFetch('https://api.github.com/repos/IzzelAliz/Arclight/releases?per_page=100');
+      const versions = new Set();
+      for (const release of releases || []) {
+        for (const asset of release.assets || []) {
+          const match = String(asset.name || '').match(/^arclight-[^-]+-(1\.\d+(?:\.\d+)*?)-.+\.jar$/);
+          if (match) versions.add(match[1]);
+        }
+      }
+      return ok(res, { versions: [...versions].sort((a, b) => semverCmp(b, a)) });
+    }
+
+    if (sw === 'bungeecord') {
+      const data = await apiFetch(
+        'https://hub.spigotmc.org/jenkins/job/BungeeCord/api/json?tree=builds[number,result,timestamp]&pretty=false'
+      );
+      const versions = (data.builds || [])
+        .filter(b => b.result === 'SUCCESS' && Number.isFinite(Number(b.number)))
+        .slice(0, 50)
+        .map(b => String(b.number));
+      return ok(res, { versions });
+    }
+
+    if (sw === 'gale') {
+      const releases = await apiFetch('https://api.github.com/repos/GaleMC/Gale/releases?per_page=100');
+      return ok(res, { versions: (releases || []).map(r => r.tag_name).filter(Boolean) });
+    }
+
+    if (sw === 'pufferfish') {
+      const releases = await apiFetch('https://api.github.com/repos/pufferfish-gg/Pufferfish/releases?per_page=100');
+      let versions = (releases || []).map(r => r.tag_name).filter(Boolean);
+      if (!versions.length) {
+        const tags = await apiFetch('https://api.github.com/repos/pufferfish-gg/Pufferfish/tags?per_page=100');
+        versions = (tags || []).map(tag => tag.name).filter(Boolean);
+      }
+      if (!versions.length) {
+        const branches = await apiFetch('https://api.github.com/repos/pufferfish-gg/Pufferfish/branches?per_page=100');
+        versions = (branches || [])
+          .map(branch => branch.name)
+          .filter(name => /^ver\/\d+\.\d+$/.test(name))
+          .map(name => name.replace(/^ver\//, ''));
+      }
+      return ok(res, { versions });
+    }
+
+    if (sw === 'quilt') {
+      const data = await apiFetch('https://meta.quiltmc.org/v3/versions/game');
+      return ok(res, { versions: data.filter(v => v.stable).map(v => v.version) });
+    }
+
+    if (sw === 'vanilla') {
+      const manifest = await apiFetch('https://launchermeta.mojang.com/mc/game/version_manifest_v2.json');
+      return ok(res, { versions: manifest.versions.filter(v => v.type === 'release').map(v => v.id) });
+    }
+
+    fail(res, `Software sin API pública: ${sw}`);
+  } catch (e) {
+    console.error('[versions/list]', e.message);
+    fail(res, e.message);
+  }
+});
+
+app.get('/api/versions/builds', async (req, res) => {
+  const { software: sw, version } = req.query;
+
+  if (!sw || !version) {
+    return fail(res, 'software y version requeridos');
+  }
+
+  try {
+    if (['paper', 'folia', 'velocity', 'waterfall'].includes(sw)) {
+      const data = await apiFetch(`https://fill.papermc.io/v3/projects/${sw}/versions/${encodeURIComponent(version)}/builds`);
+      const builds = (Array.isArray(data) ? data : []).map(b => ({
+        build: b.build,
+        channel: b.channel,
+        time: b.time,
+        url: b.downloads?.['server:default']?.url || null,
+        sha256: b.downloads?.['server:default']?.sha256 || null,
+        changes: (b.changes || []).map(c => c.summary).slice(0, 3).join(' · '),
+      })).sort((a, b) => b.build - a.build);
+
+      return ok(res, { builds });
+    }
+
+    if (sw === 'purpur') {
+      const data = await apiFetch(`https://api.purpurmc.org/v2/purpur/${encodeURIComponent(version)}`);
+      const builds = (data.builds?.all || []).slice().reverse().map(b => ({
+        build: b,
+        channel: 'STABLE',
+        time: null,
+        url: `https://api.purpurmc.org/v2/purpur/${version}/${b}/download`,
+        sha256: null,
+        changes: '',
+      }));
+
+      return ok(res, { builds });
+    }
+
+    if (sw === 'fabric') {
+      const loaders = await apiFetch(`https://meta.fabricmc.net/v2/versions/loader/${encodeURIComponent(version)}`);
+      const builds = loaders.filter(l => l.loader?.stable).map(l => ({
+        build: l.loader.build,
+        channel: 'STABLE',
+        loaderVersion: l.loader.version,
+        time: null,
+        url: null,
+        sha256: null,
+        changes: `Fabric Loader ${l.loader.version}`,
+      }));
+
+      return ok(res, { builds, isFabric: true });
+    }
+
+    if (sw === 'forge') {
+      const data = await apiFetch('https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json');
+      const forgeVersions = Array.isArray(data?.[version]) ? data[version].slice().reverse() : [];
+      const builds = forgeVersions.map(forgeVersion => ({
+        build: forgeVersion,
+        channel: 'RELEASE',
+        time: null,
+        loaderVersion: forgeVersion,
+        url: `https://maven.minecraftforge.net/net/minecraftforge/forge/${encodeURIComponent(forgeVersion)}/forge-${encodeURIComponent(forgeVersion)}-installer.jar`,
+        sha256: null,
+        changes: `Forge ${forgeVersion} para Minecraft ${version}`,
+      }));
+      return ok(res, { builds, isForge: true });
+    }
+
+    if (sw === 'leaf' || sw === 'leaves') {
+      const project = sw === 'leaf' ? 'leaf' : 'leaves';
+      const host = sw === 'leaf' ? 'api.leafmc.one' : 'api.leavesmc.org';
+      const data = await apiFetch(`https://${host}/v2/projects/${project}/versions/${encodeURIComponent(version)}/builds`);
+      const builds = (data.builds || data || []).map(item => {
+        const artifact = item.downloads?.primary || item.downloads?.application;
+        return {
+          build: item.build,
+          channel: item.channel || (item.promoted ? 'STABLE' : 'EXPERIMENTAL'),
+          time: item.time,
+          url: artifact?.name ? `https://${host}/v2/projects/${project}/versions/${encodeURIComponent(version)}/builds/${encodeURIComponent(item.build)}/downloads/${encodeURIComponent(artifact.name)}` : null,
+          sha256: artifact?.sha256 || null,
+          changes: (item.changes || []).map(change => change.summary || change.message || '').filter(Boolean).slice(0, 3).join(' · '),
+        };
+      }).sort((a, b) => Number(b.build) - Number(a.build));
+      return ok(res, { builds });
+    }
+
+    if (sw === 'magma') {
+      const data = await apiFetch(`https://magmafoundation.org/api/versions/${encodeURIComponent(version)}`);
+      const item = data.version ? data : (data.versions || []).find(entry => entry.version === version);
+      if (!item) return fail(res, `Build de Magma no encontrada: ${version}`);
+      return ok(res, { builds: [{
+        build: version,
+        channel: item.isStable ? 'STABLE' : 'BETA',
+        time: item.createdAt || item.date || null,
+        url: item.launcherUrl || item.installerUrl || `https://magmafoundation.org/api/versions/${encodeURIComponent(version)}/download?type=launcher`,
+        sha256: null,
+        changes: `Magma para Minecraft ${item.minecraftVersion || version}`,
+      }] });
+    }
+
+    if (sw === 'neoforge') {
+      const build = version;
+      return ok(res, { builds: [{
+        build,
+        channel: /-(alpha|beta|rc)/i.test(build) ? 'PRERELEASE' : 'RELEASE',
+        time: null,
+        url: `https://maven.neoforged.net/releases/net/neoforged/neoforge/${encodeURIComponent(build)}/neoforge-${encodeURIComponent(build)}-installer.jar`,
+        sha256: null,
+        changes: `NeoForge ${build} · instalador oficial`,
+      }] });
+    }
+
+    if (sw === 'spigot') {
+      const data = await apiFetch(`https://hub.spigotmc.org/versions/${encodeURIComponent(version)}.json`);
+      return ok(res, { builds: [{
+        build: data.name || 'BuildTools',
+        channel: 'BUILDTOOLS',
+        time: null,
+        url: null,
+        sha256: data.hashes?.spigot || null,
+        installable: false,
+        changes: 'Spigot se compila localmente con BuildTools; no existe un JAR de servidor oficial descargable directamente.',
+      }] });
+    }
+
+    if (sw === 'bukkit') {
+      return ok(res, { builds: [{
+        build: version,
+        channel: 'LEGACY',
+        time: null,
+        url: null,
+        sha256: null,
+        installable: false,
+        changes: 'Bukkit es una API histórica y no publica un JAR de servidor ejecutable oficial.',
+      }] });
+    }
+
+    if (sw === 'arclight') {
+      const releases = await apiFetch('https://api.github.com/repos/IzzelAliz/Arclight/releases?per_page=100');
+      const builds = [];
+      for (const release of releases || []) {
+        for (const asset of release.assets || []) {
+          const name = String(asset.name || '');
+          const match = name.match(/^arclight-([^-]+)-(1\.\d+(?:\.\d+)*?)-(.+)\.jar$/);
+          if (!match || match[2] !== version) continue;
+          builds.push({
+            build: match[3],
+            channel: release.prerelease ? 'PRERELEASE' : 'RELEASE',
+            time: release.published_at || release.created_at || null,
+            url: asset.browser_download_url,
+            sha256: asset.digest?.replace(/^sha256:/, '') || null,
+            changes: `Arclight ${match[1]} · ${release.name || release.tag_name || ''}`,
+          });
+        }
+      }
+      return ok(res, { builds });
+    }
+
+    if (sw === 'gale' || sw === 'pufferfish') {
+      const repo = sw === 'gale' ? 'GaleMC/Gale' : 'pufferfish-gg/Pufferfish';
+      const releases = await apiFetch(`https://api.github.com/repos/${repo}/releases?per_page=100`);
+      const release = (releases || []).find(r => r.tag_name === version) || (releases || []).find(r => r.name === version);
+      if (!release) {
+        return ok(res, { builds: [{
+          build: version,
+          channel: 'SOURCE',
+          time: null,
+          url: `https://github.com/${repo}/tree/${encodeURIComponent(version)}`,
+          sha256: null,
+          installable: false,
+          changes: `${sw === 'gale' ? 'Gale' : 'Pufferfish'} publica esta referencia como código fuente; consulta sus instrucciones oficiales de compilación.`,
+        }] });
+      }
+      const builds = (release?.assets || []).filter(asset => /\.jar$/i.test(asset.name)).map(asset => ({
+        build: asset.name,
+        channel: release.prerelease ? 'PRERELEASE' : 'RELEASE',
+        time: release.published_at || release.created_at || null,
+        url: asset.browser_download_url,
+        sha256: asset.digest?.replace(/^sha256:/, '') || null,
+        changes: `${sw === 'gale' ? 'Gale' : 'Pufferfish'} ${version}`,
+      }));
+      return ok(res, { builds });
+    }
+
+    if (sw === 'quilt') {
+      const loaders = await apiFetch(`https://meta.quiltmc.org/v3/versions/loader/${encodeURIComponent(version)}`);
+      const builds = (loaders || []).filter(item => item.loader?.stable).map(item => ({
+        build: item.loader.version,
+        channel: 'STABLE',
+        loaderVersion: item.loader.version,
+        time: null,
+        url: `https://maven.quiltmc.org/repository/release/org/quiltmc/quilt-server-launch/${encodeURIComponent(item.loader.version)}/quilt-server-launch-${encodeURIComponent(item.loader.version)}.jar`,
+        sha256: item.loader?.hashes?.sha256 || null,
+        installable: false,
+        changes: `Quilt Loader ${item.loader.version} · consulta la instalación oficial de Quilt`,
+      }));
+      return ok(res, { builds, isQuilt: true });
+    }
+
+    if (sw === 'sponge') {
+      return ok(res, { builds: [{
+        build: version,
+        channel: 'OFFICIAL',
+        time: null,
+        url: 'https://spongepowered.org/downloads/spongevanilla',
+        sha256: null,
+        installable: false,
+        changes: 'Consulta la descarga oficial de SpongeVanilla para elegir el JAR compatible.',
+      }] });
+    }
+
+    if (sw === 'bungeecord') {
+      const buildNumber = Number(version);
+      if (!Number.isInteger(buildNumber) || buildNumber <= 0) {
+        return fail(res, `Build de BungeeCord no válida: ${version}`);
+      }
+
+      const data = await apiFetch(
+        `https://hub.spigotmc.org/jenkins/job/BungeeCord/${buildNumber}/api/json?tree=number,result,timestamp,artifacts[fileName,relativePath]&pretty=false`
+      );
+
+      if (data.result !== 'SUCCESS') {
+        return fail(res, `BungeeCord #${version} no terminó correctamente`);
+      }
+
+      const artifact = (data.artifacts || []).find(a => a.fileName === 'BungeeCord.jar');
+      if (!artifact?.relativePath) {
+        return fail(res, `No se encontró BungeeCord.jar en el build #${version}`);
+      }
+
+      return ok(res, {
+        builds: [{
+          build: String(data.number),
+          channel: 'STABLE',
+          time: data.timestamp ? new Date(data.timestamp).toISOString() : null,
+          url: `https://hub.spigotmc.org/jenkins/job/BungeeCord/${buildNumber}/artifact/${artifact.relativePath}`,
+          sha256: null,
+          changes: `BungeeCord build #${data.number}`,
+        }],
+      });
+    }
+
+    if (sw === 'vanilla') {
+      const manifest = await apiFetch('https://launchermeta.mojang.com/mc/game/version_manifest_v2.json');
+      const entry = manifest.versions.find(v => v.id === version && v.type === 'release');
+
+      if (!entry) {
+        return fail(res, `Versión ${version} no encontrada`);
+      }
+
+      const vdata = await apiFetch(entry.url);
+      const serverUrl = vdata.downloads?.server?.url;
+
+      if (!serverUrl) {
+        return fail(res, 'No hay descarga de servidor para esta versión');
+      }
+
+      return ok(res, { builds: [{ build: 1, channel: 'STABLE', time: entry.releaseTime, url: serverUrl, sha256: vdata.downloads?.server?.sha1, changes: `Minecraft ${version} — oficial de Mojang` }] });
+    }
+
+    fail(res, `Software sin API: ${sw}`);
+  } catch (e) {
+    console.error('[versions/builds]', e.message);
+    fail(res, e.message);
+  }
+});
+
+app.post('/api/versions/install', async (req, res) => {
+  const session = await getSessionFromRequest(req);
+  if (!isOwnerSession(session)) {
+    return res.status(403).json({
+      ok: false,
+      error: 'Solo el propietario puede instalar o reemplazar el servidor (server.jar).',
+    });
+  }
+
+  const { software: sw, version, build, url, loaderVersion } = req.body;
+
+  if (!sw || !version) {
+    return fail(res, 'software y version requeridos');
+  }
+
+  try {
+    if (sw === 'neoforge') {
+      if (!build) {
+        return fail(res, 'versión de NeoForge requerida');
+      }
+
+      const javaBin = await resolveJavaForServer(version);
+      const instFile = path.join(BASE_DIR, `neoforge-installer-${build}.jar`);
+      if (!fsSync.existsSync(instFile)) {
+        const neoforgeUrl = url || `https://maven.neoforged.net/releases/net/neoforged/neoforge/${encodeURIComponent(build)}/neoforge-${encodeURIComponent(build)}-installer.jar`;
+        await downloadFile(neoforgeUrl, instFile);
+      }
+
+      return ok(res, {
+        type: 'neoforge-installer',
+        installCmd: `"${javaBin}" -jar "neoforge-installer-${build}.jar" --installServer`,
+        jarName: 'run.bat',
+        note: `NeoForge ${build} descargado. Ejecuta el comando desde la carpeta del servidor para completar la instalación; después selecciona el archivo de arranque generado en Startup.`,
+      });
+    }
+
+    if (sw === 'forge') {
+      if (!build) {
+        return fail(res, 'versión de Forge requerida');
+      }
+
+      const javaBin = await resolveJavaForServer(version);
+      const instFile = path.join(BASE_DIR, `forge-installer-${build}.jar`);
+      if (!fsSync.existsSync(instFile)) {
+        const forgeUrl = url || `https://maven.minecraftforge.net/net/minecraftforge/forge/${encodeURIComponent(build)}/forge-${encodeURIComponent(build)}-installer.jar`;
+        await downloadFile(forgeUrl, instFile);
+      }
+
+      return ok(res, {
+        type: 'forge-installer',
+        installCmd: `"${javaBin}" -jar "forge-installer-${build}.jar" --installServer`,
+        jarName: 'run.bat',
+        note: `Forge ${build} descargado. Ejecuta el comando desde la carpeta del servidor para completar la instalación; Forge generará los archivos de arranque necesarios.`,
+      });
+    }
+
+    if (sw === 'fabric') {
+      if (!loaderVersion) {
+        return fail(res, 'loaderVersion requerido para Fabric');
+      }
+
+      const installers = await apiFetch('https://meta.fabricmc.net/v2/versions/installer');
+      const inst = installers.find(i => i.stable) || installers[0];
+
+      if (!inst) {
+        return fail(res, 'No se encontró installer de Fabric');
+      }
+
+      const javaBin = await resolveJavaForServer(version);
+
+      const instFile = path.join(BASE_DIR, `fabric-installer-${inst.version}.jar`);
+      if (!fsSync.existsSync(instFile)) {
+        await downloadFile(inst.url, instFile);
+      }
+
+      return ok(res, {
+        type: 'fabric-installer',
+        installCmd: `"${javaBin}" -jar "fabric-installer-${inst.version}.jar" server -mcversion ${version} -loader ${loaderVersion} -downloadMinecraft`,
+        jarName: 'fabric-server-launch.jar',
+        note: `Java ${requiredJavaForMinecraft(version)} gestionado por MoonWolf. Ejecuta el comando generado en tu carpeta de servidor y luego selecciona fabric-server-launch.jar en Startup.`,
+      });
+    }
+
+    if (!url) {
+      return fail(res, 'URL de descarga requerida');
+    }
+
+    const currentJar = path.join(BASE_DIR, 'server.jar');
+    const tempJar = path.join(
+      BASE_DIR,
+      `.moonwolf-server-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.download`
+    );
+    let backupJar = null;
+    try {
+      await downloadFile(url, tempJar);
+      if (fsSync.existsSync(currentJar)) {
+        const bakName = `server.bak_${Date.now()}.jar`;
+        backupJar = path.join(BASE_DIR, bakName);
+        await fs.rename(currentJar, backupJar);
+        console.log(`[versions] Backup creado: ${bakName}`);
+      }
+      await fs.rename(tempJar, currentJar);
+    } catch (error) {
+      if (backupJar && !fsSync.existsSync(currentJar) && fsSync.existsSync(backupJar)) {
+        await fs.rename(backupJar, currentJar).catch(() => {});
+      }
+      throw error;
+    } finally {
+      await fs.rm(tempJar, { force: true }).catch(() => {});
+    }
+    const stats = await fs.stat(currentJar);
+
+    const isProxy = ['velocity', 'waterfall', 'bungeecord'].includes(sw);
+    const startupUpdate = {
+      jar: 'server.jar',
+      software: sw,
+      ...(isProxy ? {} : { minecraftVersion: String(version) }),
+    };
+
+    saveStartupConfig(startupUpdate);
+
+    ok(res, {
+      type: 'direct',
+      filename: 'server.jar',
+      size: (stats.size / 1024 / 1024).toFixed(2) + ' MB',
+      software: sw,
+      version,
+      build,
+      note: 'server.jar actualizado correctamente. Reinicia el servidor para aplicar los cambios.',
+    });
+  } catch (e) {
+    console.error('[versions/install]', e.message);
+    fail(res, e.message);
+  }
+});
+
+app.get('/api/versions/current', async (_req, res) => {
+  const jarPath = path.join(BASE_DIR, 'server.jar');
+
+  try {
+    const stats = await fs.stat(jarPath);
+    ok(res, {
+      exists: true,
+      size: (stats.size / 1024 / 1024).toFixed(2) + ' MB',
+      modified: stats.mtime.toLocaleString('es-ES'),
+    });
+  } catch {
+    ok(res, { exists: false });
+  }
+});
+
+/* ══════════════════════════════════════════════
+    FILE OPERATIONS
+    ══════════════════════════════════════════════ */
+let archiver = null;
+
+function getArchiver() {
+  return archiver || (archiver = require('archiver'));
+}
+
+async function createZipAtomically(zipPath, configureArchive) {
+  const tempPath = `${zipPath}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
+  try {
+    await new Promise((resolve, reject) => {
+      const output = fsSync.createWriteStream(tempPath, { flags: 'wx' });
+      const archive = getArchiver()('zip', { zlib: { level: 6 } });
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        if (error) reject(error);
+        else resolve();
+      };
+      output.once('close', () => finish());
+      output.once('error', finish);
+      archive.once('error', finish);
+      archive.pipe(output);
+      try {
+        configureArchive(archive);
+        void archive.finalize().catch(finish);
+      } catch (error) {
+        finish(error);
+      }
+    });
+
+    try {
+      await fs.rename(tempPath, zipPath);
+    } catch (error) {
+      if (!['EEXIST', 'EPERM'].includes(error?.code)) throw error;
+      await fs.rm(zipPath, { force: true });
+      await fs.rename(tempPath, zipPath);
+    }
+  } catch (error) {
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+const FILE_UPLOAD_MAX_CHUNK_BYTES = 17 * 1024 * 1024;
+const FILE_UPLOAD_ID_RE = /^[a-zA-Z0-9_-]{8,120}$/;
+const FILE_UPLOAD_DIR = path.join(BASE_DIR, '.moonwolf-uploads');
+const FILE_UPLOAD_RETENTION_MS = Math.max(
+  60 * 60 * 1000,
+  Number(process.env.MOONWOLF_UPLOAD_RETENTION_HOURS || 24) * 60 * 60 * 1000
+);
+const FILE_UPLOAD_CLEANUP_INTERVAL_MS = Math.max(
+  15 * 60 * 1000,
+  Number(process.env.MOONWOLF_UPLOAD_CLEANUP_INTERVAL_MINUTES || 60) * 60 * 1000
+);
+const activeFileUploads = new Set();
+const fileUploadLocks = new Map();
+
+function withFileUploadLock(uploadId, task) {
+  const previous = fileUploadLocks.get(uploadId) || Promise.resolve();
+  const current = previous
+    .catch(() => {})
+    .then(task);
+
+  fileUploadLocks.set(uploadId, current);
+
+  return current.finally(() => {
+    if (fileUploadLocks.get(uploadId) === current) {
+      fileUploadLocks.delete(uploadId);
+    }
+  });
+}
+
+async function cleanupStaleFileUploads() {
+  let entries;
+
+  try {
+    entries = await fs.readdir(FILE_UPLOAD_DIR, { withFileTypes: true });
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.warn('[uploads] No se pudo revisar la carpeta temporal:', error.message);
+    }
+    return;
+  }
+
+  const cutoff = Date.now() - FILE_UPLOAD_RETENTION_MS;
+  let removed = 0;
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !/\.(part|json)$/.test(entry.name)) continue;
+
+    const uploadId = entry.name.replace(/\.(part|json)$/, '');
+    if (activeFileUploads.has(uploadId)) continue;
+
+    const uploadPath = path.join(FILE_UPLOAD_DIR, entry.name);
+
+    try {
+      const stats = await fs.stat(uploadPath);
+      if (stats.mtimeMs > cutoff) continue;
+
+      await fs.rm(uploadPath, { force: true });
+      removed += 1;
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        console.warn(`[uploads] No se pudo eliminar ${entry.name}:`, error.message);
+      }
+    }
+  }
+
+  if (removed) {
+    console.log(`[uploads] Limpieza automática: ${removed} temporal(es) eliminado(s).`);
+  }
+}
+
+void cleanupStaleFileUploads();
+const fileUploadCleanupTimer = setInterval(
+  cleanupStaleFileUploads,
+  FILE_UPLOAD_CLEANUP_INTERVAL_MS
+);
+fileUploadCleanupTimer.unref?.();
+
+app.post(
+  '/api/files/upload-chunk',
+  express.raw({ type: 'application/octet-stream', limit: 18 * 1024 * 1024 }),
+  async (req, res) => {
+    const {
+      uploadId,
+      path: relParam,
+      offset: offsetParam,
+      totalSize: totalSizeParam,
+      final: finalParam,
+      overwrite: overwriteParam,
+    } = req.query || {};
+
+    const rel = String(relParam || '');
+    const uploadIdString = String(uploadId || '');
+    const numericOffset = Number(offsetParam);
+    const numericTotal = Number(totalSizeParam);
+    const final = String(finalParam || '') === '1';
+    const overwrite = String(overwriteParam || '') === '1';
+
+    if (!FILE_UPLOAD_ID_RE.test(uploadIdString)) {
+      return fail(res, 'Identificador de subida no válido');
+    }
+
+    if (!rel.trim()) {
+      return fail(res, 'Ruta requerida');
+    }
+
+    if (!Number.isSafeInteger(numericOffset) || numericOffset < 0 ||
+        !Number.isSafeInteger(numericTotal) || numericTotal < 0) {
+      return fail(res, 'Tamaño de subida no válido');
+    }
+
+    const chunk = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+
+    if (chunk.length > FILE_UPLOAD_MAX_CHUNK_BYTES) {
+      return fail(res, 'Bloque demasiado grande');
+    }
+
+    const session = await getSessionFromRequest(req);
+    if (!isOwnerSession(session) && isDangerousUploadPath(rel)) {
+      return res.status(403).json({
+        ok: false,
+        error: `Los accesos compartidos no pueden subir archivos "${path.extname(rel)}". Esta extensión permite ejecutar código en el host.`,
+      });
+    }
+
+    const full = safePath(rel);
+    if (!full) {
+      return fail(res, 'Ruta no permitida');
+    }
+
+    if (!overwrite) {
+      try {
+        await fs.access(full);
+        return res.status(409).json({
+          ok: false,
+          isFileConflict: true,
+          error: 'Ya existe un archivo con ese nombre',
+        });
+      } catch {}
+    }
+
+    if (numericOffset + chunk.length > numericTotal) {
+      return fail(res, 'El bloque excede el tamaño indicado');
+    }
+
+    const uploadDir = path.resolve(FILE_UPLOAD_DIR);
+    const uploadPath = path.join(uploadDir, `${uploadIdString}.part`);
+    const manifestPath = path.join(uploadDir, `${uploadIdString}.json`);
+
+    if (!uploadPath.startsWith(uploadDir + path.sep) ||
+        !manifestPath.startsWith(uploadDir + path.sep)) {
+      return fail(res, 'Ruta temporal no permitida');
+    }
+
+    return withFileUploadLock(uploadIdString, async () => {
+      activeFileUploads.add(uploadIdString);
+
+      try {
+        await fs.mkdir(uploadDir, { recursive: true });
+
+        let manifest = {
+          path: rel,
+          totalSize: numericTotal,
+          chunks: [],
+        };
+
+        try {
+          const stored = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+          if (
+            stored &&
+            stored.path === rel &&
+            stored.totalSize === numericTotal &&
+            Array.isArray(stored.chunks)
+          ) {
+            manifest = stored;
+          }
+        } catch {}
+
+        if (manifest.path !== rel || manifest.totalSize !== numericTotal) {
+          return fail(res, 'La subida no coincide con sus datos originales');
+        }
+
+        const chunkEnd = numericOffset + chunk.length;
+        const duplicate = manifest.chunks.some(
+          item => item.offset === numericOffset && item.end === chunkEnd
+        );
+
+        if (!duplicate && chunk.length) {
+          try {
+            await fs.access(uploadPath);
+          } catch {
+            await fs.writeFile(uploadPath, Buffer.alloc(0));
+          }
+
+          const handle = await fs.open(uploadPath, 'r+');
+          try {
+            await handle.write(chunk, 0, chunk.length, numericOffset);
+          } finally {
+            await handle.close();
+          }
+
+          manifest.chunks.push({ offset: numericOffset, end: chunkEnd });
+          manifest.chunks.sort((a, b) => a.offset - b.offset);
+        }
+
+        const merged = [];
+        for (const item of manifest.chunks) {
+          const last = merged[merged.length - 1];
+          if (last && item.offset <= last.end) {
+            last.end = Math.max(last.end, item.end);
+          } else {
+            merged.push({ offset: item.offset, end: item.end });
+          }
+        }
+
+        manifest.chunks = merged;
+        await atomicWriteFile(manifestPath, JSON.stringify(manifest), 'utf8');
+
+        const complete = numericTotal === 0
+          ? true
+          : manifest.chunks.length === 1 &&
+            manifest.chunks[0].offset === 0 &&
+            manifest.chunks[0].end === numericTotal;
+
+        if (numericTotal === 0) {
+          await fs.writeFile(uploadPath, Buffer.alloc(0));
+        } else {
+          try {
+            const handle = await fs.open(uploadPath, 'r+');
+            try {
+              await handle.truncate(numericTotal);
+            } finally {
+              await handle.close();
+            }
+          } catch {}
+        }
+
+        if (!complete) {
+          return ok(res, {
+            uploaded: manifest.chunks.reduce((sum, item) => sum + (item.end - item.offset), 0),
+            complete: false,
+          });
+        }
+
+        const finalSize = (await fs.stat(uploadPath)).size;
+        if (finalSize !== numericTotal) {
+          return fail(res, `Tamaño final incorrecto: ${finalSize}/${numericTotal}`);
+        }
+
+        await fs.mkdir(path.dirname(full), { recursive: true });
+
+        if (!overwrite) {
+          try {
+            await fs.access(full);
+            return res.status(409).json({
+              ok: false,
+              isFileConflict: true,
+              error: 'Ya existe un archivo con ese nombre',
+            });
+          } catch {}
+        }
+
+        if (overwrite) {
+          try { await fs.rm(full, { recursive: true, force: true }); } catch {}
+        }
+
+        await fs.rename(uploadPath, full);
+        await fs.rm(manifestPath, { force: true });
+
+        return ok(res, {
+          uploaded: finalSize,
+          complete: true,
+          path: rel,
+        });
+      } catch (e) {
+        return fail(res, e.message || 'No se pudo guardar el archivo');
+      } finally {
+        activeFileUploads.delete(uploadIdString);
+      }
+    });
+  }
+);
+
+app.post('/api/files/create', async (req, res) => {
+  const { path: dir, name, isDir } = req.body || {};
+
+  if (!name) {
+    return fail(res, 'Nombre requerido');
+  }
+
+  if (name.includes('/') || name.includes('\\') || name.includes('..')) {
+    return fail(res, 'Nombre no válido');
+  }
+
+  const rel = dir ? `${dir}/${name}` : name;
+  const full = safePath(rel);
+
+  if (!full) {
+    return fail(res, 'Ruta no permitida');
+  }
+
+  if (fsSync.existsSync(full)) {
+    return fail(res, 'Ya existe un archivo o carpeta con ese nombre');
+  }
+
+  try {
+    if (isDir) {
+      await fs.mkdir(full, { recursive: true });
     } else {
-      upload.status = `Subiendo ${upload.completedFiles + 1}/${upload.totalFiles}`;
-      $('uploadProgressPause').textContent = 'Ⅱ Pausar';
-      upload.resumeUpload?.();
-      upload.resumeUpload = null;
-      updateUploadProgress(upload);
+      await fs.mkdir(path.dirname(full), { recursive: true });
+      await atomicWriteFile(full, '', 'utf-8');
     }
-  });
-  $('uploadProgressCancel')?.addEventListener('click', () => {
-    if (activeDownloadAbort) {
-      activeDownloadAbort.abort();
-      activeDownloadAbort = null;
-      $('uploadProgressCancel').disabled = true;
-      if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = 'Cancelando descarga…';
-      return;
+
+    ok(res, { path: rel });
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
+
+app.post('/api/files/rename', async (req, res) => {
+  const { path: rel, newName } = req.body;
+
+  if (!rel || !newName) {
+    return fail(res, 'Parámetros requeridos');
+  }
+
+  if (newName.includes('/') || newName.includes('\\') || newName.includes('..')) {
+    return fail(res, 'Nombre no válido');
+  }
+
+  const full = safePath(rel);
+  const fullNew = safePath(path.join(path.dirname(rel), newName));
+
+  if (!full || !fullNew) {
+    return fail(res, 'Ruta no permitida');
+  }
+
+  try {
+    await fs.rename(full, fullNew);
+    ok(res);
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
+
+app.post('/api/files/copy', async (req, res) => {
+  const { path: rel, dest } = req.body;
+
+  if (!rel || dest === undefined) {
+    return fail(res, 'Parámetros requeridos');
+  }
+
+  const full = safePath(rel);
+  const fullDest = safePath(dest);
+
+  if (!full || !fullDest) {
+    return fail(res, 'Ruta no permitida');
+  }
+
+  try {
+    await fs.mkdir(path.dirname(fullDest), { recursive: true });
+    await fs.cp(full, fullDest, { recursive: true });
+    ok(res);
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
+
+app.post('/api/files/move', async (req, res) => {
+  const { path: rel, dest } = req.body;
+
+  if (!rel || dest === undefined) {
+    return fail(res, 'Parámetros requeridos');
+  }
+
+  const full = safePath(rel);
+  const fullDest = safePath(dest);
+
+  if (!full || !fullDest) {
+    return fail(res, 'Ruta no permitida');
+  }
+
+  try {
+    await fs.mkdir(path.dirname(fullDest), { recursive: true });
+    await fs.rename(full, fullDest);
+    ok(res);
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
+
+app.get('/api/files/download', async (req, res) => {
+  const full = safePath(req.query.path || '');
+
+  if (!full) {
+    return res.status(403).send('Ruta no permitida');
+  }
+
+  try {
+    const stat = await fs.stat(full);
+    if (!stat.isFile()) {
+      return res.status(400).send('Solo se pueden descargar archivos');
     }
-    const upload = activeUploadState;
-    if (!upload || upload.finished) return;
-    upload.cancelled = true;
-    upload.resumeUpload?.();
-    upload.resumeUpload = null;
-    $('uploadProgressCancel').disabled = true;
-    $('uploadProgressPause').disabled = true;
-    if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = 'Cancelando subida…';
-    if ($('uploadProgressPanel')) $('uploadProgressPanel').hidden = true;
-  });
-  $('uploadProgressRetry')?.addEventListener('click', async () => {
-    const files = lastUploadFiles.slice();
-    if (!files.length) return;
-    $('uploadProgressRetry').hidden = true;
-    await uploadSelectedFiles(files);
-  });
-  $('fileConflictModal')?.addEventListener('keydown', event => {
-    if (event.key === 'Escape') $('fileConflictModal').querySelector('[data-conflict-choice="cancel"]')?.click();
-  });
-  $('btnNewFile')?.addEventListener('click', async () => {
-    const raw = prompt('Nombre del nuevo archivo (termina en "/" para carpeta):');
-    if (!raw) return;
 
-    const trimmed = raw.trim();
-    if (!trimmed) return;
+    res.download(full);
+  } catch {
+    res.status(404).send('Archivo no encontrado');
+  }
+});
 
-    const isDir = trimmed.endsWith('/');
-    const name = isDir ? trimmed.slice(0, -1) : trimmed;
-    if (!name) return;
+app.post('/api/files/compress', async (req, res) => {
+  const { path: rel, name } = req.body;
 
-    const data = await postJSON('/api/files/create', {
-      path: currentDir,
-      name,
-      isDir,
+  if (!rel || !name) {
+    return fail(res, 'Parámetros requeridos');
+  }
+
+  const full = safePath(rel);
+  if (!full) {
+    return fail(res, 'Ruta no permitida');
+  }
+
+  const zipName = name.replace(/[^a-zA-Z0-9._-]/g, '_') + '.zip';
+  const zipDest = path.join(path.dirname(full), zipName);
+  const resolvedBase = path.resolve(BASE_DIR);
+
+  if (!zipDest.startsWith(resolvedBase + path.sep) && zipDest !== resolvedBase) {
+    return fail(res, 'Ruta no permitida');
+  }
+
+  try {
+    await createZipAtomically(zipDest, archive => {
+      const stat = fsSync.statSync(full);
+      if (stat.isDirectory()) {
+        archive.directory(full, name);
+      } else {
+        archive.file(full, { name });
+      }
     });
 
-    if (!data.ok) {
-      toast(`❌ ${data.error}`, 'err');
-      return;
+    ok(res, { zipName });
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
+
+app.post('/api/files/bulk', async (req, res) => {
+  const { action, items, destination = '' } = req.body || {};
+  const allowed = new Set(['delete', 'move', 'compress']);
+  if (!allowed.has(action) || !Array.isArray(items) || !items.length || items.length > 500) {
+    return fail(res, 'Operación masiva no válida');
+  }
+  if (action === 'move' && typeof destination !== 'string') {
+    return fail(res, 'Destino no válido');
+  }
+  const results = [];
+  for (const item of items) {
+    const rel = typeof item?.path === 'string' ? item.path : '';
+    const full = safePath(rel);
+    if (!full || path.resolve(full) === path.resolve(BASE_DIR)) {
+      results.push({ path: rel, ok: false, error: 'Ruta no permitida' });
+      continue;
     }
-
-    toast('✅ Creado correctamente', 'ok');
-    populateFiles(currentDir);
-  });
-
-  $('btnEditorBack')?.addEventListener('click', closeFileEditor);
-  $('btnSaveFile')?.addEventListener('click', saveCurrentFile);
-
-  document.addEventListener('keydown', event => {
-    if (
-      (event.ctrlKey || event.metaKey) &&
-      event.key.toLowerCase() === 's' &&
-      currentFile
-    ) {
-      event.preventDefault();
-      saveCurrentFile();
+    try {
+      const stat = await fs.stat(full);
+      if (action === 'delete') {
+        await fs.rm(full, { recursive: stat.isDirectory(), force: true });
+      } else if (action === 'move') {
+        const destinationPath = destination
+          ? `${destination.replace(/[\\/]+$/, '')}/${path.basename(rel)}`
+          : path.basename(rel);
+        const fullDest = safePath(destinationPath);
+        if (!fullDest || path.resolve(fullDest) === path.resolve(full)) throw new Error('Destino no válido');
+        await fs.mkdir(path.dirname(fullDest), { recursive: true });
+        await fs.rename(full, fullDest);
+      } else {
+        const baseName = path.basename(rel).replace(/[^a-zA-Z0-9._-]/g, '_');
+        const zipName = `${baseName}.zip`;
+        const zipDest = path.join(path.dirname(full), zipName);
+        if (!zipDest.startsWith(path.resolve(BASE_DIR) + path.sep)) throw new Error('Destino no válido');
+        await createZipAtomically(zipDest, archive => {
+          if (stat.isDirectory()) archive.directory(full, baseName);
+          else archive.file(full, { name: path.basename(full) });
+        });
+      }
+      results.push({ path: rel, ok: true });
+    } catch (error) {
+      results.push({ path: rel, ok: false, error: error.message || 'No se pudo completar la operación' });
     }
-  });
+  }
+  const completed = results.filter(result => result.ok).length;
+  const failed = results.length - completed;
+  return ok(res, { completed, failed, results });
+});
 
-  document.querySelectorAll('.plg-source').forEach(button => {
-    button.addEventListener('click', () => {
-      pluginSource = button.dataset.source;
+app.post('/api/files/delete', async (req, res) => {
+  const { path: rel, isDir } = req.body;
 
-      document.querySelectorAll('.plg-source').forEach(item =>
-        item.classList.toggle('active', item === button)
-      );
-    });
-  });
+  if (!rel) {
+    return fail(res, 'Parámetros requeridos');
+  }
 
-  document.querySelectorAll('.plg-price').forEach(button => {
-    button.addEventListener('click', () => {
-      priceFilter = button.dataset.price;
+  const full = safePath(rel);
+  if (!full) {
+    return fail(res, 'Ruta no permitida');
+  }
 
-      document.querySelectorAll('.plg-price').forEach(item =>
-        item.classList.toggle('active', item === button)
-      );
-    });
-  });
-
-  document.querySelectorAll('.plg-tab-btn').forEach(button => {
-    button.addEventListener('click', () => {
-      const tab = button.dataset.tab;
-
-      document.querySelectorAll('.plg-tab-btn').forEach(item =>
-        item.classList.toggle('active', item === button)
-      );
-
-      if ($('plgTabSearch')) {
-        $('plgTabSearch').style.display = tab === 'search' ? '' : 'none';
+  try {
+    if (isDir) {
+      if (path.resolve(full) === path.resolve(BASE_DIR)) {
+        return fail(res, 'No se puede eliminar la carpeta raíz del servidor');
       }
 
-      if ($('plgTabInstalled')) {
-        $('plgTabInstalled').style.display = tab === 'installed' ? '' : 'none';
-      }
+      await fs.rm(full, { recursive: true, force: true });
+    } else {
+      await fs.unlink(full);
+    }
 
-      if (tab === 'installed') {
-        loadInstalledPlugins();
-      }
+    ok(res);
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
+
+/* ══════════════════════════════════════════════
+    BACKUPS
+    ══════════════════════════════════════════════ */
+const BACKUPS_DIR = path.join(STARTUP_DIR, 'backups');
+const BACKUP_NAME_RE = /^[A-Za-z0-9 _.-]{1,80}$/;
+const BACKUP_FILE_RE = /^[A-Za-z0-9_.-]{1,120}\.zip$/;
+
+const BACKUP_RETENTION = Math.max(1, Number(process.env.MOONWOLF_BACKUP_RETENTION || 10));
+const BACKUP_EXCLUDES = Object.freeze(['.moonwolf', '.moonwolf-uploads']);
+const BACKUP_FLUSH_WAIT_MS = 3000;
+
+function ensureBackupsDir() {
+  if (!fsSync.existsSync(BACKUPS_DIR)) {
+    fsSync.mkdirSync(BACKUPS_DIR, { recursive: true });
+  }
+}
+
+function safeBackupPath(filename) {
+  if (!BACKUP_FILE_RE.test(filename) || filename.includes('..')) {
+    return null;
+  }
+
+  return path.join(BACKUPS_DIR, filename);
+}
+
+async function withMinecraftSavedOff(task) {
+  const running = Boolean(mcProcess && mcProcess.exitCode === null);
+
+  const send = cmd => {
+    if (!running || !mcProcess?.stdin?.writable) return;
+    try {
+      mcProcess.stdin.write(cmd + '\n');
+    } catch (error) {
+      console.warn(`[backup] No se pudo enviar "${cmd}":`, error.message);
+    }
+  };
+
+  if (running) {
+    send('save-off');
+    send('save-all flush');
+    await new Promise(resolve => setTimeout(resolve, BACKUP_FLUSH_WAIT_MS));
+  }
+
+  try {
+    return await task();
+  } finally {
+    send('save-on');
+  }
+}
+
+async function pruneOldBackups() {
+  const entries = await fs.readdir(BACKUPS_DIR, { withFileTypes: true });
+  const files = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.zip')) continue;
+    try {
+      const stats = await fs.stat(path.join(BACKUPS_DIR, entry.name));
+      files.push({ name: entry.name, mtimeMs: stats.mtimeMs });
+    } catch {}
+  }
+
+  files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  const toRemove = files.slice(BACKUP_RETENTION);
+  for (const file of toRemove) {
+    try {
+      await fs.rm(path.join(BACKUPS_DIR, file.name), { force: true });
+      console.log(`[backup] Retención: eliminada ${file.name}`);
+    } catch (error) {
+      console.warn(`[backup] No se pudo eliminar ${file.name}:`, error.message);
+    }
+  }
+
+  return toRemove.length;
+}
+
+app.get('/api/backups', async (_req, res) => {
+  try {
+    ensureBackupsDir();
+
+    const entries = await fs.readdir(BACKUPS_DIR, { withFileTypes: true });
+    const backups = await Promise.all(
+      entries
+        .filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.zip'))
+        .map(async entry => {
+          const stats = await fs.stat(path.join(BACKUPS_DIR, entry.name));
+
+          return {
+            name: entry.name,
+            sizeMb: (stats.size / 1024 / 1024).toFixed(2),
+            createdAt: stats.mtime.getTime(),
+            date: stats.mtime.toLocaleString('es-ES'),
+          };
+        })
+    );
+
+    backups.sort((a, b) => b.createdAt - a.createdAt);
+    ok(res, { backups });
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
+
+app.post('/api/backups', async (req, res) => {
+  const label = String(req.body?.name || '').trim();
+
+  if (label && !BACKUP_NAME_RE.test(label)) {
+    return fail(res, 'Nombre no válido. Usa letras, números, espacios, guiones y puntos (máx. 80 caracteres).');
+  }
+
+  try {
+    ensureBackupsDir();
+
+    const wasRunning = Boolean(mcProcess && mcProcess.exitCode === null);
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeLabel = (label || 'backup').replace(/[^A-Za-z0-9._ -]/g, '_').replace(/\s+/g, '_').slice(0, 60);
+    const zipName = `${safeLabel}_${timestamp}.zip`;
+    const zipPath = path.join(BACKUPS_DIR, zipName);
+
+    const result = await withMinecraftSavedOff(async () => {
+      await createZipAtomically(zipPath, archive => {
+        archive.directory(BASE_DIR, false, entryData => {
+          const name = String(entryData.name || '').replace(/\\/g, '/');
+          for (const excluded of BACKUP_EXCLUDES) {
+            if (name === excluded || name.startsWith(excluded + '/')) {
+              return false;
+            }
+          }
+          return entryData;
+        });
+      });
+
+      const stats = await fs.stat(zipPath);
+      return { sizeMb: (stats.size / 1024 / 1024).toFixed(2) };
     });
+
+    const pruned = await pruneOldBackups().catch(error => {
+      console.warn('[backup] Retención falló:', error.message);
+      return 0;
+    });
+
+    ok(res, {
+      name: zipName,
+      sizeMb: result.sizeMb,
+      pruned,
+      consistency: wasRunning ? 'server-consistent' : 'server-offline',
+    });
+  } catch (e) {
+    fail(res, `No se pudo crear la copia de seguridad: ${e.message}`);
+  }
+});
+
+app.get('/api/backups/download/:name', async (req, res) => {
+  const full = safeBackupPath(req.params.name);
+
+  if (!full) {
+    return res.status(403).send('Nombre no válido');
+  }
+
+  try {
+    await fs.stat(full);
+    res.download(full);
+  } catch {
+    res.status(404).send('Copia de seguridad no encontrada');
+  }
+});
+
+app.delete('/api/backups/:name', async (req, res) => {
+  const full = safeBackupPath(req.params.name);
+
+  if (!full) {
+    return fail(res, 'Nombre no válido');
+  }
+
+  try {
+    await fs.unlink(full);
+    ok(res);
+  } catch (e) {
+    fail(res, `No se pudo eliminar: ${e.message}`);
+  }
+});
+
+app.post('/api/backups/:name/restore', async (req, res) => {
+  const session = await getSessionFromRequest(req);
+  if (!isOwnerSession(session)) {
+    return res.status(403).json({
+      ok: false,
+      error: 'Solo el propietario puede restaurar copias de seguridad: sobrescriben la totalidad de los archivos del servidor.',
+    });
+  }
+
+  const full = safeBackupPath(req.params.name);
+
+  if (!full) {
+    return fail(res, 'Nombre no válido');
+  }
+
+  try {
+    const stat = await fs.stat(full);
+    if (!stat.isFile()) {
+      return fail(res, 'La copia no es un archivo válido');
+    }
+  } catch {
+    return fail(res, 'Copia de seguridad no encontrada');
+  }
+
+  const wasRunning = Boolean(mcProcess && mcProcess.exitCode === null);
+
+  try {
+    if (wasRunning) {
+      broadcastLog('🛑 Deteniendo el servidor antes de restaurar...', 'system');
+      broadcastStatus('stopping');
+      await stopMinecraft(MC_STOP_TIMEOUT_MS);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    const staging = path.join(BACKUPS_DIR, `.restore-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`);
+
+    try {
+      await fs.mkdir(staging, { recursive: true });
+
+      const psQuote = value => `'${String(value).replace(/'/g, "''")}'`;
+
+      await new Promise((resolve, reject) => {
+        const child = spawn(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy', 'Bypass',
+            '-Command',
+            `Expand-Archive -LiteralPath ${psQuote(full)} -DestinationPath ${psQuote(staging)} -Force`,
+          ],
+          { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }
+        );
+
+        let stderr = '';
+        let stdout = '';
+        child.stderr.on('data', data => { stderr += String(data); });
+        child.stdout.on('data', data => { stdout += String(data); });
+        child.once('error', reject);
+        child.once('close', code => {
+          if (code === 0) return resolve();
+          reject(new Error((stderr || stdout).trim() || `Expand-Archive terminó con código ${code}`));
+        });
+      });
+
+      const entries = await fs.readdir(staging, { withFileTypes: true });
+
+      for (const entry of entries) {
+        const src = path.join(staging, entry.name);
+        const dst = path.join(BASE_DIR, entry.name);
+
+        if (BACKUP_EXCLUDES.includes(entry.name)) continue;
+        if (!safePath(entry.name)) continue;
+
+        await fs.rm(dst, { recursive: true, force: true });
+        await fs.cp(src, dst, { recursive: true, force: true });
+      }
+
+      broadcastLog(`✅ Copia restaurada: ${req.params.name}`, 'success');
+
+      if (wasRunning) {
+        broadcastLog('▶ Reiniciando el servidor después de la restauración...', 'system');
+        broadcastStatus('starting');
+        launchServer().catch(error =>
+          broadcastLog(`❌ Error al reiniciar tras restaurar: ${error.message}`, 'error')
+        );
+      }
+
+      ok(res, { restored: true, wasRunning });
+    } finally {
+      await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+    }
+  } catch (error) {
+    console.error('[backup/restore]', error);
+    fail(res, `No se pudo restaurar la copia: ${error.message}`);
+  }
+});
+
+/* ══════════════════════════════════════════════
+    DEBUG
+    ══════════════════════════════════════════════ */
+app.get('/api/debug/start', async (_req, res) => {
+  const cfg = loadStartupConfig();
+  const jarPath = path.join(BASE_DIR, cfg.jar);
+  const exists = fsSync.existsSync(jarPath);
+  const minecraftVersion =
+    String(cfg.minecraftVersion || '').trim() ||
+    detectMinecraftVersionFromJarName(cfg.jar);
+
+  let javaBin = null;
+  let javaResolveError = null;
+
+  try {
+    javaBin =
+      cfg.javaMode === 'override' && String(cfg.javaOverridePath || '').trim()
+        ? await validateJavaOverride(cfg.javaOverridePath)
+        : await resolveJavaForServer(minecraftVersion);
+  } catch (error) {
+    javaResolveError = error.message;
+  }
+
+  const javaCheck = javaBin ? await new Promise(resolve => {
+    const j = spawn(javaBin, ['-version'], { windowsHide: true, stdio: 'pipe' });
+    let out = '';
+
+    j.stderr.on('data', d => { out += d; });
+    j.stdout.on('data', d => { out += d; });
+    j.on('close', code => resolve({ code, out }));
+    j.on('error', e => resolve({ code: -1, out: e.message }));
+  }) : { code: -1, out: javaResolveError || 'Java no disponible' };
+
+  res.json({
+    BASE_DIR,
+    jar: cfg.jar,
+    minecraftVersion,
+    javaPath: javaBin,
+    jarExists: exists,
+    jarPath,
+    java: javaCheck,
+    javaRuntime: getJavaRuntimeInfo(minecraftVersion),
+    javaResolveError,
   });
+});
 
-  $('btnPluginSearch')?.addEventListener('click', pluginSearch);
+/* ══════════════════════════════════════════════
+    START
+    ══════════════════════════════════════════════ */
+function stopMinecraft(timeoutMs = 30000) {
+  return new Promise(resolve => {
+    if (!mcProcess || mcProcess.exitCode !== null) return resolve();
 
-  $('plgSearchInput')?.addEventListener('keydown', event => {
-    if (event.key === 'Enter') {
-      pluginSearch();
+    const proc = mcProcess;
+
+    stopRequested = true;
+    restarting = false;
+
+    const killTimer = setTimeout(() => {
+      try { proc.kill(); } catch {}
+    }, timeoutMs);
+
+    proc.once('close', () => {
+      clearTimeout(killTimer);
+      resolve();
+    });
+
+    try {
+      proc.stdin.write(`${loadStartupConfig().stopCommand || 'stop'}\n`);
+    } catch {
+      try { proc.kill(); } catch {}
     }
   });
+}
 
-  $('btnRefreshInstalled')?.addEventListener('click', loadInstalledPlugins);
+module.exports = { stopMinecraft, requiredPermission, permissionAllows };
 
-  $('btnClosePlgModal')?.addEventListener('click', () => {
-    if ($('plgVersionModal')) {
-      $('plgVersionModal').style.display = 'none';
-    }
+function listenWithRetry(basePort, maxAttempts = 10) {
+  return new Promise((resolve, reject) => {
+    let attempts = 0;
+    const tryListen = port => {
+      const onError = error => {
+        if (error.code === 'EADDRINUSE' && attempts < maxAttempts - 1) {
+          attempts += 1;
+          server.off('listening', onListening);
+          console.warn(`[server] Puerto ${port} ocupado, probando ${port + 1}...`);
+          tryListen(port + 1);
+        } else {
+          server.off('error', onError);
+          reject(error);
+        }
+      };
+      const onListening = () => {
+        server.off('error', onError);
+        resolve(port);
+      };
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(port, HOST);
+    };
+    tryListen(basePort);
   });
+}
 
-  $('plgVersionModal')?.addEventListener('click', event => {
-    if (event.target === $('plgVersionModal')) {
-      $('plgVersionModal').style.display = 'none';
-    }
-  });
+async function start() {
+  removeLegacyShareTokenFiles();
+  const actualPort = await listenWithRetry(PORT);
+  console.log(`MoonWolf Panel → http://${HOST}:${actualPort}`);
 
-  $('btnNewBackup')?.addEventListener('click', createBackup);
+  if (SHARE_TOKEN_DATABASE_URL) {
+    initializeShareTokenStore()
+      .then(() => {
+        console.log('[share-tokens] Neon conectado; almacenamiento PostgreSQL inicializado.');
+      })
+      .catch(error => {
+        console.error(
+          '[share-tokens] No se pudo inicializar el almacén PostgreSQL:',
+          error?.message || error
+        );
+      });
+  } else {
+    console.warn(
+      '[share-tokens] DATABASE_URL no configurada. Los tokens compartidos quedan deshabilitados; no hay almacenamiento local alternativo.'
+    );
+  }
 
-  updateAgentUi();
-  updateStatusUi(currentStatus);
+  const cfg = loadStartupConfig();
 
-  showLogin('');
-
-  if (panelSession && agentId) {
-    connectCloud(false).catch(() =>
-      showLogin(
-        'La sesión no es válida. Introduce un nuevo código de emparejamiento.'
-      )
+  if (cfg.autoStartOnBoot) {
+    broadcastLog('🌙 Arranque automático activado. Iniciando servidor...', 'system');
+    broadcastStatus('starting');
+    launchServer().catch(error =>
+      broadcastLog(`❌ Error en arranque automático: ${error.message}`, 'error')
     );
   }
 }
 
-/* START */
-
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', bindEvents, { once: true });
-} else {
-  bindEvents();
-}
+start().catch(error => {
+  console.error('❌ Error iniciando MoonWolf Panel:', error);
+  process.exit(1);
+});
