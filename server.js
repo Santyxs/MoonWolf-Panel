@@ -856,11 +856,6 @@ const apiHits = new Map();
 const operationHits = new Map();
 const API_RATE_LIMIT = 120;
 const API_RATE_WINDOW_MS = 60_000;
-/* Limite propio de /files/upload-chunk. El cliente sube en trozos de 8 MB con 4 en
-   paralelo (dashboard.js: FILE_UPLOAD_CHUNK_SIZE / FILE_UPLOAD_PARALLEL_CHUNKS), de modo
-   que 900/min (~15 trozos/s) deja sitio a subidas legitimas grandes sin dejar la ruta
-   practicamente sin proteccion como el antiguo 10_000/min. Ajustable con
-   MOONWOLF_UPLOAD_RATE_LIMIT. */
 const FILE_UPLOAD_RATE_LIMIT = Math.max(
   60,
   Number(process.env.MOONWOLF_UPLOAD_RATE_LIMIT) || 900
@@ -1846,7 +1841,7 @@ async function resolveJavaForServer(minecraftVersion) {
 }
 
 const HOST = '0.0.0.0';
-const PORT = Number(process.env.MOONWOLF_PORT);
+const PORT = Number(process.env.MOONWOLF_PORT) || 10000;
 
 const STARTUP_DIR = path.join(BASE_DIR, '.moonwolf');
 const STARTUP_CONFIG_PATH = path.join(STARTUP_DIR, 'startup.json');
