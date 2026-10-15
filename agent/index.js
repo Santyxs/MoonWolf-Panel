@@ -367,7 +367,7 @@ const PANEL_URL = 'https://moonwolf-panel.up.railway.app';
 const CLOUD_PATH = '/socket.io';
 const VERSION = typeof __AGENT_VERSION__ !== 'undefined' ? __AGENT_VERSION__ : 'dev';
 
-const LOCAL_PORT = 3000;
+const LOCAL_PORT = 10000;
 const AGENT_TOKEN_RE = /^[A-Za-z0-9_-]{43,}$/;
 const LOCAL_TOKEN_RE = /^[A-Za-z0-9_-]{43,}$/;
 const PAIRING_CODE_RE = /^MW-P[A-Z2-9]{3}-[A-Z2-9]{4}$/;
@@ -1139,6 +1139,41 @@ async function main() {
 
     applyUpdate: () => applyUpdateNow(),
   });
+
+  /* ─────────────────────────────────────────────────────────────
+     PUENTE stdout/stderr → logs de la GUI
+     Todo lo que el servidor embebido imprime por console.log/warn/error
+     (que internamente va a process.stdout/stderr.write) se captura aquí
+     y se reenvía a addLog(), de modo que aparece en el modal de Logs de
+     la interfaz. Antes, en el .exe (compilado con editbin /SUBSYSTEM:WINDOWS),
+     toda esa salida se perdía y era imposible diagnosticar el arranque del
+     servidor local.
+     ───────────────────────────────────────────────────────────── */
+  const _stdoutWrite = process.stdout.write.bind(process.stdout);
+  const _stderrWrite = process.stderr.write.bind(process.stderr);
+
+  function _routeProcessOutputToLogs(chunk, isError) {
+    try {
+      const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+
+      for (const rawLine of text.split(/\r?\n/)) {
+        const line = rawLine.replace(/\s+$/, '');
+
+        if (line) addLog(line, isError ? 'error' : 'info');
+      }
+    } catch {}
+  }
+
+  process.stdout.write = function patchedStdoutWrite(chunk, encoding, callback) {
+    _routeProcessOutputToLogs(chunk, false);
+    return _stdoutWrite(chunk, encoding, callback);
+  };
+
+  process.stderr.write = function patchedStderrWrite(chunk, encoding, callback) {
+    _routeProcessOutputToLogs(chunk, true);
+    return _stderrWrite(chunk, encoding, callback);
+  };
+  /* ───────────────────────────────────────────────────────────── */
 
   addLog(`MoonWolf Agent v${VERSION} iniciado.`);
   addLog(`Agent ID: ${config.agentId}`);
