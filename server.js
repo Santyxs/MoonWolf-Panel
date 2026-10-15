@@ -1072,7 +1072,7 @@ app.use(helmet({
 app.use(compression({ threshold: 1024 }));
 const server = http.createServer(app);
 
-const ALLOWED_ORIGIN = 'https://moonwolf-panel.onrender.com';
+const ALLOWED_ORIGIN = 'https://moonwolf-panel.up.railway.app';
 
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
@@ -1203,9 +1203,6 @@ function assetVersion(asset) {
     return cached.version;
   }
 
-  /* La version se calcula sobre el CONTENIDO del archivo, no sobre su mtime: asi una
-     reescritura con el mismo contenido no invalida la cache, y cualquier cambio real la
-     invalida siempre. */
   let version;
   try {
     version = crypto
@@ -1221,7 +1218,6 @@ function assetVersion(asset) {
   return version;
 }
 
-/* Sirve index.html sustituyendo el ?v= de cada asset por su version real. */
 function renderIndexHtml() {
   const html = fsSync.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
 
