@@ -45,7 +45,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: agent/node_modules
-          key: agent-mods-\( {{ runner.os }}- \){{ hashFiles('agent/package.json') }}
+          key: agent-mods-${{ runner.os }}-${{ hashFiles('agent/package.json') }}
 
       - name: Install Agent dependencies
         if: steps.cache-agent-mods.outputs.cache-hit != 'true'
