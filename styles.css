@@ -574,24 +574,47 @@ a.btn-primary { text-decoration: none; }
 .log-line.system  .log-text { color: var(--accent); }
 .log-line.cmd     .log-text { color: var(--purple); }
 
-.ansi-bold { font-weight: 700; }
-.ansi-black { color: #111827; }
-.ansi-red, .ansi-dark-red { color: #ff5c70; }
-.ansi-green, .ansi-dark-green { color: #39e58c; }
-.ansi-yellow, .ansi-gold { color: #ffd166; }
-.ansi-blue, .ansi-dark-blue { color: #63b3ff; }
-.ansi-magenta, .ansi-dark-purple, .ansi-light-purple { color: #d69cff; }
-.ansi-cyan, .ansi-dark-aqua, .ansi-aqua { color: #4de4ff; }
-.ansi-white { color: #e7edf5; }
-.ansi-gray { color: #a8b4c4; }
-.ansi-dark-gray, .ansi-bright-black { color: #718096; }
-.ansi-bright-red { color: #ff7890; }
-.ansi-bright-green { color: #63ffad; }
-.ansi-bright-yellow { color: #ffe08a; }
-.ansi-bright-blue { color: #8bc8ff; }
+/* ── ANSI (terminal) ── */
+.ansi-bold      { font-weight: 700; }
+.ansi-italic    { font-style: italic; }
+.ansi-underline { text-decoration: underline; }
+.ansi-strike    { text-decoration: line-through; }
+.ansi-underline.ansi-strike { text-decoration: underline line-through; }
+
+.ansi-black          { color: #4a5568; }
+.ansi-red            { color: #ff5c70; }
+.ansi-green          { color: #39e58c; }
+.ansi-yellow         { color: #ffd166; }
+.ansi-blue           { color: #63b3ff; }
+.ansi-magenta        { color: #d69cff; }
+.ansi-cyan           { color: #4de4ff; }
+.ansi-white          { color: #e7edf5; }
+.ansi-bright-black   { color: #718096; }
+.ansi-bright-red     { color: #ff7890; }
+.ansi-bright-green   { color: #63ffad; }
+.ansi-bright-yellow  { color: #ffe08a; }
+.ansi-bright-blue    { color: #8bc8ff; }
 .ansi-bright-magenta { color: #e8baff; }
-.ansi-bright-cyan { color: #83efff; }
-.ansi-bright-white { color: #ffffff; }
+.ansi-bright-cyan    { color: #83efff; }
+.ansi-bright-white   { color: #ffffff; }
+
+/* ── Códigos § de Minecraft — paleta del cliente ── */
+.mc-black        { color: #000000; }
+.mc-dark-blue    { color: #0000AA; }
+.mc-dark-green   { color: #00AA00; }
+.mc-dark-aqua    { color: #00AAAA; }
+.mc-dark-red     { color: #AA0000; }
+.mc-dark-purple  { color: #AA00AA; }
+.mc-gold         { color: #FFAA00; }
+.mc-gray         { color: #AAAAAA; }
+.mc-dark-gray    { color: #555555; }
+.mc-blue         { color: #5555FF; }
+.mc-green        { color: #55FF55; }
+.mc-aqua         { color: #55FFFF; }
+.mc-red          { color: #FF5555; }
+.mc-light-purple { color: #FF55FF; }
+.mc-yellow       { color: #FFFF55; }
+.mc-white        { color: #FFFFFF; }
 
 .cmd-row    { display: flex; border-top: 1px solid var(--border); }
 .cmd-prefix {
