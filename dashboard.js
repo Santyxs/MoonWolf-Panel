@@ -1342,7 +1342,7 @@ function shouldIgnoreLog(line) {
   return LOG_IGNORE_PATTERNS.some(re => re.test(text));
 }
 
-const ANSI_RE = /\x1b\[([0-9;]*)m|§([0-9a-fk-or])/gi;
+const ANSI_RE = /\x1b\[([0-9;]*)m|\u00a7([0-9a-fk-orx])/gi;
 const ANSI_COLORS = {
   30: 'black', 31: 'red', 32: 'green', 33: 'yellow',
   34: 'blue', 35: 'magenta', 36: 'cyan', 37: 'white',
