@@ -31,16 +31,17 @@ const DC_ROUTES = [
   ['GET', '/api/backups/download/:name'],
 ];
 
+function pathMatchesPattern(pathname, pattern) {
+  const pathParts = String(pathname || '').split('/');
+  const patternParts = String(pattern || '').split('/');
+  if (pathParts.length !== patternParts.length) return false;
+  return patternParts.every((part, i) => part.startsWith(':') || part === pathParts[i]);
+}
+
 function dcIsDirectRoute(method, pathname) {
-  const route = pathname.split('/');
-
-  return DC_ROUTES.some(([m, pattern]) => {
-    const parts = pattern.split('/');
-
-    return m === method &&
-      parts.length === route.length &&
-      parts.every((part, i) => part.startsWith(':') || part === route[i]);
-  });
+  return DC_ROUTES.some(([m, pattern]) =>
+    m === method && pathMatchesPattern(pathname, pattern)
+  );
 }
 
 function dcPrepareNative() {
