@@ -1585,12 +1585,14 @@ const MC_VERSION_STRICT_RE = /^(?:1\.\d{1,2}(?:\.\d{1,2})?|2[0-9]+(?:\.\d{1,2}){
 const MC_CONSOLE_VERSION_RE = /(?:Starting minecraft server version|This server is running .*?version|Loading Minecraft|Minecraft version)\s+([0-9]+(?:\.[0-9]+){1,2})/i;
 
 function normalizeMinecraftVersionCandidate(value) {
-  const v = String(value || '').trim();
+  let v = String(value || '').trim();
+  // Paper a veces pone "1.21.4-R0.1-SNAPSHOT" o "1.21.4/abc"
+  v = v.split(/[\/\s]/)[0].replace(/-R\d.*$/i, '').replace(/-SNAPSHOT.*$/i, '');
   if (!MC_VERSION_STRICT_RE.test(v)) return null;
   const parsed = parseMinecraftVersion(v);
   if (!parsed) return null;
   if (parsed.major === 1 && (parsed.minor < 7 || parsed.minor > 30)) return null;
-  if (parsed.major >= 20 && parsed.major <= 30) return v;
+  if (parsed.major >= 20 && parsed.major <= 40) return v;
   if (parsed.major === 1) return v;
   return null;
 }
@@ -1605,68 +1607,230 @@ function pickBestMinecraftVersion(candidates) {
   return best;
 }
 
-/** Escanea el binario del JAR buscando cadenas típicas de versión (sin dependencias extra). */
-function detectMinecraftVersionFromJarBytes(buffer) {
-  if (!buffer || !buffer.length) return null;
+function readUInt16LE(buf, offset) {
+  return buf[offset] | (buf[offset + 1] << 8);
+}
 
-  const slices = [];
-  const headSize = Math.min(buffer.length, 3 * 1024 * 1024);
-  slices.push(buffer.subarray(0, headSize));
-  if (buffer.length > headSize) {
-    const tailSize = Math.min(buffer.length - headSize, 1024 * 1024);
-    slices.push(buffer.subarray(buffer.length - tailSize));
-  }
+function readUInt32LE(buf, offset) {
+  return (
+    (buf[offset]) |
+    (buf[offset + 1] << 8) |
+    (buf[offset + 2] << 16) |
+    (buf[offset + 3] << 24)
+  ) >>> 0;
+}
 
-  const candidates = [];
-  const patterns = [
-    /"id"\s*:\s*"(1\.\d{1,2}(?:\.\d{1,2})?|2[0-9]+(?:\.\d{1,2}){0,2})"/g,
-    /"name"\s*:\s*"(1\.\d{1,2}(?:\.\d{1,2})?|2[0-9]+(?:\.\d{1,2}){0,2})"/g,
-    /Implementation-Version:\s*([0-9]+(?:\.[0-9]+){1,2})/gi,
-    /Specification-Version:\s*([0-9]+(?:\.[0-9]+){1,2})/gi,
-    /Minecraft[_\s-]?Version[=:\s]+([0-9]+(?:\.[0-9]+){1,2})/gi,
-    /mcversion[=:\s]+([0-9]+(?:\.[0-9]+){1,2})/gi,
-    /paper-version[=:\s]+([0-9]+(?:\.[0-9]+){1,2})/gi,
-  ];
-
-  for (const slice of slices) {
-    const text = Buffer.from(slice).toString('latin1');
-    for (const re of patterns) {
-      re.lastIndex = 0;
-      let m;
-      while ((m = re.exec(text)) !== null) {
-        candidates.push(m[1]);
-        if (candidates.length > 40) break;
-      }
+/** Localiza el End of Central Directory de un ZIP/JAR. */
+function findZipEocd(buffer) {
+  // EOCD: signature 0x06054b50, mínimo 22 bytes, comment hasta 65535
+  const maxScan = Math.min(buffer.length, 22 + 65535);
+  for (let i = buffer.length - 22; i >= buffer.length - maxScan; i -= 1) {
+    if (
+      buffer[i] === 0x50 &&
+      buffer[i + 1] === 0x4b &&
+      buffer[i + 2] === 0x05 &&
+      buffer[i + 3] === 0x06
+    ) {
+      return i;
     }
   }
+  return -1;
+}
 
-  return pickBestMinecraftVersion(candidates);
+/**
+ * Extrae entradas concretas de un JAR (ZIP) sin dependencias.
+ * Solo soporta stored (0) y deflate (8).
+ */
+function extractZipEntries(jarPath, wantedNames) {
+  const want = new Set(
+    (wantedNames || []).map(n => String(n).replace(/\\/g, '/').toLowerCase())
+  );
+  if (!want.size) return new Map();
+
+  const fd = fsSync.openSync(jarPath, 'r');
+  try {
+    const stat = fsSync.fstatSync(fd);
+    const tailLen = Math.min(stat.size, 70 * 1024);
+    const tail = Buffer.alloc(tailLen);
+    fsSync.readSync(fd, tail, 0, tailLen, stat.size - tailLen);
+
+    const eocdRel = findZipEocd(tail);
+    if (eocdRel < 0) return new Map();
+
+    const eocd = tail.subarray(eocdRel);
+    const totalEntries = readUInt16LE(eocd, 10);
+    const cdSize = readUInt32LE(eocd, 12);
+    const cdOffset = readUInt32LE(eocd, 16);
+
+    if (cdSize <= 0 || cdOffset < 0 || cdOffset + cdSize > stat.size) return new Map();
+
+    const cd = Buffer.alloc(cdSize);
+    fsSync.readSync(fd, cd, 0, cdSize, cdOffset);
+
+    const zlib = require('zlib');
+    const results = new Map();
+    let offset = 0;
+
+    for (let i = 0; i < totalEntries && offset + 46 <= cd.length; i += 1) {
+      if (readUInt32LE(cd, offset) !== 0x02014b50) break;
+
+      const method = readUInt16LE(cd, offset + 10);
+      const compSize = readUInt32LE(cd, offset + 20);
+      const uncompSize = readUInt32LE(cd, offset + 24);
+      const nameLen = readUInt16LE(cd, offset + 28);
+      const extraLen = readUInt16LE(cd, offset + 30);
+      const commentLen = readUInt16LE(cd, offset + 32);
+      const localHeaderOffset = readUInt32LE(cd, offset + 42);
+      const name = cd.subarray(offset + 46, offset + 46 + nameLen).toString('utf8');
+      const nameKey = name.replace(/\\/g, '/').toLowerCase();
+
+      offset += 46 + nameLen + extraLen + commentLen;
+
+      if (!want.has(nameKey) && !want.has(path.basename(nameKey))) continue;
+      if (compSize <= 0 || uncompSize <= 0 || uncompSize > 2 * 1024 * 1024) continue;
+
+      // Cabecera local
+      const localHead = Buffer.alloc(30);
+      fsSync.readSync(fd, localHead, 0, 30, localHeaderOffset);
+      if (readUInt32LE(localHead, 0) !== 0x04034b50) continue;
+
+      const localNameLen = readUInt16LE(localHead, 26);
+      const localExtraLen = readUInt16LE(localHead, 28);
+      const dataOffset = localHeaderOffset + 30 + localNameLen + localExtraLen;
+
+      const compressed = Buffer.alloc(compSize);
+      fsSync.readSync(fd, compressed, 0, compSize, dataOffset);
+
+      let raw;
+      try {
+        if (method === 0) {
+          raw = compressed;
+        } else if (method === 8) {
+          raw = zlib.inflateRawSync(compressed);
+        } else {
+          continue;
+        }
+      } catch {
+        continue;
+      }
+
+      results.set(nameKey, raw.toString('utf8'));
+      if (results.size >= want.size) break;
+    }
+
+    return results;
+  } finally {
+    fsSync.closeSync(fd);
+  }
+}
+
+function versionFromVersionJson(text) {
+  try {
+    const data = JSON.parse(text);
+    return (
+      normalizeMinecraftVersionCandidate(data.id) ||
+      normalizeMinecraftVersionCandidate(data.name) ||
+      null
+    );
+  } catch {
+    const m =
+      text.match(/"id"\s*:\s*"([^"]+)"/) ||
+      text.match(/"name"\s*:\s*"([^"]+)"/);
+    return m ? normalizeMinecraftVersionCandidate(m[1]) : null;
+  }
+}
+
+function versionFromPatchProperties(text) {
+  // Paper/Purpur: version=1.21.4  o  mcVersion=1.21.4
+  const lines = String(text).split(/\r?\n/);
+  const map = {};
+  for (const line of lines) {
+    const m = line.match(/^\s*([A-Za-z0-9_.-]+)\s*=\s*(.+)\s*$/);
+    if (m) map[m[1].toLowerCase()] = m[2].trim();
+  }
+  return (
+    normalizeMinecraftVersionCandidate(map.version) ||
+    normalizeMinecraftVersionCandidate(map.mcversion) ||
+    normalizeMinecraftVersionCandidate(map['minecraft-version']) ||
+    null
+  );
+}
+
+function versionFromManifest(text) {
+  const impl = text.match(/Implementation-Version:\s*([^\r\n]+)/i);
+  if (impl) {
+    const v = normalizeMinecraftVersionCandidate(impl[1]);
+    if (v) return v;
+  }
+  const spec = text.match(/Specification-Version:\s*([^\r\n]+)/i);
+  if (spec) {
+    const v = normalizeMinecraftVersionCandidate(spec[1]);
+    if (v) return v;
+  }
+  return null;
 }
 
 function detectMinecraftVersionFromJarFile(jarPath) {
   try {
     if (!jarPath || !fsSync.existsSync(jarPath)) return null;
+
     const fromName = detectMinecraftVersionFromJarName(path.basename(jarPath));
     if (fromName) return fromName;
 
     const stat = fsSync.statSync(jarPath);
-    if (!stat.isFile() || stat.size <= 0 || stat.size > 200 * 1024 * 1024) return null;
+    if (!stat.isFile() || stat.size <= 22 || stat.size > 400 * 1024 * 1024) return null;
 
+    // 1) Entradas conocidas dentro del ZIP
+    const entries = extractZipEntries(jarPath, [
+      'version.json',
+      'patch.properties',
+      'META-INF/MANIFEST.MF',
+      'META-INF/versions.list',
+    ]);
+
+    if (entries.has('version.json')) {
+      const v = versionFromVersionJson(entries.get('version.json'));
+      if (v) return v;
+    }
+    if (entries.has('patch.properties')) {
+      const v = versionFromPatchProperties(entries.get('patch.properties'));
+      if (v) return v;
+    }
+    if (entries.has('meta-inf/manifest.mf')) {
+      const v = versionFromManifest(entries.get('meta-inf/manifest.mf'));
+      if (v) return v;
+    }
+
+    // 2) Fallback: escanear cabecera/cola del binario por cadenas ASCII
     const fd = fsSync.openSync(jarPath, 'r');
     try {
-      const headLen = Math.min(stat.size, 3 * 1024 * 1024);
+      const headLen = Math.min(stat.size, 4 * 1024 * 1024);
       const head = Buffer.alloc(headLen);
       fsSync.readSync(fd, head, 0, headLen, 0);
-
       let tail = null;
       if (stat.size > headLen) {
-        const tailLen = Math.min(stat.size - headLen, 1024 * 1024);
+        const tailLen = Math.min(stat.size - headLen, 2 * 1024 * 1024);
         tail = Buffer.alloc(tailLen);
         fsSync.readSync(fd, tail, 0, tailLen, stat.size - tailLen);
       }
-
-      const combined = tail ? Buffer.concat([head, tail]) : head;
-      return detectMinecraftVersionFromJarBytes(combined);
+      const text = Buffer.concat(tail ? [head, tail] : [head]).toString('latin1');
+      const candidates = [];
+      const patterns = [
+        /"id"\s*:\s*"(1\.\d{1,2}(?:\.\d{1,2})?|2[0-9]+(?:\.\d{1,2}){0,2})"/g,
+        /"name"\s*:\s*"(1\.\d{1,2}(?:\.\d{1,2})?|2[0-9]+(?:\.\d{1,2}){0,2})"/g,
+        /(?:^|\n)\s*version\s*=\s*(1\.\d{1,2}(?:\.\d{1,2})?|2[0-9]+(?:\.\d{1,2}){0,2})/gi,
+        /mcVersion\s*=\s*(1\.\d{1,2}(?:\.\d{1,2})?|2[0-9]+(?:\.\d{1,2}){0,2})/gi,
+        /Implementation-Version:\s*([0-9]+(?:\.[0-9]+){1,2}[^\r\n]*)/gi,
+      ];
+      for (const re of patterns) {
+        re.lastIndex = 0;
+        let m;
+        while ((m = re.exec(text)) !== null) {
+          candidates.push(m[1]);
+          if (candidates.length > 30) break;
+        }
+      }
+      return pickBestMinecraftVersion(candidates);
     } finally {
       fsSync.closeSync(fd);
     }
@@ -1676,15 +1840,67 @@ function detectMinecraftVersionFromJarFile(jarPath) {
   }
 }
 
+/** También mira archivos del servidor fuera del JAR (p. ej. version_history.json de Paper). */
+function detectMinecraftVersionFromServerDir() {
+  const candidates = [];
+
+  try {
+    const historyPath = path.join(BASE_DIR, 'version_history.json');
+    if (fsSync.existsSync(historyPath)) {
+      const data = JSON.parse(fsSync.readFileSync(historyPath, 'utf8'));
+      if (data && typeof data === 'object') {
+        // Suele ser { "currentVersion": "1.21.4", ... } o un mapa de versiones
+        if (data.currentVersion) candidates.push(data.currentVersion);
+        const keys = Object.keys(data).filter(k => MC_VERSION_STRICT_RE.test(k));
+        candidates.push(...keys);
+      }
+    }
+  } catch {}
+
+  try {
+    const propsPath = path.join(BASE_DIR, 'version_history.json');
+    void propsPath;
+  } catch {}
+
+  // fabric-server-launcher.properties / .fabric
+  for (const rel of [
+    'fabric-server-launcher.properties',
+    '.fabric/server/minecraft-server.version',
+  ]) {
+    try {
+      const p = path.join(BASE_DIR, rel);
+      if (!fsSync.existsSync(p)) continue;
+      const raw = fsSync.readFileSync(p, 'utf8');
+      const m =
+        raw.match(/gameVersion\s*=\s*([^\r\n]+)/i) ||
+        raw.match(/minecraft[^\d]*(1\.\d{1,2}(?:\.\d{1,2})?)/i) ||
+        raw.match(/^(1\.\d{1,2}(?:\.\d{1,2})?)\s*$/m);
+      if (m) candidates.push(m[1].trim());
+    } catch {}
+  }
+
+  return pickBestMinecraftVersion(candidates);
+}
+
 function detectMinecraftVersionFromConsoleLine(line) {
   const text = String(line || '');
+
+  // Paper reciente: "... (MC: 1.21.4)"
+  const mcTag = text.match(/\bMC:\s*([0-9]+(?:\.[0-9]+){1,2})\b/i);
+  if (mcTag) {
+    const v = normalizeMinecraftVersionCandidate(mcTag[1]);
+    if (v) return v;
+  }
+
   const m = text.match(MC_CONSOLE_VERSION_RE);
   if (m) {
     const v = normalizeMinecraftVersionCandidate(m[1]);
     if (v) return v;
   }
 
-  const paper = text.match(/running\s+(?:Paper|Purpur|Spigot|CraftBukkit|Folia|Leaves?|Pufferfish|Gale|Leaf)\s+version\s+([0-9]+(?:\.[0-9]+){1,2})/i);
+  const paper = text.match(
+    /running\s+(?:Paper|Purpur|Spigot|CraftBukkit|Folia|Leaves?|Pufferfish|Gale|Leaf)\s+version\s+([0-9]+(?:\.[0-9]+){1,2})/i
+  );
   if (paper) {
     const v = normalizeMinecraftVersionCandidate(paper[1]);
     if (v) return v;
@@ -1695,7 +1911,7 @@ function detectMinecraftVersionFromConsoleLine(line) {
 
 /**
  * Resuelve la versión de Minecraft del servidor actual.
- * Orden: config guardada → nombre del JAR → contenido del JAR.
+ * Orden: config → nombre JAR → contenido JAR → archivos del directorio.
  */
 function resolveMinecraftVersion(options = {}) {
   const { autoPersist = false, jarName = null } = options;
@@ -1714,6 +1930,11 @@ function resolveMinecraftVersion(options = {}) {
   if (!version) {
     version = detectMinecraftVersionFromJarFile(jarPath);
     if (version) source = 'jar-content';
+  }
+
+  if (!version) {
+    version = detectMinecraftVersionFromServerDir();
+    if (version) source = 'server-dir';
   }
 
   let persisted = false;
@@ -3149,6 +3370,10 @@ app.post('/api/startup/detect-version', async (req, res) => {
       if (!version) {
         version = detectMinecraftVersionFromJarFile(path.join(BASE_DIR, targetJar));
         if (version) source = 'jar-content';
+      }
+      if (!version) {
+        version = detectMinecraftVersionFromServerDir();
+        if (version) source = 'server-dir';
       }
       if (version && body.persist !== false) {
         saveStartupConfig({ minecraftVersion: version });
