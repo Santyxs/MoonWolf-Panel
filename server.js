@@ -477,12 +477,11 @@ const ADMIN_ROUTE_RULES = Object.freeze([
   },
 ]);
 
-function routeMatchesPattern(route, pattern) {
-  const routeParts = route.split('/');
-  const patternParts = pattern.split('/');
-  if (routeParts.length !== patternParts.length) return false;
-
-  return patternParts.every((part, index) => part.startsWith(':') || part === routeParts[index]);
+function pathMatchesPattern(pathname, pattern) {
+  const pathParts = String(pathname || '').split('/');
+  const patternParts = String(pattern || '').split('/');
+  if (pathParts.length !== patternParts.length) return false;
+  return patternParts.every((part, i) => part.startsWith(':') || part === pathParts[i]);
 }
 
 function requiredPermission(method, pathname) {
@@ -490,7 +489,7 @@ function requiredPermission(method, pathname) {
   const route = String(pathname || '').split('?')[0];
 
   const isAdminRoute = ADMIN_ROUTE_RULES.some(rule =>
-    rule.methods.has(verb) && rule.paths.some(pattern => routeMatchesPattern(route, pattern))
+    rule.methods.has(verb) && rule.paths.some(pattern => pathMatchesPattern(route, pattern))
   );
   if (isAdminRoute) return 'admin';
   if (verb === 'GET' || verb === 'HEAD') return 'read';
@@ -871,9 +870,46 @@ const RUNTIME_DIR =
   process.env.MOONWOLF_BASE_DIR ||
   path.join(process.cwd(), 'mc-server');
 
-const loginAttempts = new Map();
-const apiHits = new Map();
-const operationHits = new Map();
+/* ── Rate limiting helpers ── */
+function createCounterMap() {
+  const store = new Map();
+  return {
+    hit(key, limit, windowMs) {
+      const now = Date.now();
+      const rec = store.get(key);
+      if (!rec || now > rec.resetAt) {
+        store.set(key, { count: 1, resetAt: now + windowMs });
+        return false;
+      }
+      rec.count++;
+      return rec.count > limit;
+    },
+    get(key) {
+      return store.get(key);
+    },
+    set(key, value) {
+      store.set(key, value);
+    },
+    delete(key) {
+      store.delete(key);
+    },
+    cleanup(now = Date.now()) {
+      for (const [k, rec] of store) {
+        if (now > rec.resetAt) store.delete(k);
+      }
+    },
+    get size() {
+      return store.size;
+    },
+    [Symbol.iterator]() {
+      return store[Symbol.iterator]();
+    },
+  };
+}
+
+const loginAttempts = createCounterMap();
+const apiHits = createCounterMap();
+const operationHits = createCounterMap();
 const API_RATE_LIMIT = 120;
 const API_RATE_WINDOW_MS = 60_000;
 const FILE_UPLOAD_RATE_LIMIT = Math.max(
@@ -884,7 +920,7 @@ const FILE_UPLOAD_RATE_WINDOW_MS = 60_000;
 const SOCKET_CONNECTION_LIMIT = 20;
 const SOCKET_CONNECTION_WINDOW_MS = 60_000;
 const SOCKET_CONNECTION_ATTEMPTS = 40;
-const socketConnectionAttempts = new Map();
+const socketConnectionAttempts = createCounterMap();
 const socketConnections = new Map();
 const TRUSTED_PROXY_HOPS = Math.max(
   0,
@@ -914,53 +950,18 @@ const OPERATION_RATE_RULES = Object.freeze([
 ]);
 
 function loginRateLimited(ip) {
-  const now = Date.now();
-  const rec = loginAttempts.get(ip);
-
-  if (!rec || now > rec.resetAt) {
-    loginAttempts.set(ip, {
-      count: 1,
-      resetAt: now + 5 * 60 * 1000,
-    });
-
-    return false;
-  }
-
-  rec.count++;
-
-  return rec.count > 10;
+  return loginAttempts.hit(ip, 10, 5 * 60 * 1000);
 }
 
 function apiRateLimited(ip) {
-  const now = Date.now();
-  const rec = apiHits.get(ip);
-
-  if (!rec || now > rec.resetAt) {
-    apiHits.set(ip, {
-      count: 1,
-      resetAt: now + API_RATE_WINDOW_MS,
-    });
-
-    return false;
-  }
-
-  rec.count++;
-
-  return rec.count > API_RATE_LIMIT;
-}
-
-function operationPathMatches(pathname, pattern) {
-  const pathParts = pathname.split('/');
-  const patternParts = pattern.split('/');
-  if (pathParts.length !== patternParts.length) return false;
-  return patternParts.every((part, index) => part.startsWith(':') || part === pathParts[index]);
+  return apiHits.hit(ip, API_RATE_LIMIT, API_RATE_WINDOW_MS);
 }
 
 function operationRateRule(method, pathname) {
   const verb = String(method || '').toUpperCase();
   const route = String(pathname || '').split('?')[0];
   return OPERATION_RATE_RULES.find(rule =>
-    rule.methods.has(verb) && rule.paths.some(pattern => operationPathMatches(route, pattern))
+    rule.methods.has(verb) && rule.paths.some(pattern => pathMatchesPattern(route, pattern))
   ) || null;
 }
 
@@ -969,18 +970,7 @@ function operationRateLimited(ip, method, pathname) {
   if (!rule) return null;
 
   const key = `${ip}:${rule.id}`;
-  const now = Date.now();
-  const current = operationHits.get(key);
-  if (!current || now > current.resetAt) {
-    operationHits.set(key, { count: 1, resetAt: now + rule.windowMs });
-    return null;
-  }
-
-  current.count++;
-  if (current.count > rule.limit) {
-    return rule;
-  }
-  return null;
+  return operationHits.hit(key, rule.limit, rule.windowMs) ? rule : null;
 }
 
 function socketClientIp(socket) {
@@ -996,17 +986,9 @@ function socketClientIp(socket) {
 
 function socketConnectionAllowed(socket) {
   const ip = socketClientIp(socket);
-  const now = Date.now();
-  const attempts = socketConnectionAttempts.get(ip);
 
-  if (!attempts || now > attempts.resetAt) {
-    socketConnectionAttempts.set(ip, {
-      count: 1,
-      resetAt: now + SOCKET_CONNECTION_WINDOW_MS,
-    });
-  } else {
-    attempts.count++;
-    if (attempts.count > SOCKET_CONNECTION_ATTEMPTS) return false;
+  if (socketConnectionAttempts.hit(ip, SOCKET_CONNECTION_ATTEMPTS, SOCKET_CONNECTION_WINDOW_MS)) {
+    return false;
   }
 
   if ((socketConnections.get(ip) || 0) >= SOCKET_CONNECTION_LIMIT) return false;
@@ -1042,22 +1024,10 @@ function socketEventAllowed(socket, event, limit, windowMs = 60_000) {
 
 setInterval(() => {
   const now = Date.now();
-
-  for (const [ip, rec] of apiHits) {
-    if (now > rec.resetAt) apiHits.delete(ip);
-  }
-
-  for (const [ip, rec] of socketConnectionAttempts) {
-    if (now > rec.resetAt) socketConnectionAttempts.delete(ip);
-  }
-
-  for (const [ip, rec] of loginAttempts) {
-    if (now > rec.resetAt) loginAttempts.delete(ip);
-  }
-
-  for (const [key, rec] of operationHits) {
-    if (now > rec.resetAt) operationHits.delete(key);
-  }
+  loginAttempts.cleanup(now);
+  apiHits.cleanup(now);
+  operationHits.cleanup(now);
+  socketConnectionAttempts.cleanup(now);
 
   for (const [code, pairing] of pairingCodes) {
     if (pairing.expiresAt <= now) pairingCodes.delete(code);
@@ -1857,9 +1827,7 @@ async function resolveJavaForServer(minecraftVersion) {
   return executable;
 }
 
-// En modo agent embebido (LOCAL_AGENT_TOKEN) solo escuchamos en loopback.
-// En Railway/cloud seguimos en todas las interfaces.
-const HOST = LOCAL_AGENT_TOKEN ? '127.0.0.1' : '0.0.0.0';
+const HOST = '0.0.0.0';
 const PORT = Number(process.env.MOONWOLF_PORT) || 10000;
 
 const STARTUP_DIR = path.join(BASE_DIR, '.moonwolf');
@@ -2404,25 +2372,31 @@ function safePluginPath(filename) {
 const ok = (res, data = {}) => res.json({ ok: true, ...data });
 const fail = (res, error) => res.json({ ok: false, error });
 
-async function apiFetch(url) {
-  const { default: fetch } = await import('node-fetch');
-  const res = await fetch(url, { headers: { 'User-Agent': 'MoonWolfPanel/2.0 (contact@moonwolf.local)' } });
+const PANEL_UA = 'MoonWolfPanel/2.0 (contact@moonwolf.local)';
+let _fetchImpl = null;
 
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} -> ${url}`);
+async function getFetch() {
+  if (_fetchImpl) return _fetchImpl;
+  if (typeof globalThis.fetch === 'function') {
+    _fetchImpl = globalThis.fetch.bind(globalThis);
+  } else {
+    const { default: nodeFetch } = await import('node-fetch');
+    _fetchImpl = nodeFetch;
   }
+  return _fetchImpl;
+}
 
+async function apiFetch(url) {
+  const fetch = await getFetch();
+  const res = await fetch(url, { headers: { 'User-Agent': PANEL_UA } });
+  if (!res.ok) throw new Error(`HTTP ${res.status} -> ${url}`);
   return res.json();
 }
 
 async function apiFetchText(url) {
-  const { default: fetch } = await import('node-fetch');
-  const res = await fetch(url, { headers: { 'User-Agent': 'MoonWolfPanel/2.0 (contact@moonwolf.local)' } });
-
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} -> ${url}`);
-  }
-
+  const fetch = await getFetch();
+  const res = await fetch(url, { headers: { 'User-Agent': PANEL_UA } });
+  if (!res.ok) throw new Error(`HTTP ${res.status} -> ${url}`);
   return res.text();
 }
 
@@ -2474,7 +2448,7 @@ function safeDownloadDestination(dest) {
 }
 
 async function downloadFile(url, dest) {
-  const { default: fetch } = await import('node-fetch');
+  const fetch = await getFetch();
   const finalDest = safeDownloadDestination(dest);
   if (!finalDest) throw new Error('Destino de descarga no permitido.');
 
@@ -2484,7 +2458,7 @@ async function downloadFile(url, dest) {
   let response;
   for (let redirect = 0; redirect <= DOWNLOAD_MAX_REDIRECTS; redirect++) {
     response = await fetch(currentUrl, {
-      headers: { 'User-Agent': 'MoonWolfPanel/2.0 (contact@moonwolf.local)' },
+      headers: { 'User-Agent': PANEL_UA },
       redirect: 'manual',
       signal: AbortSignal.timeout(10 * 60 * 1000),
     });
@@ -3731,7 +3705,7 @@ app.get('/api/plugins/search', async (req, res) => {
 
   if (source === 'all' || source === 'modrinth') {
     try {
-      const { default: fetch } = await import('node-fetch');
+      const fetch = await getFetch();
       const r = await fetch(`https://api.modrinth.com/v2/search?query=${encodeURIComponent(q)}&limit=10`);
       const d = await r.json();
 
@@ -3804,7 +3778,7 @@ app.get('/api/plugins/versions', async (req, res) => {
 
   try {
     if (source === 'modrinth') {
-      const { default: fetch } = await import('node-fetch');
+      const fetch = await getFetch();
       const r = await fetch(`https://api.modrinth.com/v2/project/${id}/version`);
       const versions = await r.json();
 
@@ -5533,23 +5507,7 @@ function listenWithRetry(basePort, maxAttempts = 10) {
 
 async function start() {
   removeLegacyShareTokenFiles();
-
-  // En modo agent el puerto debe ser exacto: el agent habla siempre a 127.0.0.1:MOONWOLF_PORT.
-  // Si está ocupado, fallamos en lugar de saltar a otro puerto (desincronizaría el agent).
-  const maxAttempts = LOCAL_AGENT_TOKEN ? 1 : 10;
-  let actualPort;
-  try {
-    actualPort = await listenWithRetry(PORT, maxAttempts);
-  } catch (error) {
-    if (LOCAL_AGENT_TOKEN && error?.code === 'EADDRINUSE') {
-      throw new Error(
-        `El puerto local ${PORT} está ocupado. Cierra el proceso que lo usa o cambia MOONWOLF_PORT. ` +
-        `(El agent necesita ese puerto fijo; no se reintenta en otro.)`
-      );
-    }
-    throw error;
-  }
-
+  const actualPort = await listenWithRetry(PORT);
   console.log(`MoonWolf Panel → http://${HOST}:${actualPort}`);
 
   if (SHARE_TOKEN_DATABASE_URL) {

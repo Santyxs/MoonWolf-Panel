@@ -787,16 +787,18 @@ const direct = {
 
 const directReady = () => direct.ready && direct.dc?.readyState === 'open';
 
+function pathMatchesPattern(pathname, pattern) {
+  const pathParts = String(pathname || '').split('/');
+  const patternParts = String(pattern || '').split('/');
+  if (pathParts.length !== patternParts.length) return false;
+  return patternParts.every((part, i) => part.startsWith(':') || part === pathParts[i]);
+}
+
 function isDirectRoute(method, pathname) {
-  const route = pathname.split('?')[0].split('/');
-
-  return DIRECT_ROUTES.some(([m, pattern]) => {
-    const parts = pattern.split('/');
-
-    return m === method &&
-      parts.length === route.length &&
-      parts.every((part, i) => part.startsWith(':') || part === route[i]);
-  });
+  const route = String(pathname || '').split('?')[0];
+  return DIRECT_ROUTES.some(([m, pattern]) =>
+    m === method && pathMatchesPattern(route, pattern)
+  );
 }
 
 function hasResultBody(result) {
