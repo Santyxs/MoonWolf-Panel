@@ -4013,8 +4013,17 @@ async function loadStartup() {
 
       <div class="form-group">
         <label class="form-label">Versión de Minecraft</label>
-        <input id="stMinecraftVersion" class="form-input" type="text" placeholder="Ej. 1.21.11" value="${escHtml(cfg.minecraftVersion || '')}">
-        <div class="form-hint">MoonWolf usa esta versión para seleccionar automáticamente el Java compatible. Si instalaste el servidor desde Versiones, se rellena automáticamente.</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input id="stMinecraftVersion" class="form-input" type="text" placeholder="Se detecta sola si dejas vacío" value="${escHtml(cfg.minecraftVersion || '')}" style="flex:1;min-width:160px">
+          <button type="button" class="small-btn" id="btnDetectMcVersion" title="Detectar desde el JAR seleccionado">🔍 Detectar</button>
+        </div>
+        <div class="form-hint" id="stVersionHint">
+          ${
+            data.versionDetection?.autoDetected
+              ? `Detectada automáticamente (${escHtml(data.versionDetection.source || 'jar')}): <strong>${escHtml(cfg.minecraftVersion || '')}</strong>. MoonWolf la usa para elegir el Java compatible.`
+              : 'MoonWolf detecta la versión del JAR (nombre o contenido) y desde la consola al arrancar. Si dejas el campo vacío se rellena sola.'
+          }
+        </div>
       </div>
 
       <div class="form-group">
@@ -4139,6 +4148,46 @@ async function loadStartup() {
   `;
 
   $('btnSaveStartup')?.addEventListener('click', saveStartup);
+
+  $('btnDetectMcVersion')?.addEventListener('click', async () => {
+    const btn = $('btnDetectMcVersion');
+    const jar = $('stJar')?.value || '';
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = '⟳ Detectando…';
+    }
+    try {
+      const data = await api('/api/startup/detect-version', {
+        method: 'POST',
+        body: JSON.stringify({ jar: jar || undefined, force: true, persist: true }),
+      });
+      if (!data?.ok && data?.error) throw new Error(data.error);
+      const version = data.version || '';
+      const input = $('stMinecraftVersion');
+      if (input) input.value = version;
+      const hint = $('stVersionHint');
+      if (hint) {
+        hint.innerHTML = version
+          ? `Detectada (${escHtml(data.source || 'jar')}): <strong>${escHtml(version)}</strong>. Se ha guardado automáticamente.`
+          : 'No se pudo detectar la versión en el JAR. Puedes escribirla a mano.';
+      }
+      const label = $('stJavaManagedLabel');
+      if (label) label.textContent = requiredJavaLabel(version);
+      toast(
+        version
+          ? `🔍 Versión detectada: ${version}`
+          : 'No se encontró versión en el JAR',
+        version ? 'ok' : 'err'
+      );
+    } catch (error) {
+      toast(`❌ ${error.message}`, 'err');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = '🔍 Detectar';
+      }
+    }
+  });
 
   $('stJavaOverride')?.addEventListener('change', event => {
     const input = $('stJavaOverridePath');

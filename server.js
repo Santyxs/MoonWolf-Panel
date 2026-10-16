@@ -462,6 +462,7 @@ const ADMIN_ROUTE_RULES = Object.freeze([
       '/api/backups',
       '/api/backups/:name/restore',
       '/api/startup',
+      '/api/startup/detect-version',
       '/api/ports',
       '/api/plugins/install',
       '/api/versions/install',
@@ -1573,11 +1574,160 @@ function detectMinecraftVersionFromJarName(jarName) {
   if (!matches?.length) return null;
 
   for (const raw of matches) {
-    const value = raw.replace(/^[-_.]/, '').replace(/[-_.]$/, '');
+    const value = raw.replace(/^[-_.]+/, '').replace(/[-_.]+$/, '');
     if (/^(?:1\.\d+(?:\.\d+)?|2[0-9]+(?:\.\d+){0,2})$/.test(value)) return value;
   }
 
   return null;
+}
+
+const MC_VERSION_STRICT_RE = /^(?:1\.\d{1,2}(?:\.\d{1,2})?|2[0-9]+(?:\.\d{1,2}){0,2})$/;
+const MC_CONSOLE_VERSION_RE = /(?:Starting minecraft server version|This server is running .*?version|Loading Minecraft|Minecraft version)\s+([0-9]+(?:\.[0-9]+){1,2})/i;
+
+function normalizeMinecraftVersionCandidate(value) {
+  const v = String(value || '').trim();
+  if (!MC_VERSION_STRICT_RE.test(v)) return null;
+  const parsed = parseMinecraftVersion(v);
+  if (!parsed) return null;
+  if (parsed.major === 1 && (parsed.minor < 7 || parsed.minor > 30)) return null;
+  if (parsed.major >= 20 && parsed.major <= 30) return v;
+  if (parsed.major === 1) return v;
+  return null;
+}
+
+function pickBestMinecraftVersion(candidates) {
+  let best = null;
+  for (const raw of candidates) {
+    const v = normalizeMinecraftVersionCandidate(raw);
+    if (!v) continue;
+    if (!best || (compareMinecraftVersions(v, best) || 0) > 0) best = v;
+  }
+  return best;
+}
+
+/** Escanea el binario del JAR buscando cadenas típicas de versión (sin dependencias extra). */
+function detectMinecraftVersionFromJarBytes(buffer) {
+  if (!buffer || !buffer.length) return null;
+
+  const slices = [];
+  const headSize = Math.min(buffer.length, 3 * 1024 * 1024);
+  slices.push(buffer.subarray(0, headSize));
+  if (buffer.length > headSize) {
+    const tailSize = Math.min(buffer.length - headSize, 1024 * 1024);
+    slices.push(buffer.subarray(buffer.length - tailSize));
+  }
+
+  const candidates = [];
+  const patterns = [
+    /"id"\s*:\s*"(1\.\d{1,2}(?:\.\d{1,2})?|2[0-9]+(?:\.\d{1,2}){0,2})"/g,
+    /"name"\s*:\s*"(1\.\d{1,2}(?:\.\d{1,2})?|2[0-9]+(?:\.\d{1,2}){0,2})"/g,
+    /Implementation-Version:\s*([0-9]+(?:\.[0-9]+){1,2})/gi,
+    /Specification-Version:\s*([0-9]+(?:\.[0-9]+){1,2})/gi,
+    /Minecraft[_\s-]?Version[=:\s]+([0-9]+(?:\.[0-9]+){1,2})/gi,
+    /mcversion[=:\s]+([0-9]+(?:\.[0-9]+){1,2})/gi,
+    /paper-version[=:\s]+([0-9]+(?:\.[0-9]+){1,2})/gi,
+  ];
+
+  for (const slice of slices) {
+    const text = Buffer.from(slice).toString('latin1');
+    for (const re of patterns) {
+      re.lastIndex = 0;
+      let m;
+      while ((m = re.exec(text)) !== null) {
+        candidates.push(m[1]);
+        if (candidates.length > 40) break;
+      }
+    }
+  }
+
+  return pickBestMinecraftVersion(candidates);
+}
+
+function detectMinecraftVersionFromJarFile(jarPath) {
+  try {
+    if (!jarPath || !fsSync.existsSync(jarPath)) return null;
+    const fromName = detectMinecraftVersionFromJarName(path.basename(jarPath));
+    if (fromName) return fromName;
+
+    const stat = fsSync.statSync(jarPath);
+    if (!stat.isFile() || stat.size <= 0 || stat.size > 200 * 1024 * 1024) return null;
+
+    const fd = fsSync.openSync(jarPath, 'r');
+    try {
+      const headLen = Math.min(stat.size, 3 * 1024 * 1024);
+      const head = Buffer.alloc(headLen);
+      fsSync.readSync(fd, head, 0, headLen, 0);
+
+      let tail = null;
+      if (stat.size > headLen) {
+        const tailLen = Math.min(stat.size - headLen, 1024 * 1024);
+        tail = Buffer.alloc(tailLen);
+        fsSync.readSync(fd, tail, 0, tailLen, stat.size - tailLen);
+      }
+
+      const combined = tail ? Buffer.concat([head, tail]) : head;
+      return detectMinecraftVersionFromJarBytes(combined);
+    } finally {
+      fsSync.closeSync(fd);
+    }
+  } catch (error) {
+    console.warn('[version-detect] No se pudo leer el JAR:', error.message);
+    return null;
+  }
+}
+
+function detectMinecraftVersionFromConsoleLine(line) {
+  const text = String(line || '');
+  const m = text.match(MC_CONSOLE_VERSION_RE);
+  if (m) {
+    const v = normalizeMinecraftVersionCandidate(m[1]);
+    if (v) return v;
+  }
+
+  const paper = text.match(/running\s+(?:Paper|Purpur|Spigot|CraftBukkit|Folia|Leaves?|Pufferfish|Gale|Leaf)\s+version\s+([0-9]+(?:\.[0-9]+){1,2})/i);
+  if (paper) {
+    const v = normalizeMinecraftVersionCandidate(paper[1]);
+    if (v) return v;
+  }
+
+  return null;
+}
+
+/**
+ * Resuelve la versión de Minecraft del servidor actual.
+ * Orden: config guardada → nombre del JAR → contenido del JAR.
+ */
+function resolveMinecraftVersion(options = {}) {
+  const { autoPersist = false, jarName = null } = options;
+  const cfg = loadStartupConfig();
+  const configured = String(cfg.minecraftVersion || '').trim();
+  if (configured && parseMinecraftVersion(configured)) {
+    return { version: configured, source: 'config', persisted: false };
+  }
+
+  const jar = jarName || cfg.jar || 'server.jar';
+  const jarPath = path.join(BASE_DIR, jar);
+
+  let version = detectMinecraftVersionFromJarName(jar);
+  let source = version ? 'jar-name' : null;
+
+  if (!version) {
+    version = detectMinecraftVersionFromJarFile(jarPath);
+    if (version) source = 'jar-content';
+  }
+
+  let persisted = false;
+  if (version && autoPersist && !configured) {
+    try {
+      saveStartupConfig({ minecraftVersion: version });
+      persisted = true;
+      console.log(`[version-detect] Versión detectada automáticamente (${source}): ${version}`);
+    } catch (error) {
+      console.warn('[version-detect] No se pudo guardar la versión detectada:', error.message);
+    }
+  }
+
+  return { version: version || '', source: source || 'none', persisted };
 }
 
 function getJavaRuntimeInfo(minecraftVersion) {
@@ -2962,18 +3112,65 @@ app.get('/api/startup', async (_req, res) => {
       .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 
     const config = loadStartupConfig();
-    const detectedVersion =
-      config.minecraftVersion ||
-      detectMinecraftVersionFromJarName(config.jar) ||
-      detectMinecraftVersionFromJarName(jars.find(jar => jar === config.jar));
+    const resolved = resolveMinecraftVersion({
+      autoPersist: true,
+      jarName: config.jar || jars.find(jar => jar === config.jar) || jars[0] || null,
+    });
+    const detectedVersion = resolved.version || '';
 
     const runtime = getJavaRuntimeInfo(detectedVersion);
 
     ok(res, {
-      config: { ...config, minecraftVersion: detectedVersion || '' },
+      config: { ...config, minecraftVersion: detectedVersion },
       jars,
       serverPort: readServerPort(),
       javaRuntime: runtime,
+      versionDetection: {
+        source: resolved.source,
+        persisted: resolved.persisted,
+        autoDetected: resolved.source !== 'config' && Boolean(detectedVersion),
+      },
+    });
+  } catch (e) {
+    fail(res, e.message);
+  }
+});
+
+app.post('/api/startup/detect-version', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const jar = body.jar ? safeJarName(body.jar) : null;
+    const cfg = loadStartupConfig();
+    const targetJar = jar || cfg.jar || 'server.jar';
+
+    if (body.force) {
+      let version = detectMinecraftVersionFromJarName(targetJar);
+      let source = version ? 'jar-name' : null;
+      if (!version) {
+        version = detectMinecraftVersionFromJarFile(path.join(BASE_DIR, targetJar));
+        if (version) source = 'jar-content';
+      }
+      if (version && body.persist !== false) {
+        saveStartupConfig({ minecraftVersion: version });
+      }
+      return ok(res, {
+        version: version || '',
+        source: source || 'none',
+        persisted: Boolean(version && body.persist !== false),
+        javaRuntime: getJavaRuntimeInfo(version || ''),
+      });
+    }
+
+    const resolved = resolveMinecraftVersion({
+      autoPersist: body.persist !== false,
+      jarName: targetJar,
+    });
+
+    ok(res, {
+      version: resolved.version,
+      source: resolved.source,
+      persisted: resolved.persisted,
+      javaRuntime: getJavaRuntimeInfo(resolved.version),
     });
   } catch (e) {
     fail(res, e.message);
@@ -3426,9 +3623,15 @@ async function launchServerInternal() {
     return false;
   }
 
-  const minecraftVersion =
-    String(cfg.minecraftVersion || '').trim() ||
-    detectMinecraftVersionFromJarName(cfg.jar);
+  const resolvedVersion = resolveMinecraftVersion({ autoPersist: true, jarName: cfg.jar });
+  const minecraftVersion = resolvedVersion.version || '';
+
+  if (minecraftVersion && resolvedVersion.source !== 'config') {
+    broadcastLog(
+      `🔍 Versión de Minecraft detectada automáticamente: ${minecraftVersion} (${resolvedVersion.source})`,
+      'system'
+    );
+  }
 
   let javaBin;
 
@@ -3469,20 +3672,49 @@ async function launchServerInternal() {
 
   mcProcess.stdin.on('error', () => {});
 
-  mcProcess.stdout.on('data', data => {
-    String(data).split(/\r?\n/).filter(Boolean).forEach(line => {
-      const type = /WARN/i.test(line) ? 'warn' : /ERROR/i.test(line) ? 'error' : DONE_RE.test(line) ? 'success' : 'info';
-      broadcastLog(line, type);
+  let consoleVersionCaptured = Boolean(minecraftVersion);
 
-      if (DONE_RE.test(line)) {
-        broadcastStatus('online');
-        startStatsTimer();
+  const handleProcessLine = (line, defaultType) => {
+    const type = /WARN/i.test(line)
+      ? 'warn'
+      : /ERROR/i.test(line)
+        ? 'error'
+        : DONE_RE.test(line)
+          ? 'success'
+          : defaultType;
+    broadcastLog(line, type);
+
+    if (!consoleVersionCaptured) {
+      const fromConsole = detectMinecraftVersionFromConsoleLine(line);
+      if (fromConsole) {
+        consoleVersionCaptured = true;
+        const current = String(loadStartupConfig().minecraftVersion || '').trim();
+        if (!current) {
+          try {
+            saveStartupConfig({ minecraftVersion: fromConsole });
+            broadcastLog(
+              `🔍 Versión de Minecraft detectada desde la consola: ${fromConsole}`,
+              'system'
+            );
+          } catch (error) {
+            console.warn('[version-detect] Consola:', error.message);
+          }
+        }
       }
-    });
+    }
+
+    if (DONE_RE.test(line)) {
+      broadcastStatus('online');
+      startStatsTimer();
+    }
+  };
+
+  mcProcess.stdout.on('data', data => {
+    String(data).split(/\r?\n/).filter(Boolean).forEach(line => handleProcessLine(line, 'info'));
   });
 
   mcProcess.stderr.on('data', data => {
-    String(data).split(/\r?\n/).filter(Boolean).forEach(line => broadcastLog(line, 'warn'));
+    String(data).split(/\r?\n/).filter(Boolean).forEach(line => handleProcessLine(line, 'warn'));
   });
 
   mcProcess.on('error', err => {
@@ -5410,7 +5642,7 @@ app.get('/api/debug/start', async (_req, res) => {
   const exists = fsSync.existsSync(jarPath);
   const minecraftVersion =
     String(cfg.minecraftVersion || '').trim() ||
-    detectMinecraftVersionFromJarName(cfg.jar);
+    resolveMinecraftVersion({ jarName: cfg.jar }).version;
 
   let javaBin = null;
   let javaResolveError = null;
