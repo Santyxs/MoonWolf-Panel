@@ -399,9 +399,37 @@ const DANGEROUS_UPLOAD_EXTENSIONS = new Set([
   '.jar',
 ]);
 
+// Devuelve la extensión peligrosa del destino (o null). Normaliza trucos de Windows:
+// "x.jar." / "x.jar " (se recortan solos) y "x.jar::$DATA" / "x.txt:s.jar" (streams).
+function dangerousExtOf(relPath) {
+  let name = path.basename(String(relPath || '').replace(/\\/g, '/'));
+  name = name.split(':')[0].replace(/[. ]+$/, '');
+  const ext = name.startsWith('.') && name.indexOf('.', 1) === -1
+    ? name.toLowerCase()
+    : path.extname(name).toLowerCase();
+  return DANGEROUS_UPLOAD_EXTENSIONS.has(ext) ? ext : null;
+}
+
 function isDangerousUploadPath(relPath) {
-  const ext = path.extname(String(relPath || '')).toLowerCase();
-  return DANGEROUS_UPLOAD_EXTENSIONS.has(ext);
+  return dangerousExtOf(relPath) !== null;
+}
+
+// Bloquea a los accesos compartidos crear/convertir archivos ejecutables.
+// Si se pasa srcRel y conserva la misma extensión peligrosa (mover/copiar/renombrar un
+// .jar ya existente), se permite. Devuelve true si ya ha respondido con 403.
+async function denyDangerousForShare(req, res, destRel, srcRel = null) {
+  const destExt = dangerousExtOf(destRel);
+  if (!destExt) return false;
+  if (srcRel && dangerousExtOf(srcRel) === destExt) return false;
+
+  const session = await getSessionFromRequest(req);
+  if (isOwnerSession(session)) return false;
+
+  res.status(403).json({
+    ok: false,
+    error: `Los accesos compartidos no pueden crear ni modificar archivos "${destExt}". Esta extensión permite ejecutar código en el host.`,
+  });
+  return true;
 }
 
 const ADMIN_ROUTE_RULES = Object.freeze([
@@ -2931,6 +2959,8 @@ app.post('/api/files/content', async (req, res) => {
     return fail(res, 'Parámetros requeridos');
   }
 
+  if (await denyDangerousForShare(req, res, rel)) return;
+
   const full = safePath(rel);
   if (!full) {
     return fail(res, 'Ruta no permitida');
@@ -2992,19 +3022,17 @@ app.post('/api/startup', async (req, res) => {
   } = req.body || {};
 
   const session = await getSessionFromRequest(req);
-  if (!isOwnerSession(session)) {
-    const current = loadStartupConfig();
-    const attempted = {
-      javaMode:         String(javaMode || ''),
-      javaOverridePath: String(javaOverridePath || ''),
-      javaPath:         String(javaPath || ''),
-      extraArgs:        String(extraArgs || ''),
-      programArgs:      String(programArgs || ''),
-    };
+  const owner = isOwnerSession(session);
+  const current = loadStartupConfig();
+
+  if (!owner) {
+    // Un acceso compartido solo falla si ENVÍA un valor distinto al actual.
+    // Los campos que no envía (undefined) se conservan tal cual.
+    const submitted = { javaMode, javaOverridePath, javaPath, extraArgs, programArgs };
     for (const field of OWNER_ONLY_STARTUP_FIELDS) {
-      const nextValue = attempted[field] ?? '';
-      const prevValue = String(current[field] ?? '');
-      if (nextValue !== prevValue) {
+      const nextValue = submitted[field];
+      if (nextValue === undefined || nextValue === null) continue;
+      if (String(nextValue).trim() !== String(current[field] ?? '').trim()) {
         return res.status(403).json({
           ok: false,
           error: `Solo el propietario puede modificar "${field}". Los accesos compartidos no pueden cambiar cómo se lanza la JVM.`,
@@ -3013,18 +3041,21 @@ app.post('/api/startup', async (req, res) => {
     }
   }
 
+  // Campos de lanzamiento: el propietario puede cambiarlos; el resto conserva lo guardado.
+  const useSubmitted = value => owner && value !== undefined;
+
   let safeExtraArgs;
   try {
-    safeExtraArgs = validateExtraArgs(extraArgs);
+    safeExtraArgs = validateExtraArgs(useSubmitted(extraArgs) ? extraArgs : current.extraArgs);
   } catch (error) {
     return fail(res, error.message);
   }
 
   let safeProgramArgs;
   try {
-    safeProgramArgs = programArgs === undefined
-      ? loadStartupConfig().programArgs
-      : validateProgramArgs(programArgs);
+    safeProgramArgs = useSubmitted(programArgs)
+      ? validateProgramArgs(programArgs)
+      : current.programArgs;
   } catch (error) {
     return fail(res, error.message);
   }
@@ -3056,10 +3087,24 @@ app.post('/api/startup', async (req, res) => {
   }
 
   try {
-    const mode = String(javaMode || '').trim() === 'override' ? 'override' : 'managed';
-    const configuredJava = mode === 'override'
-      ? await validateJavaOverride(javaOverridePath || javaPath)
-      : 'java';
+    let mode;
+    let configuredJava;
+
+    if (owner) {
+      mode = String(useSubmitted(javaMode) ? javaMode : current.javaMode || '').trim() === 'override'
+        ? 'override'
+        : 'managed';
+      configuredJava = mode === 'override'
+        ? await validateJavaOverride(
+            useSubmitted(javaOverridePath) || useSubmitted(javaPath)
+              ? (javaOverridePath || javaPath)
+              : (current.javaOverridePath || current.javaPath)
+          )
+        : 'java';
+    } else {
+      mode = current.javaMode === 'override' ? 'override' : 'managed';
+      configuredJava = current.javaPath || 'java';
+    }
     const config = saveStartupConfig({
       jar: safeJar,
       javaPath: configuredJava,
@@ -4862,6 +4907,7 @@ app.post('/api/files/create', async (req, res) => {
   }
 
   const rel = dir ? `${dir}/${name}` : name;
+  if (await denyDangerousForShare(req, res, rel)) return;
   const full = safePath(rel);
 
   if (!full) {
@@ -4897,6 +4943,8 @@ app.post('/api/files/rename', async (req, res) => {
     return fail(res, 'Nombre no válido');
   }
 
+  if (await denyDangerousForShare(req, res, newName, rel)) return;
+
   const full = safePath(rel);
   const fullNew = safePath(path.join(path.dirname(rel), newName));
 
@@ -4918,6 +4966,8 @@ app.post('/api/files/copy', async (req, res) => {
   if (!rel || dest === undefined) {
     return fail(res, 'Parámetros requeridos');
   }
+
+  if (await denyDangerousForShare(req, res, dest, rel)) return;
 
   const full = safePath(rel);
   const fullDest = safePath(dest);
@@ -4941,6 +4991,8 @@ app.post('/api/files/move', async (req, res) => {
   if (!rel || dest === undefined) {
     return fail(res, 'Parámetros requeridos');
   }
+
+  if (await denyDangerousForShare(req, res, dest, rel)) return;
 
   const full = safePath(rel);
   const fullDest = safePath(dest);
