@@ -9,7 +9,12 @@ const { execFile } = require('node:child_process');
 const PANEL_URL = 'https://moonwolf-panel.up.railway.app';
 const CONFIG_DIR = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'MoonWolf');
 const NATIVE_ASSET = 'native/webview.win32-x64-msvc.node';
-const WEBVIEW_DATA_DIR = path.join(CONFIG_DIR, 'WebView2Data');
+// WebView2 genera muchos archivos internos. Al ser una interfaz local sin
+// sesión web persistente, usamos un perfil temporal y limpiamos el anterior
+// en el siguiente arranque, cuando ya no debería estar bloqueado por WebView2.
+const TEMP_ROOT = path.join(os.tmpdir(), 'MoonWolf-Agent');
+const WEBVIEW_DATA_DIR = path.join(TEMP_ROOT, 'WebView2Data');
+const NATIVE_ADDON_NAME = 'webview.win32-x64-msvc.node';
 
 const UI_ASSETS = {
   '/': 'ui/index.html',
@@ -48,28 +53,60 @@ try {
   }
 } catch {}
 
+function removeStaleWebViewData() {
+  // El perfil puede quedar bloqueado brevemente si un cierre anterior fue
+  // inesperado. En ese caso no impedimos el arranque; se volverá a intentar
+  // en la siguiente ejecución.
+  try {
+    fs.rmSync(WEBVIEW_DATA_DIR, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 });
+  } catch {}
+
+  // Elimina también el perfil persistente de versiones anteriores.
+  try {
+    fs.rmSync(path.join(CONFIG_DIR, 'WebView2Data'), {
+      recursive: true,
+      force: true,
+      maxRetries: 2,
+      retryDelay: 100,
+    });
+  } catch {}
+
+  // Limpieza de la estructura antigua usada por versiones previas.
+  try {
+    fs.rmSync(path.join(TEMP_ROOT, 'webviewjs'), {
+      recursive: true,
+      force: true,
+      maxRetries: 2,
+      retryDelay: 100,
+    });
+  } catch {}
+}
+
 function prepareNativeAddon() {
   if (!isStandalone || !getAsset) return;
 
-  const runtimeDir = path.join(
-    os.tmpdir(),
-    'MoonWolf-Agent',
-    'webviewjs'
-  );
+  fs.mkdirSync(TEMP_ROOT, { recursive: true });
 
-  fs.mkdirSync(runtimeDir, { recursive: true });
-
-  const nativePath = path.join(
-    runtimeDir,
-    'webview.win32-x64-msvc.node'
-  );
+  const nativePath = path.join(TEMP_ROOT, NATIVE_ADDON_NAME);
 
   try {
-    if (!fs.existsSync(nativePath)) {
-      fs.writeFileSync(
-        nativePath,
-        Buffer.from(getAsset(NATIVE_ASSET))
-      );
+    const embeddedAddon = Buffer.from(getAsset(NATIVE_ASSET));
+    let needsWrite = true;
+
+    try {
+      const existing = fs.readFileSync(nativePath);
+      needsWrite = !existing.equals(embeddedAddon);
+    } catch {}
+
+    if (needsWrite) {
+      const temporaryPath = `${nativePath}.${process.pid}.tmp`;
+      try {
+        fs.writeFileSync(temporaryPath, embeddedAddon);
+        fs.renameSync(temporaryPath, nativePath);
+      } catch (error) {
+        try { fs.rmSync(temporaryPath, { force: true }); } catch {}
+        throw error;
+      }
     }
   } catch (error) {
     throw new Error(`No se pudo preparar WebViewJS: ${error.message}`);
@@ -78,6 +115,7 @@ function prepareNativeAddon() {
   process.env.NAPI_RS_NATIVE_LIBRARY_PATH = nativePath;
 }
 
+removeStaleWebViewData();
 prepareNativeAddon();
 
 const { Application } = require('@webviewjs/webview');
@@ -678,10 +716,7 @@ function createWindow() {
     }
   );
 
-  fs.mkdirSync(
-    WEBVIEW_DATA_DIR,
-    { recursive: true }
-  );
+  fs.mkdirSync(WEBVIEW_DATA_DIR, { recursive: true });
 
   const webContext =
     app.createWebContext({
