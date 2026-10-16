@@ -1857,7 +1857,9 @@ async function resolveJavaForServer(minecraftVersion) {
   return executable;
 }
 
-const HOST = '0.0.0.0';
+// En modo agent embebido (LOCAL_AGENT_TOKEN) solo escuchamos en loopback.
+// En Railway/cloud seguimos en todas las interfaces.
+const HOST = LOCAL_AGENT_TOKEN ? '127.0.0.1' : '0.0.0.0';
 const PORT = Number(process.env.MOONWOLF_PORT) || 10000;
 
 const STARTUP_DIR = path.join(BASE_DIR, '.moonwolf');
@@ -5531,7 +5533,23 @@ function listenWithRetry(basePort, maxAttempts = 10) {
 
 async function start() {
   removeLegacyShareTokenFiles();
-  const actualPort = await listenWithRetry(PORT);
+
+  // En modo agent el puerto debe ser exacto: el agent habla siempre a 127.0.0.1:MOONWOLF_PORT.
+  // Si está ocupado, fallamos en lugar de saltar a otro puerto (desincronizaría el agent).
+  const maxAttempts = LOCAL_AGENT_TOKEN ? 1 : 10;
+  let actualPort;
+  try {
+    actualPort = await listenWithRetry(PORT, maxAttempts);
+  } catch (error) {
+    if (LOCAL_AGENT_TOKEN && error?.code === 'EADDRINUSE') {
+      throw new Error(
+        `El puerto local ${PORT} está ocupado. Cierra el proceso que lo usa o cambia MOONWOLF_PORT. ` +
+        `(El agent necesita ese puerto fijo; no se reintenta en otro.)`
+      );
+    }
+    throw error;
+  }
+
   console.log(`MoonWolf Panel → http://${HOST}:${actualPort}`);
 
   if (SHARE_TOKEN_DATABASE_URL) {
