@@ -5002,18 +5002,27 @@ app.get('/api/versions/current', async (_req, res) => {
 /* ══════════════════════════════════════════════
     FILE OPERATIONS
     ══════════════════════════════════════════════ */
-let archiver = null;
+let ZipArchiveCtor = null;
 
-function getArchiver() {
-  return archiver || (archiver = require('archiver'));
+async function getZipArchive() {
+  if (ZipArchiveCtor) return ZipArchiveCtor;
+  // archiver v8 is ESM-only; load via dynamic import for CJS compatibility
+  const mod = await import('archiver');
+  ZipArchiveCtor = mod.ZipArchive || mod.default?.ZipArchive || mod.default;
+  if (typeof ZipArchiveCtor !== 'function') {
+    throw new Error('No se pudo cargar ZipArchive desde el paquete archiver');
+  }
+  return ZipArchiveCtor;
 }
 
 async function createZipAtomically(zipPath, configureArchive) {
   const tempPath = `${zipPath}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
   try {
+    const ZipArchive = await getZipArchive();
     await new Promise((resolve, reject) => {
       const output = fsSync.createWriteStream(tempPath, { flags: 'wx' });
-      const archive = getArchiver()('zip', { zlib: { level: 6 } });
+      // archiver v8: new ZipArchive(options) instead of archiver('zip', options)
+      const archive = new ZipArchive({ zlib: { level: 6 } });
       let settled = false;
       const finish = (error) => {
         if (settled) return;
@@ -5027,7 +5036,7 @@ async function createZipAtomically(zipPath, configureArchive) {
       archive.pipe(output);
       try {
         configureArchive(archive);
-        void archive.finalize().catch(finish);
+        void Promise.resolve(archive.finalize()).catch(finish);
       } catch (error) {
         finish(error);
       }
