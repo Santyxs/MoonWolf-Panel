@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://cdnjs.cloudflare.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Share+Tech+Mono&display=swap">
 
-  <link rel="stylesheet" href="styles.css?v=20261011-direct-2">
+  <link rel="stylesheet" href="styles.css?v=20261017-backup-progress">
   <script src="dashboard.js?v=20261011-direct-2" defer></script>
 </head>
 
@@ -402,6 +402,15 @@
             <div class="page-sub">Gestión de las copias de seguridad del servidor</div>
           </div>
           <button class="small-btn" id="btnNewBackup">➕ Nueva copia</button>
+        </div>
+        <div class="backup-progress" id="backupProgress" hidden>
+          <div class="bkprog-head">
+            <span class="bkprog-label" id="backupProgressLabel">Preparando la copia de seguridad…</span>
+            <span class="bkprog-pct" id="backupProgressPct">—</span>
+          </div>
+          <div class="bkprog-track" id="backupProgressBar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="bkprog-fill" id="backupProgressFill"></div>
+          </div>
         </div>
         <div class="panel"><div class="backup-list" id="backupList"></div></div>
       </div>

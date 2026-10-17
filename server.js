@@ -421,6 +421,7 @@ const ADMIN_ROUTE_RULES = Object.freeze([
       '/api/databases',
       '/api/backups',
       '/api/backups/download/:name',
+      '/api/backups/progress',
       '/api/debug/start',
     ],
   },
@@ -5765,6 +5766,46 @@ const BACKUP_RETENTION = Math.max(1, Number(process.env.MOONWOLF_BACKUP_RETENTIO
 const BACKUP_EXCLUDES = Object.freeze(['.moonwolf', '.moonwolf-uploads']);
 const BACKUP_FLUSH_WAIT_MS = 3000;
 
+const backupProgress = {
+  active: false,
+  phase: 'idle',
+  processedBytes: 0,
+  totalBytes: 0,
+  percent: 0,
+  startedAt: null,
+  error: null,
+};
+
+async function computeDirTotalBytes(dir, excludedNames) {
+  let total = 0;
+  const stack = [dir];
+
+  while (stack.length) {
+    const current = stack.pop();
+    let entries;
+
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (excludedNames.includes(entry.name)) continue;
+        stack.push(path.join(current, entry.name));
+      } else if (entry.isFile()) {
+        try {
+          const stats = await fs.stat(path.join(current, entry.name));
+          total += stats.size;
+        } catch {}
+      }
+    }
+  }
+
+  return total;
+}
+
 function ensureBackupsDir() {
   if (!fsSync.existsSync(BACKUPS_DIR)) {
     fsSync.mkdirSync(BACKUPS_DIR, { recursive: true });
@@ -5875,8 +5916,26 @@ app.post('/api/backups', async (req, res) => {
     const zipName = `${safeLabel}_${timestamp}.zip`;
     const zipPath = path.join(BACKUPS_DIR, zipName);
 
+    backupProgress.active = true;
+    backupProgress.phase = 'flush';
+    backupProgress.processedBytes = 0;
+    backupProgress.totalBytes = await computeDirTotalBytes(BASE_DIR, BACKUP_EXCLUDES);
+    backupProgress.percent = 0;
+    backupProgress.startedAt = Date.now();
+    backupProgress.error = null;
+
     const result = await withMinecraftSavedOff(async () => {
+      backupProgress.phase = 'zipping';
+
       await createZipAtomically(zipPath, archive => {
+        archive.on('progress', data => {
+          const processed = Number(data?.fs?.processedBytes || 0);
+          backupProgress.processedBytes = processed;
+          backupProgress.percent = backupProgress.totalBytes > 0
+            ? Math.min(99, Math.round((processed / backupProgress.totalBytes) * 100))
+            : 0;
+        });
+
         archive.directory(BASE_DIR, false, entryData => {
           const name = String(entryData.name || '').replace(/\\/g, '/');
           for (const excluded of BACKUP_EXCLUDES) {
@@ -5897,6 +5956,10 @@ app.post('/api/backups', async (req, res) => {
       return 0;
     });
 
+    backupProgress.active = false;
+    backupProgress.phase = 'done';
+    backupProgress.percent = 100;
+
     ok(res, {
       name: zipName,
       sizeMb: result.sizeMb,
@@ -5904,8 +5967,15 @@ app.post('/api/backups', async (req, res) => {
       consistency: wasRunning ? 'server-consistent' : 'server-offline',
     });
   } catch (e) {
+    backupProgress.active = false;
+    backupProgress.phase = 'error';
+    backupProgress.error = e.message;
     fail(res, `No se pudo crear la copia de seguridad: ${e.message}`);
   }
+});
+
+app.get('/api/backups/progress', (_req, res) => {
+  ok(res, { progress: { ...backupProgress } });
 });
 
 app.get('/api/backups/download/:name', async (req, res) => {

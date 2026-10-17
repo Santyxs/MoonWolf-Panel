@@ -3676,6 +3676,79 @@ async function loadBackups() {
   });
 }
 
+const BACKUP_PROGRESS_POLL_MS = 500;
+
+function setBackupProgressUI({ label, pct, width, state }) {
+  const box = $('backupProgress');
+  if (!box) return;
+
+  if (state) {
+    box.classList.remove('indeterminate', 'done', 'error');
+    if (state !== 'normal') box.classList.add(state);
+  }
+
+  if (label !== undefined) $('backupProgressLabel').textContent = label;
+  if (pct !== undefined) $('backupProgressPct').textContent = pct;
+
+  if (width !== undefined) {
+    $('backupProgressFill').style.width = `${width}%`;
+    $('backupProgressBar').setAttribute('aria-valuenow', String(Math.round(width)));
+  }
+}
+
+function showBackupProgress() {
+  const box = $('backupProgress');
+  if (!box) return;
+
+  box.hidden = false;
+  setBackupProgressUI({
+    label: 'Preparando la copia de seguridad…',
+    pct: '—',
+    width: 0,
+    state: 'indeterminate',
+  });
+}
+
+function hideBackupProgress(delay = 0) {
+  setTimeout(() => {
+    const box = $('backupProgress');
+    if (!box) return;
+
+    box.hidden = true;
+    box.classList.remove('indeterminate', 'done', 'error');
+    $('backupProgressFill').style.width = '0%';
+  }, delay);
+}
+
+async function pollBackupProgress() {
+  try {
+    const data = await api('/api/backups/progress');
+
+    if (!data.ok || !data.progress || !data.progress.active) return;
+
+    const progress = data.progress;
+
+    if (progress.phase === 'flush') {
+      setBackupProgressUI({
+        label: 'Sincronizando el mundo del servidor…',
+        pct: '—',
+        state: 'indeterminate',
+      });
+      return;
+    }
+
+    const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+
+    setBackupProgressUI({
+      label: `Comprimiendo archivos… (${(progress.processedBytes / 1024 / 1024).toFixed(1)} / ${(progress.totalBytes / 1024 / 1024).toFixed(1)} MB)`,
+      pct: `${percent}%`,
+      width: percent,
+    });
+  } catch {
+    /* el siguiente sondeo lo reintenta */
+  }
+}
+
 async function createBackup() {
   const name = prompt('Nombre para la copia de seguridad (opcional):', '');
   if (name === null) return;
@@ -3687,13 +3760,28 @@ async function createBackup() {
     button.textContent = '⏳ Creando...';
   }
 
+  showBackupProgress();
+
+  const poll = setInterval(pollBackupProgress, BACKUP_PROGRESS_POLL_MS);
+  void pollBackupProgress();
+
   try {
     const data = await postJSON('/api/backups', { name: name.trim() });
 
     if (!data.ok) {
+      setBackupProgressUI({ label: data.error, pct: '✕', state: 'error' });
+      hideBackupProgress(4000);
       toast(`❌ ${data.error}`, 'err');
       return;
     }
+
+    setBackupProgressUI({
+      label: 'Copia completada',
+      pct: '100%',
+      width: 100,
+      state: 'done',
+    });
+    hideBackupProgress(2500);
 
     toast(
       data.warning
@@ -3704,8 +3792,11 @@ async function createBackup() {
 
     loadBackups();
   } catch (error) {
+    setBackupProgressUI({ label: error.message, pct: '✕', state: 'error' });
+    hideBackupProgress(4000);
     toast(`❌ ${error.message}`, 'err');
   } finally {
+    clearInterval(poll);
     if (button) {
       button.disabled = false;
       button.textContent = '➕ Nueva copia';

@@ -2804,3 +2804,85 @@ body {
   .stat-value { font-size: 14px; }
   .toast { right: 10px; bottom: 10px; left: 10px; max-width: none; }
 }
+
+/* ── BACKUP PROGRESS ── */
+.backup-progress {
+  margin-bottom: var(--sp-lg);
+  padding: var(--sp-md) var(--sp-lg);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+
+.bkprog-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--sp-md);
+  margin-bottom: var(--sp-sm);
+  font-size: var(--fs-sm);
+}
+
+.bkprog-label {
+  color: var(--textSoft);
+  letter-spacing: 0.5px;
+}
+
+.bkprog-pct {
+  font-family: 'Share Tech Mono', monospace;
+  color: var(--accent);
+  font-size: var(--fs-md);
+  font-weight: 700;
+}
+
+.bkprog-track {
+  height: 8px;
+  background: var(--surface3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  overflow: hidden;
+}
+
+.bkprog-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--accent2), var(--accent));
+  box-shadow: var(--glow-accent);
+  border-radius: var(--r-full);
+  transition: width var(--t-base);
+}
+
+.backup-progress.indeterminate .bkprog-fill {
+  width: 35%;
+  animation: bkprog-indeterminate 1.4s ease-in-out infinite;
+}
+
+.backup-progress.done .bkprog-fill {
+  background: linear-gradient(90deg, #00b36b, var(--green));
+  box-shadow: var(--glow-green);
+}
+
+.backup-progress.done .bkprog-pct {
+  color: var(--green);
+}
+
+.backup-progress.error .bkprog-fill {
+  background: linear-gradient(90deg, #a3222e, var(--red));
+  box-shadow: var(--glow-red);
+}
+
+.backup-progress.error .bkprog-pct {
+  color: var(--red);
+}
+
+@keyframes bkprog-indeterminate {
+  0% { margin-left: -35%; }
+  100% { margin-left: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backup-progress.indeterminate .bkprog-fill {
+    animation: none;
+    width: 100%;
+  }
+}
