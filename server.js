@@ -2024,29 +2024,150 @@ async function findJavaExecutable(rootDir) {
   return null;
 }
 
-async function ensureJavaRuntime(javaMajor) {
-  if (!JAVA_RUNTIME_VERSIONS.includes(Number(javaMajor))) {
-    throw new Error(`Java ${javaMajor} no está soportado por el gestor de MoonWolf.`);
+/* ── jlink: runtime mínimo por versión ── */
+
+function needsJlink(javaMajor) {
+  return Number(javaMajor) >= 9;
+}
+
+// Módulos elegidos para cubrir Paper, Spigot, Purpur, Folia, Fabric, Velocity
+// y la mayoría de plugins/mods. Incluye módulos "de más" a propósito
+// (unsupported, crypto.ec, attach, zipfs, charsets, instrument) porque
+// jdeps no detecta las clases que se cargan por reflexión o ServiceLoader.
+const JLINK_MODULES = Object.freeze([
+  // Base del lenguaje y clases estándar
+  'java.base',
+  'java.logging',
+  'java.management',
+  'java.naming',
+  'java.xml',
+  'java.sql',
+  'java.scripting',
+  'java.security.jgss',
+  'java.security.sasl',
+  'java.instrument',
+  'java.desktop',
+  'java.net.http',
+  'java.rmi',
+  'java.compiler',
+  // Módulos que plugins y mods cargan por reflexión
+  'jdk.unsupported',       // sun.misc.Unsafe (Netty, ByteBuddy, muchos plugins)
+  'jdk.crypto.ec',         // TLS con curvas elípticas
+  'jdk.crypto.cryptoki',   // PKCS#11
+  'jdk.zipfs',             // Leer .jar como sistema de archivos (crítico para MC)
+  'jdk.charsets',          // Codificaciones no-UTF8 (configs, MOTD)
+  'jdk.attach',            // Herramientas tipo Arthas, agents
+  'jdk.sctp',              // Requerido por algunas guías de Minecraft
+  'jdk.xml.dom',
+  'jdk.management',
+  'jdk.naming.dns',
+]);
+
+async function findJdkRoot(rootDir) {
+  const looksLikeJdk = dir =>
+    fsSync.existsSync(path.join(dir, 'bin', 'jlink.exe')) &&
+    fsSync.existsSync(path.join(dir, 'jmods'));
+
+  if (looksLikeJdk(rootDir)) return rootDir;
+
+  const entries = await fs.readdir(rootDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const candidate = path.join(rootDir, entry.name);
+    if (looksLikeJdk(candidate)) return candidate;
   }
 
-  const targetDir = javaRuntimeDir(javaMajor);
-  const executable = javaExecutablePath(javaMajor);
+  return null;
+}
+
+function runJlink(jlinkExe, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(jlinkExe, args, {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', d => { stdout += String(d); });
+    child.stderr.on('data', d => { stderr += String(d); });
+    child.on('error', reject);
+    child.once('close', code => {
+      if (code === 0) return resolve({ stdout, stderr });
+
+      const detail = (stderr || stdout).trim();
+      const err = new Error(detail || `jlink terminó con código ${code}`);
+      err.code = code;
+      err.stdout = stdout;
+      err.stderr = stderr;
+      reject(err);
+    });
+  });
+}
+
+async function buildJlinkRuntime(jdkRoot, outputDir) {
+  const jlinkExe = path.join(jdkRoot, 'bin', 'jlink.exe');
+  const jmodsDir = path.join(jdkRoot, 'jmods');
+  const modules = JLINK_MODULES.join(',');
+
+  const baseArgs = [
+    '--module-path', jmodsDir,
+    '--add-modules', modules,
+    '--strip-debug',
+    '--no-man-pages',
+    '--no-header-files',
+    '--output', outputDir,
+  ];
+
+  try {
+    await runJlink(jlinkExe, [...baseArgs, '--compress=2']);
+  } catch (error) {
+    // En versiones muy nuevas de jlink `--compress=2` puede estar deprecado.
+    // Si el error menciona "compress", reintentamos sin compresión.
+    const text = String(error?.stderr || error?.message || '');
+    if (/compress/i.test(text)) {
+      console.warn('[java] jlink rechazó --compress, reintentando sin compresión:', text);
+      await runJlink(jlinkExe, baseArgs);
+    } else {
+      throw error;
+    }
+  }
+}
+
+async function ensureJavaRuntime(javaMajor) {
+  const major = Number(javaMajor);
+
+  if (!JAVA_RUNTIME_VERSIONS.includes(major)) {
+    throw new Error(`Java ${major} no está soportado por el gestor de MoonWolf.`);
+  }
+
+  const targetDir = javaRuntimeDir(major);
+  const executable = javaExecutablePath(major);
 
   if (fsSync.existsSync(executable)) return executable;
 
-  if (javaInstallPromises.has(javaMajor)) {
-    return javaInstallPromises.get(javaMajor);
+  if (javaInstallPromises.has(major)) {
+    return javaInstallPromises.get(major);
   }
 
   const promise = (async () => {
     await fs.mkdir(JAVA_RUNTIMES_DIR, { recursive: true });
 
+    const useJlink = needsJlink(major);
+    const imageType = useJlink ? 'jdk' : 'jre';
+
     const metadataUrl =
-      `${JAVA_DOWNLOAD_API}/${javaMajor}/hotspot` +
-      '?architecture=x64&image_type=jdk&os=windows&vendor=eclipse' +
+      `${JAVA_DOWNLOAD_API}/${major}/hotspot` +
+      `?architecture=x64&image_type=${imageType}&os=windows&vendor=eclipse` +
       '&heap_size=normal&project=jdk&release_type=ga';
 
-    broadcastLog(`☕ Java ${javaMajor} no está instalado. Descargando runtime de MoonWolf...`, 'system');
+    broadcastLog(
+      useJlink
+        ? `☕ Java ${major} no está instalado. Descargando JDK para construir un runtime mínimo con jlink...`
+        : `☕ Java ${major} no está instalado. Descargando runtime JRE...`,
+      'system'
+    );
 
     const assets = await fetchJson(metadataUrl);
     const asset = Array.isArray(assets)
@@ -2054,18 +2175,27 @@ async function ensureJavaRuntime(javaMajor) {
       : null;
 
     if (!asset) {
-      throw new Error(`No se encontró un JDK Temurin ${javaMajor} compatible para Windows x64.`);
+      throw new Error(
+        `No se encontró un ${imageType.toUpperCase()} Temurin ${major} compatible para Windows x64.`
+      );
     }
 
-    const archive = path.join(JAVA_RUNTIMES_DIR, `.java${javaMajor}-${Date.now()}.zip`);
-    const staging = path.join(JAVA_RUNTIMES_DIR, `.install-java${javaMajor}-${Date.now()}`);
+    const archive = path.join(JAVA_RUNTIMES_DIR, `.java${major}-${Date.now()}.zip`);
+    const staging = path.join(JAVA_RUNTIMES_DIR, `.install-java${major}-${Date.now()}`);
+    const jlinkOutput = path.join(JAVA_RUNTIMES_DIR, `.jlink-java${major}-${Date.now()}`);
+
+    const cleanup = async () => {
+      await fs.rm(archive, { force: true }).catch(() => {});
+      await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+      await fs.rm(jlinkOutput, { recursive: true, force: true }).catch(() => {});
+    };
 
     try {
       await downloadToFile(asset.binary.package.link, archive);
-      broadcastLog(`☕ Java ${javaMajor} descargado. Verificando integridad...`, 'system');
+      broadcastLog(`☕ Java ${major} descargado. Verificando integridad...`, 'system');
 
       if (!(await verifySha256(archive, asset.binary.package.checksum))) {
-        throw new Error(`La verificación SHA-256 de Java ${javaMajor} ha fallado.`);
+        throw new Error(`La verificación SHA-256 de Java ${major} ha fallado.`);
       }
 
       await fs.rm(staging, { recursive: true, force: true });
@@ -2073,27 +2203,15 @@ async function ensureJavaRuntime(javaMajor) {
 
       await new Promise((resolve, reject) => {
         const psQuote = value => `'${String(value).replace(/'/g, "''")}'`;
-
         const psCommand =
           `$ErrorActionPreference='Stop'; ` +
           `Expand-Archive -LiteralPath ${psQuote(archive)} ` +
           `-DestinationPath ${psQuote(staging)} -Force`;
 
-        console.log('[java] Expand-Archive →', psCommand);
-
         const child = spawn(
           'powershell.exe',
-          [
-            '-NoProfile',
-            '-NonInteractive',
-            '-ExecutionPolicy', 'Bypass',
-            '-Command',
-            psCommand,
-          ],
-          {
-            windowsHide: true,
-            stdio: ['ignore', 'pipe', 'pipe'],
-          }
+          ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', psCommand],
+          { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }
         );
 
         let stderr = '';
@@ -2101,7 +2219,7 @@ async function ensureJavaRuntime(javaMajor) {
         child.stderr.on('data', data => { stderr += String(data); });
         child.stdout.on('data', data => { stdout += String(data); });
         child.on('error', reject);
-        child.on('close', code => {
+        child.once('close', code => {
           if (code === 0) return resolve();
           const detail = (stderr || stdout).trim();
           console.warn('[java] PowerShell falló:', detail);
@@ -2109,50 +2227,103 @@ async function ensureJavaRuntime(javaMajor) {
         });
       });
 
-      const extractedJava = await findJavaExecutable(staging);
-      if (!extractedJava) {
-        throw new Error(`El archivo de Java ${javaMajor} no contiene un bin/java.exe válido.`);
-      }
+      let prepared = false;
 
-      await fs.rm(targetDir, { recursive: true, force: true });
-      await fs.mkdir(targetDir, { recursive: true });
+      if (useJlink) {
+        try {
+          const jdkRoot = await findJdkRoot(staging);
+          if (!jdkRoot) {
+            throw new Error('No se encontró jlink/jmods dentro del JDK descargado.');
+          }
 
-      await fs.cp(path.dirname(path.dirname(extractedJava)), targetDir, {
-        recursive: true,
-        force: true,
-      });
+          await fs.rm(jlinkOutput, { recursive: true, force: true });
 
-      if (!fsSync.existsSync(executable)) {
-        const nested = await findJavaExecutable(targetDir);
-        if (!nested) {
-          throw new Error(`No se pudo preparar correctamente Java ${javaMajor}.`);
-        }
+          broadcastLog(
+            `☕ Construyendo runtime mínimo con jlink (${JLINK_MODULES.length} módulos)...`,
+            'system'
+          );
 
-        if (nested !== executable) {
-          const nestedRoot = path.dirname(path.dirname(nested));
+          await buildJlinkRuntime(jdkRoot, jlinkOutput);
+
+          if (!fsSync.existsSync(path.join(jlinkOutput, 'bin', 'java.exe'))) {
+            throw new Error('jlink no generó un bin/java.exe válido.');
+          }
+
           await fs.rm(targetDir, { recursive: true, force: true });
-          await fs.cp(nestedRoot, targetDir, { recursive: true, force: true });
+          await fs.mkdir(targetDir, { recursive: true });
+          await fs.cp(jlinkOutput, targetDir, { recursive: true, force: true });
+          prepared = true;
+
+          broadcastLog(
+            `☕ Runtime jlink de Java ${major} generado correctamente.`,
+            'success'
+          );
+        } catch (error) {
+          console.warn('[java] jlink falló, se usará el JDK completo:', error.message);
+          broadcastLog(
+            `⚠️ jlink falló (${error.message}). Se instalará el JDK completo como fallback.`,
+            'warn'
+          );
+        }
+      }
+
+      if (!prepared) {
+        // Java 8 no tiene jlink → JRE completo.
+        // Java 9+ con fallback → JDK completo.
+        const extractedJava = await findJavaExecutable(staging);
+        if (!extractedJava) {
+          throw new Error(`El archivo de Java ${major} no contiene un bin/java.exe válido.`);
+        }
+
+        const extractedRoot = path.dirname(path.dirname(extractedJava));
+
+        await fs.rm(targetDir, { recursive: true, force: true });
+        await fs.mkdir(targetDir, { recursive: true });
+        await fs.cp(extractedRoot, targetDir, { recursive: true, force: true });
+
+        if (!fsSync.existsSync(executable)) {
+          const nested = await findJavaExecutable(targetDir);
+          if (!nested) {
+            throw new Error(`No se pudo preparar correctamente Java ${major}.`);
+          }
+          if (nested !== executable) {
+            const nestedRoot = path.dirname(path.dirname(nested));
+            await fs.rm(targetDir, { recursive: true, force: true });
+            await fs.cp(nestedRoot, targetDir, { recursive: true, force: true });
+          }
         }
       }
 
       if (!fsSync.existsSync(executable)) {
-        throw new Error(`No se encontró java.exe después de instalar Java ${javaMajor}.`);
+        throw new Error(`No se encontró java.exe después de instalar Java ${major}.`);
       }
 
-      broadcastLog(`☕ Java ${javaMajor} listo: ${executable}`, 'success');
+      // Compresión NTFS transparente (opcional, no bloqueante).
+      if (process.platform === 'win32') {
+        try {
+          broadcastLog(`🗜️ Comprimiendo runtime de Java ${major} con NTFS compact...`, 'system');
+          const child = spawn('compact', ['/c', '/s', '/i', targetDir], {
+            windowsHide: true,
+            stdio: 'ignore',
+          });
+          child.on('error', () => {});
+          child.unref();
+        } catch {}
+      }
+
+      broadcastLog(`☕ Java ${major} listo: ${executable}`, 'success');
       return executable;
     } finally {
-      await fs.rm(archive, { force: true }).catch(() => {});
-      await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+      await cleanup();
     }
   })();
 
-  javaInstallPromises.set(javaMajor, promise);
+  javaInstallPromises.set(major, promise);
 
   try {
     return await promise;
   } finally {
-    javaInstallPromises.delete(javaMajor);
+    javaInstallPromises.delete(major);
   }
 }
 
@@ -5910,8 +6081,6 @@ function stopMinecraft(timeoutMs = 30000) {
   });
 }
 
-module.exports = { stopMinecraft, requiredPermission, permissionAllows };
-
 function listenWithRetry(basePort, maxAttempts = 10) {
   return new Promise((resolve, reject) => {
     let attempts = 0;
@@ -5920,10 +6089,20 @@ function listenWithRetry(basePort, maxAttempts = 10) {
         if (error.code === 'EADDRINUSE' && attempts < maxAttempts - 1) {
           attempts += 1;
           server.off('listening', onListening);
-          console.warn(`[server] Puerto ${port} ocupado, probando ${port + 1}...`);
+          console.warn(
+            `[server] Puerto ${port} ocupado (¿otra instancia del Agent?). Probando ${port + 1}...`
+          );
           tryListen(port + 1);
         } else {
           server.off('error', onError);
+          if (error.code === 'EADDRINUSE') {
+            const err = new Error(
+              `Los puertos ${basePort}–${port} están ocupados. ` +
+              '¿Hay otra instancia de MoonWolf Agent ejecutándose? Ciérrala y vuelve a intentarlo.'
+            );
+            err.code = 'EADDRINUSE';
+            return reject(err);
+          }
           reject(error);
         }
       };
@@ -5970,9 +6149,19 @@ async function start() {
       broadcastLog(`❌ Error en arranque automático: ${error.message}`, 'error')
     );
   }
+
+  return actualPort;
 }
 
-start().catch(error => {
+const ready = start();
+
+ready.catch(error => {
   console.error('❌ Error iniciando MoonWolf Panel:', error);
-  process.exit(1);
 });
+
+module.exports = {
+  stopMinecraft,
+  requiredPermission,
+  permissionAllows,
+  ready,
+};
