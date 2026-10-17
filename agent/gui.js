@@ -20,11 +20,26 @@ const NATIVE_ADDON_NAME = 'webview.win32-x64-msvc.node';
 // Debe fijarse ANTES de crear Application / WebContext.
 if (!process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS) {
   process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = [
+    // Cache mínimo
     '--disk-cache-size=1',
     '--media-cache-size=1',
     '--disable-gpu-shader-disk-cache',
     '--disable-application-cache',
     '--disable-offline-load-stale-cache',
+
+    // Extras seguros: menos red de fondo, telemetría y dumps
+    '--disable-background-networking',
+    '--disable-sync',
+    '--disable-translate',
+    '--disable-default-apps',
+    '--disable-component-update',
+    '--disable-domain-reliability',
+    '--disable-client-side-phishing-detection',
+    '--disable-breakpad',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--metrics-recording-only',
+    '--disable-features=msSmartScreenProtection,AutofillServerCommunication,OptimizationHints,MediaRouter,EdgeFeedback',
   ].join(' ');
 }
 
