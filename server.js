@@ -2024,18 +2024,11 @@ async function findJavaExecutable(rootDir) {
   return null;
 }
 
-/* ── jlink: runtime mínimo por versión ── */
-
 function needsJlink(javaMajor) {
   return Number(javaMajor) >= 9;
 }
 
-// Módulos elegidos para cubrir Paper, Spigot, Purpur, Folia, Fabric, Velocity
-// y la mayoría de plugins/mods. Incluye módulos "de más" a propósito
-// (unsupported, crypto.ec, attach, zipfs, charsets, instrument) porque
-// jdeps no detecta las clases que se cargan por reflexión o ServiceLoader.
 const JLINK_MODULES = Object.freeze([
-  // Base del lenguaje y clases estándar
   'java.base',
   'java.logging',
   'java.management',
@@ -2050,23 +2043,30 @@ const JLINK_MODULES = Object.freeze([
   'java.net.http',
   'java.rmi',
   'java.compiler',
-  // Módulos que plugins y mods cargan por reflexión
-  'jdk.unsupported',       // sun.misc.Unsafe (Netty, ByteBuddy, muchos plugins)
-  'jdk.crypto.ec',         // TLS con curvas elípticas
-  'jdk.crypto.cryptoki',   // PKCS#11
-  'jdk.zipfs',             // Leer .jar como sistema de archivos (crítico para MC)
-  'jdk.charsets',          // Codificaciones no-UTF8 (configs, MOTD)
-  'jdk.attach',            // Herramientas tipo Arthas, agents
-  'jdk.sctp',              // Requerido por algunas guías de Minecraft
+  'jdk.unsupported',
+  'jdk.crypto.ec',
+  'jdk.crypto.cryptoki',
+  'jdk.zipfs',
+  'jdk.charsets',
+  'jdk.attach',
+  'jdk.sctp',
   'jdk.xml.dom',
   'jdk.management',
   'jdk.naming.dns',
 ]);
 
 async function findJdkRoot(rootDir) {
-  const looksLikeJdk = dir =>
-    fsSync.existsSync(path.join(dir, 'bin', 'jlink.exe')) &&
-    fsSync.existsSync(path.join(dir, 'jmods'));
+  const looksLikeJdk = dir => {
+    const bin = path.join(dir, 'bin');
+    if (!fsSync.existsSync(bin)) return false;
+    try {
+      const names = fsSync.readdirSync(bin);
+      return names.some(n => /^java(\.exe)?$/i.test(n)) &&
+             names.some(n => /^jlink(\.exe)?$/i.test(n));
+    } catch {
+      return false;
+    }
+  };
 
   if (looksLikeJdk(rootDir)) return rootDir;
 
@@ -2109,10 +2109,35 @@ function runJlink(jlinkExe, args) {
 async function buildJlinkRuntime(jdkRoot, outputDir) {
   const jlinkExe = path.join(jdkRoot, 'bin', 'jlink.exe');
   const jmodsDir = path.join(jdkRoot, 'jmods');
-  const modules = JLINK_MODULES.join(',');
+
+  let availableModules = null;
+  try {
+    const entries = await fs.readdir(jmodsDir);
+    const set = new Set();
+    for (const entry of entries) {
+      if (entry.endsWith('.jmod')) set.add(entry.slice(0, -5));
+    }
+    if (set.size) availableModules = set;
+  } catch {}
+
+  let modulesToUse;
+  if (availableModules) {
+    modulesToUse = JLINK_MODULES.filter(m => availableModules.has(m));
+    const dropped = JLINK_MODULES.filter(m => !availableModules.has(m));
+    if (dropped.length) {
+      console.warn(
+        `[java] Módulos no disponibles en este JDK (se omiten): ${dropped.join(', ')}`
+      );
+    }
+    if (!modulesToUse.length) modulesToUse = JLINK_MODULES;
+  } else {
+    console.log('[java] JDK sin jmods; jlink usará el runtime actual como fuente.');
+    modulesToUse = JLINK_MODULES;
+  }
+
+  const modules = modulesToUse.join(',');
 
   const baseArgs = [
-    '--module-path', jmodsDir,
     '--add-modules', modules,
     '--strip-debug',
     '--no-man-pages',
@@ -2120,19 +2145,45 @@ async function buildJlinkRuntime(jdkRoot, outputDir) {
     '--output', outputDir,
   ];
 
-  try {
-    await runJlink(jlinkExe, [...baseArgs, '--compress=2']);
-  } catch (error) {
-    // En versiones muy nuevas de jlink `--compress=2` puede estar deprecado.
-    // Si el error menciona "compress", reintentamos sin compresión.
-    const text = String(error?.stderr || error?.message || '');
-    if (/compress/i.test(text)) {
-      console.warn('[java] jlink rechazó --compress, reintentando sin compresión:', text);
-      await runJlink(jlinkExe, baseArgs);
-    } else {
-      throw error;
+  if (availableModules) {
+    baseArgs.unshift('--module-path', jmodsDir);
+  }
+
+  const compressVariants = ['zip-6', '2', null];
+  let lastError = null;
+
+  for (const variant of compressVariants) {
+    const args = variant
+      ? [...baseArgs, `--compress=${variant}`]
+      : [...baseArgs];
+
+    try {
+      await fs.rm(outputDir, { recursive: true, force: true });
+    } catch {}
+
+    try {
+      await runJlink(jlinkExe, args);
+      if (variant) {
+        console.log(`[java] jlink usó --compress=${variant}`);
+      } else {
+        console.warn('[java] jlink terminó sin compresión (--compress no soportado).');
+      }
+      return;
+    } catch (error) {
+      lastError = error;
+      const text = String(error?.stderr || error?.message || '');
+
+      if (!/compress/i.test(text)) {
+        throw error;
+      }
+
+      console.warn(
+        `[java] jlink rechazó --compress=${variant}, probando siguiente variante...`
+      );
     }
   }
+
+  throw lastError || new Error('jlink falló con todas las variantes de --compress');
 }
 
 async function ensureJavaRuntime(javaMajor) {
@@ -2164,8 +2215,8 @@ async function ensureJavaRuntime(javaMajor) {
 
     broadcastLog(
       useJlink
-        ? `☕ Java ${major} no está instalado. Descargando JDK para construir un runtime mínimo con jlink...`
-        : `☕ Java ${major} no está instalado. Descargando runtime JRE...`,
+        ? `☕ Java ${major} no está instalado. Descargando JDK...`
+        : `☕ Java ${major} no está instalado. Descargando JRE...`,
       'system'
     );
 
@@ -2233,7 +2284,7 @@ async function ensureJavaRuntime(javaMajor) {
         try {
           const jdkRoot = await findJdkRoot(staging);
           if (!jdkRoot) {
-            throw new Error('No se encontró jlink/jmods dentro del JDK descargado.');
+            throw new Error('No se encontró jlink dentro del JDK descargado.');
           }
 
           await fs.rm(jlinkOutput, { recursive: true, force: true });
@@ -2268,8 +2319,6 @@ async function ensureJavaRuntime(javaMajor) {
       }
 
       if (!prepared) {
-        // Java 8 no tiene jlink → JRE completo.
-        // Java 9+ con fallback → JDK completo.
         const extractedJava = await findJavaExecutable(staging);
         if (!extractedJava) {
           throw new Error(`El archivo de Java ${major} no contiene un bin/java.exe válido.`);
@@ -2298,7 +2347,6 @@ async function ensureJavaRuntime(javaMajor) {
         throw new Error(`No se encontró java.exe después de instalar Java ${major}.`);
       }
 
-      // Compresión NTFS transparente (opcional, no bloqueante).
       if (process.platform === 'win32') {
         try {
           broadcastLog(`🗜️ Comprimiendo runtime de Java ${major} con NTFS compact...`, 'system');
