@@ -27,7 +27,7 @@ if (!process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS) {
     '--disable-application-cache',
     '--disable-offline-load-stale-cache',
 
-    // Extras seguros: menos red de fondo, telemetría y dumps
+    // Red / telemetría / componentes
     '--disable-background-networking',
     '--disable-sync',
     '--disable-translate',
@@ -39,7 +39,23 @@ if (!process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS) {
     '--no-first-run',
     '--no-default-browser-check',
     '--metrics-recording-only',
-    '--disable-features=msSmartScreenProtection,AutofillServerCommunication,OptimizationHints,MediaRouter,EdgeFeedback',
+
+    // UI local: sin popups, audio, plugins, etc.
+    '--disable-hang-monitor',
+    '--disable-popup-blocking',
+    '--disable-prompt-on-repost',
+    '--disable-background-timer-throttling',
+    '--disable-renderer-backgrounding',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-extensions',
+    '--disable-plugins',
+    '--disable-print-preview',
+    '--disable-speech-api',
+    '--disable-notifications',
+    '--mute-audio',
+
+    // Features de Edge/Chromium innecesarias
+    '--disable-features=msSmartScreenProtection,AutofillServerCommunication,OptimizationHints,MediaRouter,EdgeFeedback,InterestFeedContentSuggestions,ReadAnythingOmniboxIcon,TranslateUI',
   ].join(' ');
 }
 
