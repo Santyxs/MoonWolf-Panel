@@ -1620,9 +1620,7 @@ function readUInt32LE(buf, offset) {
   ) >>> 0;
 }
 
-/** Localiza el End of Central Directory de un ZIP/JAR. */
 function findZipEocd(buffer) {
-  // EOCD: signature 0x06054b50, mínimo 22 bytes, comment hasta 65535
   const maxScan = Math.min(buffer.length, 22 + 65535);
   for (let i = buffer.length - 22; i >= buffer.length - maxScan; i -= 1) {
     if (
@@ -1637,10 +1635,6 @@ function findZipEocd(buffer) {
   return -1;
 }
 
-/**
- * Extrae entradas concretas de un JAR (ZIP) sin dependencias.
- * Solo soporta stored (0) y deflate (8).
- */
 function extractZipEntries(jarPath, wantedNames) {
   const want = new Set(
     (wantedNames || []).map(n => String(n).replace(/\\/g, '/').toLowerCase())
@@ -1689,7 +1683,6 @@ function extractZipEntries(jarPath, wantedNames) {
       if (!want.has(nameKey) && !want.has(path.basename(nameKey))) continue;
       if (compSize <= 0 || uncompSize <= 0 || uncompSize > 2 * 1024 * 1024) continue;
 
-      // Cabecera local
       const localHead = Buffer.alloc(30);
       fsSync.readSync(fd, localHead, 0, 30, localHeaderOffset);
       if (readUInt32LE(localHead, 0) !== 0x04034b50) continue;
@@ -1741,7 +1734,6 @@ function versionFromVersionJson(text) {
 }
 
 function versionFromPatchProperties(text) {
-  // Paper/Purpur: version=1.21.4  o  mcVersion=1.21.4
   const lines = String(text).split(/\r?\n/);
   const map = {};
   for (const line of lines) {
@@ -1780,7 +1772,6 @@ function detectMinecraftVersionFromJarFile(jarPath) {
     const stat = fsSync.statSync(jarPath);
     if (!stat.isFile() || stat.size <= 22 || stat.size > 400 * 1024 * 1024) return null;
 
-    // 1) Entradas conocidas dentro del ZIP
     const entries = extractZipEntries(jarPath, [
       'version.json',
       'patch.properties',
@@ -1801,7 +1792,6 @@ function detectMinecraftVersionFromJarFile(jarPath) {
       if (v) return v;
     }
 
-    // 2) Fallback: escanear cabecera/cola del binario por cadenas ASCII
     const fd = fsSync.openSync(jarPath, 'r');
     try {
       const headLen = Math.min(stat.size, 4 * 1024 * 1024);
@@ -1840,7 +1830,6 @@ function detectMinecraftVersionFromJarFile(jarPath) {
   }
 }
 
-/** También mira archivos del servidor fuera del JAR (p. ej. version_history.json de Paper). */
 function detectMinecraftVersionFromServerDir() {
   const candidates = [];
 
@@ -1849,7 +1838,6 @@ function detectMinecraftVersionFromServerDir() {
     if (fsSync.existsSync(historyPath)) {
       const data = JSON.parse(fsSync.readFileSync(historyPath, 'utf8'));
       if (data && typeof data === 'object') {
-        // Suele ser { "currentVersion": "1.21.4", ... } o un mapa de versiones
         if (data.currentVersion) candidates.push(data.currentVersion);
         const keys = Object.keys(data).filter(k => MC_VERSION_STRICT_RE.test(k));
         candidates.push(...keys);
@@ -1862,7 +1850,6 @@ function detectMinecraftVersionFromServerDir() {
     void propsPath;
   } catch {}
 
-  // fabric-server-launcher.properties / .fabric
   for (const rel of [
     'fabric-server-launcher.properties',
     '.fabric/server/minecraft-server.version',
@@ -1885,7 +1872,6 @@ function detectMinecraftVersionFromServerDir() {
 function detectMinecraftVersionFromConsoleLine(line) {
   const text = String(line || '');
 
-  // Paper reciente: "... (MC: 1.21.4)"
   const mcTag = text.match(/\bMC:\s*([0-9]+(?:\.[0-9]+){1,2})\b/i);
   if (mcTag) {
     const v = normalizeMinecraftVersionCandidate(mcTag[1]);
@@ -1909,10 +1895,6 @@ function detectMinecraftVersionFromConsoleLine(line) {
   return null;
 }
 
-/**
- * Resuelve la versión de Minecraft del servidor actual.
- * Orden: config → nombre JAR → contenido JAR → archivos del directorio.
- */
 function resolveMinecraftVersion(options = {}) {
   const { autoPersist = false, jarName = null } = options;
   const cfg = loadStartupConfig();
@@ -5989,7 +5971,7 @@ async function start() {
       });
   } else {
     console.warn(
-      '[share-tokens] DATABASE_URL no configurada. Los tokens compartidos quedan deshabilitados; no hay almacenamiento local alternativo.'
+      '[share-tokens] DATABASE_URL no configurada. Los tokens compartidos quedan deshabilitados.'
     );
   }
 
