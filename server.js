@@ -399,8 +399,6 @@ const DANGEROUS_UPLOAD_EXTENSIONS = new Set([
   '.jar',
 ]);
 
-// Devuelve la extensión peligrosa del destino (o null). Normaliza trucos de Windows:
-// "x.jar." / "x.jar " (se recortan solos) y "x.jar::$DATA" / "x.txt:s.jar" (streams).
 function dangerousExtOf(relPath) {
   let name = path.basename(String(relPath || '').replace(/\\/g, '/'));
   name = name.split(':')[0].replace(/[. ]+$/, '');
@@ -414,9 +412,6 @@ function isDangerousUploadPath(relPath) {
   return dangerousExtOf(relPath) !== null;
 }
 
-// Bloquea a los accesos compartidos crear/convertir archivos ejecutables.
-// Si se pasa srcRel y conserva la misma extensión peligrosa (mover/copiar/renombrar un
-// .jar ya existente), se permite. Devuelve true si ya ha respondido con 403.
 async function denyDangerousForShare(req, res, destRel, srcRel = null) {
   const destExt = dangerousExtOf(destRel);
   if (!destExt) return false;
@@ -1586,7 +1581,6 @@ const MC_CONSOLE_VERSION_RE = /(?:Starting minecraft server version|This server 
 
 function normalizeMinecraftVersionCandidate(value) {
   let v = String(value || '').trim();
-  // Paper a veces pone "1.21.4-R0.1-SNAPSHOT" o "1.21.4/abc"
   v = v.split(/[\/\s]/)[0].replace(/-R\d.*$/i, '').replace(/-SNAPSHOT.*$/i, '');
   if (!MC_VERSION_STRICT_RE.test(v)) return null;
   const parsed = parseMinecraftVersion(v);
@@ -3406,8 +3400,6 @@ app.post('/api/startup', async (req, res) => {
   const current = loadStartupConfig();
 
   if (!owner) {
-    // Un acceso compartido solo falla si ENVÍA un valor distinto al actual.
-    // Los campos que no envía (undefined) se conservan tal cual.
     const submitted = { javaMode, javaOverridePath, javaPath, extraArgs, programArgs };
     for (const field of OWNER_ONLY_STARTUP_FIELDS) {
       const nextValue = submitted[field];
@@ -3421,7 +3413,6 @@ app.post('/api/startup', async (req, res) => {
     }
   }
 
-  // Campos de lanzamiento: el propietario puede cambiarlos; el resto conserva lo guardado.
   const useSubmitted = value => owner && value !== undefined;
 
   let safeExtraArgs;
@@ -4095,8 +4086,6 @@ app.post('/api/command', async (req, res) => {
 
   broadcastLog('/ ' + cmd, 'cmd');
 
-  // Intentar por RCON primero: los códigos § de Minecraft sobreviven a RCON
-  // (a diferencia de stdout, donde Paper los borra cuando no hay TTY real).
   const props = readServerProperties();
   const rconEnabled = String(props['enable-rcon'] || 'false').toLowerCase() === 'true';
   const rconPort = validPort(props['rcon.port']) || 25575;
@@ -4118,7 +4107,6 @@ app.post('/api/command', async (req, res) => {
     }
   }
 
-  // Fallback: stdin (sin colores, como antes)
   try {
     mcProcess.stdin.write(cmd + '\n');
   } catch (error) {
@@ -4988,7 +4976,6 @@ let ZipArchiveCtor = null;
 
 async function getZipArchive() {
   if (ZipArchiveCtor) return ZipArchiveCtor;
-  // archiver v8 is ESM-only; load via dynamic import for CJS compatibility
   const mod = await import('archiver');
   ZipArchiveCtor = mod.ZipArchive || mod.default?.ZipArchive || mod.default;
   if (typeof ZipArchiveCtor !== 'function') {
@@ -5003,7 +4990,6 @@ async function createZipAtomically(zipPath, configureArchive) {
     const ZipArchive = await getZipArchive();
     await new Promise((resolve, reject) => {
       const output = fsSync.createWriteStream(tempPath, { flags: 'wx' });
-      // archiver v8: new ZipArchive(options) instead of archiver('zip', options)
       const archive = new ZipArchive({ zlib: { level: 6 } });
       let settled = false;
       const finish = (error) => {
@@ -5969,7 +5955,7 @@ async function start() {
           error?.message || error
         );
       });
-  } else {
+  } else if (!LOCAL_AGENT_TOKEN) {
     console.warn(
       '[share-tokens] DATABASE_URL no configurada. Los tokens compartidos quedan deshabilitados.'
     );
