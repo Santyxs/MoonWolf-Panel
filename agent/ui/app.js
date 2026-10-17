@@ -433,15 +433,21 @@ function openServerDirModal() {
 /* ---------- Eventos ---------- */
 
 function bindEvents() {
-  $('open-panel')?.addEventListener(
-    'click',
-    () => nativeApi().openPanel?.()
-  );
+  $('open-panel')?.addEventListener('click', async event => {
+    const result = await nativeApi().openPanel?.();
 
-  $('open-server')?.addEventListener(
-    'click',
-    () => nativeApi().openServerFolder?.()
-  );
+    if (result && result.ok === false) {
+      flashButton(event.currentTarget, 'Error');
+    }
+  });
+
+  $('open-server')?.addEventListener('click', async event => {
+    const result = await nativeApi().openServerFolder?.();
+
+    if (result && result.ok === false) {
+      flashButton(event.currentTarget, 'Error');
+    }
+  });
 
   $('open-logs')?.addEventListener('click', () => {
     openModal('logs-modal');
@@ -525,10 +531,13 @@ function bindEvents() {
     ?.querySelector('.modal-backdrop')
     ?.addEventListener('click', () => closeModal('settings-modal'));
 
-  $('settings-open-config')?.addEventListener(
-    'click',
-    () => nativeApi().openConfig?.()
-  );
+  $('settings-open-config')?.addEventListener('click', async event => {
+    const result = await nativeApi().openConfig?.();
+
+    if (result && result.ok === false) {
+      flashButton(event.currentTarget, 'Error');
+    }
+  });
 
   $('settings-hide-tray')?.addEventListener('click', () => {
     closeModal('settings-modal');
