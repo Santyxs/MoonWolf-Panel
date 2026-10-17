@@ -57,15 +57,44 @@ function dcPrepareNative() {
 
   if (typeof sea.isSea !== 'function' || !sea.isSea()) return;
 
-  const dir = path.join(os.tmpdir(), 'MoonWolf-Agent', 'datachannel');
+  const dir = path.join(os.tmpdir(), 'MoonWolf-Agent');
   fs.mkdirSync(dir, { recursive: true });
 
+  // Guarda el addon nativo directamente en la raíz de MoonWolf-Agent.
   const target = path.join(dir, 'node_datachannel.node');
   const data = Buffer.from(sea.getAsset(DC_NATIVE_ASSET));
+  let needsWrite = true;
 
-  if (!fs.existsSync(target) || fs.statSync(target).size !== data.length) {
-    fs.writeFileSync(target, data);
+  try {
+    needsWrite = !fs.readFileSync(target).equals(data);
+  } catch {}
+
+  if (needsWrite) {
+    const temporaryPath = `${target}.${process.pid}.tmp`;
+    try {
+      fs.writeFileSync(temporaryPath, data);
+      try {
+        fs.renameSync(temporaryPath, target);
+      } catch (error) {
+        // Windows puede no reemplazar un destino existente con rename.
+        if (error.code !== 'EEXIST' && error.code !== 'EPERM' && error.code !== 'EACCES') throw error;
+        fs.rmSync(target, { force: true });
+        fs.renameSync(temporaryPath, target);
+      }
+    } finally {
+      try { fs.rmSync(temporaryPath, { force: true }); } catch {}
+    }
   }
+
+  // Retira la carpeta creada por versiones anteriores, una vez preparado el addon nuevo.
+  try {
+    fs.rmSync(path.join(dir, 'datachannel'), {
+      recursive: true,
+      force: true,
+      maxRetries: 2,
+      retryDelay: 100,
+    });
+  } catch {}
 
   process.env.NODE_DATACHANNEL_NATIVE_PATH = target;
 }
