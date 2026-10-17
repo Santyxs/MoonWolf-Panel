@@ -4,20 +4,15 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const zlib = require('node:zlib');
-const { execFile } = require('node:child_process');
+const { spawn } = require('node:child_process');
 
 const PANEL_URL = 'https://moonwolf-panel.up.railway.app';
 const CONFIG_DIR = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'MoonWolf');
 const NATIVE_ASSET = 'native/webview.win32-x64-msvc.node';
-// WebView2 genera muchos archivos internos (~10-20 MB por defecto).
-// Usamos perfil temporal + flags de cache mínimo + modo incógnito para
-// reducir el tamaño a ~1-3 MB y limpiamos al arrancar y al salir.
 const TEMP_ROOT = path.join(os.tmpdir(), 'MoonWolf-Agent');
 const WEBVIEW_DATA_DIR = path.join(TEMP_ROOT, 'WebView2Data', String(process.pid));
 const NATIVE_ADDON_NAME = 'webview.win32-x64-msvc.node';
 
-// Limitar caches de Chromium/WebView2 lo máximo posible (bytes).
-// Debe fijarse ANTES de crear Application / WebContext.
 if (!process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS) {
   process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = [
     '--disk-cache-size=1',
@@ -94,14 +89,11 @@ try {
 } catch {}
 
 function removeStaleWebViewData() {
-  // Limpia perfiles de ejecuciones anteriores (incluido el de este PID si quedó
-  // de un crash). Si algún archivo sigue bloqueado, se reintenta al salir.
   const dataRoot = path.join(TEMP_ROOT, 'WebView2Data');
   try {
     fs.rmSync(dataRoot, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 });
   } catch {}
 
-  // Perfil persistente de versiones anteriores.
   try {
     fs.rmSync(path.join(CONFIG_DIR, 'WebView2Data'), {
       recursive: true,
@@ -111,7 +103,6 @@ function removeStaleWebViewData() {
     });
   } catch {}
 
-  // Estructura antigua.
   try {
     fs.rmSync(path.join(TEMP_ROOT, 'webviewjs'), {
       recursive: true,
@@ -123,7 +114,6 @@ function removeStaleWebViewData() {
 }
 
 function scheduleWebViewDataCleanup() {
-  // Tras cerrar el proceso de renderizado, intentar borrar el perfil de este PID.
   const target = WEBVIEW_DATA_DIR;
   const tryRemove = (attempt) => {
     try {
@@ -472,41 +462,70 @@ function readUiAsset(assetName) {
   );
 }
 
-function openUrl(url) {
+/* ══════════════════════════════════════════════
+   SHELL HELPERS (spawn-based, con error handling)
+   ══════════════════════════════════════════════ */
+function openExplorerPath(target, label = 'explorer') {
+  if (!target) {
+    console.warn(`[${label}] Sin ruta para abrir.`);
+    return false;
+  }
+
+  console.log(`[${label}] Abriendo: ${target}`);
+
   try {
-    execFile(
-      'explorer.exe',
-      [url],
-      { windowsHide: true }
-    );
-  } catch {}
+    const child = spawn('explorer.exe', [target], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false,
+    });
+
+    child.on('error', err => {
+      console.error(`[${label}] spawn error:`, err?.message || err);
+    });
+
+    child.unref();
+    return true;
+  } catch (err) {
+    console.error(`[${label}] sync error:`, err?.message || err);
+    return false;
+  }
+}
+
+function openUrl(url) {
+  if (!url) return false;
+  return openExplorerPath(url, 'url');
 }
 
 function openFolder(folder) {
-  if (!folder) return;
-
-  try {
-    execFile(
-      'explorer.exe',
-      [folder],
-      { windowsHide: true }
-    );
-  } catch {}
+  if (!folder) return false;
+  return openExplorerPath(folder, 'folder');
 }
 
 function openConfigFolder(configPath) {
-  const folder =
-    path.dirname(
-      configPath || CONFIG_DIR
-    );
+  let folder = CONFIG_DIR;
+
+  if (configPath) {
+    try {
+      const st = fs.statSync(configPath);
+      folder = st.isDirectory() ? configPath : path.dirname(configPath);
+    } catch {
+      const dir = path.dirname(configPath);
+      if (dir && dir !== '.' && dir !== path.sep) folder = dir;
+    }
+  }
+
+  if (!folder) folder = CONFIG_DIR;
 
   try {
-    execFile(
-      'explorer.exe',
-      [folder],
-      { windowsHide: true }
-    );
-  } catch {}
+    fs.mkdirSync(folder, { recursive: true });
+  } catch (err) {
+    console.warn('[config] No se pudo crear la carpeta de configuración:', err?.message || err);
+    folder = CONFIG_DIR;
+    try { fs.mkdirSync(folder, { recursive: true }); } catch {}
+  }
+
+  return openExplorerPath(folder, 'config');
 }
 
 function hideToTray() {
@@ -850,24 +869,24 @@ function createWindow() {
       stateProvider(),
 
     openPanel: () => {
-      openUrl(PANEL_URL);
-      return true;
+      const ok = openUrl(PANEL_URL);
+      return { ok };
     },
 
     openServerFolder: () => {
-      openFolder(
+      const ok = openFolder(
         stateProvider().serverDir
       );
 
-      return true;
+      return { ok };
     },
 
     openConfig: () => {
-      openConfigFolder(
+      const ok = openConfigFolder(
         stateProvider().configPath
       );
 
-      return true;
+      return { ok };
     },
 
     setServerDir: dir =>
@@ -889,8 +908,10 @@ function createWindow() {
         'function' &&
       actions.saveLogs(),
 
-    hideToTray: () =>
-      hideToTray(),
+    hideToTray: () => {
+      const ok = hideToTray();
+      return { ok };
+    },
 
     restart: () =>
       typeof actions.restart ===
@@ -913,7 +934,7 @@ function createWindow() {
 
     close: () => {
       quitApp();
-      return true;
+      return { ok: true };
     },
   });
 
