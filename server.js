@@ -15,9 +15,6 @@ const { spawn } = require('child_process');
 const { Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 
-/* ══════════════════════════════════════════════
-   ATOMIC FILE WRITE HELPERS
-   ══════════════════════════════════════════════ */
 function atomicWriteFileSync(filePath, data, options = 'utf8') {
   const tempPath = `${filePath}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
   let fd = null;
@@ -25,12 +22,9 @@ function atomicWriteFileSync(filePath, data, options = 'utf8') {
   try {
     fd = fsSync.openSync(tempPath, 'wx');
     fsSync.writeFileSync(fd, data, options);
-
     try { fsSync.fsyncSync(fd); } catch {}
-
     fsSync.closeSync(fd);
     fd = null;
-
     fsSync.renameSync(tempPath, filePath);
   } catch (error) {
     if (fd !== null) { try { fsSync.closeSync(fd); } catch {} }
@@ -99,9 +93,7 @@ function readJsonConfigWithRecovery(filePath, fallback = null) {
     const quarantine = `${filePath}.corrupt-${Date.now()}`;
     try {
       fsSync.renameSync(filePath, quarantine);
-      console.warn(
-        `[config] ${filePath} corrupto y sin backup válido; movido a ${quarantine}.`
-      );
+      console.warn(`[config] ${filePath} corrupto y sin backup válido; movido a ${quarantine}.`);
     } catch (error) {
       console.warn(`[config] No se pudo aislar ${filePath}: ${error?.message || error}`);
     }
@@ -120,9 +112,6 @@ function writeJsonConfig(filePath, value, options = 'utf8') {
   );
 }
 
-/* ══════════════════════════════════════════════
-   Environments
-   ══════════════════════════════════════════════ */
 const ENV_PATH = path.join(__dirname, '.env');
 (function loadDotEnv() {
   if (!fsSync.existsSync(ENV_PATH)) return;
@@ -146,9 +135,6 @@ const ENV_PATH = path.join(__dirname, '.env');
   }
 })();
 
-/* ══════════════════════════════════════════════
-   AUTHENTICATION / SESSIONS
-   ══════════════════════════════════════════════ */
 const LOCAL_AGENT_TOKEN = process.env.MOONWOLF_LOCAL_AUTH_TOKEN || '';
 
 const SESSION_SECRET = (() => {
@@ -268,10 +254,6 @@ function canManageShareTokens(session) {
   return Boolean(session && permissionAllows(session.permission, 'admin'));
 }
 
-/* ══════════════════════════════════════════════
-   OWNER-ONLY OPERATIONS
-   ══════════════════════════════════════════════ */
-
 function isOwnerSession(session) {
   return Boolean(session && session.kind === 'owner');
 }
@@ -376,6 +358,7 @@ function parseStoredArgs(rawArgs, label) {
     return String(rawArgs || '').split(/\s+/).filter(Boolean);
   }
 }
+
 function validateExtraArgs(rawArgs) {
   const tokens = tokenizeArgs(rawArgs);
 
@@ -866,7 +849,6 @@ const RUNTIME_DIR =
   process.env.MOONWOLF_BASE_DIR ||
   path.join(process.cwd(), 'mc-server');
 
-/* ── Rate limiting helpers ── */
 function createCounterMap() {
   const store = new Map();
   return {
@@ -1030,9 +1012,6 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000).unref();
 
-/* ══════════════════════════════════════════════
-   EXPRESS / SOCKET.IO
-   ══════════════════════════════════════════════ */
 const app = express();
 app.set('trust proxy', 1);
 app.use(helmet({
@@ -1230,9 +1209,6 @@ for (const asset of PUBLIC_ASSETS) {
 
 app.use(express.json({ limit: '10mb' }));
 
-/* ══════════════════════════════════════════════
-   RATE LIMIT
-   ══════════════════════════════════════════════ */
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'moonwolf-local' });
 });
@@ -1261,9 +1237,6 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-/* ══════════════════════════════════════════════
-   PAIRING
-   ══════════════════════════════════════════════ */
 const CLOUD_ONLY_ROUTE = /^\/(pair|share-tokens)(\/|$)/;
 
 app.use('/api', (req, res, next) => {
@@ -1357,9 +1330,6 @@ app.post('/api/pair', async (req, res) => {
   });
 });
 
-/* ══════════════════════════════════════════════
-   SHARE TOKENS
-   ══════════════════════════════════════════════ */
 app.get('/api/share-tokens', async (req, res) => {
   const session = await getSessionFromRequest(req);
 
@@ -1490,9 +1460,6 @@ app.delete('/api/share-tokens/:id', async (req, res) => {
   return res.json({ ok: true });
 });
 
-/* ══════════════════════════════════════════════
-    SERVER
-    ══════════════════════════════════════════════ */
 const BASE_DIR = RUNTIME_DIR;
 
 if (!fsSync.existsSync(BASE_DIR)) {
@@ -1501,9 +1468,6 @@ if (!fsSync.existsSync(BASE_DIR)) {
 
 const PLUGINS_DIR = path.join(BASE_DIR, 'plugins');
 
-/* ══════════════════════════════════════════════
-   JAVA RUNTIMES
-   ══════════════════════════════════════════════ */
 const MOONWOLF_APP_DIR = path.join(
   process.env.APPDATA || path.join(require('os').homedir(), 'AppData', 'Roaming'),
   'MoonWolf'
@@ -1839,11 +1803,6 @@ function detectMinecraftVersionFromServerDir() {
     }
   } catch {}
 
-  try {
-    const propsPath = path.join(BASE_DIR, 'version_history.json');
-    void propsPath;
-  } catch {}
-
   for (const rel of [
     'fabric-server-launcher.properties',
     '.fabric/server/minecraft-server.version',
@@ -2058,7 +2017,6 @@ const JLINK_MODULES = Object.freeze([
   'jdk.security.jgss',
   'jdk.net',
   'jdk.nio.mapmode',
-  'jdk.random',
   'jdk.localedata',
   'jdk.jfr',
   'jdk.management.jfr',
@@ -2116,34 +2074,78 @@ function runJlink(jlinkExe, args) {
   });
 }
 
+function listAvailableModules(javaExe) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(javaExe, ['--list-modules'], {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', d => { stdout += String(d); });
+    child.stderr.on('data', d => { stderr += String(d); });
+    child.on('error', reject);
+    child.once('close', code => {
+      if (code !== 0) {
+        return reject(new Error(
+          (stderr || stdout).trim() || `java --list-modules terminó con código ${code}`
+        ));
+      }
+
+      const set = new Set();
+      for (const line of stdout.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const name = trimmed.split('@')[0].trim();
+        if (name) set.add(name);
+      }
+      resolve(set);
+    });
+  });
+}
+
 async function buildJlinkRuntime(jdkRoot, outputDir) {
   const jlinkExe = path.join(jdkRoot, 'bin', 'jlink.exe');
+  const javaExe = path.join(jdkRoot, 'bin', 'java.exe');
   const jmodsDir = path.join(jdkRoot, 'jmods');
 
-  let availableModules = null;
+  let availableModules;
+  try {
+    availableModules = await listAvailableModules(javaExe);
+    console.log(`[java] JDK expone ${availableModules.size} módulos vía --list-modules.`);
+  } catch (error) {
+    console.warn(
+      `[java] java --list-modules falló (${error.message}); usando jmods como fallback.`
+    );
+    availableModules = new Set();
+    try {
+      const entries = await fs.readdir(jmodsDir);
+      for (const entry of entries) {
+        if (entry.endsWith('.jmod')) availableModules.add(entry.slice(0, -5));
+      }
+    } catch {}
+  }
+
+  const modulesToUse = JLINK_MODULES.filter(m => availableModules.has(m));
+  const dropped = JLINK_MODULES.filter(m => !availableModules.has(m));
+
+  if (dropped.length) {
+    console.warn(
+      `[java] Módulos no disponibles en este JDK (se omiten): ${dropped.join(', ')}`
+    );
+  }
+
+  if (!modulesToUse.length) {
+    throw new Error('Ningún módulo de JLINK_MODULES existe en este JDK.');
+  }
+
+  let useModulePath = false;
   try {
     const entries = await fs.readdir(jmodsDir);
-    const set = new Set();
-    for (const entry of entries) {
-      if (entry.endsWith('.jmod')) set.add(entry.slice(0, -5));
-    }
-    if (set.size) availableModules = set;
+    useModulePath = entries.some(e => e.endsWith('.jmod'));
   } catch {}
-
-  let modulesToUse;
-  if (availableModules) {
-    modulesToUse = JLINK_MODULES.filter(m => availableModules.has(m));
-    const dropped = JLINK_MODULES.filter(m => !availableModules.has(m));
-    if (dropped.length) {
-      console.warn(
-        `[java] Módulos no disponibles en este JDK (se omiten): ${dropped.join(', ')}`
-      );
-    }
-    if (!modulesToUse.length) modulesToUse = JLINK_MODULES;
-  } else {
-    console.log('[java] JDK sin jmods; jlink usará el runtime actual como fuente.');
-    modulesToUse = JLINK_MODULES;
-  }
 
   const modules = modulesToUse.join(',');
 
@@ -2155,8 +2157,11 @@ async function buildJlinkRuntime(jdkRoot, outputDir) {
     '--output', outputDir,
   ];
 
-  if (availableModules) {
+  if (useModulePath) {
     baseArgs.unshift('--module-path', jmodsDir);
+    console.log('[java] Usando --module-path (JDK con jmods).');
+  } else {
+    console.log('[java] JDK sin jmods (JEP 493); jlink usará el runtime actual como fuente.');
   }
 
   const compressVariants = ['zip-6', '2', null];
@@ -2552,9 +2557,6 @@ function writeServerPort(port) {
   writeFileWithBackup(SERVER_PROPERTIES_PATH, content, 'utf8');
 }
 
-/* ══════════════════════════════════════════════
-   PORTS
-   ══════════════════════════════════════════════ */
 let serverPropertiesCache = null;
 
 function readServerProperties() {
@@ -2632,9 +2634,6 @@ function validPort(value) {
   return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
 }
 
-/* ══════════════════════════════════════════════
-   RCON (Minecraft Remote Console)
-   ══════════════════════════════════════════════ */
 class RconClient {
   constructor() {
     this.socket = null;
@@ -3107,9 +3106,6 @@ function semverCmp(a, b) {
   return 0;
 }
 
-/* ══════════════════════════════════════════════
-    CLOUD / AGENT
-    ══════════════════════════════════════════════ */
 const agentSockets = new Map();
 const panelSockets = new Set();
 const agentCache = new Map();
@@ -3457,9 +3453,6 @@ io.on('connection', socket => {
   });
 });
 
-/* ══════════════════════════════════════════════
-    FILES
-    ══════════════════════════════════════════════ */
 app.get('/api/files', async (req, res) => {
   const fullPath = safePath(req.query.dir || '');
 
@@ -3526,9 +3519,6 @@ app.post('/api/files/content', async (req, res) => {
   }
 });
 
-/* ═════════════
-    STARTUP
-    ════════════ */
 app.get('/api/startup', async (_req, res) => {
   try {
     const entries = await fs.readdir(BASE_DIR, { withFileTypes: true });
@@ -3730,9 +3720,6 @@ app.post('/api/startup', async (req, res) => {
   }
 });
 
-/* ═════════════════════════════════════
-    DATABASE (MySQL / MariaDB)
-    ════════════════════════════════════ */
 let mysql = null;
 
 function getMysql() {
@@ -3929,9 +3916,6 @@ app.delete('/api/databases/:name', async (req, res) => {
   }
 });
 
-/* ══════════════════════════════════════════════
-    MINECRAFT PROCESS
-    ══════════════════════════════════════════════ */
 const MC_STOP_TIMEOUT_MS = Math.max(
   5_000,
   Number(process.env.MOONWOLF_STOP_TIMEOUT_MS || 30_000)
@@ -4345,9 +4329,6 @@ app.post('/api/command', async (req, res) => {
   ok(res, { via: 'stdin' });
 });
 
-/* ══════════════════════════════════════════════
-    PLUGINS
-    ══════════════════════════════════════════════ */
 app.get('/api/plugins/search', async (req, res) => {
   const q = (req.query.q || '').trim();
   const source = req.query.source || 'all';
@@ -4624,9 +4605,6 @@ app.delete('/api/plugins/installed/:file', async (req, res) => {
   }
 });
 
-/* ══════════════════════════════════════════════
-    SOFTWARE
-    ══════════════════════════════════════════════ */
 app.get('/api/versions/software', (_req, res) => {
   ok(res, {
     software: [
@@ -5198,9 +5176,6 @@ app.get('/api/versions/current', async (_req, res) => {
   }
 });
 
-/* ══════════════════════════════════════════════
-    FILE OPERATIONS
-    ══════════════════════════════════════════════ */
 let ZipArchiveCtor = null;
 
 async function getZipArchive() {
@@ -5782,9 +5757,6 @@ app.post('/api/files/delete', async (req, res) => {
   }
 });
 
-/* ══════════════════════════════════════════════
-    BACKUPS
-    ══════════════════════════════════════════════ */
 const BACKUPS_DIR = path.join(STARTUP_DIR, 'backups');
 const BACKUP_NAME_RE = /^[A-Za-z0-9 _.-]{1,80}$/;
 const BACKUP_FILE_RE = /^[A-Za-z0-9_.-]{1,120}\.zip$/;
@@ -6064,9 +6036,6 @@ app.post('/api/backups/:name/restore', async (req, res) => {
   }
 });
 
-/* ══════════════════════════════════════════════
-    DEBUG
-    ══════════════════════════════════════════════ */
 app.get('/api/debug/start', async (_req, res) => {
   const cfg = loadStartupConfig();
   const jarPath = path.join(BASE_DIR, cfg.jar);
@@ -6110,9 +6079,6 @@ app.get('/api/debug/start', async (_req, res) => {
   });
 });
 
-/* ══════════════════════════════════════════════
-    START
-    ══════════════════════════════════════════════ */
 function stopMinecraft(timeoutMs = 30000) {
   return new Promise(resolve => {
     if (!mcProcess || mcProcess.exitCode !== null) return resolve();
