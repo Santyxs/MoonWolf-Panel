@@ -20,42 +20,39 @@ const NATIVE_ADDON_NAME = 'webview.win32-x64-msvc.node';
 // Debe fijarse ANTES de crear Application / WebContext.
 if (!process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS) {
   process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = [
-    // Cache mínimo
     '--disk-cache-size=1',
     '--media-cache-size=1',
     '--disable-gpu-shader-disk-cache',
     '--disable-application-cache',
     '--disable-offline-load-stale-cache',
-
-    // Red / telemetría / componentes
+    '--disable-extensions',
+    '--disable-component-extensions-with-background-pages',
+    '--disable-component-update',
+    '--disable-default-apps',
     '--disable-background-networking',
+    '--disable-background-downloads',
     '--disable-sync',
     '--disable-translate',
-    '--disable-default-apps',
-    '--disable-component-update',
     '--disable-domain-reliability',
     '--disable-client-side-phishing-detection',
     '--disable-breakpad',
+    '--no-pings',
+    '--metrics-recording-only',
     '--no-first-run',
     '--no-default-browser-check',
-    '--metrics-recording-only',
-
-    // UI local: sin popups, audio, plugins, etc.
     '--disable-hang-monitor',
     '--disable-popup-blocking',
     '--disable-prompt-on-repost',
     '--disable-background-timer-throttling',
     '--disable-renderer-backgrounding',
     '--disable-backgrounding-occluded-windows',
-    '--disable-extensions',
+    '--disable-ipc-flooding-protection',
     '--disable-plugins',
     '--disable-print-preview',
     '--disable-speech-api',
     '--disable-notifications',
     '--mute-audio',
-
-    // Features de Edge/Chromium innecesarias
-    '--disable-features=msSmartScreenProtection,AutofillServerCommunication,OptimizationHints,MediaRouter,EdgeFeedback,InterestFeedContentSuggestions,ReadAnythingOmniboxIcon,TranslateUI',
+    '--disable-features=msSmartScreenProtection,AutofillServerCommunication,OptimizationHints,MediaRouter,EdgeFeedback,InterestFeedContentSuggestions,ReadAnythingOmniboxIcon,TranslateUI,Translate,PrivacySandboxSettings4',
   ].join(' ');
 }
 
