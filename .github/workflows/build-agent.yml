@@ -128,6 +128,12 @@ jobs:
           }
           New-Item -ItemType Directory -Force -Path 'dist' | Out-Null
 
+      - name: Restore rcedit cache
+        uses: actions/cache@v6
+        with:
+          path: dist/tools/rcedit-x64.exe
+          key: rcedit-x64-v2.0.0
+
       - name: Determine next Agent version
         id: version
         shell: bash
@@ -166,6 +172,55 @@ jobs:
           echo "Next version: $next"
           echo "tag=$next" >> "$GITHUB_OUTPUT"
 
+      - name: Prepare base executable (icon + metadata)
+        shell: pwsh
+        env:
+          AGENT_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          $dist = (Resolve-Path 'dist').Path
+          $baseExe = Join-Path $dist 'MoonWolf-Agent-base.exe'
+          $nodeExe = (node -p "process.execPath").Trim()
+          $icon = (Resolve-Path 'agent/assets/MoonWolf-Agent.ico').Path
+          $version = $env:AGENT_TAG -replace '^agent-v', ''
+          $fileVersion = "$version.0.0"
+
+          if (-not (Test-Path -LiteralPath $nodeExe)) {
+            throw "Node executable not found: $nodeExe"
+          }
+          Copy-Item -LiteralPath $nodeExe -Destination $baseExe -Force
+
+          $toolsDir = Join-Path $dist 'tools'
+          New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+          $rcedit = Join-Path $toolsDir 'rcedit-x64.exe'
+          $rceditUrl = 'https://github.com/electron/rcedit/releases/download/v2.0.0/rcedit-x64.exe'
+
+          if (-not (Test-Path -LiteralPath $rcedit)) {
+            Write-Host 'Downloading rcedit...'
+            Invoke-WebRequest -Uri $rceditUrl -OutFile $rcedit -UseBasicParsing
+          }
+          if (-not (Test-Path -LiteralPath $rcedit)) { throw 'Failed to obtain rcedit-x64.exe' }
+
+          & $rcedit $baseExe `
+            --set-icon $icon `
+            --set-version-string 'FileDescription' 'MoonWolf Agent' `
+            --set-version-string 'ProductName' 'MoonWolf Agent' `
+            --set-version-string 'InternalName' 'MoonWolf-Agent.exe' `
+            --set-version-string 'OriginalFilename' 'MoonWolf-Agent.exe' `
+            --set-version-string 'CompanyName' 'MoonWolf' `
+            --set-file-version $fileVersion `
+            --set-product-version $fileVersion
+          if ($LASTEXITCODE -ne 0) { throw "rcedit exited with code $LASTEXITCODE" }
+
+          $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($baseExe)
+          Write-Host "Base FileDescription: $($info.FileDescription)"
+          Write-Host "Base ProductName: $($info.ProductName)"
+          Write-Host "Base FileVersion: $($info.FileVersion)"
+          if ($info.FileDescription -ne 'MoonWolf Agent' -or $info.ProductName -ne 'MoonWolf Agent') {
+            throw 'Base executable metadata does not contain the expected name MoonWolf Agent.'
+          }
+
+          Write-Host "Prepared base executable: $baseExe"
+
       - name: Bundle Agent
         shell: bash
         env:
@@ -194,6 +249,7 @@ jobs:
           $native = (Resolve-Path 'agent/node_modules/@webviewjs/webview-win32-x64-msvc/webview.win32-x64-msvc.node').Path
           $dcNative = (Resolve-Path 'agent/node_modules/node-datachannel/build/Release/node_datachannel.node').Path
           $main = (Resolve-Path 'dist/agent.cjs').Path
+          $baseExe = (Resolve-Path 'dist/MoonWolf-Agent-base.exe').Path
           $exe = Join-Path (Resolve-Path 'dist').Path 'MoonWolf-Agent.exe'
           $indexHtml = (Resolve-Path 'agent/ui/index.html').Path
           $styleCss = (Resolve-Path 'agent/ui/style.css').Path
@@ -202,6 +258,7 @@ jobs:
           $config = @{
             main = $main
             mainFormat = 'commonjs'
+            executable = $baseExe
             output = $exe
             disableExperimentalSEAWarning = $true
             useSnapshot = $false
@@ -230,13 +287,7 @@ jobs:
           Write-Host "MoonWolf-Agent.exe generated: $size bytes"
           if ($size -lt 1MB) { throw 'Generated executable is suspiciously small.' }
 
-      - name: Restore rcedit cache
-        uses: actions/cache@v6
-        with:
-          path: dist/tools/rcedit-x64.exe
-          key: rcedit-x64-v2.0.0
-
-      - name: Hide console + icon + metadata
+      - name: Hide console + verify metadata
         shell: pwsh
         env:
           AGENT_TAG: ${{ steps.version.outputs.tag }}
@@ -244,7 +295,6 @@ jobs:
           $exe = (Resolve-Path 'dist/MoonWolf-Agent.exe').Path
           $version = $env:AGENT_TAG -replace '^agent-v', ''
           $fileVersion = "$version.0.0"
-          $icon = (Resolve-Path 'agent/assets/MoonWolf-Agent.ico').Path
 
           # CONSOLE → WINDOWS (no console window)
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -270,35 +320,16 @@ jobs:
           & $editbin /SUBSYSTEM:WINDOWS $exe
           if ($LASTEXITCODE -ne 0) { throw "editbin exited with code $LASTEXITCODE" }
 
-          # Icon + version metadata
-          $toolsDir = Join-Path (Resolve-Path 'dist').Path 'tools'
-          New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
-          $rcedit = Join-Path $toolsDir 'rcedit-x64.exe'
-          $rceditUrl = 'https://github.com/electron/rcedit/releases/download/v2.0.0/rcedit-x64.exe'
-
-          if (-not (Test-Path -LiteralPath $rcedit)) {
-            Write-Host 'Downloading rcedit...'
-            Invoke-WebRequest -Uri $rceditUrl -OutFile $rcedit -UseBasicParsing
-          }
-          if (-not (Test-Path -LiteralPath $rcedit)) { throw 'Failed to obtain rcedit-x64.exe' }
-
-          & $rcedit $exe `
-            --set-icon $icon `
-            --set-version-string 'FileDescription' 'MoonWolf Agent' `
-            --set-version-string 'ProductName' 'MoonWolf Agent' `
-            --set-version-string 'InternalName' 'MoonWolf-Agent.exe' `
-            --set-version-string 'OriginalFilename' 'MoonWolf-Agent.exe' `
-            --set-version-string 'CompanyName' 'MoonWolf' `
-            --set-file-version $fileVersion `
-            --set-product-version $fileVersion
-          if ($LASTEXITCODE -ne 0) { throw "rcedit exited with code $LASTEXITCODE" }
-
+          # Verify metadata copied from the prepared Node executable.
           $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
           Write-Host "FileDescription: $($info.FileDescription)"
           Write-Host "ProductName: $($info.ProductName)"
           Write-Host "FileVersion: $($info.FileVersion)"
           if ($info.FileDescription -ne 'MoonWolf Agent' -or $info.ProductName -ne 'MoonWolf Agent') {
-            throw 'Metadata does not contain the expected name MoonWolf Agent.'
+            throw 'Final executable metadata does not contain the expected name MoonWolf Agent.'
+          }
+          if ($info.FileVersion -ne $fileVersion) {
+            throw "Unexpected file version. Expected $fileVersion, got $($info.FileVersion)"
           }
 
           $size = (Get-Item -LiteralPath $exe).Length
