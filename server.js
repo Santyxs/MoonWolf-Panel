@@ -112,34 +112,12 @@ function writeJsonConfig(filePath, value, options = 'utf8') {
   );
 }
 
-const ENV_PATH = path.join(__dirname, '.env');
-(function loadDotEnv() {
-  if (!fsSync.existsSync(ENV_PATH)) return;
-
-  for (const line of fsSync.readFileSync(ENV_PATH, 'utf8').split(/\r?\n/)) {
-    const m = line.match(/^\s*([\w.-]+)\s*=\s*(.*)\s*$/);
-    if (!m) continue;
-
-    let val = m[2] || '';
-
-    if (
-      (val.startsWith('"') && val.endsWith('"')) ||
-      (val.startsWith("'") && val.endsWith("'"))
-    ) {
-      val = val.slice(1, -1);
-    }
-
-    if (!(m[1] in process.env)) {
-      process.env[m[1]] = val;
-    }
-  }
-})();
-
-const LOCAL_AGENT_TOKEN = process.env.MOONWOLF_LOCAL_AUTH_TOKEN || '';
+/* Inyectado por el agente embebido (globalThis.__MOONWOLF__), no por variables de entorno. */
+const LOCAL_AGENT_TOKEN = String(globalThis.__MOONWOLF__?.localAuthToken || '');
 
 const SESSION_SECRET = (() => {
-  const envSecret = process.env.MOONWOLF_SESSION_SECRET;
-  if (envSecret && envSecret.length >= 32) return envSecret;
+  const injected = globalThis.__MOONWOLF__?.sessionSecret;
+  if (injected && String(injected).length >= 32) return String(injected);
 
   const appDir = path.join(
     process.env.APPDATA || path.join(require('os').homedir(), 'AppData', 'Roaming'),
@@ -224,7 +202,7 @@ function signValue(value) {
     .digest('base64url');
 }
 
-const SHARE_TOKEN_DATABASE_URL = String(process.env.DATABASE_URL || '').trim();
+const SHARE_TOKEN_DATABASE_URL = '';
 let shareTokenSql = null;
 
 const PERMISSION_RANK = {
@@ -514,13 +492,6 @@ function removeLegacyShareTokenFiles() {
   const legacyPaths = new Set([
     path.join(__dirname, '.moonwolf-share-tokens.json'),
   ]);
-  if (process.env.MOONWOLF_SHARE_STORE) {
-    const configuredPath = path.resolve(process.env.MOONWOLF_SHARE_STORE);
-    if (/share[-_]?tokens?\.json$/i.test(path.basename(configuredPath))) {
-      legacyPaths.add(configuredPath);
-    }
-  }
-
   for (const legacyPath of legacyPaths) {
     const dir = path.dirname(legacyPath);
     const base = path.basename(legacyPath);
@@ -763,9 +734,7 @@ function verifyPanelSession(token) {
   }
 }
 
-const AGENT_STORE_PATH =
-  process.env.MOONWOLF_AGENT_STORE ||
-  path.join(__dirname, '.moonwolf-agents.json');
+const AGENT_STORE_PATH = path.join(__dirname, '.moonwolf-agents.json');
 
 function verifyOrRegisterAgent(agentId, token) {
   if (!/^[A-Za-z0-9-]{16,64}$/.test(agentId)) return false;
@@ -839,7 +808,9 @@ function consumePairingCode(code) {
   return pairing;
 }
 
-const RUNTIME_DIR = path.join(process.cwd(), 'mc-server');
+const RUNTIME_DIR =
+  (globalThis.__MOONWOLF__?.serverDir && String(globalThis.__MOONWOLF__.serverDir)) ||
+  path.join(process.cwd(), 'mc-server');
 
 function createCounterMap() {
   const store = new Map();
@@ -2448,7 +2419,7 @@ async function resolveJavaForServer(minecraftVersion) {
 }
 
 const HOST = '0.0.0.0';
-const PORT = 10000;
+const PORT = Number(globalThis.__MOONWOLF__?.port) || 10000;
 
 const STARTUP_DIR = path.join(BASE_DIR, '.moonwolf');
 const STARTUP_CONFIG_PATH = path.join(STARTUP_DIR, 'startup.json');
