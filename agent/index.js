@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
+const zlib = require('node:zlib');
 const { spawn } = require('node:child_process');
 const { io } = require('socket.io-client');
 const { startGui } = require('./gui');
@@ -62,7 +63,10 @@ function dcPrepareNative() {
 
   // Guarda el addon nativo directamente en la raíz de MoonWolf-Agent.
   const target = path.join(dir, 'node_datachannel.node');
-  const data = Buffer.from(sea.getAsset(DC_NATIVE_ASSET));
+  // Los addons se incrustan comprimidos solo si gzip reduce su tamaño.
+  const asset = Buffer.from(sea.getAsset(DC_NATIVE_ASSET));
+  const isGzip = asset.length >= 2 && asset[0] === 0x1f && asset[1] === 0x8b;
+  const data = isGzip ? zlib.gunzipSync(asset) : asset;
   let needsWrite = true;
 
   try {

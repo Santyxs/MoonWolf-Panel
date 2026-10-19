@@ -135,7 +135,10 @@ function prepareNativeAddon() {
   const nativePath = path.join(TEMP_ROOT, NATIVE_ADDON_NAME);
 
   try {
-    const embeddedAddon = Buffer.from(getAsset(NATIVE_ASSET));
+    // El addon se comprime en el ejecutable solo si gzip reduce su tamaño.
+    const asset = Buffer.from(getAsset(NATIVE_ASSET));
+    const isGzip = asset.length >= 2 && asset[0] === 0x1f && asset[1] === 0x8b;
+    const embeddedAddon = isGzip ? zlib.gunzipSync(asset) : asset;
     let needsWrite = true;
 
     try {
