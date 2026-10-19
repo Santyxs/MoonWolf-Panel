@@ -474,8 +474,6 @@ function openExplorerPath(target, label = 'explorer') {
     return false;
   }
 
-  console.log(`[${label}] Abriendo: ${target}`);
-
   try {
     const child = spawn('explorer.exe', [target], {
       detached: true,
@@ -847,13 +845,6 @@ function createWindow() {
       'unresponsive',
       () => {
         console.warn('[webview] no responde.');
-      }
-    );
-
-    webview.on(
-      'responsive',
-      () => {
-        console.log('[webview] vuelve a responder.');
       }
     );
 
