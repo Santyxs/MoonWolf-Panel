@@ -202,7 +202,7 @@ function signValue(value) {
     .digest('base64url');
 }
 
-const SHARE_TOKEN_DATABASE_URL = '';
+const SHARE_TOKEN_DATABASE_URL = String(process.env.DATABASE_URL || '').trim();
 let shareTokenSql = null;
 
 const PERMISSION_RANK = {
@@ -734,30 +734,20 @@ function verifyPanelSession(token) {
   }
 }
 
-const AGENT_STORE_PATH = path.join(__dirname, '.moonwolf-agents.json');
+const agentRegistry = new Map();
 
 function verifyOrRegisterAgent(agentId, token) {
   if (!/^[A-Za-z0-9-]{16,64}$/.test(agentId)) return false;
 
-  const db = readJsonConfigWithRecovery(AGENT_STORE_PATH, {}) || {};
-  if (typeof db !== 'object' || Array.isArray(db)) return false;
-
   const hash = hashShareToken(token);
+  const existing = agentRegistry.get(agentId);
 
-  if (!Object.prototype.hasOwnProperty.call(db, agentId)) {
-    db[agentId] = hash;
-
-    try {
-      writeJsonConfig(AGENT_STORE_PATH, db, { encoding: 'utf8', mode: 0o600 });
-      try { fsSync.chmodSync(AGENT_STORE_PATH, 0o600); } catch {}
-    } catch (error) {
-      console.warn('[agents] No se pudo persistir el registro:', error.message);
-    }
-
+  if (!existing) {
+    agentRegistry.set(agentId, hash);
     return true;
   }
 
-  return timingSafeEqualStr(db[agentId], hash);
+  return timingSafeEqualStr(existing, hash);
 }
 
 const pairingCodes = new Map();
