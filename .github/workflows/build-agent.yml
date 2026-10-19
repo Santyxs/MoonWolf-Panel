@@ -255,8 +255,8 @@ jobs:
           $styleCss = (Resolve-Path 'agent/ui/style.css').Path
           $appJs = (Resolve-Path 'agent/ui/app.js').Path
 
-          # Comprime los addons nativos para que el contenido incrustado en el SEA ocupe menos.
-          # En tiempo de ejecución, agent/index.js y agent/gui.js los descomprimen con node:zlib.
+          # Prueba original, gzip y Brotli; incrusta la variante más pequeña de cada addon.
+          # MWBR marca el payload Brotli. En ejecución se descomprime con node:zlib.
           $compressedDir = Join-Path (Resolve-Path 'dist').Path 'native-compressed'
           New-Item -ItemType Directory -Force -Path $compressedDir | Out-Null
           $nativeCompressed = Join-Path $compressedDir 'webview.win32-x64-msvc.node.asset'
@@ -272,14 +272,23 @@ jobs:
           ];
           for (const [sourcePath, outputPath] of pairs) {
             const source = fs.readFileSync(sourcePath);
-            const compressed = zlib.gzipSync(source, { level: zlib.constants.Z_BEST_COMPRESSION });
-            const useCompressed = compressed.length < source.length;
-            const payload = useCompressed ? compressed : source;
+            const gzip = zlib.gzipSync(source, { level: zlib.constants.Z_BEST_COMPRESSION });
+            const brotliRaw = zlib.brotliCompressSync(source, {
+              params: {
+                [zlib.constants.BROTLI_PARAM_QUALITY]: 11,
+                [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_GENERIC,
+                [zlib.constants.BROTLI_PARAM_SIZE_HINT]: source.length,
+              },
+            });
+            const brotli = Buffer.concat([Buffer.from('MWBR'), brotliRaw]);
+            let payload = source;
+            let mode = 'original';
+            if (gzip.length < payload.length) { payload = gzip; mode = 'gzip'; }
+            if (brotli.length < payload.length) { payload = brotli; mode = 'brotli-11'; }
             fs.writeFileSync(outputPath, payload);
             const saved = source.length - payload.length;
             const percent = source.length ? (saved / source.length * 100).toFixed(1) : '0.0';
-            const mode = useCompressed ? 'gzip' : 'original (gzip no reduce el tamaño)';
-            console.log(`${path.basename(sourcePath)}: ${source.length} -> ${payload.length} bytes (${mode}; saved ${saved} bytes, ${percent}%).`);
+            console.log(`${path.basename(sourcePath)}: original ${source.length} B; gzip ${gzip.length} B; Brotli ${brotli.length} B; selected ${mode} ${payload.length} B; saved ${saved} B (${percent}%).`);
           }
           '@
           & node -e $compressScript $native $nativeCompressed $dcNative $dcNativeCompressed
@@ -297,7 +306,7 @@ jobs:
               'ui/index.html' = $indexHtml
               'ui/style.css' = $styleCss
               'ui/app.js' = $appJs
-              # Keep asset keys unchanged; gzip is used only when it reduces that native file.
+              # Asset keys stay unchanged; each file contains its smallest original/gzip/Brotli representation.
               'native/webview.win32-x64-msvc.node' = $nativeCompressed
               'native/node_datachannel.node' = $dcNativeCompressed
             }
