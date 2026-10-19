@@ -598,10 +598,7 @@ async function checkForUpdate(currentVersion) {
   const response = await fetch(UPDATE_API, {
     headers: {
       'User-Agent': 'MoonWolf-Agent',
-      'Accept': 'application/vnd.github+json',
-      ...(process.env.MOONWOLF_GH_TOKEN
-        ? { 'Authorization': `Bearer ${process.env.MOONWOLF_GH_TOKEN}` }
-        : {}),
+      'Accept': 'application/vnd.github+json'
     },
     signal: AbortSignal.timeout(5000),
   });
