@@ -1911,7 +1911,6 @@ function resolveMinecraftVersion(options = {}) {
     try {
       saveStartupConfig({ minecraftVersion: version });
       persisted = true;
-      console.log(`[version-detect] Versión detectada automáticamente (${source}): ${version}`);
     } catch (error) {
       console.warn('[version-detect] No se pudo guardar la versión detectada:', error.message);
     }
@@ -2162,7 +2161,6 @@ function verifyJlinkRuntime(outputDir) {
       if (code !== 0) {
         return reject(new Error(text || `java -version falló con código ${code}`));
       }
-      console.log('[java] Verificación jlink OK:', text.split(/\r?\n/)[0] || text.slice(0, 120));
       resolve(text);
     });
   });
@@ -2176,7 +2174,6 @@ async function buildJlinkRuntime(jdkRoot, outputDir) {
   let availableModules;
   try {
     availableModules = await listAvailableModules(javaExe);
-    console.log(`[java] JDK expone ${availableModules.size} módulos vía --list-modules.`);
   } catch (error) {
     console.warn(
       `[java] java --list-modules falló (${error.message}); usando jmods como fallback.`
@@ -2221,9 +2218,6 @@ async function buildJlinkRuntime(jdkRoot, outputDir) {
 
   if (useModulePath) {
     baseArgs.unshift('--module-path', jmodsDir);
-    console.log('[java] Usando --module-path (JDK con jmods).');
-  } else {
-    console.log('[java] JDK sin jmods (JEP 493); jlink usará el runtime actual como fuente.');
   }
 
   const compressVariants = ['zip-6', '2', null];
@@ -2240,9 +2234,7 @@ async function buildJlinkRuntime(jdkRoot, outputDir) {
 
     try {
       await runJlink(jlinkExe, args);
-      if (variant) {
-        console.log(`[java] jlink usó --compress=${variant}`);
-      } else {
+      if (!variant) {
         console.warn('[java] jlink terminó sin compresión (--compress no soportado).');
       }
       return;
@@ -3189,13 +3181,11 @@ function agentIsOnline(agentId) {
 }
 
 io.on('connection', socket => {
-  console.log('Cliente conectado:', socket.id, socket.data.role, socket.data.agentId || '');
 
   if (socket.data.role === 'local-agent') {
     socket.join(LOCAL_AGENT_ROOM);
     socket.emit('status', lastStatus);
     socket.once('disconnect', () => releaseSocketConnection(socket));
-    console.log('🖥️ Agent local conectado:', socket.id);
     return;
   }
 
@@ -3215,17 +3205,10 @@ io.on('connection', socket => {
 
     agentSockets.set(agentId, socket);
     socket.join(agentRoom(agentId));
-    console.log('🌙 MoonWolf Agent conectado:', agentId, socket.id);
 
     socket.on('pairing_create', () => {
       if (!socketEventAllowed(socket, 'pairing_create', 6)) return;
       const pairing = createPairingCode(agentId);
-      console.log(
-        '[pairing] Código creado:',
-        agentId,
-        'socket=', socket.id,
-        'expira=', new Date(pairing.expiresAt).toISOString()
-      );
       socket.emit('pairing_ready', {
         ...pairing,
         ttlMs: PAIRING_TTL_MS,
@@ -3298,7 +3281,6 @@ io.on('connection', socket => {
         notifyAgentState(false);
       }
 
-      console.log('🌙 MoonWolf Agent desconectado:', agentId, socket.id, 'motivo=', reason || 'sin-motivo');
     });
 
     return;
@@ -3315,7 +3297,6 @@ io.on('connection', socket => {
       socket.disconnect(true);
     }, Math.max(1000, socket.data.sessionExp - Date.now()));
 
-    console.log('🖥️ Panel conectado:', socket.id, '->', agentId);
 
     socket.emit('direct_config', { iceServers: ICE_SERVERS });
     socket.emit('cloud_ready', { agentOnline: online });
@@ -3503,7 +3484,6 @@ io.on('connection', socket => {
       agentSockets.get(agentId)?.emit('direct_close', { peerId: socket.id });
       panelSockets.delete(socket);
       socket.data.pendingRpc?.clear();
-      console.log('🖥️ Panel desconectado:', socket.id);
     });
 
     return;
@@ -3511,7 +3491,6 @@ io.on('connection', socket => {
 
   socket.on('disconnect', () => {
     releaseSocketConnection(socket);
-    console.log('Cliente desconectado:', socket.id);
   });
 });
 
@@ -5186,7 +5165,6 @@ app.post('/api/versions/install', async (req, res) => {
         const bakName = `server.bak_${Date.now()}.jar`;
         backupJar = path.join(BASE_DIR, bakName);
         await fs.rename(currentJar, backupJar);
-        console.log(`[versions] Backup creado: ${bakName}`);
       }
       await fs.rename(tempJar, currentJar);
     } catch (error) {
@@ -5354,9 +5332,7 @@ async function cleanupStaleFileUploads() {
     }
   }
 
-  if (removed) {
-    console.log(`[uploads] Limpieza automática: ${removed} temporal(es) eliminado(s).`);
-  }
+
 }
 
 void cleanupStaleFileUploads();
@@ -5924,7 +5900,6 @@ async function pruneOldBackups() {
   for (const file of toRemove) {
     try {
       await fs.rm(path.join(BACKUPS_DIR, file.name), { force: true });
-      console.log(`[backup] Retención: eliminada ${file.name}`);
     } catch (error) {
       console.warn(`[backup] No se pudo eliminar ${file.name}:`, error.message);
     }
