@@ -436,6 +436,7 @@ const ADMIN_ROUTE_RULES = Object.freeze([
       '/api/files/compress',
       '/api/files/bulk',
       '/api/files/delete',
+      '/api/files/upload-chunk',
       '/api/databases',
       '/api/databases/:name/reset-password',
       '/api/backups',
@@ -695,10 +696,11 @@ function publicShareToken(record) {
 async function getSessionFromRequest(req) {
   if (LOCAL_AGENT_TOKEN) {
     const localPermission = normalizeSharePermission(req.get('x-moonwolf-permission'));
+    if (!localPermission) return null;
 
-    return req.get('x-moonwolf-kind') === 'owner' && localPermission
+    return req.get('x-moonwolf-kind') === 'owner'
       ? { kind: 'owner', permission: localPermission }
-      : { kind: 'share', permission: localPermission || 'read' };
+      : { kind: 'share', permission: localPermission };
   }
 
   const auth = String(req.headers.authorization || '');
@@ -1019,14 +1021,16 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", 'https://cdnjs.cloudflare.com'],
-      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com', 'https://cdnjs.cloudflare.com'],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
       fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
       imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
-      connectSrc: ["'self'", 'https:', 'wss:'],
+      connectSrc: ["'self'", 'wss:', 'ws:'],
       objectSrc: ["'none'"],
       baseUri: ["'self'"],
       frameAncestors: ["'none'"],
+      formAction: ["'self'"],
+      upgradeInsecureRequests: [],
     },
   },
 }));
@@ -1142,6 +1146,12 @@ const PUBLIC_ASSETS = [
   'styles.css',
 ];
 
+app.use('/vendor', express.static(path.join(__dirname, 'vendor'), {
+  maxAge: '365d',
+  immutable: true,
+  fallthrough: true,
+}));
+
 const ASSET_VERSION_CACHE = new Map();
 
 function assetVersion(asset) {
@@ -1256,6 +1266,34 @@ app.use('/api', (req, res, next) => {
   }
 
   next();
+});
+
+// Enforce permission level on every local API call (headers from Agent).
+app.use('/api', async (req, res, next) => {
+  if (!LOCAL_AGENT_TOKEN) return next();
+
+  try {
+    const session = await getSessionFromRequest(req);
+    if (!session) {
+      return res.status(401).json({ ok: false, error: 'No autorizado.' });
+    }
+
+    const pathname = '/api' + (req.path.startsWith('/') ? req.path : `/${req.path}`);
+    const needed = requiredPermission(req.method, pathname);
+
+    if (!permissionAllows(session.permission, needed)) {
+      return res.status(403).json({
+        ok: false,
+        error: `Permiso insuficiente (se requiere ${needed}).`,
+      });
+    }
+
+    req.moonwolfSession = session;
+    return next();
+  } catch (error) {
+    console.error('[auth] Error comprobando permisos:', error?.message || error);
+    return res.status(500).json({ ok: false, error: 'Error de autorización.' });
+  }
 });
 
 app.post('/api/pair', async (req, res) => {
@@ -1988,6 +2026,8 @@ function needsJlink(javaMajor) {
   return Number(javaMajor) >= 9;
 }
 
+// Módulos para Paper/Spigot/Purpur/Fabric/Velocity + plugins comunes.
+// jdk.random se incluye si el JDK lo expone (--list-modules lo filtra si no).
 const JLINK_MODULES = Object.freeze([
   'java.base',
   'java.logging',
@@ -2018,6 +2058,7 @@ const JLINK_MODULES = Object.freeze([
   'jdk.security.jgss',
   'jdk.net',
   'jdk.nio.mapmode',
+  'jdk.random',
   'jdk.localedata',
   'jdk.jfr',
   'jdk.management.jfr',
@@ -2103,6 +2144,31 @@ function listAvailableModules(javaExe) {
         if (name) set.add(name);
       }
       resolve(set);
+    });
+  });
+}
+
+
+function verifyJlinkRuntime(outputDir) {
+  return new Promise((resolve, reject) => {
+    const javaExe = path.join(outputDir, 'bin', process.platform === 'win32' ? 'java.exe' : 'java');
+    const child = spawn(javaExe, ['-version'], {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stderr = '';
+    let stdout = '';
+    child.stdout.on('data', d => { stdout += String(d); });
+    child.stderr.on('data', d => { stderr += String(d); });
+    child.on('error', reject);
+    child.once('close', code => {
+      const text = (stderr || stdout).trim();
+      if (code !== 0) {
+        return reject(new Error(text || `java -version falló con código ${code}`));
+      }
+      console.log('[java] Verificación jlink OK:', text.split(/\r?\n/)[0] || text.slice(0, 120));
+      resolve(text);
     });
   });
 }
@@ -2315,6 +2381,8 @@ async function ensureJavaRuntime(javaMajor) {
           if (!fsSync.existsSync(path.join(jlinkOutput, 'bin', 'java.exe'))) {
             throw new Error('jlink no generó un bin/java.exe válido.');
           }
+
+          await verifyJlinkRuntime(jlinkOutput);
 
           await fs.rm(targetDir, { recursive: true, force: true });
           await fs.mkdir(targetDir, { recursive: true });
@@ -2953,12 +3021,10 @@ let _fetchImpl = null;
 
 async function getFetch() {
   if (_fetchImpl) return _fetchImpl;
-  if (typeof globalThis.fetch === 'function') {
-    _fetchImpl = globalThis.fetch.bind(globalThis);
-  } else {
-    const { default: nodeFetch } = await import('node-fetch');
-    _fetchImpl = nodeFetch;
+  if (typeof globalThis.fetch !== 'function') {
+    throw new Error('fetch nativo no disponible (Node 18+ requerido).');
   }
+  _fetchImpl = globalThis.fetch.bind(globalThis);
   return _fetchImpl;
 }
 
