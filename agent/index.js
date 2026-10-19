@@ -63,10 +63,13 @@ function dcPrepareNative() {
 
   // Guarda el addon nativo directamente en la raíz de MoonWolf-Agent.
   const target = path.join(dir, 'node_datachannel.node');
-  // Los addons se incrustan comprimidos solo si gzip reduce su tamaño.
+  // El build elige entre original, gzip y Brotli; MWBR identifica el payload Brotli.
   const asset = Buffer.from(sea.getAsset(DC_NATIVE_ASSET));
+  const isBrotli = asset.length >= 4 && asset.subarray(0, 4).toString('ascii') === 'MWBR';
   const isGzip = asset.length >= 2 && asset[0] === 0x1f && asset[1] === 0x8b;
-  const data = isGzip ? zlib.gunzipSync(asset) : asset;
+  const data = isBrotli
+    ? zlib.brotliDecompressSync(asset.subarray(4))
+    : isGzip ? zlib.gunzipSync(asset) : asset;
   let needsWrite = true;
 
   try {

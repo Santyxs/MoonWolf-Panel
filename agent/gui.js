@@ -135,10 +135,13 @@ function prepareNativeAddon() {
   const nativePath = path.join(TEMP_ROOT, NATIVE_ADDON_NAME);
 
   try {
-    // El addon se comprime en el ejecutable solo si gzip reduce su tamaño.
+    // El build elige entre original, gzip y Brotli; MWBR identifica el payload Brotli.
     const asset = Buffer.from(getAsset(NATIVE_ASSET));
+    const isBrotli = asset.length >= 4 && asset.subarray(0, 4).toString('ascii') === 'MWBR';
     const isGzip = asset.length >= 2 && asset[0] === 0x1f && asset[1] === 0x8b;
-    const embeddedAddon = isGzip ? zlib.gunzipSync(asset) : asset;
+    const embeddedAddon = isBrotli
+      ? zlib.brotliDecompressSync(asset.subarray(4))
+      : isGzip ? zlib.gunzipSync(asset) : asset;
     let needsWrite = true;
 
     try {
@@ -473,6 +476,8 @@ function openExplorerPath(target, label = 'explorer') {
     console.warn(`[${label}] Sin ruta para abrir.`);
     return false;
   }
+
+  console.log(`[${label}] Abriendo: ${target}`);
 
   try {
     const child = spawn('explorer.exe', [target], {
@@ -845,6 +850,13 @@ function createWindow() {
       'unresponsive',
       () => {
         console.warn('[webview] no responde.');
+      }
+    );
+
+    webview.on(
+      'responsive',
+      () => {
+        console.log('[webview] vuelve a responder.');
       }
     );
 
