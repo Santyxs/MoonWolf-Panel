@@ -519,22 +519,7 @@ function loadConfig() {
   }
 
   if (typeof config.sessionSecret !== 'string' || config.sessionSecret.length < 32) {
-    const legacySecretPath = path.join(__dirname, '.moonwolf-session-secret');
-
-    try {
-      const legacySecret = fs.readFileSync(legacySecretPath, 'utf8').trim();
-
-      if (legacySecret.length >= 32) {
-        config.sessionSecret = legacySecret;
-        try {
-          fs.unlinkSync(legacySecretPath);
-        } catch {}
-      }
-    } catch {}
-
-    if (typeof config.sessionSecret !== 'string' || config.sessionSecret.length < 32) {
-      config.sessionSecret = makeSecret();
-    }
+    config.sessionSecret = makeSecret();
   }
 
   if (!config.serverDir) {
@@ -544,8 +529,6 @@ function loadConfig() {
   if (typeof config.autoStart !== 'boolean') {
     config.autoStart = false;
   }
-
-  delete config.token;
 
   writeConfig(config);
   return config;
