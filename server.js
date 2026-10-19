@@ -886,10 +886,7 @@ const apiHits = createCounterMap();
 const operationHits = createCounterMap();
 const API_RATE_LIMIT = 120;
 const API_RATE_WINDOW_MS = 60_000;
-const FILE_UPLOAD_RATE_LIMIT = Math.max(
-  60,
-  Number(process.env.MOONWOLF_UPLOAD_RATE_LIMIT) || 900
-);
+const FILE_UPLOAD_RATE_LIMIT = 900;
 const FILE_UPLOAD_RATE_WINDOW_MS = 60_000;
 const SOCKET_CONNECTION_LIMIT = 20;
 const SOCKET_CONNECTION_WINDOW_MS = 60_000;
@@ -3950,10 +3947,7 @@ app.delete('/api/databases/:name', async (req, res) => {
   }
 });
 
-const MC_STOP_TIMEOUT_MS = Math.max(
-  5_000,
-  Number(process.env.MOONWOLF_STOP_TIMEOUT_MS || 30_000)
-);
+const MC_STOP_TIMEOUT_MS = 30_000;
 
 const DONE_RE = /Done \([\d.,]+s\)!|Listening on /;
 let mcProcess = null;
@@ -5263,14 +5257,8 @@ async function createZipAtomically(zipPath, configureArchive) {
 const FILE_UPLOAD_MAX_CHUNK_BYTES = 17 * 1024 * 1024;
 const FILE_UPLOAD_ID_RE = /^[a-zA-Z0-9_-]{8,120}$/;
 const FILE_UPLOAD_DIR = path.join(BASE_DIR, '.moonwolf-uploads');
-const FILE_UPLOAD_RETENTION_MS = Math.max(
-  60 * 60 * 1000,
-  Number(process.env.MOONWOLF_UPLOAD_RETENTION_HOURS || 24) * 60 * 60 * 1000
-);
-const FILE_UPLOAD_CLEANUP_INTERVAL_MS = Math.max(
-  15 * 60 * 1000,
-  Number(process.env.MOONWOLF_UPLOAD_CLEANUP_INTERVAL_MINUTES || 60) * 60 * 1000
-);
+const FILE_UPLOAD_RETENTION_MS = 24 * 60 * 60 * 1000;
+const FILE_UPLOAD_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const activeFileUploads = new Set();
 const fileUploadLocks = new Map();
 
@@ -5792,7 +5780,7 @@ const BACKUPS_DIR = path.join(STARTUP_DIR, 'backups');
 const BACKUP_NAME_RE = /^[A-Za-z0-9 _.-]{1,80}$/;
 const BACKUP_FILE_RE = /^[A-Za-z0-9_.-]{1,120}\.zip$/;
 
-const BACKUP_RETENTION = Math.max(1, Number(process.env.MOONWOLF_BACKUP_RETENTION || 10));
+const BACKUP_RETENTION = 10;
 const BACKUP_EXCLUDES = Object.freeze(['.moonwolf', '.moonwolf-uploads']);
 const BACKUP_FLUSH_WAIT_MS = 3000;
 
