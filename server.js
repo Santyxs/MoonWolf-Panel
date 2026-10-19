@@ -1021,8 +1021,8 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      scriptSrc: ["'self'", 'https://cdnjs.cloudflare.com'],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com', 'https://cdnjs.cloudflare.com'],
       fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
       imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
       connectSrc: ["'self'", 'wss:', 'ws:'],
@@ -1039,6 +1039,7 @@ const server = http.createServer(app);
 
 const ALLOWED_ORIGIN = 'https://moonwolf-panel.up.railway.app';
 
+const ASSET_VERSION_CACHE = new Map();
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
@@ -1146,13 +1147,7 @@ const PUBLIC_ASSETS = [
   'styles.css',
 ];
 
-app.use('/vendor', express.static(path.join(__dirname, 'vendor'), {
-  maxAge: '365d',
-  immutable: true,
-  fallthrough: true,
-}));
-
-const ASSET_VERSION_CACHE = new Map();
+app.use(compression({ threshold: 1024 }));
 
 function assetVersion(asset) {
   const filePath = path.join(__dirname, asset);

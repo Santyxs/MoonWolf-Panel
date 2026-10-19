@@ -146,16 +146,16 @@ function ensureSocketIo() {
 
 let codeMirrorPromise = null;
 
-const CODEMIRROR_BASE = '/vendor/codemirror';
+const CODEMIRROR_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16';
 
 const CODEMIRROR_MODES = {
-  javascript: `${CODEMIRROR_BASE}/mode/javascript/javascript.min.js`,
-  yaml:       `${CODEMIRROR_BASE}/mode/yaml/yaml.min.js`,
-  xml:        `${CODEMIRROR_BASE}/mode/xml/xml.min.js`,
-  properties: `${CODEMIRROR_BASE}/mode/properties/properties.min.js`,
-  shell:      `${CODEMIRROR_BASE}/mode/shell/shell.min.js`,
-  toml:       `${CODEMIRROR_BASE}/mode/toml/toml.min.js`,
-  nginx:      `${CODEMIRROR_BASE}/mode/nginx/nginx.min.js`,
+  javascript: `${CODEMIRROR_CDN}/mode/javascript/javascript.min.js`,
+  yaml:       `${CODEMIRROR_CDN}/mode/yaml/yaml.min.js`,
+  xml:        `${CODEMIRROR_CDN}/mode/xml/xml.min.js`,
+  properties: `${CODEMIRROR_CDN}/mode/properties/properties.min.js`,
+  shell:      `${CODEMIRROR_CDN}/mode/shell/shell.min.js`,
+  toml:       `${CODEMIRROR_CDN}/mode/toml/toml.min.js`,
+  nginx:      `${CODEMIRROR_CDN}/mode/nginx/nginx.min.js`,
 };
 
 function loadExternalScript(src, dataAttr) {
@@ -197,10 +197,10 @@ async function ensureCodeMirror(mode) {
   }
 
   if (!codeMirrorPromise) {
-    loadExternalStylesheet(`${CODEMIRROR_BASE}/codemirror.min.css`, 'core-css');
-    loadExternalStylesheet(`${CODEMIRROR_BASE}/theme/dracula.min.css`, 'dracula-css');
+    loadExternalStylesheet(`${CODEMIRROR_CDN}/codemirror.min.css`, 'core-css');
+    loadExternalStylesheet(`${CODEMIRROR_CDN}/theme/dracula.min.css`, 'dracula-css');
 
-    codeMirrorPromise = loadExternalScript(`${CODEMIRROR_BASE}/codemirror.min.js`, 'core-js')
+    codeMirrorPromise = loadExternalScript(`${CODEMIRROR_CDN}/codemirror.min.js`, 'core-js')
       .catch(error => {
         codeMirrorPromise = null;
         throw error;
