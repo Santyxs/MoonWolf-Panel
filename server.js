@@ -393,7 +393,6 @@ const ADMIN_ROUTE_RULES = Object.freeze([
       '/api/backups',
       '/api/backups/download/:name',
       '/api/backups/progress',
-      '/api/debug/start',
     ],
   },
   {
@@ -488,32 +487,6 @@ async function initializeShareTokenStore() {
     ON moonwolf_share_tokens (agent_id, created_at DESC)`;
 }
 
-function removeLegacyShareTokenFiles() {
-  const legacyPaths = new Set([
-    path.join(__dirname, '.moonwolf-share-tokens.json'),
-  ]);
-  for (const legacyPath of legacyPaths) {
-    const dir = path.dirname(legacyPath);
-    const base = path.basename(legacyPath);
-    const targets = [legacyPath, `${legacyPath}.bak`];
-
-    try {
-      for (const name of fsSync.readdirSync(dir)) {
-        if (name.startsWith(`${base}.corrupt-`) || name.startsWith(`${base}.tmp-`)) {
-          targets.push(path.join(dir, name));
-        }
-      }
-    } catch {}
-
-    for (const target of targets) {
-      try {
-        if (fsSync.existsSync(target)) fsSync.rmSync(target, { force: true });
-      } catch (error) {
-        console.warn(`[share-tokens] No se pudo eliminar el archivo antiguo ${target}: ${error.message}`);
-      }
-    }
-  }
-}
 
 function hashShareToken(token) {
   return crypto.createHash('sha256').update(String(token || '')).digest('hex');
@@ -6077,48 +6050,6 @@ app.post('/api/backups/:name/restore', async (req, res) => {
   }
 });
 
-app.get('/api/debug/start', async (_req, res) => {
-  const cfg = loadStartupConfig();
-  const jarPath = path.join(BASE_DIR, cfg.jar);
-  const exists = fsSync.existsSync(jarPath);
-  const minecraftVersion =
-    String(cfg.minecraftVersion || '').trim() ||
-    resolveMinecraftVersion({ jarName: cfg.jar }).version;
-
-  let javaBin = null;
-  let javaResolveError = null;
-
-  try {
-    javaBin =
-      cfg.javaMode === 'override' && String(cfg.javaOverridePath || '').trim()
-        ? await validateJavaOverride(cfg.javaOverridePath)
-        : await resolveJavaForServer(minecraftVersion);
-  } catch (error) {
-    javaResolveError = error.message;
-  }
-
-  const javaCheck = javaBin ? await new Promise(resolve => {
-    const j = spawn(javaBin, ['-version'], { windowsHide: true, stdio: 'pipe' });
-    let out = '';
-
-    j.stderr.on('data', d => { out += d; });
-    j.stdout.on('data', d => { out += d; });
-    j.on('close', code => resolve({ code, out }));
-    j.on('error', e => resolve({ code: -1, out: e.message }));
-  }) : { code: -1, out: javaResolveError || 'Java no disponible' };
-
-  res.json({
-    BASE_DIR,
-    jar: cfg.jar,
-    minecraftVersion,
-    javaPath: javaBin,
-    jarExists: exists,
-    jarPath,
-    java: javaCheck,
-    javaRuntime: getJavaRuntimeInfo(minecraftVersion),
-    javaResolveError,
-  });
-});
 
 function stopMinecraft(timeoutMs = 30000) {
   return new Promise(resolve => {
@@ -6184,7 +6115,6 @@ function listenWithRetry(basePort, maxAttempts = 10) {
 }
 
 async function start() {
-  removeLegacyShareTokenFiles();
   const actualPort = await listenWithRetry(PORT);
   console.log(`MoonWolf Panel → http://${HOST}:${actualPort}`);
 
