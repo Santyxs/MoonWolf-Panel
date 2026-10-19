@@ -572,10 +572,12 @@ async function waitForLocalServer(localUrl) {
 }
 
 function startEmbeddedLocalServer(config) {
-  process.env.MOONWOLF_SERVER_DIR = config.serverDir;
-  process.env.MOONWOLF_PORT = String(LOCAL_PORT);
-  process.env.MOONWOLF_LOCAL_AUTH_TOKEN = config.localToken;
-  process.env.MOONWOLF_SESSION_SECRET = config.sessionSecret;
+  globalThis.__MOONWOLF__ = {
+    serverDir: config.serverDir,
+    port: LOCAL_PORT,
+    localAuthToken: config.localToken,
+    sessionSecret: config.sessionSecret,
+  };
 
   return require('../server.js');
 }
