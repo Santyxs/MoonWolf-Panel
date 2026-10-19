@@ -255,6 +255,36 @@ jobs:
           $styleCss = (Resolve-Path 'agent/ui/style.css').Path
           $appJs = (Resolve-Path 'agent/ui/app.js').Path
 
+          # Comprime los addons nativos para que el contenido incrustado en el SEA ocupe menos.
+          # En tiempo de ejecución, agent/index.js y agent/gui.js los descomprimen con node:zlib.
+          $compressedDir = Join-Path (Resolve-Path 'dist').Path 'native-compressed'
+          New-Item -ItemType Directory -Force -Path $compressedDir | Out-Null
+          $nativeCompressed = Join-Path $compressedDir 'webview.win32-x64-msvc.node.asset'
+          $dcNativeCompressed = Join-Path $compressedDir 'node_datachannel.node.asset'
+
+          $compressScript = @'
+          const fs = require('node:fs');
+          const zlib = require('node:zlib');
+          const path = require('node:path');
+          const pairs = [
+            [process.argv[1], process.argv[2]],
+            [process.argv[3], process.argv[4]],
+          ];
+          for (const [sourcePath, outputPath] of pairs) {
+            const source = fs.readFileSync(sourcePath);
+            const compressed = zlib.gzipSync(source, { level: zlib.constants.Z_BEST_COMPRESSION });
+            const useCompressed = compressed.length < source.length;
+            const payload = useCompressed ? compressed : source;
+            fs.writeFileSync(outputPath, payload);
+            const saved = source.length - payload.length;
+            const percent = source.length ? (saved / source.length * 100).toFixed(1) : '0.0';
+            const mode = useCompressed ? 'gzip' : 'original (gzip no reduce el tamaño)';
+            console.log(`${path.basename(sourcePath)}: ${source.length} -> ${payload.length} bytes (${mode}; saved ${saved} bytes, ${percent}%).`);
+          }
+          '@
+          & node -e $compressScript $native $nativeCompressed $dcNative $dcNativeCompressed
+          if ($LASTEXITCODE -ne 0) { throw "Native addon compression failed with exit code $LASTEXITCODE" }
+
           $config = @{
             main = $main
             mainFormat = 'commonjs'
@@ -267,8 +297,9 @@ jobs:
               'ui/index.html' = $indexHtml
               'ui/style.css' = $styleCss
               'ui/app.js' = $appJs
-              'native/webview.win32-x64-msvc.node' = $native
-              'native/node_datachannel.node' = $dcNative
+              # Keep asset keys unchanged; gzip is used only when it reduces that native file.
+              'native/webview.win32-x64-msvc.node' = $nativeCompressed
+              'native/node_datachannel.node' = $dcNativeCompressed
             }
           }
 
