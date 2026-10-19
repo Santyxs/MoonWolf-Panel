@@ -839,11 +839,7 @@ function consumePairingCode(code) {
   return pairing;
 }
 
-const RUNTIME_DIR =
-  process.env.MOONWOLF_SERVER_DIR ||
-  process.env.BASE_DIR ||
-  process.env.MOONWOLF_BASE_DIR ||
-  path.join(process.cwd(), 'mc-server');
+const RUNTIME_DIR = path.join(process.cwd(), 'mc-server');
 
 function createCounterMap() {
   const store = new Map();
@@ -893,10 +889,7 @@ const SOCKET_CONNECTION_WINDOW_MS = 60_000;
 const SOCKET_CONNECTION_ATTEMPTS = 40;
 const socketConnectionAttempts = createCounterMap();
 const socketConnections = new Map();
-const TRUSTED_PROXY_HOPS = Math.max(
-  0,
-  Number(process.env.MOONWOLF_TRUSTED_PROXY_HOPS ?? 1)
-);
+const TRUSTED_PROXY_HOPS = 1;
 
 const OPERATION_RATE_RULES = Object.freeze([
   { id: 'pair', methods: new Set(['POST']), paths: ['/pair'], limit: 10, windowMs: 5 * 60_000 },
@@ -1496,7 +1489,7 @@ const MOONWOLF_APP_DIR = path.join(
   process.env.APPDATA || path.join(require('os').homedir(), 'AppData', 'Roaming'),
   'MoonWolf'
 );
-const JAVA_RUNTIMES_DIR = process.env.MOONWOLF_RUNTIME_DIR || path.join(MOONWOLF_APP_DIR, 'runtimes');
+const JAVA_RUNTIMES_DIR = path.join(MOONWOLF_APP_DIR, 'runtimes');
 const JAVA_RUNTIME_VERSIONS = [8, 11, 16, 17, 21, 25];
 const JAVA_DOWNLOAD_API = 'https://api.adoptium.net/v3/assets/latest';
 const javaInstallPromises = new Map();
@@ -2455,7 +2448,7 @@ async function resolveJavaForServer(minecraftVersion) {
 }
 
 const HOST = '0.0.0.0';
-const PORT = Number(process.env.MOONWOLF_PORT) || 10000;
+const PORT = 10000;
 
 const STARTUP_DIR = path.join(BASE_DIR, '.moonwolf');
 const STARTUP_CONFIG_PATH = path.join(STARTUP_DIR, 'startup.json');
@@ -3757,10 +3750,10 @@ function getMysql() {
   return mysql || (mysql = require('mysql2/promise'));
 }
 
-const MYSQL_HOST = process.env.MOONWOLF_MYSQL_HOST || 'localhost';
-const MYSQL_PORT = Number(process.env.MOONWOLF_MYSQL_PORT || 3306);
-const MYSQL_ROOT_USER = process.env.MOONWOLF_MYSQL_USER || 'root';
-const MYSQL_ROOT_PASSWORD = process.env.MOONWOLF_MYSQL_PASSWORD || '';
+const MYSQL_HOST = 'localhost';
+const MYSQL_PORT = 3306;
+const MYSQL_ROOT_USER = 'root';
+const MYSQL_ROOT_PASSWORD = '';
 
 const DATABASES_STORE_PATH = path.join(STARTUP_DIR, 'databases.json');
 const MYSQL_SYSTEM_DBS = new Set(['information_schema', 'mysql', 'performance_schema', 'sys']);
