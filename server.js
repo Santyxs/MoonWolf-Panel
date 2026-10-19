@@ -203,17 +203,10 @@ const SESSION_SECRET = (() => {
 const PANEL_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const PAIRING_TTL_MS = 5 * 60 * 1000;
 
-const ICE_SERVERS = (() => {
-  try {
-    const parsed = JSON.parse(process.env.MOONWOLF_ICE_SERVERS || '');
-    if (Array.isArray(parsed) && parsed.length) return parsed;
-  } catch {}
-
-  return [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun.cloudflare.com:3478' },
-  ];
-})();
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+];
 
 function timingSafeEqualStr(a, b) {
   const bufA = Buffer.from(String(a ?? ''));
