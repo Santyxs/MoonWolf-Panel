@@ -1,5 +1,9 @@
 'use strict';
 
+/* ══════════════════════════════════════════════
+   1. CONSTANTES Y UTILIDADES
+   ══════════════════════════════════════════════ */
+
 const CLOUD_URL = location.origin;
 const CLOUD_PATH = '/socket.io';
 
@@ -51,7 +55,9 @@ const DANGEROUS_UPLOAD_EXTENSIONS = new Set([
   '.jar',
 ]);
 
-/* STATE */
+/* ══════════════════════════════════════════════
+   2. ESTADO GLOBAL
+   ══════════════════════════════════════════════ */
 
 let cloudSocket = null;
 let panelSession = sessionStorage.getItem(SESSION_KEY) || '';
@@ -94,7 +100,7 @@ let lastAgentActivityState = null;
 let lastStatusActivity = null;
 
 /* ══════════════════════════════════════════════
-   PERMISOS
+   3. PERMISOS
    ══════════════════════════════════════════════ */
 
 const PERMISSION_RANK = { read: 1, control: 2, admin: 3 };
@@ -113,7 +119,9 @@ function isDangerousUploadFile(file) {
   return DANGEROUS_UPLOAD_EXTENSIONS.has(ext);
 }
 
-/* SOCKET.IO */
+/* ══════════════════════════════════════════════
+   4. CARGADORES EXTERNOS (Socket.IO · CodeMirror)
+   ══════════════════════════════════════════════ */
 
 function ensureSocketIo() {
   if (typeof window.io === 'function') {
@@ -218,7 +226,9 @@ async function ensureCodeMirror(mode) {
   }
 }
 
-/* LOGIN */
+/* ══════════════════════════════════════════════
+   5. LOGIN Y SESIÓN
+   ══════════════════════════════════════════════ */
 
 function formatLoginCode(raw) {
   const clean = String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -508,7 +518,9 @@ async function attemptLogin() {
   }
 }
 
-/* CLOUD CONNECTION */
+/* ══════════════════════════════════════════════
+   6. CONEXIÓN CLOUD (Socket.IO)
+   ══════════════════════════════════════════════ */
 
 function clearPending(errorMessage) {
   for (const [, resolve] of pending) {
@@ -712,8 +724,6 @@ async function connectCloud(manual = false) {
   });
 }
 
-/* RPC / API */
-
 async function cloudApi(pathname, init = {}) {
   const headers = new Headers(init.headers || {});
   headers.set('Authorization', `Bearer ${panelSession}`);
@@ -755,9 +765,6 @@ function rpcCloud(pathname, init = {}) {
   });
 }
 
-/* ══════════════════════════════════════════════
-   CANAL DIRECTO (WebRTC) — Panel ↔ Agent
-   ══════════════════════════════════════════════ */
 const DF = { REQ_HEAD: 1, REQ_BODY: 2, REQ_END: 3, RES_HEAD: 17, RES_BODY: 18, RES_END: 19, RES_ERR: 20 };
 const DIRECT_FRAME_BYTES = 16 * 1024;
 const DIRECT_HIGH_WATER = 4 * 1024 * 1024;
@@ -784,6 +791,10 @@ const direct = {
   openTimer: null,
   failures: 0,
 };
+
+/* ══════════════════════════════════════════════
+   7. CANAL DIRECTO (WebRTC) Y CAPA API
+   ══════════════════════════════════════════════ */
 
 const directReady = () => direct.ready && direct.dc?.readyState === 'open';
 
@@ -1140,7 +1151,9 @@ function postJSON(pathname, body) {
   return api(pathname, { method: 'POST', body });
 }
 
-/* AGENT STATUS */
+/* ══════════════════════════════════════════════
+   8. ESTADO DEL AGENTE Y SERVIDOR
+   ══════════════════════════════════════════════ */
 
 function setAgentOnline(online) {
   const nextState = Boolean(online);
@@ -1214,8 +1227,6 @@ function updateAgentStatusBadges() {
     renderSettings();
   }
 }
-
-/* SERVER / TERMINAL */
 
 function updateStatusUi(status) {
   status = STATUS_LABELS[status] ? status : 'offline';
@@ -1331,12 +1342,13 @@ function updateStats(stats = {}) {
   }
 }
 
-/* ══════════════════════════════════════════════
-   FILTRO DE LOGS
-   ══════════════════════════════════════════════ */
 const LOG_IGNORE_PATTERNS = [
   /Thread RCON Client \/127\.0\.0\.1 (started|shutting down)/i,
 ];
+
+/* ══════════════════════════════════════════════
+   9. TERMINAL / CONSOLA
+   ══════════════════════════════════════════════ */
 
 function shouldIgnoreLog(line) {
   const text = String(line || '');
@@ -1507,7 +1519,9 @@ async function sendCmd() {
   }
 }
 
-/* FILE MANAGER */
+/* ══════════════════════════════════════════════
+   10. ARCHIVOS
+   ══════════════════════════════════════════════ */
 
 function fileIcon(type) {
   return {
@@ -2700,7 +2714,9 @@ async function saveCurrentFile() {
   toast('💾 Archivo guardado', 'ok');
 }
 
-/* PLUGINS */
+/* ══════════════════════════════════════════════
+   11. PLUGINS
+   ══════════════════════════════════════════════ */
 
 async function pluginSearch() {
   const query = $('plgSearchInput')?.value.trim();
@@ -2984,16 +3000,16 @@ async function loadInstalledPlugins() {
   });
 }
 
-/* ══════════════════════════════════════════════
-   VERSIONS & SOFTWARE
-   ══════════════════════════════════════════════ */
-
 let versionCatalog = [];
 let versionCurrent = {
   software: '',
   version: '',
   build: '',
 };
+
+/* ══════════════════════════════════════════════
+   12. VERSIONES Y SOFTWARE
+   ══════════════════════════════════════════════ */
 
 function versionFindSoftware(id) {
   return versionCatalog.find(item => item.id === id) || {
@@ -3405,7 +3421,9 @@ async function installSelectedVersion() {
   }
 }
 
-/* DATABASES (MySQL / MariaDB) */
+/* ══════════════════════════════════════════════
+   13. BASES DE DATOS
+   ══════════════════════════════════════════════ */
 
 function showDbCredentials(creds) {
   const text =
@@ -3589,7 +3607,269 @@ async function loadDatabases() {
   });
 }
 
-/* BACKUPS */
+/* ══════════════════════════════════════════════
+   14. USUARIOS Y TOKENS COMPARTIDOS
+   ══════════════════════════════════════════════ */
+
+const SHARE_PERMISSION_LABELS = {
+  read: '👁️ Solo lectura',
+  control: '🎮 Control',
+  admin: '🛡️ Administrador',
+};
+function sharePermissionLabel(permission) {
+  return SHARE_PERMISSION_LABELS[String(permission || '').toLowerCase()] || SHARE_PERMISSION_LABELS.read;
+}
+async function loadShareTokens() {
+  if (panelPermission !== 'admin') return;
+
+  const list = $('shareTokenList');
+  if (!list) return;
+
+  try {
+    const data = await cloudApi('/api/share-tokens');
+    const tokens = Array.isArray(data.tokens) ? data.tokens : [];
+
+    const control = tokens.filter(token => token.permission === 'control').length;
+    const read = tokens.filter(token => token.permission === 'read').length;
+    const admin = tokens.filter(token => token.permission === 'admin').length;
+
+    if ($('userStatTotal')) $('userStatTotal').textContent = tokens.length;
+    if ($('userStatControl')) $('userStatControl').textContent = control;
+    if ($('userStatRead')) $('userStatRead').textContent = read;
+    if ($('userStatAdmin')) $('userStatAdmin').textContent = admin;
+
+    list.innerHTML = tokens.length
+      ? tokens
+          .map(token => {
+            const expiry = token.expiresAt
+              ? new Date(token.expiresAt).toLocaleString('es-ES')
+              : 'Nunca';
+            return `
+            <div class="user-row">
+              <div class="user-avatar">👤</div>
+              <div class="user-row-main">
+                <strong>${escHtml(token.label || 'Usuario')}</strong>
+                <div class="user-row-meta">
+                  <select class="form-input user-permission-select ${escHtml(token.permission)}" data-edit-permission="${escHtml(token.id)}">
+                    <option value="read" ${token.permission === 'read' ? 'selected' : ''}>${SHARE_PERMISSION_LABELS.read}</option>
+                    <option value="control" ${token.permission === 'control' ? 'selected' : ''}>${SHARE_PERMISSION_LABELS.control}</option>
+                    <option value="admin" ${token.permission === 'admin' ? 'selected' : ''}>${SHARE_PERMISSION_LABELS.admin}</option>
+                  </select>
+                  <span>Caduca: ${escHtml(expiry)}</span>
+                </div>
+              </div>
+              <button class="small-btn user-revoke-btn" data-revoke-share="${escHtml(token.id)}">Revocar</button>
+            </div>
+          `;
+          })
+          .join('')
+      : '<div class="empty-state"><div class="empty-icon">👥</div><div class="empty-msg">No hay usuarios con acceso.</div></div>';
+
+    list.querySelectorAll('[data-revoke-share]').forEach(button => {
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+          await cloudApi(
+            `/api/share-tokens/${encodeURIComponent(button.dataset.revokeShare)}`,
+            { method: 'DELETE' }
+          );
+          toast('Acceso revocado.', 'ok');
+          await loadShareTokens();
+        } catch (error) {
+          toast(error.message, 'err');
+          button.disabled = false;
+        }
+      });
+    });
+    list.querySelectorAll('[data-edit-permission]').forEach(select => {
+      select.dataset.previousPermission = select.value;
+      select.addEventListener('change', async () => {
+        const previous = select.dataset.previousPermission;
+        select.disabled = true;
+        try {
+          await cloudApi(`/api/share-tokens/${encodeURIComponent(select.dataset.editPermission)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ permission: select.value }),
+          });
+          select.dataset.previousPermission = select.value;
+          toast(`Permiso actualizado: ${sharePermissionLabel(select.value)}.`, 'ok');
+          await loadShareTokens();
+        } catch (error) {
+          select.value = previous;
+          select.disabled = false;
+          toast(error.message, 'err');
+        }
+      });
+    });
+  } catch (error) {
+    list.innerHTML = `<div class="empty-state">${escHtml(error.message)}</div>`;
+  }
+}
+
+function renderUsers() {
+  const element = $('userList');
+  if (!element) return;
+
+  const canManageUsers = isOwnerSession() && panelPermission === 'admin';
+
+  if (!canManageUsers) {
+    element.innerHTML = `
+      <div class="user-access-grid">
+        <div class="panel user-access-card">
+          <div class="panel-header">
+            <div class="panel-title"><span>👤</span> TU ACCESO</div>
+          </div>
+          <div class="user-access-body">
+            <div class="user-profile-icon">👤</div>
+            <div>
+              <div class="user-profile-title">Acceso compartido</div>
+              <div class="user-profile-sub">Este panel te ha sido compartido por el propietario.</div>
+            </div>
+          </div>
+          <div class="user-permission-row">
+            <span>Permiso</span>
+            <strong>${escHtml(sharePermissionLabel(panelPermission))}</strong>
+          </div>
+          <div class="user-info-note">
+            Tu acceso está limitado a los permisos asignados por el propietario.
+            Las operaciones que permiten ejecutar código en el host (instalar plugins,
+            cambiar flags JVM, restaurar backups) están reservadas al propietario.
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  element.innerHTML = `
+    <div class="user-stats-grid">
+      <div class="user-stat-card">
+        <span class="user-stat-icon">👥</span>
+        <div><span class="user-stat-label">Accesos activos</span><strong id="userStatTotal">—</strong></div>
+      </div>
+      <div class="user-stat-card">
+        <span class="user-stat-icon">👁️</span>
+        <div><span class="user-stat-label">Solo lectura</span><strong id="userStatRead">—</strong></div>
+      </div>
+      <div class="user-stat-card">
+        <span class="user-stat-icon">🎮</span>
+        <div><span class="user-stat-label">Con control</span><strong id="userStatControl">—</strong></div>
+      </div>
+      <div class="user-stat-card">
+        <span class="user-stat-icon">🛡️</span>
+        <div><span class="user-stat-label">Administradores</span><strong id="userStatAdmin">—</strong></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title"><span>➕</span> NUEVO USUARIO</div>
+          <div class="user-panel-subtitle">Crea un acceso independiente.</div>
+        </div>
+      </div>
+      <div class="user-create-form">
+        <input id="shareLabel" class="form-input" placeholder="Nombre (ej. Paco)" maxlength="60">
+        <select id="sharePermission" class="form-input">
+          <option value="read">👁️ Solo lectura</option>
+          <option value="control">🎮 Control</option>
+          <option value="admin">🛡️ Administrador</option>
+        </select>
+        <select id="shareExpiry" class="form-input">
+          <option value="never">Sin caducidad</option>
+          <option value="1h">1 hora</option>
+          <option value="1d">1 día</option>
+          <option value="7d">7 días</option>
+          <option value="30d">30 días</option>
+        </select>
+        <button class="small-btn user-create-btn" id="btnCreateShare">Crear acceso</button>
+      </div>
+    </div>
+
+    <div id="shareCreatedBox" class="panel user-token-panel" style="display:none">
+      <div class="user-token-title">🔐 ACCESO CREADO</div>
+      <div class="user-token-sub">Este token se muestra una sola vez. Entrégaselo a la persona que va a usar el panel.</div>
+      <div class="user-token-row">
+        <code id="shareCreatedToken"></code>
+        <button class="small-btn" id="btnCopyShareToken">Copiar</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title"><span>👥</span> USUARIOS CON ACCESO</div>
+          <div class="user-panel-subtitle">Puedes revocar cualquier acceso inmediatamente.</div>
+        </div>
+        <button class="small-btn" id="btnRefreshUsers">↺ Actualizar</button>
+      </div>
+      <div id="shareTokenList"></div>
+    </div>
+  `;
+
+  bindShareSettings();
+  $('btnRefreshUsers')?.addEventListener('click', loadShareTokens);
+}
+
+function bindShareSettings() {
+  if (panelPermission !== 'admin') return;
+
+  $('btnCreateShare')?.addEventListener('click', async () => {
+    const button = $('btnCreateShare');
+    button.disabled = true;
+
+    try {
+      const data = await cloudApi('/api/share-tokens', {
+        method: 'POST',
+        body: JSON.stringify({
+          label: $('shareLabel')?.value || '',
+          permission: $('sharePermission')?.value || 'read',
+          expires: $('shareExpiry')?.value || 'never',
+        }),
+      });
+
+      const token = data.token;
+      let copied = false;
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(token);
+          copied = true;
+        }
+      } catch {}
+
+      $('shareCreatedToken').textContent = token;
+      $('shareCreatedBox').style.display = '';
+      $('shareLabel').value = '';
+      toast(
+        copied
+          ? 'Token creado y copiado al portapapeles.'
+          : 'Token creado. Cópialo antes de cerrar esta pantalla.',
+        'ok'
+      );
+      await loadShareTokens();
+    } catch (error) {
+      toast(error.message, 'err');
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  $('btnCopyShareToken')?.addEventListener('click', async event => {
+    const token = $('shareCreatedToken')?.textContent || '';
+    try {
+      await navigator.clipboard.writeText(token);
+      flashButton(event.currentTarget, 'Copiado');
+    } catch {
+      toast('No se pudo copiar el token.', 'err');
+    }
+  });
+
+  loadShareTokens();
+}
+
+/* ══════════════════════════════════════════════
+   15. BACKUPS
+   ══════════════════════════════════════════════ */
 
 async function loadBackups() {
   const container = $('backupList');
@@ -3749,27 +4029,9 @@ async function pollBackupProgress() {
   }
 }
 
-function openBackupNameModal() {
-  const modal = $('backupNameModal');
-  const input = $('backupNameInput');
-
-  if (!modal || !input) {
-    void createBackup('');
-    return;
-  }
-
-  input.value = '';
-  modal.hidden = false;
-  input.focus();
-}
-
-function closeBackupNameModal() {
-  const modal = $('backupNameModal');
-  if (modal) modal.hidden = true;
-}
-
-async function createBackup(name = '') {
-  closeBackupNameModal();
+async function createBackup() {
+  const name = prompt('Nombre para la copia de seguridad (opcional):', '');
+  if (name === null) return;
 
   const button = $('btnNewBackup');
 
@@ -3878,7 +4140,9 @@ async function restoreBackup(name) {
   }
 }
 
-/* PORTS */
+/* ══════════════════════════════════════════════
+   16. PUERTOS
+   ══════════════════════════════════════════════ */
 
 async function loadPorts() {
   const element = $('portList');
@@ -4037,7 +4301,9 @@ async function savePorts() {
   }
 }
 
-/* STARTUP */
+/* ══════════════════════════════════════════════
+   17. STARTUP
+   ══════════════════════════════════════════════ */
 
 function requiredJavaLabel(version) {
   const match = String(version || '').trim().match(/^(\d+)\.(\d+)(?:\.(\d+))?/);
@@ -4376,400 +4642,9 @@ async function saveStartup() {
   loadStartup();
 }
 
-/* NAVIGATION */
-
-function switchView(id) {
-  const editorOpen = Boolean(currentFile && $('filesEditorPanel')?.style.display !== 'none');
-  if (editorOpen && id !== 'files' && !closeFileEditor()) return;
-  document.querySelectorAll('.view').forEach(view => view.classList.remove('active'));
-  document.querySelectorAll('.sb-item').forEach(item => item.classList.remove('active'));
-
-  $(`view-${id}`)?.classList.add('active');
-
-  document
-    .querySelector(`.sb-item[data-view="${id}"]`)
-    ?.classList.add('active');
-
-  switch (id) {
-    case 'files':
-      populateFiles(currentDir);
-      break;
-
-    case 'versions':
-      loadVersionState().catch(error => toast(error.message, 'err'));
-      break;
-
-    case 'plugins':
-      loadInstalledPlugins();
-      break;
-
-    case 'databases':
-      loadDatabases();
-      break;
-
-    case 'users':
-      renderUsers();
-      break;
-
-    case 'backups':
-      loadBackups();
-      break;
-
-    case 'ports':
-      loadPorts();
-      break;
-
-    case 'startup':
-      loadStartup();
-      break;
-
-    case 'activitylog':
-      renderActivity();
-      break;
-
-    case 'settings':
-      renderSettings();
-      break;
-  }
-}
-
-/* ACTIVITY */
-
-function addActivity(message, level = 'info', icon = '📌') {
-  activities.push({
-    message,
-    level,
-    icon,
-    time: new Date().toLocaleTimeString('es-ES'),
-  });
-
-  if (activities.length > 200) {
-    activities.shift();
-  }
-
-  if ($('view-activitylog')?.classList.contains('active')) {
-    renderActivity();
-  }
-}
-
-function renderActivity() {
-  const element = $('activityList');
-
-  if (!element) return;
-
-  if (!activities.length) {
-    element.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-icon">📭</div>
-        <div class="empty-msg">No hay actividad todavía</div>
-      </div>
-    `;
-    return;
-  }
-
-  const counts = activities.reduce((acc, item) => {
-    const level = item.level || 'info';
-    acc[level] = (acc[level] || 0) + 1;
-    return acc;
-  }, {});
-
-  const toolbar = `
-    <div class="activity-toolbar">
-      <div class="activity-counter">
-        <span class="activity-counter-num">${activities.length}</span>
-        <span class="activity-counter-label">eventos</span>
-      </div>
-      <div class="activity-filters">
-        ${counts.info  ? `<span class="activity-filter info">${counts.info} info</span>` : ''}
-        ${counts.ok    ? `<span class="activity-filter ok">${counts.ok} ok</span>` : ''}
-        ${counts.warn  ? `<span class="activity-filter warn">${counts.warn} aviso</span>` : ''}
-        ${counts.error ? `<span class="activity-filter error">${counts.error} error</span>` : ''}
-      </div>
-    </div>
-  `;
-
-  const items = activities
-    .slice()
-    .reverse()
-    .map(item => {
-      const level = String(item.level || 'info').toLowerCase();
-      const safeLevel = ['info', 'ok', 'warn', 'error'].includes(level) ? level : 'info';
-      const label = { info: 'INFO', ok: 'OK', warn: 'AVISO', error: 'ERROR' }[safeLevel];
-
-      return `
-        <div class="activity-item ${safeLevel}">
-          <div class="activity-icon">${escHtml(item.icon || '📌')}</div>
-          <div class="activity-body">
-            <div class="activity-msg">${escHtml(item.message)}</div>
-            <div class="activity-time">${escHtml(item.time || '--:--:--')}</div>
-          </div>
-          <span class="activity-badge ${safeLevel}">${label}</span>
-        </div>
-      `;
-    })
-    .join('');
-
-  element.innerHTML = toolbar + `<div class="activity-feed">${items}</div>`;
-}
-
-/* USERS */
-const SHARE_PERMISSION_LABELS = {
-  read: '👁️ Solo lectura',
-  control: '🎮 Control',
-  admin: '🛡️ Administrador',
-};
-function sharePermissionLabel(permission) {
-  return SHARE_PERMISSION_LABELS[String(permission || '').toLowerCase()] || SHARE_PERMISSION_LABELS.read;
-}
-async function loadShareTokens() {
-  if (panelPermission !== 'admin') return;
-
-  const list = $('shareTokenList');
-  if (!list) return;
-
-  try {
-    const data = await cloudApi('/api/share-tokens');
-    const tokens = Array.isArray(data.tokens) ? data.tokens : [];
-
-    const control = tokens.filter(token => token.permission === 'control').length;
-    const read = tokens.filter(token => token.permission === 'read').length;
-    const admin = tokens.filter(token => token.permission === 'admin').length;
-
-    if ($('userStatTotal')) $('userStatTotal').textContent = tokens.length;
-    if ($('userStatControl')) $('userStatControl').textContent = control;
-    if ($('userStatRead')) $('userStatRead').textContent = read;
-    if ($('userStatAdmin')) $('userStatAdmin').textContent = admin;
-
-    list.innerHTML = tokens.length
-      ? tokens
-          .map(token => {
-            const expiry = token.expiresAt
-              ? new Date(token.expiresAt).toLocaleString('es-ES')
-              : 'Nunca';
-            return `
-            <div class="user-row">
-              <div class="user-avatar">👤</div>
-              <div class="user-row-main">
-                <strong>${escHtml(token.label || 'Usuario')}</strong>
-                <div class="user-row-meta">
-                  <select class="form-input user-permission-select ${escHtml(token.permission)}" data-edit-permission="${escHtml(token.id)}">
-                    <option value="read" ${token.permission === 'read' ? 'selected' : ''}>${SHARE_PERMISSION_LABELS.read}</option>
-                    <option value="control" ${token.permission === 'control' ? 'selected' : ''}>${SHARE_PERMISSION_LABELS.control}</option>
-                    <option value="admin" ${token.permission === 'admin' ? 'selected' : ''}>${SHARE_PERMISSION_LABELS.admin}</option>
-                  </select>
-                  <span>Caduca: ${escHtml(expiry)}</span>
-                </div>
-              </div>
-              <button class="small-btn user-revoke-btn" data-revoke-share="${escHtml(token.id)}">Revocar</button>
-            </div>
-          `;
-          })
-          .join('')
-      : '<div class="empty-state"><div class="empty-icon">👥</div><div class="empty-msg">No hay usuarios con acceso.</div></div>';
-
-    list.querySelectorAll('[data-revoke-share]').forEach(button => {
-      button.addEventListener('click', async () => {
-        button.disabled = true;
-        try {
-          await cloudApi(
-            `/api/share-tokens/${encodeURIComponent(button.dataset.revokeShare)}`,
-            { method: 'DELETE' }
-          );
-          toast('Acceso revocado.', 'ok');
-          await loadShareTokens();
-        } catch (error) {
-          toast(error.message, 'err');
-          button.disabled = false;
-        }
-      });
-    });
-    list.querySelectorAll('[data-edit-permission]').forEach(select => {
-      select.dataset.previousPermission = select.value;
-      select.addEventListener('change', async () => {
-        const previous = select.dataset.previousPermission;
-        select.disabled = true;
-        try {
-          await cloudApi(`/api/share-tokens/${encodeURIComponent(select.dataset.editPermission)}`, {
-            method: 'PATCH',
-            body: JSON.stringify({ permission: select.value }),
-          });
-          select.dataset.previousPermission = select.value;
-          toast(`Permiso actualizado: ${sharePermissionLabel(select.value)}.`, 'ok');
-          await loadShareTokens();
-        } catch (error) {
-          select.value = previous;
-          select.disabled = false;
-          toast(error.message, 'err');
-        }
-      });
-    });
-  } catch (error) {
-    list.innerHTML = `<div class="empty-state">${escHtml(error.message)}</div>`;
-  }
-}
-
-function renderUsers() {
-  const element = $('userList');
-  if (!element) return;
-
-  const canManageUsers = isOwnerSession() && panelPermission === 'admin';
-
-  if (!canManageUsers) {
-    element.innerHTML = `
-      <div class="user-access-grid">
-        <div class="panel user-access-card">
-          <div class="panel-header">
-            <div class="panel-title"><span>👤</span> TU ACCESO</div>
-          </div>
-          <div class="user-access-body">
-            <div class="user-profile-icon">👤</div>
-            <div>
-              <div class="user-profile-title">Acceso compartido</div>
-              <div class="user-profile-sub">Este panel te ha sido compartido por el propietario.</div>
-            </div>
-          </div>
-          <div class="user-permission-row">
-            <span>Permiso</span>
-            <strong>${escHtml(sharePermissionLabel(panelPermission))}</strong>
-          </div>
-          <div class="user-info-note">
-            Tu acceso está limitado a los permisos asignados por el propietario.
-            Las operaciones que permiten ejecutar código en el host (instalar plugins,
-            cambiar flags JVM, restaurar backups) están reservadas al propietario.
-          </div>
-        </div>
-      </div>
-    `;
-    return;
-  }
-
-  element.innerHTML = `
-    <div class="user-stats-grid">
-      <div class="user-stat-card">
-        <span class="user-stat-icon">👥</span>
-        <div><span class="user-stat-label">Accesos activos</span><strong id="userStatTotal">—</strong></div>
-      </div>
-      <div class="user-stat-card">
-        <span class="user-stat-icon">👁️</span>
-        <div><span class="user-stat-label">Solo lectura</span><strong id="userStatRead">—</strong></div>
-      </div>
-      <div class="user-stat-card">
-        <span class="user-stat-icon">🎮</span>
-        <div><span class="user-stat-label">Con control</span><strong id="userStatControl">—</strong></div>
-      </div>
-      <div class="user-stat-card">
-        <span class="user-stat-icon">🛡️</span>
-        <div><span class="user-stat-label">Administradores</span><strong id="userStatAdmin">—</strong></div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-header">
-        <div>
-          <div class="panel-title"><span>➕</span> NUEVO USUARIO</div>
-          <div class="user-panel-subtitle">Crea un acceso independiente.</div>
-        </div>
-      </div>
-      <div class="user-create-form">
-        <input id="shareLabel" class="form-input" placeholder="Nombre (ej. Paco)" maxlength="60">
-        <select id="sharePermission" class="form-input">
-          <option value="read">👁️ Solo lectura</option>
-          <option value="control">🎮 Control</option>
-          <option value="admin">🛡️ Administrador</option>
-        </select>
-        <select id="shareExpiry" class="form-input">
-          <option value="never">Sin caducidad</option>
-          <option value="1h">1 hora</option>
-          <option value="1d">1 día</option>
-          <option value="7d">7 días</option>
-          <option value="30d">30 días</option>
-        </select>
-        <button class="small-btn user-create-btn" id="btnCreateShare">Crear acceso</button>
-      </div>
-    </div>
-
-    <div id="shareCreatedBox" class="panel user-token-panel" style="display:none">
-      <div class="user-token-title">🔐 ACCESO CREADO</div>
-      <div class="user-token-sub">Este token se muestra una sola vez. Entrégaselo a la persona que va a usar el panel.</div>
-      <div class="user-token-row">
-        <code id="shareCreatedToken"></code>
-        <button class="small-btn" id="btnCopyShareToken">Copiar</button>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-header">
-        <div>
-          <div class="panel-title"><span>👥</span> USUARIOS CON ACCESO</div>
-          <div class="user-panel-subtitle">Puedes revocar cualquier acceso inmediatamente.</div>
-        </div>
-        <button class="small-btn" id="btnRefreshUsers">↺ Actualizar</button>
-      </div>
-      <div id="shareTokenList"></div>
-    </div>
-  `;
-
-  bindShareSettings();
-  $('btnRefreshUsers')?.addEventListener('click', loadShareTokens);
-}
-
-function bindShareSettings() {
-  if (panelPermission !== 'admin') return;
-
-  $('btnCreateShare')?.addEventListener('click', async () => {
-    const button = $('btnCreateShare');
-    button.disabled = true;
-
-    try {
-      const data = await cloudApi('/api/share-tokens', {
-        method: 'POST',
-        body: JSON.stringify({
-          label: $('shareLabel')?.value || '',
-          permission: $('sharePermission')?.value || 'read',
-          expires: $('shareExpiry')?.value || 'never',
-        }),
-      });
-
-      const token = data.token;
-      let copied = false;
-      try {
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(token);
-          copied = true;
-        }
-      } catch {}
-
-      $('shareCreatedToken').textContent = token;
-      $('shareCreatedBox').style.display = '';
-      $('shareLabel').value = '';
-      toast(
-        copied
-          ? 'Token creado y copiado al portapapeles.'
-          : 'Token creado. Cópialo antes de cerrar esta pantalla.',
-        'ok'
-      );
-      await loadShareTokens();
-    } catch (error) {
-      toast(error.message, 'err');
-    } finally {
-      button.disabled = false;
-    }
-  });
-
-  $('btnCopyShareToken')?.addEventListener('click', async event => {
-    const token = $('shareCreatedToken')?.textContent || '';
-    try {
-      await navigator.clipboard.writeText(token);
-      flashButton(event.currentTarget, 'Copiado');
-    } catch {
-      toast('No se pudo copiar el token.', 'err');
-    }
-  });
-
-  loadShareTokens();
-}
-
-/* SETTINGS */
+/* ══════════════════════════════════════════════
+   18. AJUSTES
+   ══════════════════════════════════════════════ */
 
 function renderSettings() {
   const element = $('settingsList');
@@ -4868,7 +4743,149 @@ function renderSettings() {
   });
 }
 
-/* TOAST & HELPERS */
+/* ══════════════════════════════════════════════
+   19. REGISTRO DE ACTIVIDAD
+   ══════════════════════════════════════════════ */
+
+function addActivity(message, level = 'info', icon = '📌') {
+  activities.push({
+    message,
+    level,
+    icon,
+    time: new Date().toLocaleTimeString('es-ES'),
+  });
+
+  if (activities.length > 200) {
+    activities.shift();
+  }
+
+  if ($('view-activitylog')?.classList.contains('active')) {
+    renderActivity();
+  }
+}
+
+function renderActivity() {
+  const element = $('activityList');
+
+  if (!element) return;
+
+  if (!activities.length) {
+    element.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">📭</div>
+        <div class="empty-msg">No hay actividad todavía</div>
+      </div>
+    `;
+    return;
+  }
+
+  const counts = activities.reduce((acc, item) => {
+    const level = item.level || 'info';
+    acc[level] = (acc[level] || 0) + 1;
+    return acc;
+  }, {});
+
+  const toolbar = `
+    <div class="activity-toolbar">
+      <div class="activity-counter">
+        <span class="activity-counter-num">${activities.length}</span>
+        <span class="activity-counter-label">eventos</span>
+      </div>
+      <div class="activity-filters">
+        ${counts.info  ? `<span class="activity-filter info">${counts.info} info</span>` : ''}
+        ${counts.ok    ? `<span class="activity-filter ok">${counts.ok} ok</span>` : ''}
+        ${counts.warn  ? `<span class="activity-filter warn">${counts.warn} aviso</span>` : ''}
+        ${counts.error ? `<span class="activity-filter error">${counts.error} error</span>` : ''}
+      </div>
+    </div>
+  `;
+
+  const items = activities
+    .slice()
+    .reverse()
+    .map(item => {
+      const level = String(item.level || 'info').toLowerCase();
+      const safeLevel = ['info', 'ok', 'warn', 'error'].includes(level) ? level : 'info';
+      const label = { info: 'INFO', ok: 'OK', warn: 'AVISO', error: 'ERROR' }[safeLevel];
+
+      return `
+        <div class="activity-item ${safeLevel}">
+          <div class="activity-icon">${escHtml(item.icon || '📌')}</div>
+          <div class="activity-body">
+            <div class="activity-msg">${escHtml(item.message)}</div>
+            <div class="activity-time">${escHtml(item.time || '--:--:--')}</div>
+          </div>
+          <span class="activity-badge ${safeLevel}">${label}</span>
+        </div>
+      `;
+    })
+    .join('');
+
+  element.innerHTML = toolbar + `<div class="activity-feed">${items}</div>`;
+}
+
+/* ══════════════════════════════════════════════
+   20. NAVEGACIÓN (switchView)
+   ══════════════════════════════════════════════ */
+
+function switchView(id) {
+  const editorOpen = Boolean(currentFile && $('filesEditorPanel')?.style.display !== 'none');
+  if (editorOpen && id !== 'files' && !closeFileEditor()) return;
+  document.querySelectorAll('.view').forEach(view => view.classList.remove('active'));
+  document.querySelectorAll('.sb-item').forEach(item => item.classList.remove('active'));
+
+  $(`view-${id}`)?.classList.add('active');
+
+  document
+    .querySelector(`.sb-item[data-view="${id}"]`)
+    ?.classList.add('active');
+
+  switch (id) {
+    case 'files':
+      populateFiles(currentDir);
+      break;
+
+    case 'versions':
+      loadVersionState().catch(error => toast(error.message, 'err'));
+      break;
+
+    case 'plugins':
+      loadInstalledPlugins();
+      break;
+
+    case 'databases':
+      loadDatabases();
+      break;
+
+    case 'users':
+      renderUsers();
+      break;
+
+    case 'backups':
+      loadBackups();
+      break;
+
+    case 'ports':
+      loadPorts();
+      break;
+
+    case 'startup':
+      loadStartup();
+      break;
+
+    case 'activitylog':
+      renderActivity();
+      break;
+
+    case 'settings':
+      renderSettings();
+      break;
+  }
+}
+
+/* ══════════════════════════════════════════════
+   21. TOAST Y HELPERS UI
+   ══════════════════════════════════════════════ */
 
 function toast(message, type = 'info') {
   const element = $('toast');
@@ -4899,7 +4916,9 @@ function flashButton(button, label, duration = 1200) {
   }, duration);
 }
 
-/* EVENTS */
+/* ══════════════════════════════════════════════
+   22. EVENTOS E INICIALIZACIÓN
+   ══════════════════════════════════════════════ */
 
 function bindEvents() {
   ensureLoginGate();
@@ -5159,23 +5178,7 @@ function bindEvents() {
     }
   });
 
-  $('btnNewBackup')?.addEventListener('click', openBackupNameModal);
-  $('btnBackupNameCancel')?.addEventListener('click', closeBackupNameModal);
-  $('btnBackupNameCreate')?.addEventListener('click', () => {
-    const value = $('backupNameInput')?.value ?? '';
-    void createBackup(value.trim());
-  });
-  $('backupNameInput')?.addEventListener('keydown', event => {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      $('btnBackupNameCreate')?.click();
-    } else if (event.key === 'Escape') {
-      closeBackupNameModal();
-    }
-  });
-  $('backupNameModal')?.addEventListener('click', event => {
-    if (event.target === event.currentTarget) closeBackupNameModal();
-  });
+  $('btnNewBackup')?.addEventListener('click', createBackup);
 
   updateAgentUi();
   updateStatusUi(currentStatus);
@@ -5191,10 +5194,9 @@ function bindEvents() {
   }
 }
 
-/* START */
-
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', bindEvents, { once: true });
 } else {
   bindEvents();
 }
+
