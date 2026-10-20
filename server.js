@@ -4540,6 +4540,22 @@ app.get('/api/plugins/versions', async (req, res) => {
         if (!Array.isArray(updates)) updates = [];
       } catch {}
 
+      const decodeSpigetText = text => {
+        if (!text || typeof text !== 'string') return null;
+        const trimmed = text.trim();
+        // Spiget codifica las descripciones de las actualizaciones en base64
+        try {
+          const decoded = Buffer.from(trimmed, 'base64').toString('utf8');
+          // Verificar si el resultado decodificado parece texto/HTML válido o se pudo recomponer
+          if (Buffer.from(decoded, 'utf8').toString('base64').replace(/=+$/, '') === trimmed.replace(/=+$/, '')) {
+            return decoded;
+          }
+          return decoded || trimmed;
+        } catch {
+          return trimmed;
+        }
+      };
+
       const findChangelog = releaseDateSec => {
         if (!releaseDateSec || !updates.length) return null;
 
@@ -4555,7 +4571,7 @@ app.get('/api/plugins/versions', async (req, res) => {
           }
         }
 
-        return best && bestDiff <= 7 * 86400 ? best.description : null;
+        return best && bestDiff <= 7 * 86400 ? decodeSpigetText(best.description) : null;
       };
 
       const versions = (Array.isArray(rawVersions) ? rawVersions : []).map(v => {
