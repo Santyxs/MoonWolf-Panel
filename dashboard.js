@@ -2869,6 +2869,7 @@ async function openPluginVersions(plugin) {
             .replace(/^## (.*$)/gim, '<div class="plg-ch-h2">$1</div>')
             .replace(/^# (.*$)/gim, '<div class="plg-ch-h1">$1</div>')
             .replace(/^\s*-\s+(.*$)/gim, '<div class="plg-ch-li">• $1</div>')
+            .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
             .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
             .replace(/\*(.*?)\*/g, '<em>$1</em>')
             .replace(/`([^`]+)`/g, '<code>$1</code>');
