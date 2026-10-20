@@ -1,4 +1,7 @@
-/* ── TOKENS ── */
+/* ══════════════════════════════════════════════
+   1. TOKENS
+   ══════════════════════════════════════════════ */
+
 :root {
   --bg:        #05080d;
   --surface:   #0b1016;
@@ -62,7 +65,10 @@
   --glow-yellow: 0 0 18px rgba(255,204,0,0.15);
 }
 
-/* ── RESET ── */
+/* ══════════════════════════════════════════════
+   2. RESET
+   ══════════════════════════════════════════════ */
+
 *, *::before, *::after {
   margin: 0;
   padding: 0;
@@ -120,8 +126,9 @@ select:focus:not(:focus-visible) {
 }
 
 /* ══════════════════════════════════════════════
-   SIDEBAR
+   3. SIDEBAR
    ══════════════════════════════════════════════ */
+
 .sidebar {
   width: var(--sidebar-w);
   min-height: 100vh;
@@ -295,8 +302,9 @@ select:focus:not(:focus-visible) {
 }
 
 /* ══════════════════════════════════════════════
-   MAIN
+   4. MAIN
    ══════════════════════════════════════════════ */
+
 .main {
   margin-left: var(--sidebar-w);
   flex: 1;
@@ -341,7 +349,10 @@ select:focus:not(:focus-visible) {
   to   { opacity: 1; transform: none; }
 }
 
-/* ── PANEL ── */
+/* ══════════════════════════════════════════════
+   5. PANEL
+   ══════════════════════════════════════════════ */
+
 .panel {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -373,7 +384,10 @@ select:focus:not(:focus-visible) {
   gap: var(--sp-sm);
 }
 
-/* ── SHARED BUTTON BASE ── */
+/* ══════════════════════════════════════════════
+   6. SHARED BUTTON BASE
+   ══════════════════════════════════════════════ */
+
 .small-btn,
 .accent-btn,
 .save-btn,
@@ -415,7 +429,10 @@ select:focus:not(:focus-visible) {
   background: rgba(255,68,85,0.06);
 }
 
-/* ── UPLOAD MENU ── */
+/* ══════════════════════════════════════════════
+   7. UPLOAD MENU
+   ══════════════════════════════════════════════ */
+
 .upload-menu { position: relative; display: inline-flex; }
 .upload-menu-trigger { display: inline-flex; align-items: center; gap: 6px; }
 .upload-menu-caret { font-size: 10px; line-height: 1; color: var(--muted); transition: transform var(--t-fast); }
@@ -443,7 +460,10 @@ select:focus:not(:focus-visible) {
   background: var(--accentDim); color: var(--accent); outline: none;
 }
 
-/* ── SERVER CONTROLS ── */
+/* ══════════════════════════════════════════════
+   8. SERVER CONTROLS
+   ══════════════════════════════════════════════ */
+
 .controls {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -509,7 +529,10 @@ select:focus:not(:focus-visible) {
 .btn-primary:disabled { opacity: 0.4; }
 a.btn-primary { text-decoration: none; }
 
-/* ── STATS GRID ── */
+/* ══════════════════════════════════════════════
+   9. STATS GRID
+   ══════════════════════════════════════════════ */
+
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
@@ -554,7 +577,10 @@ a.btn-primary { text-decoration: none; }
 .tps-warn { color: var(--yellow) !important; }
 .tps-bad  { color: var(--red)    !important; }
 
-/* ── CONSOLE ── */
+/* ══════════════════════════════════════════════
+   10. CONSOLE
+   ══════════════════════════════════════════════ */
+
 .console {
   height: 620px;
   overflow-y: auto;
@@ -574,7 +600,10 @@ a.btn-primary { text-decoration: none; }
 .log-line.system  .log-text { color: var(--accent); }
 .log-line.cmd     .log-text { color: var(--purple); }
 
-/* ── ANSI (terminal) ── */
+/* ══════════════════════════════════════════════
+   11. ANSI (terminal)
+   ══════════════════════════════════════════════ */
+
 .ansi-bold      { font-weight: 700; }
 .ansi-italic    { font-style: italic; }
 .ansi-underline { text-decoration: underline; }
@@ -598,7 +627,10 @@ a.btn-primary { text-decoration: none; }
 .ansi-bright-cyan    { color: #83efff; }
 .ansi-bright-white   { color: #ffffff; }
 
-/* ── Códigos § de Minecraft — paleta del cliente ── */
+/* ══════════════════════════════════════════════
+   12. Códigos § de Minecraft — paleta del cliente
+   ══════════════════════════════════════════════ */
+
 .mc-black        { color: #000000; }
 .mc-dark-blue    { color: #0000AA; }
 .mc-dark-green   { color: #00AA00; }
@@ -682,8 +714,9 @@ a.btn-primary { text-decoration: none; }
 }
 
 /* ══════════════════════════════════════════════
-   FILE MANAGER
+   13. FILE MANAGER
    ══════════════════════════════════════════════ */
+
 .files-layout.is-dragging {
   position: relative;
   outline: 2px dashed var(--accent); outline-offset: 8px; border-radius: var(--r-lg);
@@ -972,8 +1005,9 @@ a.btn-primary { text-decoration: none; }
 .CodeMirror-gutter-filler { background: #0b1016; }
 
 /* ══════════════════════════════════════════════
-   FILE CONTEXT MENU
+   14. FILE CONTEXT MENU
    ══════════════════════════════════════════════ */
+
 .file-ctx-menu {
   position: fixed;
   z-index: 1000;
@@ -1027,8 +1061,9 @@ a.btn-primary { text-decoration: none; }
 }
 
 /* ══════════════════════════════════════════════
-   PLUGINS
+   15. PLUGINS
    ══════════════════════════════════════════════ */
+
 .plg-tab-btn {
   background: var(--surface2);
   border: 1px solid var(--border);
@@ -1460,8 +1495,9 @@ a.btn-primary { text-decoration: none; }
 .installed-plugin-row .small-btn { flex-shrink: 0; }
 
 /* ══════════════════════════════════════════════
-   VERSIONES — SERVIDORES POR CATEGORÍA
+   16. VERSIONES — SERVIDORES POR CATEGORÍA
    ══════════════════════════════════════════════ */
+
 
 #versionList {
   display: flex;
@@ -1627,7 +1663,10 @@ a.btn-primary { text-decoration: none; }
   }
 }
 
-/* ── VERSIONES DE MINECRAFT ── */
+/* ══════════════════════════════════════════════
+   17. VERSIONES DE MINECRAFT
+   ══════════════════════════════════════════════ */
+
 .ver-loading-page,
 .ver-loading {
   min-height: 180px;
@@ -1822,8 +1861,9 @@ a.btn-primary { text-decoration: none; }
 }
 
 /* ══════════════════════════════════════════════
-   USERS
+   18. USERS
    ══════════════════════════════════════════════ */
+
 .user-list { padding: var(--sp-sm); }
 
 .icon-btn {
@@ -1844,8 +1884,9 @@ a.btn-primary { text-decoration: none; }
 .icon-btn.edit:hover { border-color: var(--accent); color: var(--accent); background: var(--accentDim); }
 
 /* ══════════════════════════════════════════════
-   BACKUPS
+   19. BACKUPS
    ══════════════════════════════════════════════ */
+
 .backup-list { padding: var(--sp-sm); }
 .backup-row  {
   display: flex;
@@ -1871,8 +1912,9 @@ a.btn-primary { text-decoration: none; }
 }
 
 /* ══════════════════════════════════════════════
-   PORTS
+   20. PORTS
    ══════════════════════════════════════════════ */
+
 .port-list { padding: var(--sp-sm); }
 .port-row  {
   display: flex;
@@ -1958,8 +2000,9 @@ a.btn-primary { text-decoration: none; }
 }
 
 /* ══════════════════════════════════════════════
-   STARTUP
+   21. STARTUP
    ══════════════════════════════════════════════ */
+
 .startup-form    { padding: 18px; display: flex; flex-direction: column; gap: 18px; }
 .form-group      { display: flex; flex-direction: column; gap: 6px; }
 .form-label      {
@@ -2008,7 +2051,10 @@ a.btn-primary { text-decoration: none; }
   transform: translateY(-1px);
 }
 
-/* ── Toggle cards (startup + ports) ── */
+/* ══════════════════════════════════════════════
+   22. Toggle cards (startup + ports)
+   ══════════════════════════════════════════════ */
+
 .startup-toggles {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -2089,7 +2135,10 @@ a.btn-primary { text-decoration: none; }
   }
 }
 
-/* ── Toggle switch ── */
+/* ══════════════════════════════════════════════
+   23. Toggle switch
+   ══════════════════════════════════════════════ */
+
 .toggle {
   position: relative;
   display: inline-block;
@@ -2142,8 +2191,9 @@ a.btn-primary { text-decoration: none; }
 }
 
 /* ══════════════════════════════════════════════
-   SETTINGS
+   24. SETTINGS
    ══════════════════════════════════════════════ */
+
 .settings-list {
   padding: 6px;
   display: flex;
@@ -2309,8 +2359,9 @@ a.btn-primary { text-decoration: none; }
 }
 
 /* ══════════════════════════════════════════════
-   ACTIVITY LOG
+   25. ACTIVITY LOG
    ══════════════════════════════════════════════ */
+
 .activity-list {
   padding: 0;
   max-height: 620px;
@@ -2459,8 +2510,9 @@ a.btn-primary { text-decoration: none; }
 }
 
 /* ══════════════════════════════════════════════
-   EMPTY STATE & TOAST
+   26. EMPTY STATE & TOAST
    ══════════════════════════════════════════════ */
+
 .empty-state {
   display: flex;
   flex-direction: column;
@@ -2497,8 +2549,9 @@ a.btn-primary { text-decoration: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ══════════════════════════════════════════════
-   RESPONSIVE
+   27. RESPONSIVE
    ══════════════════════════════════════════════ */
+
 @media (max-width: 768px) {
   :root { --sidebar-w: 58px; }
 
@@ -2539,7 +2592,10 @@ a.btn-primary { text-decoration: none; }
   }
 }
 
-/* ── USERS ── */
+/* ══════════════════════════════════════════════
+   28. USERS
+   ══════════════════════════════════════════════ */
+
 .user-stats-grid {
   display:grid;
   grid-template-columns:repeat(4,1fr);
@@ -2805,7 +2861,10 @@ body {
   .toast { right: 10px; bottom: 10px; left: 10px; max-width: none; }
 }
 
-/* ── BACKUP PROGRESS ── */
+/* ══════════════════════════════════════════════
+   29. BACKUP PROGRESS
+   ══════════════════════════════════════════════ */
+
 .backup-progress {
   margin-bottom: var(--sp-lg);
   padding: var(--sp-md) var(--sp-lg);
