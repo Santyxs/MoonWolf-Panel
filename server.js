@@ -979,8 +979,7 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'", 'https://cdnjs.cloudflare.com'],
-      styleSrcElem: ["'self'", 'https://fonts.googleapis.com', 'https://cdnjs.cloudflare.com'],
-      styleSrcAttr: ["'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com', 'https://cdnjs.cloudflare.com'],
       fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
       imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
       connectSrc: ["'self'", 'wss://moonwolf-panel.up.railway.app', 'ws://moonwolf-panel.up.railway.app'],
