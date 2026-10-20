@@ -5753,6 +5753,7 @@ app.post('/api/files/bulk', async (req, res) => {
         const destinationPath = destination
           ? `${destination.replace(/[\\/]+$/, '')}/${path.basename(rel)}`
           : path.basename(rel);
+        if (await denyDangerousForShare(req, res, destinationPath, rel)) return;
         const fullDest = safePath(destinationPath);
         if (!fullDest || path.resolve(fullDest) === path.resolve(full)) throw new Error('Destino no válido');
         await fs.mkdir(path.dirname(fullDest), { recursive: true });
