@@ -1,5 +1,9 @@
 'use strict';
 
+/* ══════════════════════════════════════════════
+   1. REQUIRES
+   ══════════════════════════════════════════════ */
+
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -10,7 +14,7 @@ const { io } = require('socket.io-client');
 const { startGui } = require('./gui');
 
 /* ══════════════════════════════════════════════
-   CANAL DIRECTO (WebRTC) — Panel ↔ Agent
+   2. CANAL DIRECTO (WebRTC)
    ══════════════════════════════════════════════ */
 const DC_NATIVE_ASSET = 'native/node_datachannel.node';
 const DC_FRAME = { REQ_HEAD: 1, REQ_BODY: 2, REQ_END: 3, RES_HEAD: 17, RES_BODY: 18, RES_END: 19, RES_ERR: 20 };
@@ -398,7 +402,10 @@ function createDirectManager({ localFetch, requiredPermission, permissionAllows,
 
   return { available: Boolean(ndc), handleSignal, updateCtx, closePeer, closeAll };
 }
-/* ══════════════════════════════════════════════ */
+
+/* ══════════════════════════════════════════════
+   3. CONSTANTES Y CONFIG
+   ══════════════════════════════════════════════ */
 
 const PANEL_URL = 'https://moonwolf-panel.up.railway.app';
 const CLOUD_PATH = '/socket.io';
@@ -417,6 +424,11 @@ const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const UPDATE_REPO = 'Santyxs/MoonWolf-Panel';
 const UPDATE_API = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
 const UPDATE_DIR = path.join(CONFIG_DIR, 'updates');
+
+
+/* ══════════════════════════════════════════════
+   4. CONFIG DEL AGENT
+   ══════════════════════════════════════════════ */
 
 function ensureConfigDir() {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
@@ -538,6 +550,11 @@ function wait(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+
+/* ══════════════════════════════════════════════
+   5. SERVIDOR LOCAL EMBEBIDO
+   ══════════════════════════════════════════════ */
+
 async function waitForLocalServer(localUrl) {
   for (let attempt = 1; attempt <= 30; attempt++) {
     try {
@@ -564,6 +581,11 @@ function startEmbeddedLocalServer(config) {
 
   return require('../server.js');
 }
+
+
+/* ══════════════════════════════════════════════
+   6. ACTUALIZACIONES
+   ══════════════════════════════════════════════ */
 
 function compareVersions(a, b) {
   const pa = String(a || '').split('.').map(n => parseInt(n, 10) || 0);
@@ -810,6 +832,11 @@ function cleanUpdateDir() {
     }
   }
 }
+
+
+/* ══════════════════════════════════════════════
+   7. MAIN
+   ══════════════════════════════════════════════ */
 
 async function main() {
   const selfUpdateIdx = process.argv.indexOf('--self-update');
@@ -1393,6 +1420,11 @@ async function main() {
     reconnectTimer = setTimeout(connectCloud, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 30000);
   }
+
+
+/* ══════════════════════════════════════════════
+   8. CLOUD SOCKET
+   ══════════════════════════════════════════════ */
 
   function connectCloud() {
     if (shuttingDown) return;
