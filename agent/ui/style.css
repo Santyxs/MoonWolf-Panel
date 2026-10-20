@@ -1,3 +1,8 @@
+
+/* ══════════════════════════════════════════════
+   1. TOKENS
+   ══════════════════════════════════════════════ */
+
 :root {
   font-family:
     "Segoe UI Variable",
@@ -25,6 +30,11 @@
   --red: #ff6b7a;
 }
 
+
+/* ══════════════════════════════════════════════
+   2. RESET
+   ══════════════════════════════════════════════ */
+
 * {
   box-sizing: border-box;
 }
@@ -42,6 +52,11 @@ body {
   overflow: hidden;
   background: var(--background);
 }
+
+
+/* ══════════════════════════════════════════════
+   3. LAYOUT Y HERO
+   ══════════════════════════════════════════════ */
 
 .ambient {
   position: absolute;
@@ -129,9 +144,24 @@ button {
   text-transform: uppercase;
 }
 
+
+/* ══════════════════════════════════════════════
+   4. STATUS
+   ══════════════════════════════════════════════ */
+
 .status-card,
+
+/* ══════════════════════════════════════════════
+   5. INFO CARDS
+   ══════════════════════════════════════════════ */
+
 .info-card,
 .update-banner,
+
+/* ══════════════════════════════════════════════
+   6. BANNERS Y NOTICES
+   ══════════════════════════════════════════════ */
+
 .restart-banner {
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
@@ -272,6 +302,11 @@ button {
   background: linear-gradient(90deg, transparent, rgba(148, 163, 184, 0.16), transparent);
 }
 
+
+/* ══════════════════════════════════════════════
+   7. BOTONES
+   ══════════════════════════════════════════════ */
+
 .small-button {
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.03);
@@ -320,6 +355,11 @@ button {
   background: var(--green);
   box-shadow: 0 0 8px rgba(62, 226, 138, 0.5);
 }
+
+
+/* ══════════════════════════════════════════════
+   8. ACCIONES
+   ══════════════════════════════════════════════ */
 
 .actions {
   display: grid;
@@ -408,6 +448,11 @@ footer {
   font-size: 11px;
   letter-spacing: 0.4px;
 }
+
+
+/* ══════════════════════════════════════════════
+   9. MODALES
+   ══════════════════════════════════════════════ */
 
 .modal {
   position: fixed;
@@ -501,6 +546,11 @@ footer {
   background: var(--surface-hover);
   color: white;
 }
+
+
+/* ══════════════════════════════════════════════
+   10. LOGS
+   ══════════════════════════════════════════════ */
 
 .logs-toolbar {
   display: flex;
@@ -833,6 +883,11 @@ footer {
   from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+
+/* ══════════════════════════════════════════════
+   11. CONFIRMACIÓN
+   ══════════════════════════════════════════════ */
 
 .mw-confirm-overlay {
   position: fixed;
