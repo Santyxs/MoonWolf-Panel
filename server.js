@@ -4543,10 +4543,8 @@ app.get('/api/plugins/versions', async (req, res) => {
       const decodeSpigetText = text => {
         if (!text || typeof text !== 'string') return null;
         const trimmed = text.trim();
-        // Spiget codifica las descripciones de las actualizaciones en base64
         try {
           const decoded = Buffer.from(trimmed, 'base64').toString('utf8');
-          // Verificar si el resultado decodificado parece texto/HTML válido o se pudo recomponer
           if (Buffer.from(decoded, 'utf8').toString('base64').replace(/=+$/, '') === trimmed.replace(/=+$/, '')) {
             return decoded;
           }
