@@ -3749,9 +3749,27 @@ async function pollBackupProgress() {
   }
 }
 
-async function createBackup() {
-  const name = prompt('Nombre para la copia de seguridad (opcional):', '');
-  if (name === null) return;
+function openBackupNameModal() {
+  const modal = $('backupNameModal');
+  const input = $('backupNameInput');
+
+  if (!modal || !input) {
+    void createBackup('');
+    return;
+  }
+
+  input.value = '';
+  modal.hidden = false;
+  input.focus();
+}
+
+function closeBackupNameModal() {
+  const modal = $('backupNameModal');
+  if (modal) modal.hidden = true;
+}
+
+async function createBackup(name = '') {
+  closeBackupNameModal();
 
   const button = $('btnNewBackup');
 
@@ -5141,7 +5159,23 @@ function bindEvents() {
     }
   });
 
-  $('btnNewBackup')?.addEventListener('click', createBackup);
+  $('btnNewBackup')?.addEventListener('click', openBackupNameModal);
+  $('btnBackupNameCancel')?.addEventListener('click', closeBackupNameModal);
+  $('btnBackupNameCreate')?.addEventListener('click', () => {
+    const value = $('backupNameInput')?.value ?? '';
+    void createBackup(value.trim());
+  });
+  $('backupNameInput')?.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      $('btnBackupNameCreate')?.click();
+    } else if (event.key === 'Escape') {
+      closeBackupNameModal();
+    }
+  });
+  $('backupNameModal')?.addEventListener('click', event => {
+    if (event.target === event.currentTarget) closeBackupNameModal();
+  });
 
   updateAgentUi();
   updateStatusUi(currentStatus);

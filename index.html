@@ -412,6 +412,22 @@
             <div class="bkprog-fill" id="backupProgressFill"></div>
           </div>
         </div>
+        <div class="file-conflict-modal" id="backupNameModal" hidden role="dialog" aria-modal="true" aria-labelledby="backupNameTitle">
+          <div class="backup-name-card">
+            <div class="backup-name-head">
+              <div class="backup-name-icon">💾</div>
+              <div>
+                <strong id="backupNameTitle">Nueva copia de seguridad</strong>
+                <span>Se comprimirán todos los archivos del servidor en un ZIP. El nombre es opcional.</span>
+              </div>
+            </div>
+            <input class="backup-name-input" id="backupNameInput" type="text" maxlength="80" placeholder="Nombre (opcional)" autocomplete="off" spellcheck="false">
+            <div class="backup-name-actions">
+              <button class="small-btn" id="btnBackupNameCancel" type="button">Cancelar</button>
+              <button class="small-btn conflict-numbered" id="btnBackupNameCreate" type="button">💾 Crear copia</button>
+            </div>
+          </div>
+        </div>
         <div class="panel"><div class="backup-list" id="backupList"></div></div>
       </div>
 

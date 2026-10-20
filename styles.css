@@ -2886,3 +2886,22 @@ body {
     width: 100%;
   }
 }
+
+/* Modal de nombre para nueva copia de seguridad (sustituye a window.prompt) */
+.backup-name-card {
+  width: min(460px, 100%); padding: 20px; display: flex; flex-direction: column; gap: 14px;
+  border: 1px solid rgba(0,200,255,.42); border-radius: var(--r-lg);
+  background: var(--surface2); box-shadow: var(--shadow-lg), 0 0 28px rgba(0,200,255,.1);
+}
+.backup-name-head { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start; }
+.backup-name-head > div { display: flex; flex-direction: column; }
+.backup-name-icon { color: var(--accent); font-size: 28px; line-height: 1; }
+.backup-name-head strong { color: var(--text); font-size: var(--fs-md); }
+.backup-name-head span { margin-top: 5px; color: var(--muted2); font-size: var(--fs-sm); }
+.backup-name-input {
+  background: var(--bg); border: 1px solid var(--border2); border-radius: var(--r-md);
+  padding: 10px 14px; color: var(--text); font-family: inherit; font-size: var(--fs-base);
+  outline: none; transition: border-color var(--t-base), box-shadow var(--t-base);
+}
+.backup-name-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(0,200,255,.18); }
+.backup-name-actions { display: flex; justify-content: flex-end; gap: 8px; }
