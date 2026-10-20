@@ -1,5 +1,9 @@
 'use strict';
 
+/* ══════════════════════════════════════════════
+   1. ESTADO Y UTILIDADES
+   ══════════════════════════════════════════════ */
+
 const $ = id => document.getElementById(id);
 
 let state = {
@@ -40,7 +44,9 @@ function escapeHtml(value) {
     .replace(/"/g, '&quot;');
 }
 
-/* ---------- Confirmación personalizada ---------- */
+/* ══════════════════════════════════════════════
+   2. CONFIRMACIÓN
+   ══════════════════════════════════════════════ */
 
 function customConfirm(message, title = 'Reiniciar Agent') {
   return new Promise(resolve => {
@@ -109,7 +115,9 @@ function customConfirm(message, title = 'Reiniciar Agent') {
   });
 }
 
-/* ---------- Actualizaciones ---------- */
+/* ══════════════════════════════════════════════
+   3. ACTUALIZACIONES
+   ══════════════════════════════════════════════ */
 
 function cancelUpdateCheck() {
   pendingUpdateCheck = false;
@@ -123,7 +131,9 @@ function revealUpdateIfPending() {
   cancelUpdateCheck();
 }
 
-/* ---------- Render ---------- */
+/* ══════════════════════════════════════════════
+   4. RENDER
+   ══════════════════════════════════════════════ */
 
 function render() {
   const cloudConnected = Boolean(state.cloudConnected);
@@ -286,7 +296,9 @@ function renderSettings() {
   $('settings-agent-id').textContent = state.agentId || '—';
 }
 
-/* ---------- Logs ---------- */
+/* ══════════════════════════════════════════════
+   5. LOGS
+   ══════════════════════════════════════════════ */
 
 function formatLogTime(value) {
   const date = new Date(value);
@@ -369,7 +381,9 @@ function renderLogs(force = false) {
   list.scrollTop = nearBottom ? list.scrollHeight : previousScroll;
 }
 
-/* ---------- Estado / utilidades ---------- */
+/* ══════════════════════════════════════════════
+   6. ESTADO Y MODALES
+   ══════════════════════════════════════════════ */
 
 function refreshState(event) {
   const next = event?.detail || nativeApi().getState?.();
@@ -430,7 +444,9 @@ function openServerDirModal() {
   openModal('serverdir-modal');
 }
 
-/* ---------- Eventos ---------- */
+/* ══════════════════════════════════════════════
+   7. EVENTOS E INICIALIZACIÓN
+   ══════════════════════════════════════════════ */
 
 function bindEvents() {
   $('open-panel')?.addEventListener('click', async event => {
