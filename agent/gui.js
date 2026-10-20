@@ -1,5 +1,9 @@
 'use strict';
 
+/* ══════════════════════════════════════════════
+   1. REQUIRES Y CONSTANTES
+   ══════════════════════════════════════════════ */
+
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -87,6 +91,11 @@ try {
     isStandalone = true;
   }
 } catch {}
+
+
+/* ══════════════════════════════════════════════
+   2. NATIVE ADDON Y WEBVIEW DATA
+   ══════════════════════════════════════════════ */
 
 function removeStaleWebViewData() {
   const dataRoot = path.join(TEMP_ROOT, 'WebView2Data');
@@ -207,6 +216,11 @@ function cleanupOldExe() {
 }
 
 cleanupOldExe();
+
+
+/* ══════════════════════════════════════════════
+   3. ICONO PNG
+   ══════════════════════════════════════════════ */
 
 function decodePngRgba(png) {
   const signature = Buffer.from([
@@ -469,7 +483,7 @@ function readUiAsset(assetName) {
 }
 
 /* ══════════════════════════════════════════════
-   SHELL HELPERS (spawn-based, con error handling)
+   4. SHELL HELPERS
    ══════════════════════════════════════════════ */
 function openExplorerPath(target, label = 'explorer') {
   if (!target) {
@@ -625,6 +639,11 @@ function finishQuit() {
   });
 }
 
+
+/* ══════════════════════════════════════════════
+   5. TRAY
+   ══════════════════════════════════════════════ */
+
 function createTray() {
   if (!app || tray) return;
 
@@ -716,6 +735,11 @@ const WEBVIEW_RESTRICTIONS_SCRIPT = `
 function installWebViewRestrictions() {
   executeWebViewScript(WEBVIEW_RESTRICTIONS_SCRIPT);
 }
+
+
+/* ══════════════════════════════════════════════
+   6. VENTANA Y PROTOCOLO
+   ══════════════════════════════════════════════ */
 
 function createWindow() {
   app = new Application();
@@ -1110,6 +1134,11 @@ function revealWindowAfterInitialPaint() {
   }
 }
 
+
+/* ══════════════════════════════════════════════
+   7. START GUI
+   ══════════════════════════════════════════════ */
+
 function startGui(
   getState,
   guiActions = {}
@@ -1132,6 +1161,11 @@ function startGui(
       quitApp(),
   };
 }
+
+
+/* ══════════════════════════════════════════════
+   8. EXPORTS
+   ══════════════════════════════════════════════ */
 
 module.exports = {
   startGui,
