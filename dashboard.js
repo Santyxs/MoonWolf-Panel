@@ -2861,10 +2861,23 @@ async function openPluginVersions(plugin) {
           ? new Date(version.published).toLocaleString('es-ES')
           : '';
 
-        const changelog = version.changelog
+        let rawChangelog = version.changelog;
+        if (typeof rawChangelog === 'string') {
+          const trimmed = rawChangelog.trim();
+          if (/^[A-Za-z0-9+/=]+$/.test(trimmed) && trimmed.length % 4 === 0 && trimmed.length > 8) {
+            try {
+              const decoded = atob(trimmed);
+              if (/^[\x09\x0A\x0D\x20-\x7E\xA0-\uFFFF]*$/.test(decoded)) {
+                rawChangelog = decodeURIComponent(escape(decoded));
+              }
+            } catch {}
+          }
+        }
+
+        const changelog = rawChangelog
           ? `<div class="plg-ver-changelog">${version.changelogIsHtml
-              ? version.changelog
-              : escHtml(version.changelog)}</div>`
+              ? rawChangelog
+              : escHtml(rawChangelog)}</div>`
           : '';
 
         const action = version.isExternal
