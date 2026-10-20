@@ -2861,10 +2861,23 @@ async function openPluginVersions(plugin) {
           ? new Date(version.published).toLocaleString('es-ES')
           : '';
 
+        const formatChangelog = text => {
+          if (!text) return '';
+          return escHtml(text)
+            .replace(/^#### (.*$)/gim, '<div class="plg-ch-h4">$1</div>')
+            .replace(/^### (.*$)/gim, '<div class="plg-ch-h3">$1</div>')
+            .replace(/^## (.*$)/gim, '<div class="plg-ch-h2">$1</div>')
+            .replace(/^# (.*$)/gim, '<div class="plg-ch-h1">$1</div>')
+            .replace(/^\s*-\s+(.*$)/gim, '<div class="plg-ch-li">• $1</div>')
+            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\*(.*?)\*/g, '<em>$1</em>')
+            .replace(/`([^`]+)`/g, '<code>$1</code>');
+        };
+
         const changelog = version.changelog
           ? `<div class="plg-ver-changelog">${version.changelogIsHtml
               ? version.changelog
-              : escHtml(version.changelog)}</div>`
+              : formatChangelog(version.changelog)}</div>`
           : '';
 
         const action = version.isExternal

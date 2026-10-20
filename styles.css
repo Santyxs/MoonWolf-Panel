@@ -1400,6 +1400,25 @@ a.btn-primary { text-decoration: none; }
 .plg-ver-changelog ul,
 .plg-ver-changelog ol { margin: 0 0 4px; padding-left: 16px; }
 .plg-ver-changelog a { color: var(--accent); }
+.plg-ver-changelog strong { color: var(--text); font-weight: 700; }
+.plg-ver-changelog code {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  border-radius: var(--r-xs);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+.plg-ch-h1, .plg-ch-h2, .plg-ch-h3, .plg-ch-h4 {
+  color: var(--text);
+  font-weight: 700;
+  margin-top: 10px;
+  margin-bottom: 4px;
+}
+.plg-ch-h1 { font-size: 1.15em; }
+.plg-ch-h2 { font-size: 1.05em; }
+.plg-ch-h3, .plg-ch-h4 { font-size: 0.95em; }
+.plg-ch-li { margin-left: 8px; }
 
 .plg-ver-right { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0; }
 .plg-ver-meta  { display: flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; }
