@@ -853,6 +853,14 @@ const socketConnectionAttempts = createCounterMap();
 const socketConnections = new Map();
 const TRUSTED_PROXY_HOPS = 1;
 
+setInterval(() => {
+  const now = Date.now();
+  loginAttempts.cleanup(now);
+  apiHits.cleanup(now);
+  operationHits.cleanup(now);
+  socketConnectionAttempts.cleanup(now);
+}, 5 * 60 * 1000).unref();
+
 const OPERATION_RATE_RULES = Object.freeze([
   { id: 'pair', methods: new Set(['POST']), paths: ['/pair'], limit: 10, windowMs: 5 * 60_000 },
   { id: 'share-tokens', methods: new Set(['POST', 'PATCH', 'DELETE']), paths: ['/share-tokens', '/share-tokens/:id'], limit: 20, windowMs: 60_000 },
@@ -971,10 +979,10 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'", 'https://cdnjs.cloudflare.com'],
-      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com', 'https://cdnjs.cloudflare.com'],
+      styleSrc: ["'self'", 'https://fonts.googleapis.com', 'https://cdnjs.cloudflare.com'],
       fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
       imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
-      connectSrc: ["'self'", 'wss:', 'ws:'],
+      connectSrc: ["'self'", 'wss://moonwolf-panel.up.railway.app', 'ws://moonwolf-panel.up.railway.app'],
       objectSrc: ["'none'"],
       baseUri: ["'self'"],
       frameAncestors: ["'none'"],
@@ -983,6 +991,11 @@ app.use(helmet({
     },
   },
 }));
+app.use((req, res, next) => {
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
 app.use(compression({ threshold: 1024 }));
 const server = http.createServer(app);
 
@@ -1012,7 +1025,9 @@ const io = new Server(server, {
 
 io.use(async (socket, next) => {
   if (!socketConnectionAllowed(socket)) {
-    console.warn('[socket] Conexión rechazada por rate limit:', socket.handshake.address);
+    console.warn('[socket] Conexión rechazada por rate limit', {
+      ip: socket.handshake.address,
+    });
     return next(new Error('rate_limited'));
   }
 
@@ -1023,7 +1038,9 @@ io.use(async (socket, next) => {
     const token = String(auth.token || '');
 
     if (!LOCAL_AGENT_TOKEN || !timingSafeEqualStr(token, LOCAL_AGENT_TOKEN)) {
-      console.warn('[socket] local-agent rechazado: token inválido o no configurado');
+      console.warn('[socket] local-agent rechazado: token inválido o no configurado', {
+        ip: socket.handshake.address,
+      });
       releaseSocketConnection(socket);
       return next(new Error('unauthorized'));
     }
@@ -1037,13 +1054,18 @@ io.use(async (socket, next) => {
     const token = String(auth.token || '');
 
     if (!agentId || !token) {
-      console.warn('[socket] agent rechazado: faltan agentId o token');
+      console.warn('[socket] agent rechazado: faltan agentId o token', {
+        ip: socket.handshake.address,
+      });
       releaseSocketConnection(socket);
       return next(new Error('unauthorized'));
     }
 
     if (agentId.length < 16 || token.length < 32 || !verifyOrRegisterAgent(agentId, token)) {
-      console.warn('[socket] agent rechazado: credenciales inválidas para agentId:', agentId || '(vacío)');
+      console.warn('[socket] agent rechazado: credenciales inválidas', {
+        agentId: agentId || '(vacío)',
+        ip: socket.handshake.address,
+      });
       releaseSocketConnection(socket);
       return next(new Error('unauthorized'));
     }
@@ -1058,6 +1080,9 @@ io.use(async (socket, next) => {
     const session = verifyPanelSession(auth.session);
 
     if (!session) {
+      console.warn('[socket] panel rechazado: sesión inválida o caducada', {
+        ip: socket.handshake.address,
+      });
       releaseSocketConnection(socket);
       return next(new Error('unauthorized'));
     }
@@ -1066,12 +1091,21 @@ io.use(async (socket, next) => {
       try {
         const share = await findShareTokenById(session.shareTokenId, session.agentId);
         if (!isShareTokenActive(share)) {
+          console.warn('[socket] panel rechazado: share token inactivo', {
+            ip: socket.handshake.address,
+            agentId: session.agentId,
+            shareTokenId: session.shareTokenId,
+          });
           releaseSocketConnection(socket);
           return next(new Error('unauthorized'));
         }
         session.permission = normalizeSharePermission(share.permission) || 'read';
       } catch (error) {
-        console.error('[share-tokens] socket auth:', error.message);
+        console.error('[share-tokens] socket auth failed', {
+          error: error.message,
+          ip: socket.handshake.address,
+          agentId: session.agentId,
+        });
         releaseSocketConnection(socket);
         return next(new Error('share_store_unavailable'));
       }
@@ -1086,6 +1120,10 @@ io.use(async (socket, next) => {
     return next();
   }
 
+  console.warn('[socket] rol no válido', {
+    ip: socket.handshake.address,
+    role: role || '(ninguno)',
+  });
   releaseSocketConnection(socket);
   return next(new Error('Rol no válido.'));
 });
@@ -1250,7 +1288,7 @@ app.use('/api', async (req, res, next) => {
     req.moonwolfSession = session;
     return next();
   } catch (error) {
-    console.error('[auth] Error comprobando permisos:', error?.message || error);
+    console.error('[auth] Error comprobando permisos', { error: error?.message || error, ip: req.ip, path: req.path });
     return res.status(500).json({ ok: false, error: 'Error de autorización.' });
   }
 });
@@ -1261,6 +1299,7 @@ app.use('/api', async (req, res, next) => {
 
 app.post('/api/pair', async (req, res) => {
   if (loginRateLimited(req.ip)) {
+    console.warn('[pair] rate limited', { ip: req.ip });
     return res.status(429).json({ ok: false, error: 'Demasiados intentos, espera unos minutos.' });
   }
 
@@ -1273,7 +1312,10 @@ app.post('/api/pair', async (req, res) => {
     try {
       share = await findShareToken(code);
     } catch (error) {
-      console.error('[share-tokens] pair lookup:', error.message);
+      console.error('[share-tokens] pair lookup failed', {
+        ip: req.ip,
+        error: error.message,
+      });
       return res.status(503).json({
         ok: false,
         error: 'El servicio de autorizaciones no está disponible. Inténtalo de nuevo más tarde.',
@@ -1281,6 +1323,7 @@ app.post('/api/pair', async (req, res) => {
     }
 
     if (!share) {
+      console.warn('[pair] share token inválido/revocado/caducado', { ip: req.ip });
       return res.status(401).json({
         ok: false,
         error: 'Token compartido inválido, revocado o caducado.',
@@ -1298,6 +1341,7 @@ app.post('/api/pair', async (req, res) => {
     pairing = consumePairingCode(code);
 
     if (!pairing) {
+      console.warn('[pair] código de emparejamiento inválido o caducado', { ip: req.ip });
       return res.status(401).json({
         ok: false,
         error: 'Código de emparejamiento inválido o caducado.',
@@ -1308,6 +1352,10 @@ app.post('/api/pair', async (req, res) => {
   const agentSocket = agentSockets.get(pairing.agentId);
 
   if (!agentSocket?.connected) {
+    console.warn('[pair] agent no conectado', {
+      ip: req.ip,
+      agentId: pairing.agentId,
+    });
     return res.status(409).json({
       ok: false,
       error: 'El MoonWolf Agent ya no está conectado.',
@@ -1319,6 +1367,13 @@ app.post('/api/pair', async (req, res) => {
   if (!share) {
     agentSocket.emit('pairing_consumed');
   }
+
+  console.info('[pair] sesión creada', {
+    ip: req.ip,
+    agentId: pairing.agentId,
+    kind: sessionOptions.kind,
+    permission: sessionOptions.permission,
+  });
 
   return res.json({
     ok: true,
@@ -1343,7 +1398,7 @@ app.get('/api/share-tokens', async (req, res) => {
     const tokens = (await listShareTokensForAgent(session.agentId)).map(publicShareToken);
     return res.json({ ok: true, tokens });
   } catch (error) {
-    console.error('[share-tokens] list:', error.message);
+    console.error('[share-tokens] list failed', { error: error.message, agentId: session?.agentId });
     return res.status(503).json({ ok: false, error: 'Neon no está disponible; no se pudieron consultar los accesos compartidos.' });
   }
 });
@@ -1389,7 +1444,7 @@ app.post('/api/share-tokens', async (req, res) => {
       access: publicShareToken(created.record),
     });
   } catch (error) {
-    console.error('[share-tokens] create:', error.message);
+    console.error('[share-tokens] create failed', { error: error.message, agentId: session?.agentId });
     return res.status(503).json({ ok: false, error: 'Neon no está disponible; no se pudo guardar el acceso compartido.' });
   }
 });
@@ -1410,7 +1465,7 @@ app.patch('/api/share-tokens/:id', async (req, res) => {
   try {
     record = await updateShareTokenPermission(req.params.id, session.agentId, permission);
   } catch (error) {
-    console.error('[share-tokens] update:', error.message);
+    console.error('[share-tokens] update failed', { error: error.message, agentId: session?.agentId, id: req.params.id });
     return res.status(503).json({ ok: false, error: 'Neon no está disponible; no se pudo actualizar el acceso compartido.' });
   }
 
@@ -1444,7 +1499,7 @@ app.delete('/api/share-tokens/:id', async (req, res) => {
   try {
     record = await revokeShareToken(req.params.id, session.agentId);
   } catch (error) {
-    console.error('[share-tokens] revoke:', error.message);
+    console.error('[share-tokens] revoke failed', { error: error.message, agentId: session?.agentId, id: req.params.id });
     return res.status(503).json({ ok: false, error: 'Neon no está disponible; no se pudo revocar el acceso compartido.' });
   }
 
@@ -3354,7 +3409,7 @@ io.on('connection', socket => {
         try {
           share = await findShareTokenById(socket.data.shareTokenId, agentId);
         } catch (error) {
-          console.error('[share-tokens] rpc validation:', error.message);
+          console.error('[share-tokens] rpc validation failed', { error: error.message, agentId });
           return rejectRpc(503, 'No se pudo verificar el acceso compartido en Neon.');
         }
 
@@ -3431,7 +3486,7 @@ io.on('connection', socket => {
         try {
           share = await findShareTokenById(socket.data.shareTokenId, agentId);
         } catch (error) {
-          console.error('[share-tokens] direct_signal validation:', error.message);
+          console.error('[share-tokens] direct_signal validation failed', { error: error.message, agentId });
           socket.emit('share_revoked');
           return socket.disconnect(true);
         }
