@@ -5719,7 +5719,7 @@ const BACKUP_NAME_RE = /^[A-Za-z0-9 _.-]{1,80}$/;
 const BACKUP_FILE_RE = /^[A-Za-z0-9_.-]{1,120}\.zip$/;
 
 const BACKUP_RETENTION = 10;
-const BACKUP_EXCLUDES = Object.freeze(['.moonwolf', '.moonwolf-uploads']);
+const BACKUP_EXCLUDES = Object.freeze(['.moonwolf', '.moonwolf-uploads', '.paper-remapped', 'libraries']);
 const BACKUP_FLUSH_WAIT_MS = 3000;
 
 const backupProgress = {
@@ -5734,25 +5734,37 @@ const backupProgress = {
 
 async function computeDirTotalBytes(dir, excludedNames) {
   let total = 0;
-  const stack = [dir];
+  const stack = [{ dir, relative: '' }];
 
   while (stack.length) {
     const current = stack.pop();
     let entries;
 
     try {
-      entries = await fs.readdir(current, { withFileTypes: true });
+      entries = await fs.readdir(current.dir, { withFileTypes: true });
     } catch {
       continue;
     }
 
     for (const entry of entries) {
+      const relativeName = current.relative
+        ? `${current.relative}/${entry.name}`
+        : entry.name;
+
+      if (excludedNames.some(excluded =>
+        relativeName === excluded || relativeName.startsWith(excluded + '/')
+      )) {
+        continue;
+      }
+
       if (entry.isDirectory()) {
-        if (excludedNames.includes(entry.name)) continue;
-        stack.push(path.join(current, entry.name));
+        stack.push({
+          dir: path.join(current.dir, entry.name),
+          relative: relativeName,
+        });
       } else if (entry.isFile()) {
         try {
-          const stats = await fs.stat(path.join(current, entry.name));
+          const stats = await fs.stat(path.join(current.dir, entry.name));
           total += stats.size;
         } catch {}
       }
