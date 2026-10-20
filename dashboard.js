@@ -3092,14 +3092,6 @@ function renderVersionSoftware() {
     .map(category => [category, groups[category]]);
 
   container.innerHTML = `
-    <div class="ver-hero">
-      <div class="ver-hero-icon">📦</div>
-      <div>
-        <div class="ver-hero-title">Versiones de Minecraft</div>
-        <div class="ver-hero-description">Selecciona una categoría, el software y después la versión que quieres instalar.</div>
-      </div>
-    </div>
-
     ${orderedGroups.map(([category, items]) => `
       <section class="ver-category">
         <div class="ver-category-header">
