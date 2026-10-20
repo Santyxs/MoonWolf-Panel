@@ -1110,21 +1110,25 @@ function renderIndexHtml() {
 }
 
 app.get('/', (_req, res) => {
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-store');
   res.type('html').send(renderIndexHtml());
 });
 
 for (const asset of PUBLIC_ASSETS) {
   app.get('/' + asset, (req, res) => {
     if (asset === 'index.html') {
-      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Cache-Control', 'no-store');
       res.type('html').send(renderIndexHtml());
       return;
     }
 
+    // Solo marcar como immutable los assets servidos con el hash de contenido
+    // real generado por assetVersion() (10 hex). Un ?v= manual o de otro formato
+    // cae a max-age=300 y nunca queda "clavado" un JS/CSS viejo en el navegador.
+    const immutable = /^[0-9a-f]{10}$/.test(String(req.query.v || ''));
     res.setHeader(
       'Cache-Control',
-      req.query.v ? 'public, max-age=31536000, immutable' : 'public, max-age=300'
+      immutable ? 'public, max-age=31536000, immutable' : 'public, max-age=300'
     );
     res.sendFile(path.join(__dirname, asset));
   });
@@ -1134,6 +1138,13 @@ app.use(express.json({ limit: '10mb' }));
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'moonwolf-local' });
+});
+
+// Blindaje anti-caché para toda la API: ninguna respuesta JSON debe poder
+// guardarla el navegador ni un CDN (evita listas desactualizadas, p. ej. backups).
+app.use('/api', (_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  next();
 });
 
 app.use('/api', (req, res, next) => {
