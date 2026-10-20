@@ -1,5 +1,9 @@
 'use strict';
 
+/* ══════════════════════════════════════════════
+   1. REQUIRES
+   ══════════════════════════════════════════════ */
+
 const express = require('express');
 const compression = require('compression');
 const helmet = require('helmet');
@@ -14,6 +18,10 @@ const net = require('net');
 const { spawn } = require('child_process');
 const { Transform } = require('stream');
 const { pipeline } = require('stream/promises');
+
+/* ══════════════════════════════════════════════
+   2. UTILIDADES DE FICHEROS Y CONFIG JSON
+   ══════════════════════════════════════════════ */
 
 function atomicWriteFileSync(filePath, data, options = 'utf8') {
   const tempPath = `${filePath}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
@@ -111,6 +119,10 @@ function writeJsonConfig(filePath, value, options = 'utf8') {
     current => { JSON.parse(current); return true; }
   );
 }
+
+/* ══════════════════════════════════════════════
+   3. SECRETOS Y CONSTANTES DE SESIÓN
+   ══════════════════════════════════════════════ */
 
 /* Inyectado por el agente embebido (globalThis.__MOONWOLF__), no por variables de entorno. */
 const LOCAL_AGENT_TOKEN = String(globalThis.__MOONWOLF__?.localAuthToken || '');
@@ -211,6 +223,10 @@ const PERMISSION_RANK = {
   admin: 3,
 };
 const SHARE_PERMISSIONS = new Set(Object.keys(PERMISSION_RANK));
+
+/* ══════════════════════════════════════════════
+   4. PERMISOS, VALIDACIÓN JVM Y ARCHIVOS PELIGROSOS
+   ══════════════════════════════════════════════ */
 
 function permissionAllows(actual, required) {
   return (PERMISSION_RANK[String(actual || '')] || 0) >= (PERMISSION_RANK[String(required || '')] || 99);
@@ -447,6 +463,10 @@ function requiredPermission(method, pathname) {
   return 'control';
 }
 
+/* ══════════════════════════════════════════════
+   5. SHARE TOKENS (PostgreSQL)
+   ══════════════════════════════════════════════ */
+
 function getShareTokenSql() {
   if (!SHARE_TOKEN_DATABASE_URL) {
     const error = new Error('DATABASE_URL no está configurada.');
@@ -630,6 +650,10 @@ function publicShareToken(record) {
   };
 }
 
+/* ══════════════════════════════════════════════
+   6. SESIONES DEL PANEL Y PAIRING
+   ══════════════════════════════════════════════ */
+
 async function getSessionFromRequest(req) {
   if (LOCAL_AGENT_TOKEN) {
     const localPermission = normalizeSharePermission(req.get('x-moonwolf-permission'));
@@ -774,6 +798,10 @@ function consumePairingCode(code) {
 const RUNTIME_DIR =
   (globalThis.__MOONWOLF__?.serverDir && String(globalThis.__MOONWOLF__.serverDir)) ||
   path.join(process.cwd(), 'mc-server');
+
+/* ══════════════════════════════════════════════
+   7. RATE LIMITING
+   ══════════════════════════════════════════════ */
 
 function createCounterMap() {
   const store = new Map();
@@ -932,6 +960,10 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000).unref();
 
+/* ══════════════════════════════════════════════
+   8. EXPRESS, HELMET Y SOCKET.IO (setup)
+   ══════════════════════════════════════════════ */
+
 const app = express();
 app.set('trust proxy', 1);
 app.use(helmet({
@@ -1065,6 +1097,10 @@ const PUBLIC_ASSETS = [
 ];
 
 app.use(compression({ threshold: 1024 }));
+
+/* ══════════════════════════════════════════════
+   9. ASSETS, HTML Y HEALTH
+   ══════════════════════════════════════════════ */
 
 function assetVersion(asset) {
   const filePath = path.join(__dirname, asset);
@@ -1218,6 +1254,10 @@ app.use('/api', async (req, res, next) => {
     return res.status(500).json({ ok: false, error: 'Error de autorización.' });
   }
 });
+
+/* ══════════════════════════════════════════════
+   10. RUTAS DE AUTH (pair · share-tokens)
+   ══════════════════════════════════════════════ */
 
 app.post('/api/pair', async (req, res) => {
   if (loginRateLimited(req.ip)) {
@@ -1439,6 +1479,10 @@ const JAVA_RUNTIME_VERSIONS = [8, 11, 16, 17, 21, 25];
 const JAVA_DOWNLOAD_API = 'https://api.adoptium.net/v3/assets/latest';
 const javaInstallPromises = new Map();
 const javaPathCache = new Map();
+
+/* ══════════════════════════════════════════════
+   11. MINECRAFT / JAVA (detección, runtime, jlink)
+   ══════════════════════════════════════════════ */
 
 function parseMinecraftVersion(version) {
   const match = String(version || '').trim().match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
@@ -2392,6 +2436,10 @@ async function resolveJavaForServer(minecraftVersion) {
   return executable;
 }
 
+/* ══════════════════════════════════════════════
+   12. STARTUP CONFIG Y SERVER.PROPERTIES
+   ══════════════════════════════════════════════ */
+
 const HOST = '0.0.0.0';
 const PORT = Number(globalThis.__MOONWOLF__?.port) || 10000;
 
@@ -2594,6 +2642,10 @@ function writeServerProperties(values) {
   );
   serverPropertiesCache = null;
 }
+
+/* ══════════════════════════════════════════════
+   13. PUERTOS
+   ══════════════════════════════════════════════ */
 
 function checkLocalPort(port, host = '127.0.0.1') {
   return new Promise(resolve => {
@@ -2883,6 +2935,10 @@ app.post('/api/ports', (req, res) => {
   }
 });
 
+/* ══════════════════════════════════════════════
+   14. PATHS SEGUROS Y DESCARGA DE ARCHIVOS
+   ══════════════════════════════════════════════ */
+
 function safePath(rel) {
   if (typeof rel !== 'string') return null;
 
@@ -3107,6 +3163,10 @@ function emitToAgentPanels(agentId, event, payload) {
 function agentIsOnline(agentId) {
   return Boolean(agentSockets.get(agentId)?.connected);
 }
+
+/* ══════════════════════════════════════════════
+   15. SOCKET.IO (handlers agent · panel · RPC)
+   ══════════════════════════════════════════════ */
 
 io.on('connection', socket => {
 
@@ -3422,6 +3482,10 @@ io.on('connection', socket => {
   });
 });
 
+/* ══════════════════════════════════════════════
+   16. ARCHIVOS (listado y contenido)
+   ══════════════════════════════════════════════ */
+
 app.get('/api/files', async (req, res) => {
   const fullPath = safePath(req.query.dir || '');
 
@@ -3487,6 +3551,10 @@ app.post('/api/files/content', async (req, res) => {
     fail(res, 'No se puede guardar');
   }
 });
+
+/* ══════════════════════════════════════════════
+   17. STARTUP (API)
+   ══════════════════════════════════════════════ */
 
 app.get('/api/startup', async (_req, res) => {
   try {
@@ -3690,6 +3758,10 @@ app.post('/api/startup', async (req, res) => {
 });
 
 let mysql = null;
+
+/* ══════════════════════════════════════════════
+   18. BASES DE DATOS (MySQL)
+   ══════════════════════════════════════════════ */
 
 function getMysql() {
   return mysql || (mysql = require('mysql2/promise'));
@@ -3900,6 +3972,10 @@ let statsBusy = false;
 let previousCpuSnapshot = null;
 
 let lastStatus = 'offline';
+
+/* ══════════════════════════════════════════════
+   19. STATS Y LANZAMIENTO DEL SERVIDOR
+   ══════════════════════════════════════════════ */
 
 function getCpuSnapshot() {
   return os.cpus().reduce((snapshot, cpu) => {
@@ -4162,6 +4238,10 @@ function launchServer() {
   return launchPromise;
 }
 
+/* ══════════════════════════════════════════════
+   20. CONTROL DEL SERVIDOR (start · stop · restart · command)
+   ══════════════════════════════════════════════ */
+
 app.post('/api/start', (_req, res) => {
   if (launchPromise || (mcProcess && mcProcess.exitCode === null)) {
     return fail(res, 'El servidor ya está en marcha');
@@ -4294,6 +4374,10 @@ app.post('/api/command', async (req, res) => {
 
   ok(res, { via: 'stdin' });
 });
+
+/* ══════════════════════════════════════════════
+   21. PLUGINS (API)
+   ══════════════════════════════════════════════ */
 
 app.get('/api/plugins/search', async (req, res) => {
   const q = (req.query.q || '').trim();
@@ -4570,6 +4654,10 @@ app.delete('/api/plugins/installed/:file', async (req, res) => {
     fail(res, e.message);
   }
 });
+
+/* ══════════════════════════════════════════════
+   22. VERSIONES (API)
+   ══════════════════════════════════════════════ */
 
 app.get('/api/versions/software', (_req, res) => {
   ok(res, {
@@ -5140,6 +5228,10 @@ app.get('/api/versions/current', async (_req, res) => {
     ok(res, { exists: false });
   }
 });
+
+/* ══════════════════════════════════════════════
+   23. ARCHIVOS (upload · CRUD · zip)
+   ══════════════════════════════════════════════ */
 
 let ZipArchiveCtor = null;
 
@@ -5732,6 +5824,10 @@ const backupProgress = {
   error: null,
 };
 
+/* ══════════════════════════════════════════════
+   24. BACKUPS
+   ══════════════════════════════════════════════ */
+
 async function computeDirTotalBytes(dir, excludedNames) {
   let total = 0;
   const stack = [{ dir, relative: '' }];
@@ -6074,6 +6170,10 @@ app.post('/api/backups/:name/restore', async (req, res) => {
 });
 
 
+/* ══════════════════════════════════════════════
+   25. PARADA Y BOOTSTRAP
+   ══════════════════════════════════════════════ */
+
 function stopMinecraft(timeoutMs = 30000) {
   return new Promise(resolve => {
     if (!mcProcess || mcProcess.exitCode !== null) return resolve();
@@ -6183,3 +6283,4 @@ module.exports = {
   permissionAllows,
   ready,
 };
+
