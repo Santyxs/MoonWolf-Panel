@@ -5884,6 +5884,25 @@ const BACKUP_RETENTION = 10;
 const BACKUP_EXCLUDES = Object.freeze(['.moonwolf', '.moonwolf-uploads', '.paper-remapped', 'libraries']);
 const BACKUP_FLUSH_WAIT_MS = 3000;
 
+function isExcludedBackupRoot(name) {
+  const normalized = String(name || '').toLowerCase();
+  return BACKUP_EXCLUDES.some(excluded => excluded.toLowerCase() === normalized);
+}
+
+function backupEntryKey(name) {
+  // En Windows, las rutas no distinguen mayúsculas; los nombres del ZIP deben hacerlo igual.
+  return process.platform === 'win32' ? String(name).toLowerCase() : String(name);
+}
+
+function isSafeBackupRootName(name) {
+  if (typeof name !== 'string' || !name || name === '.' || name === '..') return false;
+  if (name.includes('/') || name.includes('\\') || name.includes('\0')) return false;
+  if (path.isAbsolute(name)) return false;
+  // Evita nombres de unidad y flujos ADS de Windows durante la restauración.
+  if (process.platform === 'win32' && /[:*?"<>|]/.test(name)) return false;
+  return true;
+}
+
 const backupProgress = {
   active: false,
   phase: 'idle',
@@ -5893,6 +5912,36 @@ const backupProgress = {
   startedAt: null,
   error: null,
 };
+
+// Las operaciones que modifican el conjunto de copias o el servidor se serializan:
+// evita que dos ZIP compartan el progreso, que save-off/save-on se crucen o que
+// una restauración coincida con una creación/eliminación de copias.
+const backupOperation = {
+  active: false,
+  type: null,
+  startedAt: null,
+};
+
+function beginBackupOperation(type) {
+  if (backupOperation.active) return false;
+  backupOperation.active = true;
+  backupOperation.type = type;
+  backupOperation.startedAt = Date.now();
+  return true;
+}
+
+function endBackupOperation() {
+  backupOperation.active = false;
+  backupOperation.type = null;
+  backupOperation.startedAt = null;
+}
+
+function backupOperationConflict(res) {
+  return res.status(409).json({
+    ok: false,
+    error: `Ya hay una operación de copias de seguridad en curso (${backupOperation.type || 'operación'}). Espera a que termine.`,
+  });
+}
 
 /* ══════════════════════════════════════════════
    24. BACKUPS
@@ -6039,6 +6088,8 @@ app.post('/api/backups', async (req, res) => {
     return fail(res, 'Nombre no válido. Usa letras, números, espacios, guiones y puntos (máx. 80 caracteres).');
   }
 
+  if (!beginBackupOperation('creación')) return backupOperationConflict(res);
+
   try {
     ensureBackupsDir();
 
@@ -6104,6 +6155,8 @@ app.post('/api/backups', async (req, res) => {
     backupProgress.phase = 'error';
     backupProgress.error = e.message;
     fail(res, `No se pudo crear la copia de seguridad: ${e.message}`);
+  } finally {
+    endBackupOperation();
   }
 });
 
@@ -6133,11 +6186,15 @@ app.delete('/api/backups/:name', async (req, res) => {
     return fail(res, 'Nombre no válido');
   }
 
+  if (!beginBackupOperation('eliminación')) return backupOperationConflict(res);
+
   try {
     await fs.unlink(full);
     ok(res);
   } catch (e) {
     fail(res, `No se pudo eliminar: ${e.message}`);
+  } finally {
+    endBackupOperation();
   }
 });
 
@@ -6164,6 +6221,8 @@ app.post('/api/backups/:name/restore', async (req, res) => {
   } catch {
     return fail(res, 'Copia de seguridad no encontrada');
   }
+
+  if (!beginBackupOperation('restauración')) return backupOperationConflict(res);
 
   const wasRunning = Boolean(mcProcess && mcProcess.exitCode === null);
 
@@ -6207,16 +6266,47 @@ app.post('/api/backups/:name/restore', async (req, res) => {
       });
 
       const entries = await fs.readdir(staging, { withFileTypes: true });
+      const restoreEntries = entries.filter(entry => !isExcludedBackupRoot(entry.name));
+      const restoredRootNames = new Set();
+      const resolvedBase = path.resolve(BASE_DIR);
+      const normalizedBase = process.platform === 'win32'
+        ? resolvedBase.toLowerCase()
+        : resolvedBase;
 
-      for (const entry of entries) {
+      // Aplica primero los elementos de la instantánea. Aquí no se usa safePath:
+      // un enlace simbólico ya existente en el destino debe poder sustituirse
+      // como elemento, manteniendo el destino limitado a BASE_DIR.
+      for (const entry of restoreEntries) {
+        if (!isSafeBackupRootName(entry.name)) {
+          throw new Error(`La copia contiene un nombre de archivo no permitido: ${entry.name}`);
+        }
+
         const src = path.join(staging, entry.name);
-        const dst = path.join(BASE_DIR, entry.name);
+        const dst = path.resolve(BASE_DIR, entry.name);
+        const normalizedDst = process.platform === 'win32' ? dst.toLowerCase() : dst;
+        if (!normalizedDst.startsWith(normalizedBase + path.sep) || normalizedDst === normalizedBase) {
+          throw new Error(`La copia contiene una ruta fuera del servidor: ${entry.name}`);
+        }
 
-        if (BACKUP_EXCLUDES.includes(entry.name)) continue;
-        if (!safePath(entry.name)) continue;
+        const sourceStats = await fs.lstat(src);
+        if (sourceStats.isSymbolicLink()) {
+          throw new Error(`La copia contiene un enlace simbólico no permitido: ${entry.name}`);
+        }
 
         await fs.rm(dst, { recursive: true, force: true });
         await fs.cp(src, dst, { recursive: true, force: true });
+        restoredRootNames.add(backupEntryKey(entry.name));
+      }
+
+      // Restaurar significa recuperar una instantánea, no mezclar contenidos:
+      // elimina elementos de la raíz ausentes en la copia y conserva los
+      // directorios y datos internos excluidos expresamente por MoonWolf.
+      const currentEntries = await fs.readdir(BASE_DIR, { withFileTypes: true });
+      for (const entry of currentEntries) {
+        if (isExcludedBackupRoot(entry.name)) continue;
+        if (restoredRootNames.has(backupEntryKey(entry.name))) continue;
+
+        await fs.rm(path.join(BASE_DIR, entry.name), { recursive: true, force: true });
       }
 
       broadcastLog(`✅ Copia restaurada: ${req.params.name}`, 'success');
@@ -6236,6 +6326,8 @@ app.post('/api/backups/:name/restore', async (req, res) => {
   } catch (error) {
     console.error('[backup/restore]', error);
     fail(res, `No se pudo restaurar la copia: ${error.message}`);
+  } finally {
+    endBackupOperation();
   }
 });
 
