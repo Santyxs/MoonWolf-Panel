@@ -905,7 +905,7 @@ async function startDirectLink() {
 
   dc.onclose = () => closeDirectLink(true);
   dc.onbufferedamountlow = wakeDirect;
-  dc.onmessage = event => onDirectMessage(event.data);
+  dc.onmessage = event => { void onDirectMessage(event.data); };
 
   direct.openTimer = setTimeout(() => {
     if (directReady()) return;
@@ -941,7 +941,7 @@ async function sendDirect(type, id, payload = new Uint8Array(0)) {
   direct.dc.send(frame);
 }
 
-function onDirectMessage(data) {
+async function onDirectMessage(data) {
   if (!(data instanceof ArrayBuffer) || data.byteLength < 5) return;
 
   const view = new DataView(data);
@@ -954,36 +954,49 @@ function onDirectMessage(data) {
   if (type === DF.RES_HEAD) {
     req.head = JSON.parse(new TextDecoder().decode(new Uint8Array(data, 5)));
     req.totalSize = Number(req.head?.contentLength || req.head?.size) || 0;
+    if (typeof req.onHeaders === 'function') {
+      try { await req.onHeaders(req.head); } catch (error) { req.reject(error); direct.reqs.delete(id); return; }
+    }
     if (typeof req.onProgress === 'function') {
       req.onProgress(0, req.totalSize);
     }
   } else if (type === DF.RES_BODY) {
     const chunk = new Uint8Array(data, 5);
 
-    req.chunks.push(chunk);
     req.size += chunk.length;
+    if (typeof req.onChunk === 'function' && req.head?.status >= 200 && req.head?.status < 300) {
+      req.writeChain = (req.writeChain || Promise.resolve()).then(() => req.onChunk(chunk));
+      req.writeChain.catch(error => {
+        if (direct.reqs.has(id)) {
+          direct.reqs.delete(id);
+          req.reject(error);
+          try { void sendDirect(DF.REQ_END, id); } catch {}
+        }
+      });
+    } else {
+      req.chunks.push(chunk);
+    }
     if (typeof req.onProgress === 'function') {
       req.onProgress(req.size, req.totalSize);
     }
   } else if (type === DF.RES_END) {
     direct.reqs.delete(id);
-
-    const bytes = new Uint8Array(req.size);
-    let offset = 0;
-
-    for (const chunk of req.chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.length;
-    }
+    try { await req.writeChain; } catch (error) { req.reject(error); return; }
 
     const status = req.head?.status || 502;
+    let bytes;
+    if (typeof req.onChunk !== 'function' || status < 200 || status >= 300) {
+      bytes = new Uint8Array(req.size);
+      let offset = 0;
+      for (const chunk of req.chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+    }
 
     req.resolve({
       id: null,
       ok: status >= 200 && status < 300,
       status,
       contentType: req.head?.contentType || 'application/octet-stream',
-      bodyBytes: bytes,
+      ...(bytes ? { bodyBytes: bytes } : { streamed: true }),
     });
   } else if (type === DF.RES_ERR) {
     direct.reqs.delete(id);
@@ -991,7 +1004,7 @@ function onDirectMessage(data) {
   }
 }
 
-async function directRequest(method, pathname, body, { onProgress, signal } = {}) {
+async function directRequest(method, pathname, body, { onProgress, onHeaders, onChunk, signal } = {}) {
   const id = direct.nextId++ >>> 0;
   const isBinary = body instanceof Uint8Array;
   const encoder = new TextEncoder();
@@ -1005,7 +1018,7 @@ async function directRequest(method, pathname, body, { onProgress, signal } = {}
     : isBinary ? body : encoder.encode(typeof body === 'string' ? body : JSON.stringify(body));
 
   const done = new Promise((resolve, reject) => {
-    direct.reqs.set(id, { resolve, reject, head: null, chunks: [], size: 0, onProgress, totalSize: 0 });
+    direct.reqs.set(id, { resolve, reject, head: null, chunks: [], size: 0, onProgress, onHeaders, onChunk, totalSize: 0, writeChain: Promise.resolve() });
   });
 
   if (signal) {
@@ -1084,7 +1097,7 @@ function rpcHttp(pathname, init = {}) {
 
   if (isDirectRoute(method, pathname)) {
     return waitForDirectReady().then(() =>
-      directRequest(method, pathname, init.body, { onProgress: init.onProgress, signal: init.signal }).catch(error => {
+      directRequest(method, pathname, init.body, { onProgress: init.onProgress, onHeaders: init.onHeaders, onChunk: init.onChunk, signal: init.signal }).catch(error => {
         if (init.signal?.aborted || error?.name === 'AbortError') throw error;
         throw new Error(
           'La conexión directa se ha interrumpido durante la operación. Comprueba WebRTC e inténtalo de nuevo.',
@@ -2450,6 +2463,7 @@ async function downloadUrlWithProgress(pathname, filename, title = 'Descargando 
   const startedAt = Date.now();
   let receivedBytes = 0;
   let totalBytes = 0;
+  let activeDownloadWriter = null;
 
   activeDownloadAbort = new AbortController();
 
@@ -2497,25 +2511,58 @@ async function downloadUrlWithProgress(pathname, filename, title = 'Descargando 
   };
 
   try {
+    // En Chromium compatible, escribir cada bloque directamente al archivo evita
+    // mantener el archivo entero en RAM y crear copias adicionales en un Blob.
+    let writable = null;
+    let saveHandle = null;
+    const canStreamToDisk = typeof window.showSaveFilePicker === 'function';
+    if (canStreamToDisk) {
+      saveHandle = await window.showSaveFilePicker({ suggestedName: filename });
+      writable = await saveHandle.createWritable();
+      activeDownloadWriter = writable;
+    }
     const result = await rpcHttp(pathname, {
       onProgress,
       signal: activeDownloadAbort.signal,
+      ...(writable ? {
+        onHeaders: async head => {
+          if (head?.status < 200 || head?.status >= 300) {
+            await writable.abort().catch(() => {});
+            writable = null;
+            activeDownloadWriter = null;
+          }
+        },
+        onChunk: async chunk => {
+          if (writable) await writable.write(chunk);
+        },
+      } : {}),
     });
 
-    if (!hasResultBody(result) || result.ok === false) {
-      throw new Error(result?.data?.error || 'No se pudo descargar el archivo.');
+    if (!hasResultBody(result) && !result?.streamed || result.ok === false) {
+      if (writable) await writable.abort().catch(() => {});
+      const errorBytes = decodeResultBody(result);
+      const errorText = errorBytes ? new TextDecoder().decode(errorBytes) : '';
+      throw new Error(errorText || result?.data?.error || 'No se pudo descargar el archivo.');
     }
 
-    const bytes = decodeResultBody(result);
-    const blob = new Blob([bytes], {
-      type: result.contentType || 'application/octet-stream',
-    });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = filename;
-    anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 15000);
+    if (result.streamed && writable) {
+      await writable.close();
+      writable = null;
+      activeDownloadWriter = null;
+    } else {
+      if (writable) await writable.abort().catch(() => {});
+      activeDownloadWriter = null;
+      const bytes = decodeResultBody(result);
+      const blob = new Blob([bytes], {
+        type: result.contentType || 'application/octet-stream',
+      });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 15000);
+    }
 
     const totalSeconds = (Date.now() - startedAt) / 1000;
     if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = `Descarga completada en ${formatDuration(totalSeconds)}`;
@@ -2526,6 +2573,14 @@ async function downloadUrlWithProgress(pathname, filename, title = 'Descargando 
     setTimeout(() => { if (panel && !activeUploadState) panel.hidden = true; }, 3500);
     toast(`✅ Descargado: ${filename}`, 'ok');
   } catch (error) {
+    if (activeDownloadWriter) {
+      try { await activeDownloadWriter.abort(); } catch {}
+      activeDownloadWriter = null;
+    }
+    if (error?.name === 'AbortError' && !activeDownloadAbort?.signal?.aborted) {
+      if (panel && !activeUploadState) panel.hidden = true;
+      return;
+    }
     if (activeDownloadAbort?.signal?.aborted) {
       if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = 'Descarga cancelada';
       if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = filename;
