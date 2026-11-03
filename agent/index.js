@@ -407,7 +407,7 @@ function createDirectManager({ localFetch, requiredPermission, permissionAllows,
    3. CONSTANTES Y CONFIG
    ══════════════════════════════════════════════ */
 
-const PANEL_URL = 'https://moonwolf-panel.up.railway.app';
+const PANEL_URL = 'https://moonwolf-panel.onrender.com';
 const CLOUD_PATH = '/socket.io';
 const VERSION = typeof __AGENT_VERSION__ !== 'undefined' ? __AGENT_VERSION__ : 'dev';
 
