@@ -982,7 +982,7 @@ app.use(helmet({
       styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com', 'https://cdnjs.cloudflare.com'],
       fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
       imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
-      connectSrc: ["'self'", 'wss://moonwolf-panel.up.railway.app', 'ws://moonwolf-panel.up.railway.app'],
+      connectSrc: ["'self'", 'wss://moonwolf-panel.onrender.com', 'ws://moonwolf-panel.onrender.com'],
       objectSrc: ["'none'"],
       baseUri: ["'self'"],
       frameAncestors: ["'none'"],
@@ -999,7 +999,7 @@ app.use((req, res, next) => {
 app.use(compression({ threshold: 1024 }));
 const server = http.createServer(app);
 
-const ALLOWED_ORIGIN = 'https://moonwolf-panel.up.railway.app';
+const ALLOWED_ORIGIN = 'https://moonwolf-panel.onrender.com';
 
 const ASSET_VERSION_CACHE = new Map();
 app.use((req, res, next) => {
