@@ -1,15 +1,9 @@
 {
   "name": "moonwolf-agent",
-  "version": "1.0.0",
+  "version": "0.0.0-rust",
   "private": true,
-  "description": "MoonWolf Agent para Windows",
-  "main": "index.js",
+  "description": "DEPRECATED: el Agent es ahora nativo en Rust. Ver agent/README.md y GitHub Actions.",
   "scripts": {
-    "start": "node index.js"
-  },
-  "dependencies": {
-    "@webviewjs/webview": "^0.4.7",
-    "node-datachannel": "0.22.0",
-    "socket.io-client": "^4.8.4"
+    "start": "echo El Agent Node fue reemplazado por Rust. Usa GitHub Actions o: cargo build --release"
   }
 }
