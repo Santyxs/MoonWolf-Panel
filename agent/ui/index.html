@@ -1,93 +1,232 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MoonWolf Agent</title>
-  <style>
-    :root { --bg:#0b1020; --card:#141b2d; --text:#e8eefc; --muted:#8b9bb8; --accent:#6c9eff; --ok:#3dd68c; --warn:#f5a524; --err:#f31260; }
-    *{box-sizing:border-box}
-    body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
-    .app{max-width:560px;margin:0 auto;padding:1.5rem}
-    .hero{display:flex;align-items:center;gap:1rem;margin-bottom:1.25rem}
-    .moon{width:48px;height:48px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#fff,#6c9eff);box-shadow:0 0 24px #6c9eff66}
-    h1{margin:0;font-size:1.4rem} .hero p{margin:0;color:var(--muted);font-size:.9rem}
-    .card{background:var(--card);border-radius:14px;padding:1rem 1.15rem;margin-bottom:.85rem}
-    .status{display:flex;align-items:center;gap:.75rem}
-    .dot{width:10px;height:10px;border-radius:50%;background:var(--warn)}
-    .dot.ok{background:var(--ok)} .dot.err{background:var(--err)}
-    .label{font-size:.72rem;color:var(--muted);text-transform:uppercase}
-    .value{font-size:.95rem;word-break:break-all}
-    .row{display:flex;justify-content:space-between;align-items:center;gap:.75rem;padding:.35rem 0}
-    .sep{height:1px;background:#ffffff12;margin:.4rem 0}
-    button{border:0;border-radius:10px;padding:.55rem 1rem;font-weight:600;cursor:pointer;background:#1e2a44;color:var(--text)}
-    button.primary{background:var(--accent);color:#0b1020}
-    .actions{display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-top:.5rem}
-    .logs{max-height:160px;overflow:auto;font-family:ui-monospace,Consolas,monospace;font-size:.72rem;line-height:1.35;color:var(--muted)}
-    .logs .err{color:var(--err)} .logs .warn{color:var(--warn)} .logs .info{color:var(--text)}
-    footer{text-align:center;color:var(--muted);font-size:.75rem;margin-top:1.5rem}
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MoonWolf Agent</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Segoe UI", Tahoma, sans-serif;
+    background: #0d1117;
+    color: #e6edf3;
+    min-height: 100vh;
+    padding: 20px;
+  }
+  .wrap { max-width: 520px; margin: 0 auto; }
+  .header {
+    display: flex; align-items: center; gap: 14px;
+    margin-bottom: 18px;
+  }
+  .logo {
+    width: 44px; height: 44px; border-radius: 50%;
+    background: linear-gradient(135deg, #ffffff, #58a6ff);
+    box-shadow: 0 0 20px rgba(88,166,255,.4);
+    flex-shrink: 0;
+  }
+  .header h1 { font-size: 20px; font-weight: 600; }
+  .header p { font-size: 13px; color: #8b949e; }
+  .card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+  }
+  .status-row { display: flex; align-items: center; gap: 12px; }
+  .dot {
+    width: 12px; height: 12px; border-radius: 50%;
+    background: #d29922; flex-shrink: 0;
+  }
+  .dot.on { background: #3fb950; }
+  .dot.off { background: #f85149; }
+  .label {
+    font-size: 11px; text-transform: uppercase;
+    letter-spacing: .04em; color: #8b949e; margin-bottom: 2px;
+  }
+  .value {
+    font-size: 14px; word-break: break-all;
+  }
+  .row {
+    display: flex; justify-content: space-between;
+    align-items: center; gap: 10px; padding: 8px 0;
+  }
+  .row + .row { border-top: 1px solid #21262d; }
+  button {
+    font-family: inherit; font-size: 13px; font-weight: 600;
+    border: 1px solid #30363d; border-radius: 8px;
+    padding: 8px 12px; cursor: pointer;
+    background: #21262d; color: #e6edf3;
+  }
+  button:hover { background: #30363d; }
+  button.primary {
+    background: #238636; border-color: #238636; color: #fff;
+  }
+  button.primary:hover { background: #2ea043; }
+  button.danger {
+    background: #21262d; border-color: #f85149; color: #f85149;
+  }
+  .actions {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+    margin-top: 4px;
+  }
+  .logs {
+    max-height: 140px; overflow-y: auto;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 11px; line-height: 1.4; color: #8b949e;
+  }
+  .logs .e { color: #f85149; }
+  .logs .w { color: #d29922; }
+  .logs .i { color: #c9d1d9; }
+  .foot {
+    text-align: center; font-size: 11px; color: #484f58;
+    margin-top: 16px;
+  }
+  #pairing { font-weight: 600; font-size: 16px; letter-spacing: .05em; color: #58a6ff; }
+</style>
 </head>
 <body>
-  <div class="app">
-    <div class="hero"><div class="moon"></div><div><h1>MoonWolf</h1><p>Agent · Rust</p></div></div>
-    <div class="card status">
-      <div id="dot" class="dot"></div>
-      <div><strong id="status-title">Conectando…</strong><div id="status-desc" style="color:var(--muted);font-size:.85rem">Iniciando</div></div>
+<div class="wrap">
+  <div class="header">
+    <div class="logo"></div>
+    <div>
+      <h1>MoonWolf Agent</h1>
+      <p>Cliente nativo · Rust</p>
     </div>
-    <div class="card">
-      <div class="row"><div><div class="label">Código de emparejamiento</div><div id="pairing" class="value">—</div></div><button type="button" id="copy-pairing">Copiar</button></div>
-      <div class="sep"></div>
-      <div class="row"><div style="min-width:0"><div class="label">Servidor</div><div id="server-dir" class="value">—</div></div></div>
-      <div class="sep"></div>
-      <div class="row"><div><div class="label">Versión</div><div id="version" class="value">—</div></div>
-        <div style="display:flex;align-items:center;gap:.4rem"><span id="local-dot" class="dot" style="width:8px;height:8px"></span><span style="font-size:.8rem;color:var(--muted)">Local</span></div></div>
-    </div>
-    <div class="card">
-      <div class="label" style="margin-bottom:.4rem">Logs recientes</div>
-      <div id="logs" class="logs">—</div>
-    </div>
-    <div class="actions">
-      <button type="button" class="primary" id="open-panel">Abrir Panel</button>
-      <button type="button" id="open-config">Configuración</button>
-      <button type="button" id="check-update">Buscar updates</button>
-      <button type="button" id="quit">Salir</button>
-    </div>
-    <footer>MoonWolf Agent · sin Node.js</footer>
   </div>
-  <script>
-    const $ = id => document.getElementById(id);
-    function apply(state) {
-      if (!state) return;
-      const cloud = !!state.cloudConnected;
-      const local = !!state.localServerReady;
-      $('dot').className = 'dot ' + (cloud ? 'ok' : 'err');
-      $('status-title').textContent = cloud ? 'Conectado' : 'Desconectado';
-      $('status-desc').textContent = cloud ? 'MoonWolf Cloud' : 'Reintentando…';
-      $('pairing').textContent = state.pairingCode || '—';
-      $('server-dir').textContent = state.serverDir || '—';
-      $('version').textContent = state.version || '—';
-      $('local-dot').className = 'dot ' + (local ? 'ok' : '');
-      const logs = Array.isArray(state.logs) ? state.logs.slice(-12) : [];
-      const el = $('logs');
-      if (!logs.length) { el.textContent = '—'; return; }
-      el.innerHTML = logs.map(l => {
-        const lvl = (l.level || 'info').toLowerCase();
-        const msg = (l.message || '').replace(/</g,'&lt;');
-        return '<div class="'+lvl+'">['+lvl+'] '+msg+'</div>';
-      }).join('');
-      el.scrollTop = el.scrollHeight;
+
+  <div class="card status-row">
+    <div id="dot" class="dot"></div>
+    <div>
+      <div id="statusTitle" style="font-weight:600">Conectando…</div>
+      <div id="statusDesc" style="font-size:12px;color:#8b949e">Iniciando</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <div class="label">Código de emparejamiento</div>
+        <div id="pairing" class="value">—</div>
+      </div>
+      <button type="button" id="btnCopy">Copiar</button>
+    </div>
+    <div class="row">
+      <div style="min-width:0">
+        <div class="label">Carpeta del servidor</div>
+        <div id="serverDir" class="value">—</div>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <div class="label">Versión</div>
+        <div id="version" class="value">—</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span id="localDot" class="dot" style="width:8px;height:8px"></span>
+        <span style="font-size:12px;color:#8b949e">API local</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="label" style="margin-bottom:6px">Logs</div>
+    <div id="logs" class="logs">Esperando eventos…</div>
+  </div>
+
+  <div class="actions">
+    <button type="button" class="primary" id="btnPanel">Abrir Panel</button>
+    <button type="button" id="btnConfig">Configuración</button>
+    <button type="button" id="btnUpdate">Buscar updates</button>
+    <button type="button" class="danger" id="btnQuit">Salir</button>
+  </div>
+
+  <div class="foot">MoonWolf · sin Node.js</div>
+</div>
+
+<script>
+(function () {
+  function send(obj) {
+    var msg = typeof obj === 'string' ? obj : JSON.stringify(obj);
+    try {
+      if (window.ipc && typeof window.ipc.postMessage === 'function') {
+        window.ipc.postMessage(msg);
+        return;
+      }
+    } catch (e) {}
+    try {
+      if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage) {
+        window.chrome.webview.postMessage(msg);
+        return;
+      }
+    } catch (e) {}
+    try {
+      if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ipc) {
+        window.webkit.messageHandlers.ipc.postMessage(msg);
+        return;
+      }
+    } catch (e) {}
+    console.warn('IPC no disponible', msg);
+  }
+
+  function $(id) { return document.getElementById(id); }
+
+  function apply(state) {
+    if (!state) return;
+    var cloud = !!state.cloudConnected;
+    var local = !!state.localServerReady;
+    $('dot').className = 'dot ' + (cloud ? 'on' : 'off');
+    $('statusTitle').textContent = cloud ? 'Conectado' : 'Desconectado';
+    $('statusDesc').textContent = cloud ? 'MoonWolf Cloud' : 'Reintentando conexión…';
+    $('pairing').textContent = state.pairingCode || '—';
+    $('serverDir').textContent = state.serverDir || '—';
+    $('version').textContent = state.version || '—';
+    $('localDot').className = 'dot ' + (local ? 'on' : 'off');
+
+    var logs = Array.isArray(state.logs) ? state.logs.slice(-15) : [];
+    var el = $('logs');
+    if (!logs.length) {
+      el.textContent = 'Sin logs todavía';
+      return;
     }
-    window.__moonwolfAgent = {
-      post: obj => { try { window.ipc.postMessage(JSON.stringify(obj)); } catch(e) {} },
-      onState: apply,
-    };
-    window.addEventListener('moonwolf-state', e => apply(e.detail));
-    $('copy-pairing').onclick = () => { const t = $('pairing').textContent; if (t && t !== '—') navigator.clipboard?.writeText(t); };
-    $('open-panel').onclick = () => window.__moonwolfAgent.post({ action: 'open_panel' });
-    $('open-config').onclick = () => window.__moonwolfAgent.post({ action: 'open_config_dir' });
-    $('check-update').onclick = () => window.__moonwolfAgent.post({ action: 'check_update' });
-    $('quit').onclick = () => window.__moonwolfAgent.post({ action: 'quit' });
-  </script>
+    el.innerHTML = logs.map(function (l) {
+      var lvl = String(l.level || 'info').toLowerCase();
+      var cls = lvl === 'error' ? 'e' : (lvl === 'warn' ? 'w' : 'i');
+      var msg = String(l.message || '').replace(/</g, '&lt;');
+      return '<div class="' + cls + '">[' + lvl + '] ' + msg + '</div>';
+    }).join('');
+    el.scrollTop = el.scrollHeight;
+  }
+
+  window.__applyState = function (json) {
+    try {
+      var state = typeof json === 'string' ? JSON.parse(json) : json;
+      apply(state);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  window.__moonwolfAgent = {
+    post: send,
+    onState: apply
+  };
+
+  $('btnCopy').onclick = function () {
+    var t = $('pairing').textContent;
+    if (t && t !== '—') {
+      try { navigator.clipboard.writeText(t); } catch (e) {}
+      send({ action: 'copy_pairing' });
+    }
+  };
+  $('btnPanel').onclick = function () { send({ action: 'open_panel' }); };
+  $('btnConfig').onclick = function () { send({ action: 'open_config_dir' }); };
+  $('btnUpdate').onclick = function () { send({ action: 'check_update' }); };
+  $('btnQuit').onclick = function () { send({ action: 'quit' }); };
+
+  // Aviso visual de que el JS cargó
+  $('statusDesc').textContent = 'UI lista · esperando estado del agent';
+})();
+</script>
 </body>
 </html>

@@ -13,8 +13,6 @@ use wry::WebViewBuilder;
 use crate::state::AppState;
 
 const WINDOW_TITLE: &str = "MoonWolf Agent";
-
-/// UI embebida en el binario (no hace falta la carpeta ui/ junto al .exe).
 const EMBEDDED_UI: &str = include_str!("../ui/index.html");
 
 #[derive(Debug)]
@@ -28,6 +26,7 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     let event_loop = EventLoopBuilder::<GuiEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
+    // Hilo que empuja el estado a la UI cada 500 ms
     {
         let app = Arc::clone(&app);
         let proxy = proxy.clone();
@@ -60,143 +59,32 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
 
     let window = WindowBuilder::new()
         .with_title(WINDOW_TITLE)
-        .with_inner_size(tao::dpi::LogicalSize::new(620u32, 720u32))
-        .with_min_inner_size(tao::dpi::LogicalSize::new(560u32, 650u32))
+        .with_inner_size(tao::dpi::LogicalSize::new(560u32, 680u32))
+        .with_min_inner_size(tao::dpi::LogicalSize::new(480u32, 560u32))
         .with_resizable(true)
         .build(&event_loop)?;
 
     let app_for_ipc = Arc::clone(&app);
+    let proxy_for_ipc = proxy.clone();
 
     let webview = WebViewBuilder::new(&window)
         .with_html(&index_html)
         .with_ipc_handler(move |req| {
-            let body = req.body().to_string();
-            let app = Arc::clone(&app_for_ipc);
-            if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&body) {
-                let action = msg.get("action").and_then(|a| a.as_str()).unwrap_or("");
-                match action {
-                    "quit" => {
-                        std::thread::spawn(move || {
-                            if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                                .enable_all()
-                                .build()
-                            {
-                                rt.block_on(async {
-                                    let mut s = app.write().await;
-                                    s.shutting_down = true;
-                                    s.add_log("info", "Cierre solicitado desde la interfaz");
-                                });
-                            }
-                        });
-                    }
-                    "clear_logs" => {
-                        std::thread::spawn(move || {
-                            if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                                .enable_all()
-                                .build()
-                            {
-                                rt.block_on(async {
-                                    let mut s = app.write().await;
-                                    s.logs.clear();
-                                    s.add_log("info", "Registro de logs limpiado");
-                                });
-                            }
-                        });
-                    }
-                    "set_server_dir" => {
-                        if let Some(dir) = msg.get("path").and_then(|p| p.as_str()) {
-                            let dir = dir.to_string();
-                            std::thread::spawn(move || {
-                                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                                    .enable_all()
-                                    .build()
-                                {
-                                    rt.block_on(async {
-                                        let mut s = app.write().await;
-                                        let path = PathBuf::from(&dir);
-                                        if let Err(e) = std::fs::create_dir_all(&path) {
-                                            s.add_log(
-                                                "error",
-                                                format!("No se pudo crear carpeta: {e}"),
-                                            );
-                                            return;
-                                        }
-                                        s.config.server_dir = path;
-                                        if let Err(e) = s.config.save() {
-                                            s.add_log(
-                                                "error",
-                                                format!("No se pudo guardar config: {e}"),
-                                            );
-                                        } else {
-                                            s.restart_required = true;
-                                            s.add_log(
-                                                "warn",
-                                                "Carpeta del servidor actualizada. Reinicia el Agent.",
-                                            );
-                                        }
-                                    });
-                                }
-                            });
-                        }
-                    }
-                    "open_panel" => {
-                        let _ = open_url("https://moonwolf-panel.onrender.com");
-                    }
-                    "open_config_dir" => {
-                        let dir = crate::config::AgentConfig::config_dir();
-                        let _ = open_path(&dir);
-                    }
-                    "check_update" => {
-                        let app2 = Arc::clone(&app);
-                        std::thread::spawn(move || {
-                            if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                                .enable_all()
-                                .build()
-                            {
-                                rt.block_on(async {
-                                    if let Err(e) = crate::update::check_once(app2).await {
-                                        let mut s = app.write().await;
-                                        s.add_log(
-                                            "error",
-                                            format!("Error buscando actualización: {e}"),
-                                        );
-                                    }
-                                });
-                            }
-                        });
-                    }
-                    other => tracing::debug!("IPC action desconocida: {other}"),
-                }
-            }
+            // wry 0.45: Request<String> — el body es el mensaje JS
+            let body = req.body().clone();
+            handle_ipc(body, Arc::clone(&app_for_ipc), proxy_for_ipc.clone());
         })
         .build()?;
 
     info!("Ventana GUI lista");
 
-    let _ = webview.evaluate_script(
-        r#"
-        window.__moonwolfAgent = window.__moonwolfAgent || {
-            post: (obj) => window.ipc.postMessage(JSON.stringify(obj)),
-            onState: null,
-        };
-        window.__applyState = (json) => {
-            try {
-                const state = typeof json === 'string' ? JSON.parse(json) : json;
-                if (typeof window.__moonwolfAgent.onState === 'function') {
-                    window.__moonwolfAgent.onState(state);
-                }
-                window.dispatchEvent(new CustomEvent('moonwolf-state', { detail: state }));
-            } catch (e) { console.error(e); }
-        };
-    "#,
-    );
-
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
             Event::UserEvent(GuiEvent::StateJson(json)) => {
-                // Pasar el estado como literal JS (json ya es JSON válido)
-                let script = format!("window.__applyState && window.__applyState({});", json);
+                // Pasar JSON escapado como string literal a __applyState
+                let escaped = serde_json::to_string(&json).unwrap_or_else(|_| "\"{}\"".into());
+                let script = format!("window.__applyState && window.__applyState({escaped})");
                 if let Err(e) = webview.evaluate_script(&script) {
                     error!("evaluate_script: {e}");
                 }
@@ -225,8 +113,78 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     });
 }
 
+fn handle_ipc(body: String, app: Arc<RwLock<AppState>>, proxy: tao::event_loop::EventLoopProxy<GuiEvent>) {
+    let body = body.trim().to_string();
+    // Aceptar texto plano o JSON
+    let action = if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+        v.get("action")
+            .and_then(|a| a.as_str())
+            .unwrap_or("")
+            .to_string()
+    } else {
+        body.clone()
+    };
+
+    match action.as_str() {
+        "quit" => {
+            spawn_async(app, |app| async move {
+                let mut s = app.write().await;
+                s.shutting_down = true;
+                s.add_log("info", "Cierre solicitado desde la interfaz");
+            });
+            let _ = proxy.send_event(GuiEvent::Quit);
+        }
+        "open_panel" => {
+            let _ = open_url("https://moonwolf-panel.onrender.com");
+        }
+        "open_config_dir" => {
+            let dir = crate::config::AgentConfig::config_dir();
+            let _ = open_path(&dir);
+        }
+        "check_update" => {
+            spawn_async(app, |app| async move {
+                if let Err(e) = crate::update::check_once(Arc::clone(&app)).await {
+                    let mut s = app.write().await;
+                    s.add_log("error", format!("Error buscando actualización: {e}"));
+                }
+            });
+        }
+        "copy_pairing" => {
+            spawn_async(app, |app| async move {
+                let mut s = app.write().await;
+                s.add_log("info", "Código de emparejamiento copiado");
+            });
+        }
+        "clear_logs" => {
+            spawn_async(app, |app| async move {
+                let mut s = app.write().await;
+                s.logs.clear();
+                s.add_log("info", "Registro de logs limpiado");
+            });
+        }
+        other if !other.is_empty() => {
+            tracing::debug!("IPC action: {other}");
+        }
+        _ => {}
+    }
+}
+
+fn spawn_async<F, Fut>(app: Arc<RwLock<AppState>>, f: F)
+where
+    F: FnOnce(Arc<RwLock<AppState>>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    std::thread::spawn(move || {
+        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            rt.block_on(f(app));
+        }
+    });
+}
+
 fn load_ui_index() -> String {
-    // 1) Archivo junto al .exe (útil en desarrollo / empaquetado manual)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let p = dir.join("ui").join("index.html");
@@ -236,7 +194,6 @@ fn load_ui_index() -> String {
             }
         }
     }
-    // 2) Embebida en el binario (release GitHub)
     info!("UI embebida en el binario");
     EMBEDDED_UI.to_string()
 }
