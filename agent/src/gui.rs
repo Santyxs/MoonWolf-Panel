@@ -1,5 +1,5 @@
 //! Interfaz gráfica con WebView (wry + tao).
-//! UI = HTML/CSS/JS del agent Node original + bridge window.native → IPC.
+//! UI = agent/ui/index.html (UI Node original + bridge IPC, un solo archivo).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,88 +15,12 @@ use crate::state::AppState;
 
 const WINDOW_TITLE: &str = "MoonWolf Agent";
 const PANEL_URL: &str = "https://moonwolf-panel.onrender.com";
-
-const UI_BODY: &str = include_str!("../ui/body.html");
-const UI_CSS: &str = include_str!("../ui/style.css");
-const UI_JS: &str = include_str!("../ui/app.js");
-
-const NATIVE_BRIDGE: &str = r#"
-(function () {
-  function post(action, extra) {
-    var payload = Object.assign({ action: action }, extra || {});
-    var msg = JSON.stringify(payload);
-    try {
-      if (window.ipc && window.ipc.postMessage) {
-        window.ipc.postMessage(msg);
-        return;
-      }
-    } catch (e) {}
-    try {
-      if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage) {
-        window.chrome.webview.postMessage(msg);
-        return;
-      }
-    } catch (e) {}
-  }
-  var lastState = null;
-  window.__applyState = function (json) {
-    try {
-      var state = typeof json === 'string' ? JSON.parse(json) : json;
-      lastState = state;
-      window.dispatchEvent(new CustomEvent('moonwolf-state', { detail: state }));
-    } catch (e) {
-      console.error(e);
-    }
-  };
-  window.native = {
-    getState: function () { return lastState || {}; },
-    openPanel: function () { post('open_panel'); return { ok: true }; },
-    openServerFolder: function () { post('open_server_folder'); return { ok: true }; },
-    openConfig: function () { post('open_config_dir'); return { ok: true }; },
-    setServerDir: function (dir) {
-      post('set_server_dir', { path: dir });
-      return Promise.resolve({ ok: true, restartRequired: true });
-    },
-    clearLogs: function () { post('clear_logs'); return true; },
-    saveLogs: function () { post('save_logs'); return true; },
-    hideToTray: function () { post('hide_to_tray'); return { ok: true }; },
-    restart: function () { post('restart'); return true; },
-    checkForUpdates: function () {
-      post('check_update');
-      return Promise.resolve({ ok: true });
-    },
-    applyUpdate: function () {
-      post('apply_update');
-      return Promise.resolve({ ok: true });
-    },
-    close: function () { post('quit'); return { ok: true }; }
-  };
-})();
-"#;
+const EMBEDDED_UI: &str = include_str!("../ui/index.html");
 
 #[derive(Debug)]
 enum GuiEvent {
     StateJson(String),
     Quit,
-}
-
-fn build_index_html() -> String {
-    let mut out = String::with_capacity(
-        UI_CSS.len() + UI_BODY.len() + UI_JS.len() + NATIVE_BRIDGE.len() + 512,
-    );
-    out.push_str("<!DOCTYPE html>\n<html lang=\"es\">\n<head>\n");
-    out.push_str("<meta charset=\"UTF-8\">\n");
-    out.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
-    out.push_str("<title>MoonWolf Agent</title>\n<style>\n");
-    out.push_str(UI_CSS);
-    out.push_str("\n</style>\n</head>\n<body>\n");
-    out.push_str(UI_BODY);
-    out.push_str("\n<script>\n");
-    out.push_str(NATIVE_BRIDGE);
-    out.push_str("\n</script>\n<script>\n");
-    out.push_str(UI_JS);
-    out.push_str("\n</script>\n</body>\n</html>\n");
-    out
 }
 
 fn setup_webview2_data_dir() {
@@ -370,8 +294,8 @@ fn load_ui_index() -> String {
             }
         }
     }
-    info!("UI ensamblada (HTML/CSS/JS originales + bridge)");
-    build_index_html()
+    info!("UI embebida (index.html único)");
+    EMBEDDED_UI.to_string()
 }
 
 fn open_url(url: &str) -> bool {

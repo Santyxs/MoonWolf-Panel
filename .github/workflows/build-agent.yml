@@ -27,20 +27,90 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Restore original Agent UI (CSS/JS Node)
+      - name: Build single index.html (UI original + bridge)
         shell: bash
         run: |
           mkdir -p agent/ui
-          curl -fsSL "https://raw.githubusercontent.com/Santyxs/MoonWolf-Panel/c27b2e00/agent/ui/style.css" \
-            -o agent/ui/style.css
-          curl -fsSL "https://raw.githubusercontent.com/Santyxs/MoonWolf-Panel/c27b2e00/agent/ui/app.js" \
-            -o agent/ui/app.js
-          if [ ! -s agent/ui/body.html ]; then
-            curl -fsSL "https://raw.githubusercontent.com/Santyxs/MoonWolf-Panel/c27b2e00/agent/ui/index.html" \
-              | python -c "import sys,re; t=sys.stdin.read(); m=re.search(r'<body[^>]*>(.*)</body>',t,re.S|re.I); print(m.group(1) if m else t)" \
-              > agent/ui/body.html
-          fi
-          wc -c agent/ui/style.css agent/ui/app.js agent/ui/body.html
+          curl -fsSL "https://raw.githubusercontent.com/Santyxs/MoonWolf-Panel/c27b2e00/agent/ui/style.css" -o /tmp/mw-style.css
+          curl -fsSL "https://raw.githubusercontent.com/Santyxs/MoonWolf-Panel/c27b2e00/agent/ui/app.js" -o /tmp/mw-app.js
+          curl -fsSL "https://raw.githubusercontent.com/Santyxs/MoonWolf-Panel/c27b2e00/agent/ui/index.html" -o /tmp/mw-index.html
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          css = Path('/tmp/mw-style.css').read_text(encoding='utf-8')
+          js = Path('/tmp/mw-app.js').read_text(encoding='utf-8')
+          html = Path('/tmp/mw-index.html').read_text(encoding='utf-8')
+          m = re.search(r'<body[^>]*>(.*)</body>', html, re.S|re.I)
+          body = m.group(1) if m else html
+          css = re.sub(r'/\*.*?\*/', '', css, flags=re.S)
+          css = re.sub(r'\s+', ' ', css)
+          css = re.sub(r'\s*([{}:;,])\s*', r'\1', css).strip()
+          js = re.sub(r'/\*[\s\S]*?\*/', '', js)
+          js = re.sub(r'^\s*//.*$', '', js, flags=re.M)
+          js = re.sub(r'\n{2,}', '\n', js).strip()
+          bridge = r'''
+          (function () {
+            function post(action, extra) {
+              var payload = Object.assign({ action: action }, extra || {});
+              var msg = JSON.stringify(payload);
+              try { if (window.ipc && window.ipc.postMessage) { window.ipc.postMessage(msg); return; } } catch (e) {}
+              try {
+                if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage) {
+                  window.chrome.webview.postMessage(msg); return;
+                }
+              } catch (e) {}
+            }
+            var lastState = null;
+            window.__applyState = function (json) {
+              try {
+                var state = typeof json === 'string' ? JSON.parse(json) : json;
+                lastState = state;
+                window.dispatchEvent(new CustomEvent('moonwolf-state', { detail: state }));
+              } catch (e) { console.error(e); }
+            };
+            window.native = {
+              getState: function () { return lastState || {}; },
+              openPanel: function () { post('open_panel'); return { ok: true }; },
+              openServerFolder: function () { post('open_server_folder'); return { ok: true }; },
+              openConfig: function () { post('open_config_dir'); return { ok: true }; },
+              setServerDir: function (dir) {
+                post('set_server_dir', { path: dir });
+                return Promise.resolve({ ok: true, restartRequired: true });
+              },
+              clearLogs: function () { post('clear_logs'); return true; },
+              saveLogs: function () { post('save_logs'); return true; },
+              hideToTray: function () { post('hide_to_tray'); return { ok: true }; },
+              restart: function () { post('restart'); return true; },
+              checkForUpdates: function () { post('check_update'); return Promise.resolve({ ok: true }); },
+              applyUpdate: function () { post('apply_update'); return Promise.resolve({ ok: true }); },
+              close: function () { post('quit'); return { ok: true }; }
+            };
+          })();
+          '''
+          full = f"""<!DOCTYPE html>
+          <html lang="es">
+          <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>MoonWolf Agent</title>
+          <style>
+          {css}
+          </style>
+          </head>
+          <body>
+          {body}
+          <script>
+          {bridge}
+          </script>
+          <script>
+          {js}
+          </script>
+          </body>
+          </html>
+          """
+          Path('agent/ui/index.html').write_text(full, encoding='utf-8')
+          print('index.html', len(full), 'bytes')
+          PY
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -70,39 +140,22 @@ jobs:
             echo "version=$ver" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
           latest=$(
-            gh release list \
-              --limit 50 \
-              --exclude-drafts \
-              --exclude-pre-releases \
+            gh release list --limit 50 --exclude-drafts --exclude-pre-releases \
               --json tagName \
               --jq '[.[] | .tagName | select(startswith("agent-v"))] | sort_by(sub("^agent-v"; "") | split(".") | map(tonumber)) | last // empty' \
             2>/dev/null || true
           )
-
           if [ -z "$latest" ]; then
-            next="agent-v1.0"
-            ver="1.0.0"
+            next="agent-v1.0"; ver="1.0.0"
           else
             version="${latest#agent-v}"
-            major="${version%%.*}"
-            rest="${version#*.}"
-            minor="${rest%%.*}"
-            if [ "$rest" = "$version" ]; then
-              major="$version"
-              minor=0
-            fi
+            major="${version%%.*}"; rest="${version#*.}"; minor="${rest%%.*}"
+            if [ "$rest" = "$version" ]; then major="$version"; minor=0; fi
             minor=$((minor + 1))
-            if [ "$minor" -ge 99 ]; then
-              major=$((major + 1))
-              minor=0
-            fi
-            next="agent-v${major}.${minor}"
-            ver="${major}.${minor}.0"
+            if [ "$minor" -ge 99 ]; then major=$((major + 1)); minor=0; fi
+            next="agent-v${major}.${minor}"; ver="${major}.${minor}.0"
           fi
-
-          echo "Latest: ${latest:-none} → Next: $next (cargo $ver)"
           echo "tag=$next" >> "$GITHUB_OUTPUT"
           echo "version=$ver" >> "$GITHUB_OUTPUT"
 
@@ -118,7 +171,6 @@ jobs:
           elif [ "$dots" -eq 1 ]; then VER="${VER}.0"
           fi
           sed -i "s/^version = \".*\"/version = \"${VER}\"/" Cargo.toml
-          grep '^version' Cargo.toml
 
       - name: Build release
         working-directory: agent
@@ -133,10 +185,9 @@ jobs:
           AGENT_TAG: ${{ steps.version.outputs.tag }}
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $exe = "dist/MoonWolf-Agent.exe"
-          Copy-Item -LiteralPath "agent/target/release/moonwolf-agent.exe" -Destination $exe -Force
-          $size = (Get-Item -LiteralPath $exe).Length
-          Write-Host "MoonWolf-Agent.exe: $size bytes (tag $env:AGENT_TAG)"
+          Copy-Item -LiteralPath "agent/target/release/moonwolf-agent.exe" -Destination "dist/MoonWolf-Agent.exe" -Force
+          $size = (Get-Item "dist/MoonWolf-Agent.exe").Length
+          Write-Host "MoonWolf-Agent.exe: $size bytes"
           if ($size -lt 500KB) { throw "Executable suspiciously small" }
 
       - name: Upload workflow artifact
@@ -161,10 +212,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag "$TAG_NAME" "$GITHUB_SHA" || true
           git push origin "$TAG_NAME" || true
-          gh release create "$TAG_NAME" \
-            dist/MoonWolf-Agent.exe \
+          gh release create "$TAG_NAME" dist/MoonWolf-Agent.exe \
             --title "MoonWolf Agent v${TAG_NAME#agent-v} (Rust)" \
-            --notes "Agent nativo en **Rust** (sin Node.js). UI original del Agent.\n\n**Commit:** ${GITHUB_SHA}"
+            --notes "Agent nativo Rust. UI original.\n**Commit:** ${GITHUB_SHA}"
 
       - name: Upload asset to existing release
         if: github.event_name == 'release'
@@ -172,6 +222,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" \
-            dist/MoonWolf-Agent.exe \
-            --clobber
+          gh release upload "${{ github.event.release.tag_name }}" dist/MoonWolf-Agent.exe --clobber
