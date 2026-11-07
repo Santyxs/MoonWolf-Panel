@@ -13,8 +13,8 @@ path = "src/main.rs"
 
 [features]
 default = ["gui"]
-gui = ["wry", "tao", "muda"]
-webrtc = ["webrtc"]
+gui = ["dep:wry", "dep:tao", "dep:muda"]
+webrtc = ["dep:webrtc"]
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "net", "time", "sync", "io-util", "process", "signal"] }
