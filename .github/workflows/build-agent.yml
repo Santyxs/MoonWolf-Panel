@@ -47,7 +47,6 @@ jobs:
           if [ "${{ github.event_name }}" = "release" ]; then
             tag="${{ github.event.release.tag_name }}"
             ver="${tag#agent-v}"
-            # Normalizar a MAJOR.MINOR.PATCH para Cargo
             dots=$(echo "$ver" | tr -cd '.' | wc -c)
             if [ "$dots" -eq 0 ]; then ver="${ver}.0.0"
             elif [ "$dots" -eq 1 ]; then ver="${ver}.0"
@@ -75,9 +74,7 @@ jobs:
             major="${version%%.*}"
             rest="${version#*.}"
             minor="${rest%%.*}"
-            # Si solo hay major.minor, minor es el segundo componente
             if [ "$rest" = "$version" ]; then
-              # solo un número
               major="$version"
               minor=0
             fi
@@ -100,7 +97,6 @@ jobs:
           VER: ${{ steps.version.outputs.version }}
         working-directory: agent
         run: |
-          # Cargo exige MAJOR.MINOR.PATCH
           VER="$VER"
           dots=$(echo "$VER" | tr -cd '.' | wc -c)
           if [ "$dots" -eq 0 ]; then VER="${VER}.0.0"
@@ -126,9 +122,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           $exe = "dist/MoonWolf-Agent.exe"
           Copy-Item -LiteralPath "agent/target/release/moonwolf-agent.exe" -Destination $exe -Force
-          if (Test-Path -LiteralPath "agent/ui") {
-            Copy-Item -LiteralPath "agent/ui" -Destination "dist/ui" -Recurse -Force
-          }
           $size = (Get-Item -LiteralPath $exe).Length
           Write-Host "MoonWolf-Agent.exe: $size bytes (tag $env:AGENT_TAG)"
           if ($size -lt 500KB) { throw "Executable suspiciously small" }
@@ -137,9 +130,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: MoonWolf-Agent-Windows
-          path: |
-            dist/MoonWolf-Agent.exe
-            dist/ui/**
+          path: dist/MoonWolf-Agent.exe
           if-no-files-found: error
 
       - name: Create tag + GitHub Release
