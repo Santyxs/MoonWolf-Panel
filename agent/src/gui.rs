@@ -14,6 +14,9 @@ use crate::state::AppState;
 
 const WINDOW_TITLE: &str = "MoonWolf Agent";
 
+/// UI embebida en el binario (no hace falta la carpeta ui/ junto al .exe).
+const EMBEDDED_UI: &str = include_str!("../ui/index.html");
+
 #[derive(Debug)]
 enum GuiEvent {
     StateJson(String),
@@ -21,7 +24,7 @@ enum GuiEvent {
 }
 
 pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
-    let index_html = load_ui_index()?;
+    let index_html = load_ui_index();
     let event_loop = EventLoopBuilder::<GuiEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
@@ -64,7 +67,6 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
 
     let app_for_ipc = Arc::clone(&app);
 
-    // wry 0.45: WebViewBuilder::new(&window) → .build()
     let webview = WebViewBuilder::new(&window)
         .with_html(&index_html)
         .with_ipc_handler(move |req| {
@@ -113,12 +115,18 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
                                         let mut s = app.write().await;
                                         let path = PathBuf::from(&dir);
                                         if let Err(e) = std::fs::create_dir_all(&path) {
-                                            s.add_log("error", format!("No se pudo crear carpeta: {e}"));
+                                            s.add_log(
+                                                "error",
+                                                format!("No se pudo crear carpeta: {e}"),
+                                            );
                                             return;
                                         }
                                         s.config.server_dir = path;
                                         if let Err(e) = s.config.save() {
-                                            s.add_log("error", format!("No se pudo guardar config: {e}"));
+                                            s.add_log(
+                                                "error",
+                                                format!("No se pudo guardar config: {e}"),
+                                            );
                                         } else {
                                             s.restart_required = true;
                                             s.add_log(
@@ -167,7 +175,7 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
 
     let _ = webview.evaluate_script(
         r#"
-        window.__moonwolfAgent = {
+        window.__moonwolfAgent = window.__moonwolfAgent || {
             post: (obj) => window.ipc.postMessage(JSON.stringify(obj)),
             onState: null,
         };
@@ -187,6 +195,7 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         *control_flow = ControlFlow::Wait;
         match event {
             Event::UserEvent(GuiEvent::StateJson(json)) => {
+                // Pasar el estado como literal JS (json ya es JSON válido)
                 let script = format!("window.__applyState && window.__applyState({});", json);
                 if let Err(e) = webview.evaluate_script(&script) {
                     error!("evaluate_script: {e}");
@@ -216,24 +225,20 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     });
 }
 
-fn load_ui_index() -> anyhow::Result<String> {
+fn load_ui_index() -> String {
+    // 1) Archivo junto al .exe (útil en desarrollo / empaquetado manual)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let p = dir.join("ui").join("index.html");
-            if p.exists() {
-                return Ok(std::fs::read_to_string(p)?);
+            if let Ok(html) = std::fs::read_to_string(&p) {
+                info!("UI cargada desde {}", p.display());
+                return html;
             }
         }
     }
-    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui").join("index.html");
-    if dev.exists() {
-        return Ok(std::fs::read_to_string(dev)?);
-    }
-    Ok(r#"<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>MoonWolf Agent</title>
-<style>body{font-family:system-ui;background:#0b1020;color:#e8eefc;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
-.card{background:#141b2d;padding:2rem;border-radius:16px;text-align:center}h1{margin:0 0 .5rem}</style></head>
-<body><div class="card"><h1>MoonWolf Agent</h1><p>Rust · sin Node.js</p></div>
-<script>window.__moonwolfAgent={post:o=>window.ipc.postMessage(JSON.stringify(o))};</script></body></html>"#.into())
+    // 2) Embebida en el binario (release GitHub)
+    info!("UI embebida en el binario");
+    EMBEDDED_UI.to_string()
 }
 
 fn open_url(url: &str) -> bool {
