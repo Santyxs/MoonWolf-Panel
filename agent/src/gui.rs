@@ -1,4 +1,5 @@
 //! Interfaz gráfica con WebView (wry + tao).
+//! UI = agent/ui/index.html (misma del agent Node) + bridge window.native.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use crate::state::AppState;
 
 const WINDOW_TITLE: &str = "MoonWolf Agent";
 const EMBEDDED_UI: &str = include_str!("../ui/index.html");
+const PANEL_URL: &str = "https://moonwolf-panel.onrender.com";
 
 #[derive(Debug)]
 enum GuiEvent {
@@ -21,14 +23,11 @@ enum GuiEvent {
     Quit,
 }
 
-/// Evita la carpeta `MoonWolf-Agent.exe.WebView2` junto al .exe.
-/// WebView2 (Edge) guarda caché ahí por defecto; la movemos a AppData.
 fn setup_webview2_data_dir() {
     #[cfg(windows)]
     {
         let dir = crate::config::AgentConfig::config_dir().join("WebView2");
         let _ = std::fs::create_dir_all(&dir);
-        // Variable oficial de WebView2 — debe fijarse ANTES de crear el WebView
         std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &dir);
         info!("WebView2 data folder: {}", dir.display());
     }
@@ -65,7 +64,7 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
                             }
                         }
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
                 }
             });
         });
@@ -73,8 +72,8 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
 
     let window = WindowBuilder::new()
         .with_title(WINDOW_TITLE)
-        .with_inner_size(tao::dpi::LogicalSize::new(560u32, 680u32))
-        .with_min_inner_size(tao::dpi::LogicalSize::new(480u32, 560u32))
+        .with_inner_size(tao::dpi::LogicalSize::new(420u32, 720u32))
+        .with_min_inner_size(tao::dpi::LogicalSize::new(380u32, 600u32))
         .with_resizable(true)
         .build(&event_loop)?;
 
@@ -95,8 +94,12 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         *control_flow = ControlFlow::Wait;
         match event {
             Event::UserEvent(GuiEvent::StateJson(json)) => {
-                let escaped = serde_json::to_string(&json).unwrap_or_else(|_| "\"{}\"".into());
-                let script = format!("window.__applyState && window.__applyState({escaped})");
+                // Como el agent Node: CustomEvent moonwolf-state
+                let safe = json.replace('\u{2028}', "\\u2028").replace('\u{2029}', "\\u2029");
+                let script = format!(
+                    "window.__applyState && window.__applyState({safe});\
+                     window.dispatchEvent(new CustomEvent('moonwolf-state', {{ detail: {safe} }}));"
+                );
                 if let Err(e) = webview.evaluate_script(&script) {
                     error!("evaluate_script: {e}");
                 }
@@ -108,21 +111,24 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
-                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    let app = Arc::clone(&app);
-                    rt.block_on(async {
-                        let mut s = app.write().await;
-                        s.shutting_down = true;
-                    });
-                }
+                mark_shutdown(Arc::clone(&app));
                 *control_flow = ControlFlow::Exit;
             }
             _ => {}
         }
     });
+}
+
+fn mark_shutdown(app: Arc<RwLock<AppState>>) {
+    if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        rt.block_on(async {
+            let mut s = app.write().await;
+            s.shutting_down = true;
+        });
+    }
 }
 
 fn handle_ipc(
@@ -131,17 +137,22 @@ fn handle_ipc(
     proxy: tao::event_loop::EventLoopProxy<GuiEvent>,
 ) {
     let body = body.trim().to_string();
-    let action = if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-        v.get("action")
-            .and_then(|a| a.as_str())
-            .unwrap_or("")
-            .to_string()
+    let (action, path_arg) = if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+        (
+            v.get("action")
+                .and_then(|a| a.as_str())
+                .unwrap_or("")
+                .to_string(),
+            v.get("path")
+                .and_then(|p| p.as_str())
+                .map(|s| s.to_string()),
+        )
     } else {
-        body.clone()
+        (body.clone(), None)
     };
 
     match action.as_str() {
-        "quit" => {
+        "quit" | "close" => {
             spawn_async(app, |app| async move {
                 let mut s = app.write().await;
                 s.shutting_down = true;
@@ -150,11 +161,66 @@ fn handle_ipc(
             let _ = proxy.send_event(GuiEvent::Quit);
         }
         "open_panel" => {
-            let _ = open_url("https://moonwolf-panel.onrender.com");
+            let _ = open_url(PANEL_URL);
         }
-        "open_config_dir" => {
+        "open_config_dir" | "open_config" => {
             let dir = crate::config::AgentConfig::config_dir();
             let _ = open_path(&dir);
+        }
+        "open_server_folder" => {
+            spawn_async(app, |app| async move {
+                let dir = {
+                    let s = app.read().await;
+                    s.config.server_dir.clone()
+                };
+                let _ = open_path(&dir);
+            });
+        }
+        "set_server_dir" => {
+            if let Some(dir) = path_arg {
+                spawn_async(app, move |app| async move {
+                    let mut s = app.write().await;
+                    let path = PathBuf::from(&dir);
+                    if let Err(e) = std::fs::create_dir_all(&path) {
+                        s.add_log("error", format!("No se pudo crear carpeta: {e}"));
+                        return;
+                    }
+                    s.config.server_dir = path;
+                    if let Err(e) = s.config.save() {
+                        s.add_log("error", format!("No se pudo guardar config: {e}"));
+                    } else {
+                        s.restart_required = true;
+                        s.add_log(
+                            "warn",
+                            "Carpeta del servidor actualizada. Reinicia el Agent.",
+                        );
+                    }
+                });
+            }
+        }
+        "clear_logs" => {
+            spawn_async(app, |app| async move {
+                let mut s = app.write().await;
+                s.logs.clear();
+                s.add_log("info", "Registro de logs limpiado");
+            });
+        }
+        "save_logs" => {
+            spawn_async(app, |app| async move {
+                let (dir, text) = {
+                    let s = app.read().await;
+                    let lines: Vec<String> = s
+                        .logs
+                        .iter()
+                        .map(|l| format!("[{}] {}", l.level, l.message))
+                        .collect();
+                    (crate::config::AgentConfig::config_dir(), lines.join("\n"))
+                };
+                let path = dir.join("agent.log");
+                let _ = std::fs::write(&path, text);
+                let mut s = app.write().await;
+                s.add_log("info", format!("Logs guardados en {}", path.display()));
+            });
         }
         "check_update" => {
             spawn_async(app, |app| async move {
@@ -164,18 +230,42 @@ fn handle_ipc(
                 }
             });
         }
-        "copy_pairing" => {
+        "apply_update" => {
             spawn_async(app, |app| async move {
-                let mut s = app.write().await;
-                s.add_log("info", "Código de emparejamiento copiado");
+                let (current, new_exe) = {
+                    let s = app.read().await;
+                    (std::env::current_exe().ok(), s.update_file.clone())
+                };
+                if let (Some(cur), Some(new_path)) = (current, new_exe) {
+                    if let Err(e) = crate::update::apply_update(&cur, &new_path).await {
+                        let mut s = app.write().await;
+                        s.add_log("error", format!("No se pudo aplicar update: {e}"));
+                    } else {
+                        let mut s = app.write().await;
+                        s.shutting_down = true;
+                        s.add_log("info", "Actualización aplicada. Reiniciando…");
+                    }
+                } else {
+                    let mut s = app.write().await;
+                    s.add_log("error", "No hay actualización lista para aplicar");
+                }
             });
         }
-        "clear_logs" => {
+        "restart" => {
+            // Reinicio simple: salir; el usuario o un launcher puede reabrir.
+            // En Windows intentamos relanzar el mismo exe.
+            if let Ok(exe) = std::env::current_exe() {
+                let _ = std::process::Command::new(&exe).spawn();
+            }
             spawn_async(app, |app| async move {
                 let mut s = app.write().await;
-                s.logs.clear();
-                s.add_log("info", "Registro de logs limpiado");
+                s.shutting_down = true;
             });
+            let _ = proxy.send_event(GuiEvent::Quit);
+        }
+        "hide_to_tray" => {
+            // Sin bandeja nativa completa aún: minimizar no está expuesto fácilmente desde aquí.
+            info!("hide_to_tray solicitado (no implementado en Rust todavía)");
         }
         other if !other.is_empty() => {
             tracing::debug!("IPC action: {other}");
