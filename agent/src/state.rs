@@ -26,6 +26,7 @@ pub struct UpdateInfo {
     pub size: u64,
 }
 
+/// Snapshot para la UI (mismas claves que el agent Node: camelCase).
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiSnapshot {
@@ -36,19 +37,15 @@ pub struct GuiSnapshot {
     pub config_path: String,
     pub cloud_connected: bool,
     pub local_server_ready: bool,
-    pub pairing_code: Option<String>,
+    pub pairing_code: String,
     pub logs: Vec<LogEntry>,
-    pub update: Option<UpdateGui>,
     pub restart_required: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateGui {
-    pub available: Option<UpdateInfo>,
-    pub status: String,
-    pub progress: f32,
-    pub error: Option<String>,
+    /// Compatible con app.js original
+    pub update_available: Option<UpdateInfo>,
+    pub update_status: String,
+    pub update_progress: f32,
+    pub update_error: Option<String>,
+    pub update_notice: Option<String>,
 }
 
 pub struct AppState {
@@ -112,15 +109,14 @@ impl AppState {
             config_path: AgentConfig::config_path().display().to_string(),
             cloud_connected: self.cloud_connected,
             local_server_ready: self.local_ready,
-            pairing_code: self.pairing_code.clone(),
+            pairing_code: self.pairing_code.clone().unwrap_or_default(),
             logs: self.logs.iter().cloned().collect(),
-            update: Some(UpdateGui {
-                available: self.update_available.clone(),
-                status: self.update_status.clone(),
-                progress: self.update_progress,
-                error: self.update_error.clone(),
-            }),
             restart_required: self.restart_required,
+            update_available: self.update_available.clone(),
+            update_status: self.update_status.clone(),
+            update_progress: self.update_progress,
+            update_error: self.update_error.clone(),
+            update_notice: None,
         }
     }
 }
