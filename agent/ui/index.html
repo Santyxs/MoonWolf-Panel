@@ -4,210 +4,75 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MoonWolf Agent</title>
-  <link rel="stylesheet" href="style.css">
+  <style>
+    :root { --bg:#0b1020; --card:#141b2d; --text:#e8eefc; --muted:#8b9bb8; --accent:#6c9eff; --ok:#3dd68c; --warn:#f5a524; --err:#f31260; }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+    .app{max-width:560px;margin:0 auto;padding:1.5rem}
+    .hero{display:flex;align-items:center;gap:1rem;margin-bottom:1.25rem}
+    .moon{width:48px;height:48px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#fff,#6c9eff);box-shadow:0 0 24px #6c9eff66}
+    h1{margin:0;font-size:1.4rem} .hero p{margin:0;color:var(--muted);font-size:.9rem}
+    .card{background:var(--card);border-radius:14px;padding:1rem 1.15rem;margin-bottom:.85rem}
+    .status{display:flex;align-items:center;gap:.75rem}
+    .dot{width:10px;height:10px;border-radius:50%;background:var(--warn)}
+    .dot.ok{background:var(--ok)} .dot.err{background:var(--err)}
+    .label{font-size:.72rem;color:var(--muted);text-transform:uppercase}
+    .value{font-size:.95rem;word-break:break-all}
+    .row{display:flex;justify-content:space-between;align-items:center;gap:.75rem;padding:.35rem 0}
+    .sep{height:1px;background:#ffffff12;margin:.4rem 0}
+    button{border:0;border-radius:10px;padding:.55rem 1rem;font-weight:600;cursor:pointer;background:#1e2a44;color:var(--text)}
+    button.primary{background:var(--accent);color:#0b1020}
+    .actions{display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-top:.5rem}
+    footer{text-align:center;color:var(--muted);font-size:.75rem;margin-top:1.5rem}
+  </style>
 </head>
 <body>
-  <div class="ambient" aria-hidden="true"></div>
-
-    <!-- 1. APP PRINCIPAL -->
-  <main class="app">
-        <!-- 2. HERO -->
-    <section class="hero">
-      <div class="moon-logo"><div class="moon"></div></div>
-      <div class="brand">
-        <h1>MoonWolf</h1>
-        <p>Agent</p>
-      </div>
-    </section>
-
-        <!-- 3. STATUS -->
-    <section id="status-card" class="status-card connecting">
-      <div id="status-dot" class="status-dot connecting"></div>
-      <div class="status-content">
-        <strong id="status-title">Conectando...</strong>
-        <span id="status-description">Conectando con MoonWolf Cloud</span>
-      </div>
-    </section>
-
-        <!-- 4. INFO -->
-    <section class="info-card">
-      <div class="info-row">
-        <div>
-          <span class="label">Código de emparejamiento</span>
-          <span id="pairing-code" class="value code">—</span>
-        </div>
-        <button id="copy-pairing" class="small-button" type="button">Copiar</button>
-      </div>
-      <div class="separator"></div>
-      <div class="info-row">
-        <div class="wide">
-          <span class="label">Servidor</span>
-          <span id="server-dir" class="value path">—</span>
-        </div>
-        <button id="edit-server-dir" class="small-button" type="button">Cambiar</button>
-      </div>
-      <div class="separator"></div>
-      <div class="info-row">
-        <div>
-          <span class="label">Versión</span>
-          <span id="version" class="value">—</span>
-        </div>
-        <div class="local-status">
-          <span id="local-dot" class="mini-dot"></span>
-          <span id="local-status">Servidor local</span>
-        </div>
-      </div>
-    </section>
-
-        <!-- 5. BANNERS -->
-    <section id="update-banner" class="update-banner hidden">
-      <div class="update-banner-content">
-        <strong id="update-title">Actualización disponible</strong>
-        <span id="update-description">—</span>
-        <div id="update-progress-track" class="update-progress-track hidden">
-          <div id="update-progress-fill" class="update-progress-fill"></div>
-        </div>
-      </div>
-      <button id="update-apply" class="button primary compact" type="button" disabled>
-        <span>⬆</span>Actualizar
-      </button>
-    </section>
-
-    <section id="restart-banner" class="restart-banner hidden">
-      <div class="restart-banner-content">
-        <strong>Reinicio pendiente</strong>
-        <span>Los cambios en la carpeta del servidor requieren reiniciar el Agent.</span>
-      </div>
-      <button id="restart-agent" class="button primary compact" type="button">
-        <span>↻</span>Reiniciar ahora
-      </button>
-    </section>
-
-        <!-- 6. ACCIONES -->
-    <section class="actions">
-      <button id="open-panel" class="button primary" type="button">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M6.2 3.2a.75.75 0 0 0 0 1.5h3.99L3.47 11.42a.75.75 0 1 0 1.06 1.06L11.25 5.76v4a.75.75 0 0 0 1.5 0v-5.8a.75.75 0 0 0-.75-.76H6.2Z"/></svg>
-        Abrir Panel
-      </button>
-      <button id="settings" class="button secondary" type="button">
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <path fill="currentColor" d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492ZM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0Z"/>
-          <path fill="currentColor" d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319ZM7.163 1.626c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.291-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.291c.415.764-.42 1.6-1.185 1.184l-.291-.159a1.873 1.873 0 0 0-2.693 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.692-1.115l-.292.16c-.764.415-1.6-.42-1.184-1.185l.159-.291A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.377l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.115l.094-.319Z"/>
-        </svg>
-        Configuración
-      </button>
-      <button id="open-logs" class="button secondary" type="button">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M2.5 3.25A1.25 1.25 0 0 1 3.75 2h8.5A1.25 1.25 0 0 1 13.5 3.25v9.5A1.25 1.25 0 0 1 12.25 14h-8.5A1.25 1.25 0 0 1 2.5 12.75v-9.5Zm2.25 1.5a.75.75 0 0 0 0 1.5h6.5a.75.75 0 0 0 0-1.5h-6.5Zm0 3a.75.75 0 0 0 0 1.5h6.5a.75.75 0 0 0 0-1.5h-6.5Zm0 3a.75.75 0 0 0 0 1.5h4.5a.75.75 0 0 0 0-1.5h-4.5Z"/></svg>
-        Logs
-      </button>
-    </section>
-
-    <footer><span>MoonWolf Agent</span></footer>
-  </main>
-
-  <div id="update-notice" class="update-notice hidden"></div>
-
-    <!-- 7. MODAL LOGS -->
-  <section id="logs-modal" class="modal hidden">
-    <div class="modal-backdrop"></div>
-    <div class="dialog-window">
-      <div class="dialog-header">
-        <div>
-          <strong>Logs del Agent</strong>
-          <span id="logs-count">0 entradas</span>
-        </div>
-        <button id="close-logs" class="modal-close" type="button">×</button>
-      </div>
-      <div class="logs-toolbar">
-        <input id="logs-search" class="logs-search" type="search" placeholder="Buscar en los logs…" spellcheck="false" autocomplete="off">
-        <div class="logs-filters" role="tablist">
-          <button id="logs-filter-all" class="log-filter active" type="button" data-level="all">Todos</button>
-          <button id="logs-filter-info" class="log-filter" type="button" data-level="info">Info</button>
-          <button id="logs-filter-warn" class="log-filter" type="button" data-level="warn">Avisos</button>
-          <button id="logs-filter-error" class="log-filter" type="button" data-level="error">Errores</button>
-        </div>
-      </div>
-      <div id="logs-list" class="logs-list"></div>
-      <div class="dialog-actions">
-        <button id="copy-logs" class="small-button" type="button">Copiar</button>
-        <button id="save-logs" class="small-button" type="button">Guardar</button>
-        <button id="clear-logs" class="small-button danger" type="button">Limpiar</button>
-      </div>
+  <div class="app">
+    <div class="hero"><div class="moon"></div><div><h1>MoonWolf</h1><p>Agent · Rust</p></div></div>
+    <div class="card status">
+      <div id="dot" class="dot"></div>
+      <div><strong id="status-title">Conectando…</strong><div id="status-desc" style="color:var(--muted);font-size:.85rem">Iniciando</div></div>
     </div>
-  </section>
-
-    <!-- 8. MODAL CARPETA SERVIDOR -->
-  <section id="serverdir-modal" class="modal hidden">
-    <div class="modal-backdrop"></div>
-    <div class="dialog-window compact">
-      <div class="dialog-header">
-        <div>
-          <strong>Carpeta del servidor</strong>
-          <span>Ruta donde MoonWolf Agent gestiona los archivos del servidor</span>
-        </div>
-        <button id="close-serverdir" class="modal-close" type="button">×</button>
-      </div>
-      <div class="form-body">
-        <input id="serverdir-input" class="text-input" type="text" spellcheck="false" autocomplete="off" placeholder="C:\Users\TuUsuario\MoonWolf">
-        <div id="serverdir-error" class="field-error"></div>
-        <div class="field-hint">Se creará la carpeta si no existe. Debes reiniciar MoonWolf Agent para aplicar el cambio.</div>
-      </div>
-      <div class="dialog-actions">
-        <button id="cancel-serverdir" class="small-button" type="button">Cancelar</button>
-        <button id="save-serverdir" class="button primary compact" type="button">Guardar</button>
-      </div>
+    <div class="card">
+      <div class="row"><div><div class="label">Código de emparejamiento</div><div id="pairing" class="value">—</div></div><button type="button" id="copy-pairing">Copiar</button></div>
+      <div class="sep"></div>
+      <div class="row"><div style="min-width:0"><div class="label">Servidor</div><div id="server-dir" class="value">—</div></div></div>
+      <div class="sep"></div>
+      <div class="row"><div><div class="label">Versión</div><div id="version" class="value">—</div></div>
+        <div style="display:flex;align-items:center;gap:.4rem"><span id="local-dot" class="dot" style="width:8px;height:8px"></span><span style="font-size:.8rem;color:var(--muted)">Local</span></div></div>
     </div>
-  </section>
-
-    <!-- 9. MODAL CONFIGURACIÓN -->
-  <section id="settings-modal" class="modal hidden">
-    <div class="modal-backdrop"></div>
-    <div class="dialog-window compact">
-      <div class="dialog-header">
-        <div>
-          <strong>Configuración</strong>
-          <span>Carpetas y datos del Agent</span>
-        </div>
-        <button id="close-settings" class="modal-close" type="button">×</button>
-      </div>
-      <div class="form-body">
-        <div class="info-card nested">
-          <div class="info-row">
-            <div class="wide">
-              <span class="label">Carpeta de configuración</span>
-              <span id="settings-config-dir" class="value path">—</span>
-            </div>
-            <button id="settings-open-config" class="small-button" type="button">Abrir</button>
-          </div>
-          <div class="separator"></div>
-          <div class="info-row">
-            <div class="wide">
-              <span class="label">Agent ID</span>
-              <span id="settings-agent-id" class="value path">—</span>
-            </div>
-            <button id="settings-copy-id" class="small-button" type="button">Copiar</button>
-          </div>
-          <div class="separator"></div>
-          <div class="info-row">
-            <div class="wide">
-              <span class="label">Buscar actualizaciones</span>
-              <span class="value">Comprueba si hay una versión más reciente</span>
-            </div>
-            <button id="settings-check-update" class="small-button" type="button">Buscar</button>
-          </div>
-          <div class="separator"></div>
-          <div class="info-row">
-            <div class="wide">
-              <span class="label">Bandeja del sistema</span>
-              <span class="value">Minimiza el programa a la bandeja</span>
-            </div>
-            <button id="settings-hide-tray" class="small-button" type="button">Minimizar</button>
-          </div>
-        </div>
-      </div>
+    <div class="actions">
+      <button type="button" class="primary" id="open-panel">Abrir Panel</button>
+      <button type="button" id="open-config">Configuración</button>
+      <button type="button" id="check-update">Buscar updates</button>
+      <button type="button" id="quit">Salir</button>
     </div>
-  </section>
-
-  <script src="app.js"></script>
+    <footer>MoonWolf Agent · sin Node.js</footer>
+  </div>
+  <script>
+    const $ = id => document.getElementById(id);
+    function apply(state) {
+      if (!state) return;
+      const cloud = !!state.cloudConnected;
+      const local = !!state.localServerReady;
+      $('dot').className = 'dot ' + (cloud ? 'ok' : 'err');
+      $('status-title').textContent = cloud ? 'Conectado' : 'Desconectado';
+      $('status-desc').textContent = cloud ? 'MoonWolf Cloud' : 'Reintentando…';
+      $('pairing').textContent = state.pairingCode || '—';
+      $('server-dir').textContent = state.serverDir || '—';
+      $('version').textContent = state.version || '—';
+      $('local-dot').className = 'dot ' + (local ? 'ok' : '');
+    }
+    window.__moonwolfAgent = {
+      post: obj => { try { window.ipc.postMessage(JSON.stringify(obj)); } catch(e) {} },
+      onState: apply,
+    };
+    window.addEventListener('moonwolf-state', e => apply(e.detail));
+    $('copy-pairing').onclick = () => { const t = $('pairing').textContent; if (t && t !== '—') navigator.clipboard?.writeText(t); };
+    $('open-panel').onclick = () => window.__moonwolfAgent.post({ action: 'open_panel' });
+    $('open-config').onclick = () => window.__moonwolfAgent.post({ action: 'open_config_dir' });
+    $('check-update').onclick = () => window.__moonwolfAgent.post({ action: 'check_update' });
+    $('quit').onclick = () => window.__moonwolfAgent.post({ action: 'quit' });
+  </script>
 </body>
 </html>
