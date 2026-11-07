@@ -73,13 +73,9 @@ async fn connect_once(
     panel_url: &str,
     attempt: u32,
 ) -> anyhow::Result<()> {
-    let (agent_id, agent_token, _version) = {
+    let (agent_id, agent_token) = {
         let s = app.read().await;
-        (
-            s.config.agent_id.clone(),
-            s.config.agent_token.clone(),
-            s.version.clone(),
-        )
+        (s.config.agent_id.clone(), s.config.agent_token.clone())
     };
 
     if agent_id.len() < 16 || agent_token.len() < 32 {
@@ -101,8 +97,6 @@ async fn connect_once(
         );
     }
 
-    // Socket.IO v4 auth en el handshake (como socket.io-client en Node).
-    // rust_socketio añade /socket.io/ automáticamente si el path de la URL es "/".
     let auth = json!({
         "role": "agent",
         "agentId": agent_id,
@@ -113,9 +107,11 @@ async fn connect_once(
     let app_on_close = Arc::clone(&app);
     let app_on_error = Arc::clone(&app);
 
+    // WebsocketUpgrade: polling primero y upgrade (más fiable detrás de proxies).
+    // Si falla, se puede probar solo Websocket.
     let client = ClientBuilder::new(panel_url)
         .namespace("/")
-        .transport_type(TransportType::Websocket)
+        .transport_type(TransportType::WebsocketUpgrade)
         .auth(auth)
         .on(Event::Connect, move |_, socket: Client| {
             let app = Arc::clone(&app_on_connect);
@@ -126,7 +122,6 @@ async fn connect_once(
                     s.cloud_connected = true;
                     s.add_log("info", "Conectado a MoonWolf Cloud.");
                 }
-                // Sin payload, igual que el agent Node: cloudSocket.emit('pairing_create')
                 if let Err(e) = socket.emit("pairing_create", json!({})).await {
                     error!("pairing_create: {e}");
                     let mut s = app.write().await;
@@ -187,10 +182,7 @@ async fn connect_once(
 
                     if code.is_empty() {
                         let mut s = app.write().await;
-                        s.add_log(
-                            "error",
-                            format!("pairing_ready sin código: {data}"),
-                        );
+                        s.add_log("error", format!("pairing_ready sin código: {data}"));
                         return;
                     }
 
@@ -260,7 +252,6 @@ async fn connect_once(
         .await
         .map_err(|e| anyhow::anyhow!("connect falló: {e}"))?;
 
-    // Mantener la conexión viva hasta desconexión o shutdown
     loop {
         sleep_ms(1_000).await;
         let s = app.read().await;

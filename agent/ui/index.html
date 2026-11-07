@@ -23,6 +23,8 @@
     button{border:0;border-radius:10px;padding:.55rem 1rem;font-weight:600;cursor:pointer;background:#1e2a44;color:var(--text)}
     button.primary{background:var(--accent);color:#0b1020}
     .actions{display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-top:.5rem}
+    .logs{max-height:160px;overflow:auto;font-family:ui-monospace,Consolas,monospace;font-size:.72rem;line-height:1.35;color:var(--muted)}
+    .logs .err{color:var(--err)} .logs .warn{color:var(--warn)} .logs .info{color:var(--text)}
     footer{text-align:center;color:var(--muted);font-size:.75rem;margin-top:1.5rem}
   </style>
 </head>
@@ -40,6 +42,10 @@
       <div class="sep"></div>
       <div class="row"><div><div class="label">Versión</div><div id="version" class="value">—</div></div>
         <div style="display:flex;align-items:center;gap:.4rem"><span id="local-dot" class="dot" style="width:8px;height:8px"></span><span style="font-size:.8rem;color:var(--muted)">Local</span></div></div>
+    </div>
+    <div class="card">
+      <div class="label" style="margin-bottom:.4rem">Logs recientes</div>
+      <div id="logs" class="logs">—</div>
     </div>
     <div class="actions">
       <button type="button" class="primary" id="open-panel">Abrir Panel</button>
@@ -62,6 +68,15 @@
       $('server-dir').textContent = state.serverDir || '—';
       $('version').textContent = state.version || '—';
       $('local-dot').className = 'dot ' + (local ? 'ok' : '');
+      const logs = Array.isArray(state.logs) ? state.logs.slice(-12) : [];
+      const el = $('logs');
+      if (!logs.length) { el.textContent = '—'; return; }
+      el.innerHTML = logs.map(l => {
+        const lvl = (l.level || 'info').toLowerCase();
+        const msg = (l.message || '').replace(/</g,'&lt;');
+        return '<div class="'+lvl+'">['+lvl+'] '+msg+'</div>';
+      }).join('');
+      el.scrollTop = el.scrollHeight;
     }
     window.__moonwolfAgent = {
       post: obj => { try { window.ipc.postMessage(JSON.stringify(obj)); } catch(e) {} },
