@@ -46,8 +46,14 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "release" ]; then
             tag="${{ github.event.release.tag_name }}"
+            ver="${tag#agent-v}"
+            # Normalizar a MAJOR.MINOR.PATCH para Cargo
+            dots=$(echo "$ver" | tr -cd '.' | wc -c)
+            if [ "$dots" -eq 0 ]; then ver="${ver}.0.0"
+            elif [ "$dots" -eq 1 ]; then ver="${ver}.0"
+            fi
             echo "tag=$tag" >> "$GITHUB_OUTPUT"
-            echo "version=${tag#agent-v}" >> "$GITHUB_OUTPUT"
+            echo "version=$ver" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -63,21 +69,30 @@ jobs:
 
           if [ -z "$latest" ]; then
             next="agent-v1.0"
+            ver="1.0.0"
           else
             version="${latest#agent-v}"
             major="${version%%.*}"
-            minor="${version#*.}"
+            rest="${version#*.}"
+            minor="${rest%%.*}"
+            # Si solo hay major.minor, minor es el segundo componente
+            if [ "$rest" = "$version" ]; then
+              # solo un número
+              major="$version"
+              minor=0
+            fi
             minor=$((minor + 1))
             if [ "$minor" -ge 99 ]; then
               major=$((major + 1))
               minor=0
             fi
             next="agent-v${major}.${minor}"
+            ver="${major}.${minor}.0"
           fi
 
-          echo "Latest: ${latest:-none} → Next: $next"
+          echo "Latest: ${latest:-none} → Next: $next (cargo $ver)"
           echo "tag=$next" >> "$GITHUB_OUTPUT"
-          echo "version=${next#agent-v}" >> "$GITHUB_OUTPUT"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
 
       - name: Set crate version
         shell: bash
@@ -85,7 +100,14 @@ jobs:
           VER: ${{ steps.version.outputs.version }}
         working-directory: agent
         run: |
+          # Cargo exige MAJOR.MINOR.PATCH
+          VER="$VER"
+          dots=$(echo "$VER" | tr -cd '.' | wc -c)
+          if [ "$dots" -eq 0 ]; then VER="${VER}.0.0"
+          elif [ "$dots" -eq 1 ]; then VER="${VER}.0"
+          fi
           sed -i "s/^version = \".*\"/version = \"${VER}\"/" Cargo.toml
+          echo "Cargo.toml version:"
           grep '^version' Cargo.toml
 
       - name: Build release
