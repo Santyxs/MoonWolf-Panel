@@ -21,7 +21,6 @@ use crate::util::sleep_ms;
 
 const RECONNECT_BASE_MS: u64 = 1_000;
 const RECONNECT_MAX_MS: u64 = 30_000;
-const CLOUD_PATH: &str = "/socket.io";
 
 pub async fn run(app: Arc<RwLock<AppState>>, panel_url: &str) {
     let mut backoff = RECONNECT_BASE_MS;
@@ -74,7 +73,7 @@ async fn connect_once(
     panel_url: &str,
     attempt: u32,
 ) -> anyhow::Result<()> {
-    let (agent_id, agent_token, version) = {
+    let (agent_id, agent_token, _version) = {
         let s = app.read().await;
         (
             s.config.agent_id.clone(),
@@ -83,7 +82,6 @@ async fn connect_once(
         )
     };
 
-    // Validación alineada con server.js
     if agent_id.len() < 16 || agent_token.len() < 32 {
         anyhow::bail!(
             "credenciales inválidas (agentId len={}, token len={})",
@@ -103,6 +101,8 @@ async fn connect_once(
         );
     }
 
+    // Socket.IO v4 auth en el handshake (como socket.io-client en Node).
+    // rust_socketio añade /socket.io/ automáticamente si el path de la URL es "/".
     let auth = json!({
         "role": "agent",
         "agentId": agent_id,
@@ -115,7 +115,6 @@ async fn connect_once(
 
     let client = ClientBuilder::new(panel_url)
         .namespace("/")
-        .path(CLOUD_PATH)
         .transport_type(TransportType::Websocket)
         .auth(auth)
         .on(Event::Connect, move |_, socket: Client| {
@@ -127,9 +126,11 @@ async fn connect_once(
                     s.cloud_connected = true;
                     s.add_log("info", "Conectado a MoonWolf Cloud.");
                 }
-                // Pedir código de emparejamiento (como el agent Node)
+                // Sin payload, igual que el agent Node: cloudSocket.emit('pairing_create')
                 if let Err(e) = socket.emit("pairing_create", json!({})).await {
                     error!("pairing_create: {e}");
+                    let mut s = app.write().await;
+                    s.add_log("error", format!("No se pudo pedir pairing: {e}"));
                 } else {
                     let mut s = app.write().await;
                     s.add_log("info", "Solicitando código de emparejamiento…");
@@ -157,6 +158,21 @@ async fn connect_once(
             }
             .boxed()
         })
+        .on("connect_error", {
+            let app = Arc::clone(&app);
+            move |payload: Payload, _| {
+                let app = Arc::clone(&app);
+                async move {
+                    let msg = payload_debug(&payload);
+                    error!("connect_error: {msg}");
+                    let mut s = app.write().await;
+                    s.cloud_connected = false;
+                    s.pairing_code = None;
+                    s.add_log("error", format!("connect_error: {msg}"));
+                }
+                .boxed()
+            }
+        })
         .on("pairing_ready", {
             let app = Arc::clone(&app);
             move |payload: Payload, _| {
@@ -173,12 +189,11 @@ async fn connect_once(
                         let mut s = app.write().await;
                         s.add_log(
                             "error",
-                            "Cloud devolvió un código de emparejamiento vacío",
+                            format!("pairing_ready sin código: {data}"),
                         );
                         return;
                     }
 
-                    // Formato esperado: MW-Pxxx-xxxx
                     if !code.starts_with("MW-P") {
                         let mut s = app.write().await;
                         s.add_log(
@@ -236,25 +251,14 @@ async fn connect_once(
         .on_any({
             move |event, payload, _| {
                 async move {
-                    let name = format!("{event:?}");
-                    // Evitar ruido de eventos conocidos
-                    if !matches!(
-                        name.as_str(),
-                        "Message(Connect)"
-                            | "Message(Close)"
-                            | "Custom(\"pairing_ready\")"
-                            | "Custom(\"pairing_consumed\")"
-                            | "Custom(\"rpc\")"
-                    ) {
-                        debug!(?event, "evento cloud: {}", payload_debug(&payload));
-                    }
+                    debug!(?event, "evento cloud: {}", payload_debug(&payload));
                 }
                 .boxed()
             }
         })
         .connect()
         .await
-        .map_err(|e| anyhow::anyhow!("connect: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("connect falló: {e}"))?;
 
     // Mantener la conexión viva hasta desconexión o shutdown
     loop {
