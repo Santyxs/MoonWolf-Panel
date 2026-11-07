@@ -1,0 +1,3 @@
+/* Placeholder: CI sobrescribe con la CSS original del agent Node (c27b2e00) */
+:root { color-scheme: dark; --bg: #080a10; --text: #f3f6fb; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: "Segoe UI", sans-serif; }

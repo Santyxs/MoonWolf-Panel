@@ -27,6 +27,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Restore original Agent UI (CSS/JS Node)
+        shell: bash
+        run: |
+          mkdir -p agent/ui
+          curl -fsSL "https://raw.githubusercontent.com/Santyxs/MoonWolf-Panel/c27b2e00/agent/ui/style.css" \
+            -o agent/ui/style.css
+          curl -fsSL "https://raw.githubusercontent.com/Santyxs/MoonWolf-Panel/c27b2e00/agent/ui/app.js" \
+            -o agent/ui/app.js
+          if [ ! -s agent/ui/body.html ]; then
+            curl -fsSL "https://raw.githubusercontent.com/Santyxs/MoonWolf-Panel/c27b2e00/agent/ui/index.html" \
+              | python -c "import sys,re; t=sys.stdin.read(); m=re.search(r'<body[^>]*>(.*)</body>',t,re.S|re.I); print(m.group(1) if m else t)" \
+              > agent/ui/body.html
+          fi
+          wc -c agent/ui/style.css agent/ui/app.js agent/ui/body.html
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -103,7 +118,6 @@ jobs:
           elif [ "$dots" -eq 1 ]; then VER="${VER}.0"
           fi
           sed -i "s/^version = \".*\"/version = \"${VER}\"/" Cargo.toml
-          echo "Cargo.toml version:"
           grep '^version' Cargo.toml
 
       - name: Build release
@@ -111,7 +125,6 @@ jobs:
         shell: bash
         run: |
           cargo build --release
-          ls -la target/release/
           test -f target/release/moonwolf-agent.exe
 
       - name: Stage artifact
@@ -141,26 +154,17 @@ jobs:
           TAG_NAME: ${{ steps.version.outputs.tag }}
         run: |
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            echo "Release $TAG_NAME already exists; uploading asset"
             gh release upload "$TAG_NAME" dist/MoonWolf-Agent.exe --clobber
             exit 0
           fi
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag "$TAG_NAME" "$GITHUB_SHA" || true
           git push origin "$TAG_NAME" || true
-
           gh release create "$TAG_NAME" \
             dist/MoonWolf-Agent.exe \
             --title "MoonWolf Agent v${TAG_NAME#agent-v} (Rust)" \
-            --notes "Agent nativo en **Rust** (sin Node.js).
-
-          ## Instalación
-          1. Descarga \`MoonWolf-Agent.exe\`
-          2. Ejecuta el \`.exe\` (no requiere instalar Rust ni Node)
-
-          **Commit:** ${GITHUB_SHA}"
+            --notes "Agent nativo en **Rust** (sin Node.js). UI original del Agent.\n\n**Commit:** ${GITHUB_SHA}"
 
       - name: Upload asset to existing release
         if: github.event_name == 'release'

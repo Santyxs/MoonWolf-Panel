@@ -1,5 +1,5 @@
 //! Interfaz gráfica con WebView (wry + tao).
-//! UI = agent/ui/index.html (misma del agent Node) + bridge window.native.
+//! UI = HTML/CSS/JS del agent Node original + bridge window.native → IPC.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,13 +14,89 @@ use wry::WebViewBuilder;
 use crate::state::AppState;
 
 const WINDOW_TITLE: &str = "MoonWolf Agent";
-const EMBEDDED_UI: &str = include_str!("../ui/index.html");
 const PANEL_URL: &str = "https://moonwolf-panel.onrender.com";
+
+const UI_BODY: &str = include_str!("../ui/body.html");
+const UI_CSS: &str = include_str!("../ui/style.css");
+const UI_JS: &str = include_str!("../ui/app.js");
+
+const NATIVE_BRIDGE: &str = r#"
+(function () {
+  function post(action, extra) {
+    var payload = Object.assign({ action: action }, extra || {});
+    var msg = JSON.stringify(payload);
+    try {
+      if (window.ipc && window.ipc.postMessage) {
+        window.ipc.postMessage(msg);
+        return;
+      }
+    } catch (e) {}
+    try {
+      if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage) {
+        window.chrome.webview.postMessage(msg);
+        return;
+      }
+    } catch (e) {}
+  }
+  var lastState = null;
+  window.__applyState = function (json) {
+    try {
+      var state = typeof json === 'string' ? JSON.parse(json) : json;
+      lastState = state;
+      window.dispatchEvent(new CustomEvent('moonwolf-state', { detail: state }));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+  window.native = {
+    getState: function () { return lastState || {}; },
+    openPanel: function () { post('open_panel'); return { ok: true }; },
+    openServerFolder: function () { post('open_server_folder'); return { ok: true }; },
+    openConfig: function () { post('open_config_dir'); return { ok: true }; },
+    setServerDir: function (dir) {
+      post('set_server_dir', { path: dir });
+      return Promise.resolve({ ok: true, restartRequired: true });
+    },
+    clearLogs: function () { post('clear_logs'); return true; },
+    saveLogs: function () { post('save_logs'); return true; },
+    hideToTray: function () { post('hide_to_tray'); return { ok: true }; },
+    restart: function () { post('restart'); return true; },
+    checkForUpdates: function () {
+      post('check_update');
+      return Promise.resolve({ ok: true });
+    },
+    applyUpdate: function () {
+      post('apply_update');
+      return Promise.resolve({ ok: true });
+    },
+    close: function () { post('quit'); return { ok: true }; }
+  };
+})();
+"#;
 
 #[derive(Debug)]
 enum GuiEvent {
     StateJson(String),
     Quit,
+}
+
+fn build_index_html() -> String {
+    let mut out = String::with_capacity(
+        UI_CSS.len() + UI_BODY.len() + UI_JS.len() + NATIVE_BRIDGE.len() + 512,
+    );
+    out.push_str("<!DOCTYPE html>\n<html lang=\"es\">\n<head>\n");
+    out.push_str("<meta charset=\"UTF-8\">\n");
+    out.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
+    out.push_str("<title>MoonWolf Agent</title>\n<style>\n");
+    out.push_str(UI_CSS);
+    out.push_str("\n</style>\n</head>\n<body>\n");
+    out.push_str(UI_BODY);
+    out.push_str("\n<script>\n");
+    out.push_str(NATIVE_BRIDGE);
+    out.push_str("\n</script>\n<script>\n");
+    out.push_str(UI_JS);
+    out.push_str("\n</script>\n</body>\n</html>\n");
+    out
 }
 
 fn setup_webview2_data_dir() {
@@ -94,12 +170,10 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         *control_flow = ControlFlow::Wait;
         match event {
             Event::UserEvent(GuiEvent::StateJson(json)) => {
-                // Como el agent Node: CustomEvent moonwolf-state
-                let safe = json.replace('\u{2028}', "\\u2028").replace('\u{2029}', "\\u2029");
-                let script = format!(
-                    "window.__applyState && window.__applyState({safe});\
-                     window.dispatchEvent(new CustomEvent('moonwolf-state', {{ detail: {safe} }}));"
-                );
+                let safe = json
+                    .replace('\u{2028}', "\\u2028")
+                    .replace('\u{2029}', "\\u2029");
+                let script = format!("window.__applyState && window.__applyState({safe});");
                 if let Err(e) = webview.evaluate_script(&script) {
                     error!("evaluate_script: {e}");
                 }
@@ -252,8 +326,6 @@ fn handle_ipc(
             });
         }
         "restart" => {
-            // Reinicio simple: salir; el usuario o un launcher puede reabrir.
-            // En Windows intentamos relanzar el mismo exe.
             if let Ok(exe) = std::env::current_exe() {
                 let _ = std::process::Command::new(&exe).spawn();
             }
@@ -264,8 +336,7 @@ fn handle_ipc(
             let _ = proxy.send_event(GuiEvent::Quit);
         }
         "hide_to_tray" => {
-            // Sin bandeja nativa completa aún: minimizar no está expuesto fácilmente desde aquí.
-            info!("hide_to_tray solicitado (no implementado en Rust todavía)");
+            info!("hide_to_tray solicitado (bandeja aún no implementada en Rust)");
         }
         other if !other.is_empty() => {
             tracing::debug!("IPC action: {other}");
@@ -299,8 +370,8 @@ fn load_ui_index() -> String {
             }
         }
     }
-    info!("UI embebida en el binario");
-    EMBEDDED_UI.to_string()
+    info!("UI ensamblada (HTML/CSS/JS originales + bridge)");
+    build_index_html()
 }
 
 fn open_url(url: &str) -> bool {
