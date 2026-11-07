@@ -29,29 +29,13 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Ensure full UI CSS/JS in tree
+      - name: Verify UI assets
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p agent/ui
-          # Siempre usar la UI original completa del agent Node
-          curl -fsSL "https://raw.githubusercontent.com/Santyxs/MoonWolf-Panel/c27b2e00/agent/ui/style.css" \
-            -o agent/ui/style.css
-          curl -fsSL "https://raw.githubusercontent.com/Santyxs/MoonWolf-Panel/c27b2e00/agent/ui/app.js" \
-            -o agent/ui/app.js
+          test -f agent/ui/index.html
+          test -f agent/ui/style.css
+          test -f agent/ui/app.js
           wc -c agent/ui/index.html agent/ui/style.css agent/ui/app.js
-
-          # Si el repo tenía placeholders, dejar los archivos completos en main
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add agent/ui/style.css agent/ui/app.js
-          if git diff --staged --quiet; then
-            echo "UI assets already up to date in git"
-          else
-            git commit -m "chore(agent): style.css y app.js completos (UI Node original) [skip ci]"
-            git push origin HEAD:${{ github.ref_name }} || true
-          fi
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable

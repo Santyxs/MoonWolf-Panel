@@ -472,6 +472,13 @@ function bindEvents() {
     if (list) list.scrollTop = list.scrollHeight;
   });
 
+  $('view-logs')?.addEventListener('click', () => {
+    openModal('logs-modal');
+    renderLogs(true);
+    const list = $('logs-list');
+    if (list) list.scrollTop = list.scrollHeight;
+  });
+
   $('logs-search')?.addEventListener('input', event => {
     logsQuery = event.currentTarget.value || '';
     renderLogs(true);
