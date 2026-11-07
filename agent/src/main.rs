@@ -1,12 +1,4 @@
 //! MoonWolf Agent — reescritura nativa en Rust (sin Node.js).
-//!
-//! Responsabilidades:
-//! - Configuración persistente (agentId, tokens, serverDir)
-//! - API HTTP local (gestión de archivos del servidor Minecraft)
-//! - Conexión Socket.IO con MoonWolf Cloud
-//! - Canal directo WebRTC (feature `webrtc`)
-//! - GUI WebView (feature `gui`) + bandeja del sistema
-//! - Auto-actualización desde GitHub Releases
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
@@ -25,7 +17,7 @@ mod direct;
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::AgentConfig;
@@ -99,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
     {
         info!("Modo headless (sin feature `gui`). Ctrl+C para salir.");
         tokio::signal::ctrl_c().await?;
-        warn!("Señal de salida recibida");
+        tracing::warn!("Señal de salida recibida");
     }
 
     {
