@@ -1,14 +1,10 @@
 //! Cliente Socket.IO hacia MoonWolf Cloud.
-//! Protocolo alineado con server.js + el agent Node original:
-//! - handshake.auth = { role: "agent", agentId, token }
-//! - al conectar: emit "pairing_create"
-//! - recibe "pairing_ready" { code, ttlMs, expiresAt }
-//! - "pairing_consumed" → pedir código nuevo
-//! - "rpc" → proxy a API local → "rpc_result"
+//! RPC: el panel espera bodyBase64 (no body JSON).
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use futures::future::FutureExt;
 use rust_socketio::asynchronous::{Client, ClientBuilder};
 use rust_socketio::{Event, Payload, TransportType};
@@ -58,10 +54,7 @@ pub async fn run(app: Arc<RwLock<AppState>>, panel_url: &str) {
         info!("Reintento de Cloud en {backoff} ms…");
         {
             let mut s = app.write().await;
-            s.add_log(
-                "warn",
-                format!("Reconexión programada en {backoff} ms"),
-            );
+            s.add_log("warn", format!("Reconexión programada en {backoff} ms"));
         }
         sleep_ms(backoff).await;
         backoff = (backoff * 2).min(RECONNECT_MAX_MS);
@@ -86,9 +79,7 @@ async fn connect_once(
         );
     }
 
-    info!(
-        "Conectando a Cloud (intento #{attempt}): {panel_url} agentId={agent_id}"
-    );
+    info!("Conectando a Cloud (intento #{attempt}): {panel_url} agentId={agent_id}");
     {
         let mut s = app.write().await;
         s.add_log(
@@ -107,8 +98,6 @@ async fn connect_once(
     let app_on_close = Arc::clone(&app);
     let app_on_error = Arc::clone(&app);
 
-    // WebsocketUpgrade: polling primero y upgrade (más fiable detrás de proxies).
-    // Si falla, se puede probar solo Websocket.
     let client = ClientBuilder::new(panel_url)
         .namespace("/")
         .transport_type(TransportType::WebsocketUpgrade)
@@ -179,30 +168,14 @@ async fn connect_once(
                         .and_then(|c| c.as_str())
                         .unwrap_or("")
                         .to_string();
-
-                    if code.is_empty() {
+                    if code.is_empty() || !code.starts_with("MW-P") {
                         let mut s = app.write().await;
-                        s.add_log("error", format!("pairing_ready sin código: {data}"));
+                        s.add_log("error", format!("pairing_ready inválido: {data}"));
                         return;
                     }
-
-                    if !code.starts_with("MW-P") {
-                        let mut s = app.write().await;
-                        s.add_log(
-                            "error",
-                            format!("Código de emparejamiento inválido: {code}"),
-                        );
-                        return;
-                    }
-
-                    {
-                        let mut s = app.write().await;
-                        s.pairing_code = Some(code.clone());
-                        s.add_log(
-                            "info",
-                            format!("Código de emparejamiento disponible: {code}"),
-                        );
-                    }
+                    let mut s = app.write().await;
+                    s.pairing_code = Some(code.clone());
+                    s.add_log("info", format!("Código de emparejamiento disponible: {code}"));
                 }
                 .boxed()
             }
@@ -220,9 +193,7 @@ async fn connect_once(
                             "Código de emparejamiento utilizado. Generando uno nuevo.",
                         );
                     }
-                    if let Err(e) = socket.emit("pairing_create", json!({})).await {
-                        error!("pairing_create tras consumed: {e}");
-                    }
+                    let _ = socket.emit("pairing_create", json!({})).await;
                 }
                 .boxed()
             }
@@ -284,6 +255,7 @@ fn payload_debug(payload: &Payload) -> String {
     }
 }
 
+/// Igual que forwardHttp del agent Node: bodyBase64 + contentType + status.
 async fn handle_rpc(app: &Arc<RwLock<AppState>>, payload: &Payload) -> serde_json::Value {
     let req = payload_json(payload);
     let method = req
@@ -302,25 +274,31 @@ async fn handle_rpc(app: &Arc<RwLock<AppState>>, payload: &Payload) -> serde_jso
         s.config.local_token.clone()
     };
 
+    // path puede incluir query: /api/files?dir=
     let url = format!("http://127.0.0.1:10000{path}");
     let client = reqwest::Client::new();
     let mut builder = match method.as_str() {
         "POST" => client.post(&url),
         "PUT" => client.put(&url),
         "DELETE" => client.delete(&url),
+        "PATCH" => client.patch(&url),
         _ => client.get(&url),
     };
     builder = builder
         .header("Authorization", format!("Bearer {token}"))
+        .header("X-MoonWolf-Token", &token)
         .timeout(Duration::from_secs(120));
 
     if let Some(body) = req.get("body") {
-        builder = builder.json(body);
+        if !body.is_null() {
+            builder = builder.json(body);
+        }
     }
 
     match builder.send().await {
         Ok(resp) => {
             let status = resp.status().as_u16();
+            let ok = resp.status().is_success();
             let content_type = resp
                 .headers()
                 .get("content-type")
@@ -328,22 +306,25 @@ async fn handle_rpc(app: &Arc<RwLock<AppState>>, payload: &Payload) -> serde_jso
                 .unwrap_or("application/json")
                 .to_string();
             let bytes = resp.bytes().await.unwrap_or_default();
-            let body_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
-                json!({ "raw": String::from_utf8_lossy(&bytes) })
-            });
             json!({
                 "id": id,
-                "ok": status < 400,
+                "ok": ok,
                 "status": status,
                 "contentType": content_type,
-                "body": body_json,
+                "bodyBase64": B64.encode(&bytes),
             })
         }
-        Err(e) => json!({
-            "id": id,
-            "ok": false,
-            "status": 502,
-            "error": e.to_string(),
-        }),
+        Err(e) => {
+            let msg = e.to_string();
+            let err_body = json!({ "ok": false, "error": msg });
+            let bytes = serde_json::to_vec(&err_body).unwrap_or_default();
+            json!({
+                "id": id,
+                "ok": false,
+                "status": 502,
+                "contentType": "application/json",
+                "bodyBase64": B64.encode(&bytes),
+            })
+        }
     }
 }
