@@ -1,5 +1,6 @@
 //! Interfaz gráfica con WebView (wry + tao).
-//! UI = agent/ui/index.html (UI Node original + bridge IPC, un solo archivo).
+//! Fuentes separadas: ui/index.html + ui/style.css + ui/app.js
+//! En runtime se ensamblan (WebView no puede cargar href locales del .exe).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,12 +16,93 @@ use crate::state::AppState;
 
 const WINDOW_TITLE: &str = "MoonWolf Agent";
 const PANEL_URL: &str = "https://moonwolf-panel.onrender.com";
-const EMBEDDED_UI: &str = include_str!("../ui/index.html");
+
+const UI_HTML: &str = include_str!("../ui/index.html");
+const UI_CSS: &str = include_str!("../ui/style.css");
+const UI_JS: &str = include_str!("../ui/app.js");
+
+const NATIVE_BRIDGE: &str = r#"
+(function () {
+  function post(action, extra) {
+    var payload = Object.assign({ action: action }, extra || {});
+    var msg = JSON.stringify(payload);
+    try {
+      if (window.ipc && window.ipc.postMessage) {
+        window.ipc.postMessage(msg);
+        return;
+      }
+    } catch (e) {}
+    try {
+      if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage) {
+        window.chrome.webview.postMessage(msg);
+        return;
+      }
+    } catch (e) {}
+  }
+  var lastState = null;
+  window.__applyState = function (json) {
+    try {
+      var state = typeof json === 'string' ? JSON.parse(json) : json;
+      lastState = state;
+      window.dispatchEvent(new CustomEvent('moonwolf-state', { detail: state }));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+  window.native = {
+    getState: function () { return lastState || {}; },
+    openPanel: function () { post('open_panel'); return { ok: true }; },
+    openServerFolder: function () { post('open_server_folder'); return { ok: true }; },
+    openConfig: function () { post('open_config_dir'); return { ok: true }; },
+    setServerDir: function (dir) {
+      post('set_server_dir', { path: dir });
+      return Promise.resolve({ ok: true, restartRequired: true });
+    },
+    clearLogs: function () { post('clear_logs'); return true; },
+    saveLogs: function () { post('save_logs'); return true; },
+    hideToTray: function () { post('hide_to_tray'); return { ok: true }; },
+    restart: function () { post('restart'); return true; },
+    checkForUpdates: function () {
+      post('check_update');
+      return Promise.resolve({ ok: true });
+    },
+    applyUpdate: function () {
+      post('apply_update');
+      return Promise.resolve({ ok: true });
+    },
+    close: function () { post('quit'); return { ok: true }; }
+  };
+})();
+"#;
 
 #[derive(Debug)]
 enum GuiEvent {
     StateJson(String),
     Quit,
+}
+
+fn assemble_ui() -> String {
+    let mut html = UI_HTML.to_string();
+
+    html = html.replace("<link rel=\"stylesheet\" href=\"style.css\">", "");
+    html = html.replace("<link rel='stylesheet' href='style.css'>", "");
+    html = html.replace("<script src=\"app.js\"></script>", "");
+    html = html.replace("<script src='app.js'></script>", "");
+
+    if let Some(pos) = html.find("</head>") {
+        let style_tag = format!("<style>\n{}\n</style>\n", UI_CSS);
+        html.insert_str(pos, &style_tag);
+    }
+
+    if let Some(pos) = html.rfind("</body>") {
+        let scripts = format!(
+            "<script>\n{}\n</script>\n<script>\n{}\n</script>\n",
+            NATIVE_BRIDGE, UI_JS
+        );
+        html.insert_str(pos, &scripts);
+    }
+
+    html
 }
 
 fn setup_webview2_data_dir() {
@@ -36,7 +118,7 @@ fn setup_webview2_data_dir() {
 pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     setup_webview2_data_dir();
 
-    let index_html = load_ui_index();
+    let index_html = assemble_ui();
     let event_loop = EventLoopBuilder::<GuiEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
@@ -282,20 +364,6 @@ where
             rt.block_on(f(app));
         }
     });
-}
-
-fn load_ui_index() -> String {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let p = dir.join("ui").join("index.html");
-            if let Ok(html) = std::fs::read_to_string(&p) {
-                info!("UI cargada desde {}", p.display());
-                return html;
-            }
-        }
-    }
-    info!("UI embebida (index.html único)");
-    EMBEDDED_UI.to_string()
 }
 
 fn open_url(url: &str) -> bool {
