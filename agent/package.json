@@ -1,9 +1,0 @@
-{
-  "name": "moonwolf-agent",
-  "version": "0.0.0-rust",
-  "private": true,
-  "description": "DEPRECATED: el Agent es ahora nativo en Rust. Ver agent/README.md y GitHub Actions.",
-  "scripts": {
-    "start": "echo El Agent Node fue reemplazado por Rust. Usa GitHub Actions o: cargo build --release"
-  }
-}
