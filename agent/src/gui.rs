@@ -21,12 +21,26 @@ enum GuiEvent {
     Quit,
 }
 
+/// Evita la carpeta `MoonWolf-Agent.exe.WebView2` junto al .exe.
+/// WebView2 (Edge) guarda caché ahí por defecto; la movemos a AppData.
+fn setup_webview2_data_dir() {
+    #[cfg(windows)]
+    {
+        let dir = crate::config::AgentConfig::config_dir().join("WebView2");
+        let _ = std::fs::create_dir_all(&dir);
+        // Variable oficial de WebView2 — debe fijarse ANTES de crear el WebView
+        std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &dir);
+        info!("WebView2 data folder: {}", dir.display());
+    }
+}
+
 pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
+    setup_webview2_data_dir();
+
     let index_html = load_ui_index();
     let event_loop = EventLoopBuilder::<GuiEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
-    // Hilo que empuja el estado a la UI cada 500 ms
     {
         let app = Arc::clone(&app);
         let proxy = proxy.clone();
@@ -70,7 +84,6 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     let webview = WebViewBuilder::new(&window)
         .with_html(&index_html)
         .with_ipc_handler(move |req| {
-            // wry 0.45: Request<String> — el body es el mensaje JS
             let body = req.body().clone();
             handle_ipc(body, Arc::clone(&app_for_ipc), proxy_for_ipc.clone());
         })
@@ -82,7 +95,6 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         *control_flow = ControlFlow::Wait;
         match event {
             Event::UserEvent(GuiEvent::StateJson(json)) => {
-                // Pasar JSON escapado como string literal a __applyState
                 let escaped = serde_json::to_string(&json).unwrap_or_else(|_| "\"{}\"".into());
                 let script = format!("window.__applyState && window.__applyState({escaped})");
                 if let Err(e) = webview.evaluate_script(&script) {
@@ -113,9 +125,12 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     });
 }
 
-fn handle_ipc(body: String, app: Arc<RwLock<AppState>>, proxy: tao::event_loop::EventLoopProxy<GuiEvent>) {
+fn handle_ipc(
+    body: String,
+    app: Arc<RwLock<AppState>>,
+    proxy: tao::event_loop::EventLoopProxy<GuiEvent>,
+) {
     let body = body.trim().to_string();
-    // Aceptar texto plano o JSON
     let action = if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
         v.get("action")
             .and_then(|a| a.as_str())
