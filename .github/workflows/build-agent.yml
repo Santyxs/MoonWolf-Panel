@@ -1,157 +1,64 @@
-name: Build Agent
+name: Build Agent (Rust)
 
 on:
   workflow_dispatch:
-
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - 'agent/**'
-      - 'server.js'
       - '.github/workflows/build-agent.yml'
-      - 'package.json'
-      - 'package-lock.json'
+  release:
+    types: [published]
 
 concurrency:
-  group: build-agent-${{ github.ref }}
+  group: build-agent-rust-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   build-windows:
     runs-on: windows-latest
-
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
         with:
-          fetch-depth: 1
+          targets: x86_64-pc-windows-msvc
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
         with:
-          node-version: '26'
-          cache: npm
-          cache-dependency-path: package-lock.json
+          workspaces: agent
+          shared-key: moonwolf-agent-windows
 
-      - name: Install root dependencies
-        run: npm ci --no-audit --no-fund
-
-      - name: Cache agent node_modules
-        id: cache-agent-mods
-        uses: actions/cache@v6
-        with:
-          path: agent/node_modules
-          key: agent-mods-${{ hashFiles('agent/package.json') }}
-
-      - name: Install Agent dependencies
-        if: steps.cache-agent-mods.outputs.cache-hit != 'true'
-        working-directory: agent
-        run: npm install --no-package-lock --no-audit --no-fund
-
-      - name: Patch natives for SEA + prepare dist
-        shell: pwsh
-        run: |
-          # Verify native addons exist
-          $natives = @(
-            'agent/node_modules/@webviewjs/webview-win32-x64-msvc/webview.win32-x64-msvc.node',
-            'agent/node_modules/node-datachannel/build/Release/node_datachannel.node'
-          )
-          foreach ($p in $natives) {
-            if (-not (Test-Path -LiteralPath $p)) {
-              throw "Native addon not found: $p"
-            }
-            Write-Host "OK $(Resolve-Path -LiteralPath $p)"
-          }
-
-          # WebViewJS: process.dlopen via NAPI_RS_NATIVE_LIBRARY_PATH
-          $bindings = 'agent/node_modules/@webviewjs/webview/js-bindings.js'
-          if (-not (Test-Path -LiteralPath $bindings)) {
-            throw "js-bindings.js not found"
-          }
-          $content = Get-Content -LiteralPath $bindings -Raw
-          $old = 'return require(process.env.NAPI_RS_NATIVE_LIBRARY_PATH);'
-          if ($content.Contains('process.dlopen(nativeModule, process.env.NAPI_RS_NATIVE_LIBRARY_PATH')) {
-            Write-Host 'WebViewJS js-bindings already patched (cache hit).'
-          } elseif ($content.Contains($old)) {
-            $new = @(
-              'const nativeModule = { exports: {} };'
-              'process.dlopen(nativeModule, process.env.NAPI_RS_NATIVE_LIBRARY_PATH, 2);'
-              'return nativeModule.exports;'
-            ) -join "`n"
-            Set-Content -LiteralPath $bindings -Value ($content.Replace($old, $new)) -Encoding utf8
-            Write-Host 'WebViewJS js-bindings patched.'
-          } else {
-            throw 'Expected line not found in js-bindings.js.'
-          }
-
-          # Shim so esbuild does not load the .node binary
-          $pkgDir = 'agent/node_modules/@webviewjs/webview-win32-x64-msvc'
-          $shimRel = 'webview-shim.js'
-          Set-Content -LiteralPath (Join-Path $pkgDir $shimRel) -Value 'module.exports = {};' -Encoding ascii -NoNewline
-          $pkgJsonPath = Join-Path $pkgDir 'package.json'
-          $pkg = Get-Content -LiteralPath $pkgJsonPath -Raw | ConvertFrom-Json
-          $pkg.main = $shimRel
-          $pkg | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $pkgJsonPath -Encoding utf8
-          Write-Host "package.json main -> $shimRel"
-
-          # node-datachannel: process.dlopen via NODE_DATACHANNEL_NATIVE_PATH
-          $pattern = 'require\(\s*[''"][^''"]*node_datachannel\.node[''"]\s*\)'
-          $replacement = '(() => { if (!process.env.NODE_DATACHANNEL_NATIVE_PATH) { throw new Error("NODE_DATACHANNEL_NATIVE_PATH is not defined"); } const m = { exports: {} }; process.dlopen(m, process.env.NODE_DATACHANNEL_NATIVE_PATH, 2); return m.exports; })()'
-          $patched = 0
-          Get-ChildItem -Path 'agent/node_modules/node-datachannel' -Recurse -Include '*.js','*.cjs','*.mjs' -File |
-            ForEach-Object {
-              $text = Get-Content -LiteralPath $_.FullName -Raw
-              if ($text -match $pattern) {
-                Set-Content -LiteralPath $_.FullName -Value ($text -replace $pattern, $replacement) -Encoding utf8 -NoNewline
-                Write-Host "Patched: $($_.FullName)"
-                $patched++
-              }
-            }
-          if ($patched -eq 0) {
-            $already = Get-ChildItem -Path 'agent/node_modules/node-datachannel' -Recurse -Include '*.js','*.cjs','*.mjs' -File |
-              Where-Object { (Get-Content -LiteralPath $_.FullName -Raw) -match 'NODE_DATACHANNEL_NATIVE_PATH' }
-            if ($already) {
-              Write-Host "node-datachannel already patched (cache hit): $($already.Count) file(s)."
-            } else {
-              throw 'Native binding require not found in node-datachannel'
-            }
-          } else {
-            Write-Host "node-datachannel: $patched file(s) patched."
-          }
-
-          if (Test-Path -LiteralPath 'dist') {
-            Remove-Item -LiteralPath 'dist' -Recurse -Force
-          }
-          New-Item -ItemType Directory -Force -Path 'dist' | Out-Null
-
-      - name: Restore rcedit cache
-        uses: actions/cache@v6
-        with:
-          path: dist/tools/rcedit-x64.exe
-          key: rcedit-x64-v2.0.0
-
-      - name: Determine next Agent version
+      - name: Determine version
         id: version
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Bump minor; at .99 roll over to next major.0
+          if [ "${{ github.event_name }}" = "release" ]; then
+            tag="${{ github.event.release.tag_name }}"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "version=${tag#agent-v}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           latest=$(
             gh release list \
               --limit 50 \
               --exclude-drafts \
               --exclude-pre-releases \
               --json tagName \
-              --jq '
-                [.[] | .tagName | select(startswith("agent-v"))] |
-                sort_by(sub("^agent-v"; "") | split(".") | map(tonumber)) |
-                last // empty
-              '
+              --jq '[.[] | .tagName | select(startswith("agent-v"))] | sort_by(sub("^agent-v"; "") | split(".") | map(tonumber)) | last // empty' \
+            2>/dev/null || true
           )
 
           if [ -z "$latest" ]; then
@@ -168,232 +75,86 @@ jobs:
             next="agent-v${major}.${minor}"
           fi
 
-          echo "Latest version: ${latest:-none}"
-          echo "Next version: $next"
+          echo "Latest: ${latest:-none} → Next: $next"
           echo "tag=$next" >> "$GITHUB_OUTPUT"
+          echo "version=${next#agent-v}" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare base executable (icon + metadata)
-        shell: pwsh
-        env:
-          AGENT_TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          $dist = (Resolve-Path 'dist').Path
-          $baseExe = Join-Path $dist 'MoonWolf-Agent-base.exe'
-          $nodeExe = (node -p "process.execPath").Trim()
-          $icon = (Resolve-Path 'agent/assets/MoonWolf-Agent.ico').Path
-          $version = $env:AGENT_TAG -replace '^agent-v', ''
-          $fileVersion = "$version.0.0"
-
-          if (-not (Test-Path -LiteralPath $nodeExe)) {
-            throw "Node executable not found: $nodeExe"
-          }
-          Copy-Item -LiteralPath $nodeExe -Destination $baseExe -Force
-
-          $toolsDir = Join-Path $dist 'tools'
-          New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
-          $rcedit = Join-Path $toolsDir 'rcedit-x64.exe'
-          $rceditUrl = 'https://github.com/electron/rcedit/releases/download/v2.0.0/rcedit-x64.exe'
-
-          if (-not (Test-Path -LiteralPath $rcedit)) {
-            Write-Host 'Downloading rcedit...'
-            Invoke-WebRequest -Uri $rceditUrl -OutFile $rcedit -UseBasicParsing
-          }
-          if (-not (Test-Path -LiteralPath $rcedit)) { throw 'Failed to obtain rcedit-x64.exe' }
-
-          & $rcedit $baseExe `
-            --set-icon $icon `
-            --set-version-string 'FileDescription' 'MoonWolf Agent' `
-            --set-version-string 'ProductName' 'MoonWolf Agent' `
-            --set-version-string 'InternalName' 'MoonWolf-Agent.exe' `
-            --set-version-string 'OriginalFilename' 'MoonWolf-Agent.exe' `
-            --set-version-string 'CompanyName' 'MoonWolf' `
-            --set-file-version $fileVersion `
-            --set-product-version $fileVersion
-          if ($LASTEXITCODE -ne 0) { throw "rcedit exited with code $LASTEXITCODE" }
-
-          $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($baseExe)
-          Write-Host "Base FileDescription: $($info.FileDescription)"
-          Write-Host "Base ProductName: $($info.ProductName)"
-          Write-Host "Base FileVersion: $($info.FileVersion)"
-          if ($info.FileDescription -ne 'MoonWolf Agent' -or $info.ProductName -ne 'MoonWolf Agent') {
-            throw 'Base executable metadata does not contain the expected name MoonWolf Agent.'
-          }
-
-          Write-Host "Prepared base executable: $baseExe"
-
-      - name: Bundle Agent
+      - name: Set crate version
         shell: bash
         env:
-          AGENT_TAG: ${{ steps.version.outputs.tag }}
+          VER: ${{ steps.version.outputs.version }}
+        working-directory: agent
         run: |
-          npx --no-install esbuild agent/index.js \
-            --bundle \
-            --minify \
-            --platform=node \
-            --target=node26 \
-            --format=cjs \
-            --define:__AGENT_VERSION__="\"${AGENT_TAG#agent-v}\"" \
-            --outfile=dist/agent.cjs \
-            --log-level=info
+          sed -i "s/^version = \".*\"/version = \"${VER}\"/" Cargo.toml
+          grep '^version' Cargo.toml
 
-          size=$(wc -c < dist/agent.cjs | tr -d ' ')
-          echo "agent.cjs: ${size} bytes"
-          if [ "$size" -lt 102400 ]; then
-            echo "Generated bundle is suspiciously small." >&2
-            exit 1
-          fi
-
-      - name: Create SEA configuration + build
-        shell: pwsh
+      - name: Build release
+        working-directory: agent
+        shell: bash
         run: |
-          $native = (Resolve-Path 'agent/node_modules/@webviewjs/webview-win32-x64-msvc/webview.win32-x64-msvc.node').Path
-          $dcNative = (Resolve-Path 'agent/node_modules/node-datachannel/build/Release/node_datachannel.node').Path
-          $main = (Resolve-Path 'dist/agent.cjs').Path
-          $baseExe = (Resolve-Path 'dist/MoonWolf-Agent-base.exe').Path
-          $exe = Join-Path (Resolve-Path 'dist').Path 'MoonWolf-Agent.exe'
-          $indexHtml = (Resolve-Path 'agent/ui/index.html').Path
-          $styleCss = (Resolve-Path 'agent/ui/style.css').Path
-          $appJs = (Resolve-Path 'agent/ui/app.js').Path
+          cargo build --release
+          ls -la target/release/
+          test -f target/release/moonwolf-agent.exe
 
-          # Prueba original, gzip y Brotli; incrusta la variante más pequeña de cada addon.
-          # MWBR marca el payload Brotli. En ejecución se descomprime con node:zlib.
-          $compressedDir = Join-Path (Resolve-Path 'dist').Path 'native-compressed'
-          New-Item -ItemType Directory -Force -Path $compressedDir | Out-Null
-          $nativeCompressed = Join-Path $compressedDir 'webview.win32-x64-msvc.node.asset'
-          $dcNativeCompressed = Join-Path $compressedDir 'node_datachannel.node.asset'
-
-          $compressScript = @'
-          const fs = require('node:fs');
-          const zlib = require('node:zlib');
-          const path = require('node:path');
-          const pairs = [
-            [process.argv[1], process.argv[2]],
-            [process.argv[3], process.argv[4]],
-          ];
-          for (const [sourcePath, outputPath] of pairs) {
-            const source = fs.readFileSync(sourcePath);
-            const gzip = zlib.gzipSync(source, { level: zlib.constants.Z_BEST_COMPRESSION });
-            const brotliRaw = zlib.brotliCompressSync(source, {
-              params: {
-                [zlib.constants.BROTLI_PARAM_QUALITY]: 11,
-                [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_GENERIC,
-                [zlib.constants.BROTLI_PARAM_SIZE_HINT]: source.length,
-              },
-            });
-            const brotli = Buffer.concat([Buffer.from('MWBR'), brotliRaw]);
-            let payload = source;
-            let mode = 'original';
-            if (gzip.length < payload.length) { payload = gzip; mode = 'gzip'; }
-            if (brotli.length < payload.length) { payload = brotli; mode = 'brotli-11'; }
-            fs.writeFileSync(outputPath, payload);
-            const saved = source.length - payload.length;
-            const percent = source.length ? (saved / source.length * 100).toFixed(1) : '0.0';
-            console.log(`${path.basename(sourcePath)}: original ${source.length} B; gzip ${gzip.length} B; Brotli ${brotli.length} B; selected ${mode} ${payload.length} B; saved ${saved} B (${percent}%).`);
-          }
-          '@
-          & node -e $compressScript $native $nativeCompressed $dcNative $dcNativeCompressed
-          if ($LASTEXITCODE -ne 0) { throw "Native addon compression failed with exit code $LASTEXITCODE" }
-
-          $config = @{
-            main = $main
-            mainFormat = 'commonjs'
-            executable = $baseExe
-            output = $exe
-            disableExperimentalSEAWarning = $true
-            useSnapshot = $false
-            useCodeCache = $true
-            assets = @{
-              'ui/index.html' = $indexHtml
-              'ui/style.css' = $styleCss
-              'ui/app.js' = $appJs
-              # Asset keys stay unchanged; each file contains its smallest original/gzip/Brotli representation.
-              'native/webview.win32-x64-msvc.node' = $nativeCompressed
-              'native/node_datachannel.node' = $dcNativeCompressed
-            }
-          }
-
-          $config | ConvertTo-Json -Depth 10 | Set-Content -Path 'dist/sea-config.json' -Encoding utf8
-          Write-Host 'sea-config.json:'
-          Get-Content -LiteralPath 'dist/sea-config.json' -Raw
-
-          if (Test-Path -LiteralPath $exe) { Remove-Item -LiteralPath $exe -Force }
-
-          Write-Host 'Building SEA with node --build-sea...'
-          node --build-sea (Resolve-Path 'dist/sea-config.json').Path
-          if ($LASTEXITCODE -ne 0) { throw "node --build-sea exited with code $LASTEXITCODE" }
-          if (-not (Test-Path -LiteralPath $exe)) { throw "Expected output not found: $exe" }
-
-          $size = (Get-Item -LiteralPath $exe).Length
-          Write-Host "MoonWolf-Agent.exe generated: $size bytes"
-          if ($size -lt 1MB) { throw 'Generated executable is suspiciously small.' }
-
-      - name: Hide console + verify metadata
+      - name: Stage artifact
         shell: pwsh
         env:
           AGENT_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          $exe = (Resolve-Path 'dist/MoonWolf-Agent.exe').Path
-          $version = $env:AGENT_TAG -replace '^agent-v', ''
-          $fileVersion = "$version.0.0"
-
-          # CONSOLE → WINDOWS (no console window)
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (-not (Test-Path -LiteralPath $vswhere)) { throw 'vswhere.exe not found' }
-
-          $vsInstallPath = & $vswhere -latest -products * `
-            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-            -property installationPath
-          if ([string]::IsNullOrWhiteSpace($vsInstallPath) -or -not (Test-Path -LiteralPath $vsInstallPath)) {
-            throw 'Visual Studio installation with C++ tools not found.'
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $exe = "dist/MoonWolf-Agent.exe"
+          Copy-Item -LiteralPath "agent/target/release/moonwolf-agent.exe" -Destination $exe -Force
+          if (Test-Path -LiteralPath "agent/ui") {
+            Copy-Item -LiteralPath "agent/ui" -Destination "dist/ui" -Recurse -Force
           }
-
-          $msvcRoot = Join-Path $vsInstallPath 'VC\Tools\MSVC'
-          $msvcVersion = Get-ChildItem -LiteralPath $msvcRoot -Directory |
-            Sort-Object { try { [version]$_.Name } catch { [version]'0.0' } } -Descending |
-            Select-Object -First 1
-          if ($null -eq $msvcVersion) { throw "No MSVC version found under $msvcRoot" }
-
-          $editbin = Join-Path $msvcVersion.FullName 'bin\Hostx64\x64\editbin.exe'
-          if (-not (Test-Path -LiteralPath $editbin)) { throw 'editbin.exe not found' }
-
-          Write-Host "editbin MSVC $($msvcVersion.Name)"
-          & $editbin /SUBSYSTEM:WINDOWS $exe
-          if ($LASTEXITCODE -ne 0) { throw "editbin exited with code $LASTEXITCODE" }
-
-          # Verify metadata copied from the prepared Node executable.
-          $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
-          Write-Host "FileDescription: $($info.FileDescription)"
-          Write-Host "ProductName: $($info.ProductName)"
-          Write-Host "FileVersion: $($info.FileVersion)"
-          if ($info.FileDescription -ne 'MoonWolf Agent' -or $info.ProductName -ne 'MoonWolf Agent') {
-            throw 'Final executable metadata does not contain the expected name MoonWolf Agent.'
-          }
-          if ($info.FileVersion -ne $fileVersion) {
-            throw "Unexpected file version. Expected $fileVersion, got $($info.FileVersion)"
-          }
-
           $size = (Get-Item -LiteralPath $exe).Length
-          Write-Host "MoonWolf-Agent.exe ready: $size bytes"
+          Write-Host "MoonWolf-Agent.exe: $size bytes (tag $env:AGENT_TAG)"
+          if ($size -lt 500KB) { throw "Executable suspiciously small" }
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: MoonWolf-Agent-Windows
-          path: dist/MoonWolf-Agent.exe
+          path: |
+            dist/MoonWolf-Agent.exe
+            dist/ui/**
           if-no-files-found: error
 
-      - name: Create Agent tag + Release
+      - name: Create tag + GitHub Release
+        if: github.event_name != 'release'
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ steps.version.outputs.tag }}
-        shell: bash
         run: |
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Release $TAG_NAME already exists; uploading asset"
+            gh release upload "$TAG_NAME" dist/MoonWolf-Agent.exe --clobber
+            exit 0
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag "$TAG_NAME" "$GITHUB_SHA"
-          git push origin "$TAG_NAME"
+          git tag "$TAG_NAME" "$GITHUB_SHA" || true
+          git push origin "$TAG_NAME" || true
 
           gh release create "$TAG_NAME" \
             dist/MoonWolf-Agent.exe \
-            --title "MoonWolf Agent v${TAG_NAME#agent-v}" \
-            --generate-notes
+            --title "MoonWolf Agent v${TAG_NAME#agent-v} (Rust)" \
+            --notes "Agent nativo en **Rust** (sin Node.js).
+
+          ## Instalación
+          1. Descarga \`MoonWolf-Agent.exe\`
+          2. Ejecuta el \`.exe\` (no requiere instalar Rust ni Node)
+
+          **Commit:** ${GITHUB_SHA}"
+
+      - name: Upload asset to existing release
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            dist/MoonWolf-Agent.exe \
+            --clobber
