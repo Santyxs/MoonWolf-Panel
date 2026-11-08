@@ -78,6 +78,7 @@ const NATIVE_BRIDGE: &str = r#"
 #[derive(Debug)]
 enum GuiEvent {
     StateJson(String),
+    Minimize,
     Quit,
 }
 
@@ -186,6 +187,9 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
             }
             Event::UserEvent(GuiEvent::Quit) => {
                 *control_flow = ControlFlow::Exit;
+            }
+            Event::UserEvent(GuiEvent::Minimize) => {
+                window.set_minimized(true);
             }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
@@ -342,7 +346,8 @@ fn handle_ipc(
             let _ = proxy.send_event(GuiEvent::Quit);
         }
         "hide_to_tray" => {
-            info!("hide_to_tray solicitado (bandeja aún no implementada en Rust)");
+            info!("hide_to_tray / minimizar a segundo plano solicitado");
+            let _ = proxy.send_event(GuiEvent::Minimize);
         }
         other if !other.is_empty() => {
             tracing::debug!("IPC action: {other}");
