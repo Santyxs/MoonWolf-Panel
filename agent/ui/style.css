@@ -863,11 +863,12 @@ footer {
 
 .update-progress-track {
   width: 100%;
-  height: 5px;
-  margin-top: 7px;
+  height: 8px;
+  margin-top: 10px;
   border-radius: 99px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.08);
   overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
 }
 
 .update-progress-track.hidden {
@@ -877,8 +878,10 @@ footer {
 .update-progress-fill {
   height: 100%;
   width: 0%;
-  background: linear-gradient(90deg, var(--accent), var(--green));
-  transition: width 0.3s ease;
+  border-radius: 99px;
+  background: linear-gradient(90deg, #8b5cf6, #a78bfa 45%, #34d399);
+  box-shadow: 0 0 12px rgba(139, 92, 246, 0.45);
+  transition: width 0.25s ease-out;
 }
 
 .update-notice {
