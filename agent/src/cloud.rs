@@ -11,8 +11,7 @@ use serde_json::json;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-use crate::state::AppState;
-use crate::util::sleep_ms;
+use crate::{sleep_ms, AppState};
 
 const RECONNECT_BASE_MS: u64 = 1_000;
 const RECONNECT_MAX_MS: u64 = 30_000;
