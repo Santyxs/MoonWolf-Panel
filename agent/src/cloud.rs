@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
+use chrono::TimeZone;
 use futures::future::FutureExt;
 use rust_socketio::asynchronous::{Client, ClientBuilder};
 use rust_socketio::{Event, Payload, TransportType};
@@ -11,7 +12,7 @@ use serde_json::json;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-use crate::{sleep_ms, AppState};
+use crate::{sleep_ms, AppState, LogEntry, LOCAL_PORT};
 
 const RECONNECT_BASE_MS: u64 = 1_000;
 const RECONNECT_MAX_MS: u64 = 30_000;
@@ -221,16 +222,110 @@ async fn connect_once(
         .await
         .map_err(|e| anyhow::anyhow!("connect falló: {e}"))?;
 
-    loop {
-        sleep_ms(1_000).await;
+    let (initial_logs, mut last_seq) = {
         let s = app.read().await;
-        if s.shutting_down || !s.cloud_connected {
+        let logs: Vec<_> = s.logs.iter().map(log_to_panel).collect();
+        (logs, s.log_seq)
+    };
+    if !initial_logs.is_empty() {
+        let _ = client
+            .emit(
+                "event",
+                json!({
+                    "name": "log_batch",
+                    "payload": initial_logs,
+                }),
+            )
+            .await;
+    }
+
+    let mut last_mc_running = {
+        let s = app.read().await;
+        s.mc_running
+    };
+
+    // Loop de polling: envía logs nuevos y cambios de estado al Cloud
+    loop {
+        sleep_ms(500).await;
+
+        let (shutting_down, connected, log_seq, mc_running) = {
+            let s = app.read().await;
+            (s.shutting_down, s.cloud_connected, s.log_seq, s.mc_running)
+        };
+
+        if shutting_down || !connected {
             break;
+        }
+
+        if log_seq > last_seq {
+            let new_logs: Vec<_> = {
+                let s = app.read().await;
+                s.logs
+                    .iter()
+                    .filter(|l| l.seq > last_seq)
+                    .map(log_to_panel)
+                    .collect()
+            };
+            if !new_logs.is_empty() {
+                if new_logs.len() == 1 {
+                    let _ = client
+                        .emit(
+                            "event",
+                            json!({
+                                "name": "log",
+                                "payload": new_logs[0],
+                            }),
+                        )
+                        .await;
+                } else {
+                    let _ = client
+                        .emit(
+                            "event",
+                            json!({
+                                "name": "log_batch",
+                                "payload": new_logs,
+                            }),
+                        )
+                        .await;
+                }
+            }
+            last_seq = log_seq;
+        }
+
+        if mc_running != last_mc_running {
+            let _ = client
+                .emit(
+                    "event",
+                    json!({
+                        "name": "status",
+                        "payload": if mc_running { "online" } else { "offline" },
+                    }),
+                )
+                .await;
+            last_mc_running = mc_running;
         }
     }
 
     let _ = client.disconnect().await;
     Ok(())
+}
+
+fn log_to_panel(entry: &LogEntry) -> serde_json::Value {
+    let time = entry
+        .time
+        .with_timezone(&chrono::Local)
+        .format("%H:%M:%S")
+        .to_string();
+    let type_str = match entry.level.as_str() {
+        "error" => "error",
+        "warn" => "warn",
+        _ => "info",
+    };
+    json!({
+        "line": entry.message,
+        "time": time,
+        "type": type_str,
+    })
 }
 
 fn payload_json(payload: &Payload) -> serde_json::Value {
@@ -253,7 +348,6 @@ fn payload_debug(payload: &Payload) -> String {
     }
 }
 
-/// Igual que forwardHttp del agent Node: bodyBase64 + contentType + status.
 async fn handle_rpc(app: &Arc<RwLock<AppState>>, payload: &Payload) -> serde_json::Value {
     let req = payload_json(payload);
     let method = req
@@ -272,8 +366,7 @@ async fn handle_rpc(app: &Arc<RwLock<AppState>>, payload: &Payload) -> serde_jso
         s.config.local_token.clone()
     };
 
-    // path puede incluir query: /api/files?dir=
-    let url = format!("http://127.0.0.1:10000{path}");
+    let url = format!("http://127.0.0.1:{}{}", LOCAL_PORT, path);
     let client = reqwest::Client::new();
     let mut builder = match method.as_str() {
         "POST" => client.post(&url),
