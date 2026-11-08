@@ -20,6 +20,7 @@ const PANEL_URL: &str = "https://moonwolf-panel.onrender.com";
 const UI_HTML: &str = include_str!("../ui/index.html");
 const UI_CSS: &str = include_str!("../ui/style.css");
 const UI_JS: &str = include_str!("../ui/app.js");
+const TRAY_ICON_PNG: &[u8] = include_bytes!("../assets/tray.png");
 
 const NATIVE_BRIDGE: &str = r#"
 (function () {
@@ -78,7 +79,8 @@ const NATIVE_BRIDGE: &str = r#"
 #[derive(Debug)]
 enum GuiEvent {
     StateJson(String),
-    Minimize,
+    MinimizeToTray,
+    RestoreFromTray,
     Quit,
 }
 
@@ -153,12 +155,83 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         });
     }
 
+    let window_icon = image::load_from_memory(TRAY_ICON_PNG)
+        .ok()
+        .map(|img| {
+            let rgba = img.into_rgba8();
+            let (w, h) = image::GenericImageView::dimensions(&rgba);
+            tao::window::Icon::from_rgba(rgba.into_raw(), w, h).ok()
+        })
+        .flatten();
+
     let window = WindowBuilder::new()
         .with_title(WINDOW_TITLE)
         .with_inner_size(tao::dpi::LogicalSize::new(420u32, 570u32))
         .with_min_inner_size(tao::dpi::LogicalSize::new(380u32, 500u32))
+        .with_window_icon(window_icon)
         .with_resizable(true)
         .build(&event_loop)?;
+
+    // Configurar bandeja del sistema (tray-icon)
+    let tray_menu = muda::Menu::new();
+    let item_open = muda::MenuItem::with_id("tray_open", "Abrir MoonWolf Agent", true, None);
+    let item_quit = muda::MenuItem::with_id("tray_quit", "Salir", true, None);
+    let _ = tray_menu.append(&item_open);
+    let _ = tray_menu.append(&muda::PredefinedMenuItem::separator());
+    let _ = tray_menu.append(&item_quit);
+
+    let tray_icon_img = image::load_from_memory(TRAY_ICON_PNG)
+        .ok()
+        .and_then(|img| {
+            let rgba = img.into_rgba8();
+            let (w, h) = image::GenericImageView::dimensions(&rgba);
+            tray_icon::Icon::from_rgba(rgba.into_raw(), w, h).ok()
+        });
+
+    let mut tray_builder = tray_icon::TrayIconBuilder::new()
+        .with_tooltip(WINDOW_TITLE)
+        .with_menu(Box::new(tray_menu))
+        .with_menu_on_left_click(false);
+
+    if let Some(ti) = tray_icon_img {
+        tray_builder = tray_builder.with_icon(ti);
+    }
+
+    let _tray_icon = match tray_builder.build() {
+        Ok(t) => {
+            info!("Bandeja del sistema inicializada");
+            Some(t)
+        }
+        Err(e) => {
+            error!("Error inicializando bandeja: {e}");
+            None
+        }
+    };
+
+    {
+        let proxy = proxy.clone();
+        tray_icon::TrayIconEvent::set_event_handler(Some(move |event| {
+            if let tray_icon::TrayIconEvent::Click {
+                button: tray_icon::MouseButton::Left,
+                button_state: tray_icon::MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let _ = proxy.send_event(GuiEvent::RestoreFromTray);
+            }
+        }));
+    }
+
+    {
+        let proxy = proxy.clone();
+        muda::MenuEvent::set_event_handler(Some(move |event| {
+            if event.id.0 == "tray_open" {
+                let _ = proxy.send_event(GuiEvent::RestoreFromTray);
+            } else if event.id.0 == "tray_quit" {
+                let _ = proxy.send_event(GuiEvent::Quit);
+            }
+        }));
+    }
 
     let app_for_ipc = Arc::clone(&app);
     let proxy_for_ipc = proxy.clone();
@@ -188,8 +261,13 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
             Event::UserEvent(GuiEvent::Quit) => {
                 *control_flow = ControlFlow::Exit;
             }
-            Event::UserEvent(GuiEvent::Minimize) => {
-                window.set_minimized(true);
+            Event::UserEvent(GuiEvent::MinimizeToTray) => {
+                window.set_visible(false);
+            }
+            Event::UserEvent(GuiEvent::RestoreFromTray) => {
+                window.set_visible(true);
+                window.set_minimized(false);
+                window.set_focus();
             }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
@@ -347,7 +425,7 @@ fn handle_ipc(
         }
         "hide_to_tray" => {
             info!("hide_to_tray / minimizar a segundo plano solicitado");
-            let _ = proxy.send_event(GuiEvent::Minimize);
+            let _ = proxy.send_event(GuiEvent::MinimizeToTray);
         }
         other if !other.is_empty() => {
             tracing::debug!("IPC action: {other}");

@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [features]
 default = ["gui"]
-gui = ["dep:wry", "dep:tao", "dep:muda"]
+gui = ["dep:wry", "dep:tao", "dep:muda", "dep:tray-icon", "dep:image"]
 webrtc = ["dep:webrtc"]
 
 [dependencies]
@@ -55,6 +55,8 @@ parking_lot = "0.12"
 wry = { version = "0.45", optional = true }
 tao = { version = "0.30", optional = true }
 muda = { version = "0.15", optional = true }
+tray-icon = { version = "0.19", optional = true }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 webrtc = { version = "0.11", optional = true }
 
 [target.'cfg(windows)'.dependencies]
