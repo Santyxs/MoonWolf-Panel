@@ -74,6 +74,12 @@ pub struct AgentConfig {
     pub server_dir: PathBuf,
     #[serde(default)]
     pub auto_start: bool,
+    #[serde(default = "default_java_path")]
+    pub java_path: String,
+}
+
+fn default_java_path() -> String {
+    "java".to_string()
 }
 
 impl AgentConfig {
@@ -129,6 +135,7 @@ impl AgentConfig {
                 session_secret: Self::make_secret(),
                 server_dir: Self::default_server_dir(),
                 auto_start: false,
+                java_path: default_java_path(),
             });
 
         if config.agent_id.is_empty() {
@@ -145,6 +152,9 @@ impl AgentConfig {
         }
         if config.server_dir.as_os_str().is_empty() {
             config.server_dir = Self::default_server_dir();
+        }
+        if config.java_path.trim().is_empty() {
+            config.java_path = default_java_path();
         }
 
         config.save()?;
@@ -243,13 +253,10 @@ pub struct AppState {
     pub cloud_connected: bool,
     pub local_ready: bool,
     pub pairing_code: Option<String>,
-
     pub logs: VecDeque<LogEntry>,
     pub log_seq: u64,
-
     pub console_logs: VecDeque<LogEntry>,
     pub console_seq: u64,
-
     pub mc_running: bool,
     pub update_available: Option<UpdateInfo>,
     pub update_status: String,
@@ -510,6 +517,7 @@ async fn main() -> anyhow::Result<()> {
     info!(
         agent_id = %config.agent_id,
         server_dir = %config.server_dir.display(),
+        java_path = %config.java_path,
         "Configuración cargada"
     );
 
