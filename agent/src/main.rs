@@ -1,27 +1,19 @@
-//! MoonWolf Agent — reescritura nativa en Rust (sin Node.js).
-
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-mod config;
-mod cloud;
-mod local;
-mod update;
-mod util;
 mod state;
+mod local;
+mod cloud;
+mod update;
 
 #[cfg(feature = "gui")]
 mod gui;
-
-#[cfg(feature = "webrtc")]
-mod direct;
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
-use crate::config::AgentConfig;
-use crate::state::AppState;
+use crate::state::{AgentConfig, AppState};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PANEL_URL: &str = "https://moonwolf-panel.onrender.com";
@@ -52,7 +44,8 @@ async fn main() -> anyhow::Result<()> {
         let state = Arc::clone(&state);
         tokio::spawn(async move {
             if let Err(e) = local::serve(state, LOCAL_PORT).await {
-                error!("API local falló: {e:#}");
+                error!("API local falló: {e:#}. Abortando el agente.");
+                std::process::exit(1);
             }
         })
     };
