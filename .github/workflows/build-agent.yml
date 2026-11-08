@@ -105,6 +105,7 @@ jobs:
             patch="${patch:-0}"
 
             ver="${major}.${minor}.${patch}"
+            previous=""
 
           else
             latest=$(
@@ -131,6 +132,8 @@ jobs:
                 '
             )
 
+            previous="$latest"
+
             if [[ -z "$latest" ]]; then
               major=1
               minor=0
@@ -154,6 +157,7 @@ jobs:
 
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "previous_tag=$previous" >> "$GITHUB_OUTPUT"
 
           echo "Building MoonWolf Agent v$ver"
 
@@ -261,6 +265,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
+          PREVIOUS_TAG: ${{ steps.version.outputs.previous_tag }}
         run: |
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" \
@@ -268,6 +273,12 @@ jobs:
               dist/SHA256SUMS.txt \
               --clobber
             exit 0
+          fi
+
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            CHANGELOG_LINE="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREVIOUS_TAG}...${TAG_NAME}"
+          else
+            CHANGELOG_LINE="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/commits/${TAG_NAME}"
           fi
 
           cat > release-notes.md << EOF
@@ -278,8 +289,7 @@ jobs:
           - Embedded application icon.
           - SHA256 checksum included.
 
-          **Commit:** ${GITHUB_SHA}
-          **Target:** x86_64-pc-windows-msvc
+          ${CHANGELOG_LINE}
           EOF
 
           gh release create "$TAG_NAME" \
