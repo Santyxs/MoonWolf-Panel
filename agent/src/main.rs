@@ -243,8 +243,13 @@ pub struct AppState {
     pub cloud_connected: bool,
     pub local_ready: bool,
     pub pairing_code: Option<String>,
+
     pub logs: VecDeque<LogEntry>,
     pub log_seq: u64,
+
+    pub console_logs: VecDeque<LogEntry>,
+    pub console_seq: u64,
+
     pub mc_running: bool,
     pub update_available: Option<UpdateInfo>,
     pub update_status: String,
@@ -265,6 +270,8 @@ impl AppState {
             pairing_code: None,
             logs: VecDeque::with_capacity(MAX_LOGS),
             log_seq: 0,
+            console_logs: VecDeque::with_capacity(MAX_LOGS),
+            console_seq: 0,
             mc_running: false,
             update_available: None,
             update_status: "idle".into(),
@@ -293,6 +300,24 @@ impl AppState {
             self.logs.pop_front();
         }
         self.logs.push_back(entry);
+    }
+
+    pub fn add_console_log(&mut self, level: &str, message: impl Into<String>) {
+        let text: String = message.into();
+
+        self.console_seq = self.console_seq.saturating_add(1);
+        let console_entry = LogEntry {
+            time: Utc::now(),
+            level: level.to_string(),
+            message: text.clone(),
+            seq: self.console_seq,
+        };
+        if self.console_logs.len() >= MAX_LOGS {
+            self.console_logs.pop_front();
+        }
+        self.console_logs.push_back(console_entry);
+
+        self.add_log(level, text);
     }
 
     pub fn snapshot(&self) -> GuiSnapshot {
