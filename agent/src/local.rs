@@ -8,9 +8,11 @@ use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use chrono::Utc;
+use mysql_async::prelude::*;
+use mysql_async::{Opts, Pool};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::process::{Child, Command};
@@ -33,6 +35,8 @@ const UPLOAD_BODY_LIMIT: usize = 20 * 1024 * 1024;
 const BACKUPS_REL_DIR: &str = ".moonwolf/backups";
 const BACKUP_EXCLUDES: &[&str] = &[".moonwolf", ".moonwolf-uploads"];
 const BACKUP_RETENTION: usize = 10;
+
+const PANEL_UA: &str = "MoonWolfPanel/2.0 (contact@moonwolf.local)";
 
 /* ══════════════════════════════════════════════
    ESTADO
@@ -115,13 +119,29 @@ pub async fn serve(app: Arc<RwLock<AppState>>, port: u16) -> anyhow::Result<()> 
         .route("/api/backups", get(list_backups).post(create_backup))
         .route("/api/backups/progress", get(get_backup_progress))
         .route("/api/backups/download/:name", get(download_backup))
-        .route("/api/backups/:name", axum::routing::delete(delete_backup))
+        .route("/api/backups/:name", delete(delete_backup))
         .route("/api/backups/:name/restore", post(restore_backup))
         // Startup
         .route("/api/startup", get(get_startup).post(save_startup))
         .route("/api/startup/detect-version", post(detect_version))
         // Ports
         .route("/api/ports", get(get_ports).post(save_ports))
+        // Versions
+        .route("/api/versions/software", get(versions_software))
+        .route("/api/versions/list", get(versions_list))
+        .route("/api/versions/builds", get(versions_builds))
+        .route("/api/versions/install", post(versions_install))
+        // Plugins
+        .route("/api/plugins/search", get(plugins_search))
+        .route("/api/plugins/versions", get(plugins_versions))
+        .route("/api/plugins/install", post(plugins_install))
+        .route("/api/plugins/installed", get(plugins_installed))
+        .route("/api/plugins/installed/:file", delete(plugins_delete))
+        // Databases
+        .route("/api/databases/status", get(db_status))
+        .route("/api/databases", get(db_list).post(db_create))
+        .route("/api/databases/:name/reset-password", post(db_reset))
+        .route("/api/databases/:name", delete(db_delete))
         .layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT))
         .with_state(state)
         .layer(cors);
@@ -208,6 +228,90 @@ fn resolve_safe(root: &Path, rel: &str) -> Result<PathBuf, String> {
         }
         Ok(joined)
     }
+}
+
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(PANEL_UA)
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .expect("reqwest client")
+}
+
+async fn fetch_json(url: &str) -> Result<serde_json::Value, String> {
+    let resp = http_client()
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    resp.json().await.map_err(|e| format!("JSON: {e}"))
+}
+
+async fn fetch_text(url: &str) -> Result<String, String> {
+    let resp = http_client()
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    resp.text().await.map_err(|e| format!("text: {e}"))
+}
+
+async fn download_to(url: &str, dest: &Path) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut resp = http_client()
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("HTTP status: {e}"))?;
+
+    if let Some(parent) = dest.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+
+    let mut file = tokio::fs::File::create(dest)
+        .await
+        .map_err(|e| format!("create: {e}"))?;
+
+    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("chunk: {e}"))? {
+        file.write_all(&chunk).await.map_err(|e| format!("write: {e}"))?;
+    }
+    file.flush().await.ok();
+    Ok(())
+}
+
+fn semver_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let pa: Vec<i64> = a.split('.').map(|s| s.parse().unwrap_or(0)).collect();
+    let pb: Vec<i64> = b.split('.').map(|s| s.parse().unwrap_or(0)).collect();
+    for i in 0..pa.len().max(pb.len()) {
+        match pa.get(i).copied().unwrap_or(0).cmp(&pb.get(i).copied().unwrap_or(0)) {
+            std::cmp::Ordering::Equal => continue,
+            o => return o,
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+fn urlencode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
 }
 
 /* ══════════════════════════════════════════════
@@ -630,12 +734,12 @@ async fn upload_chunk(
     if !body.is_empty() {
         use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
-        let file = tokio::fs::OpenOptions::new()
+        let mut file = match tokio::fs::OpenOptions::new()
             .create(true)
             .write(true)
             .open(&part_path)
-            .await;
-        let mut file = match file {
+            .await
+        {
             Ok(f) => f,
             Err(e) => return Ok(json_fail(&format!("No se pudo abrir part: {e}"))),
         };
@@ -750,8 +854,7 @@ async fn rename_file(
     let root = s.config.server_dir.clone();
     drop(s);
 
-    if body.new_name.contains('/') || body.new_name.contains('\\') || body.new_name.contains("..")
-    {
+    if body.new_name.contains('/') || body.new_name.contains('\\') || body.new_name.contains("..") {
         return Ok(json_fail("Nombre no válido"));
     }
 
@@ -987,8 +1090,7 @@ async fn bulk_action(
 
     for item in &body.items {
         let result: anyhow::Result<()> = async {
-            let full = resolve_safe(&root, &item.path)
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let full = resolve_safe(&root, &item.path).map_err(|e| anyhow::anyhow!("{}", e))?;
             if !full.exists() {
                 anyhow::bail!("No existe");
             }
@@ -1011,8 +1113,7 @@ async fn bulk_action(
                     } else {
                         format!("{}/{}", body.destination.trim_end_matches('/'), name)
                     };
-                    let dst = resolve_safe(&root, &target_rel)
-                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    let dst = resolve_safe(&root, &target_rel).map_err(|e| anyhow::anyhow!("{}", e))?;
                     if let Some(p) = dst.parent() {
                         let _ = tokio::fs::create_dir_all(p).await;
                     }
@@ -1080,11 +1181,7 @@ async fn bulk_action(
             }
             Err(e) => {
                 failed += 1;
-                results.push(json!({
-                    "path": item.path,
-                    "ok": false,
-                    "error": e.to_string(),
-                }));
+                results.push(json!({ "path": item.path, "ok": false, "error": e.to_string() }));
             }
         }
     }
@@ -1112,10 +1209,7 @@ async fn compute_total_bytes(root: &Path) -> u64 {
     let root_clone = root.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let mut total = 0u64;
-        for entry in WalkDir::new(&root_clone)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
+        for entry in WalkDir::new(&root_clone).into_iter().filter_map(|e| e.ok()) {
             let rel = match entry.path().strip_prefix(&root_clone) {
                 Ok(r) => r,
                 Err(_) => continue,
@@ -1310,7 +1404,6 @@ async fn create_backup(
                     std::io::copy(&mut f, &mut zip)?;
                     if let Ok(meta) = entry.metadata() {
                         processed += meta.len();
-                        // Actualizar progreso sin await (usar try_lock)
                         if let Ok(mut guard) = progress_ref.try_lock() {
                             guard.processed_bytes = processed;
                             if guard.total_bytes > 0 {
@@ -1370,10 +1463,7 @@ async fn create_backup(
             p.percent = 100;
         }
 
-        Ok::<(String, f64), anyhow::Error>((
-            zip_name,
-            meta.len() as f64 / 1024.0 / 1024.0,
-        ))
+        Ok::<(String, f64), anyhow::Error>((zip_name, meta.len() as f64 / 1024.0 / 1024.0))
     }
     .await;
 
@@ -1589,15 +1679,9 @@ async fn restore_backup(
         Ok(Ok(())) => {
             {
                 let mut s = st.app.write().await;
-                s.add_console_log(
-                    "info",
-                    format!("Copia restaurada: {}", name),
-                );
+                s.add_console_log("info", format!("Copia restaurada: {}", name));
             }
-            Ok(json_ok(json!({
-                "restored": true,
-                "wasRunning": was_running,
-            })))
+            Ok(json_ok(json!({ "restored": true, "wasRunning": was_running })))
         }
         Ok(Err(e)) => Ok(json_fail(&format!("No se pudo restaurar: {e}"))),
         Err(e) => Ok(json_fail(&format!("Tarea restauración falló: {e}"))),
@@ -1705,7 +1789,6 @@ async fn get_startup(
     let cfg = load_startup_config(&root);
     let jars = list_jars(&root).await;
 
-    // Puerto leído de server.properties
     let props = read_properties(&root.join("server.properties")).await;
     let server_port: Option<u16> = props
         .get("server-port")
@@ -1829,9 +1912,7 @@ async fn detect_version(
     }
 
     let version = detect_version_from_name(&jar);
-
     let source = if version.is_some() { "jar-name" } else { "none" };
-
     let version_str = version.unwrap_or_default();
     let mut persisted = false;
 
@@ -1952,54 +2033,29 @@ async fn get_ports(
 
     let props = read_properties(&root.join("server.properties")).await;
 
-    let server_port: u16 = props
-        .get("server-port")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(25565);
-    let query_enabled = props
-        .get("enable-query")
-        .map(|v| v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let query_port: u16 = props
-        .get("query.port")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(25565);
-    let rcon_enabled = props
-        .get("enable-rcon")
-        .map(|v| v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let rcon_port: u16 = props
-        .get("rcon.port")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(25575);
-    let has_rcon_password = props
-        .get("rcon.password")
-        .map(|v| !v.is_empty())
-        .unwrap_or(false);
+    let server_port: u16 = props.get("server-port").and_then(|v| v.parse().ok()).unwrap_or(25565);
+    let query_enabled = props.get("enable-query").map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(false);
+    let query_port: u16 = props.get("query.port").and_then(|v| v.parse().ok()).unwrap_or(25565);
+    let rcon_enabled = props.get("enable-rcon").map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(false);
+    let rcon_port: u16 = props.get("rcon.port").and_then(|v| v.parse().ok()).unwrap_or(25575);
+    let has_rcon_password = props.get("rcon.password").map(|v| !v.is_empty()).unwrap_or(false);
 
     let ports = vec![
         json!({
-            "id": "minecraft",
-            "name": "Minecraft",
+            "id": "minecraft", "name": "Minecraft",
             "description": "Puerto principal del servidor.",
-            "protocol": "TCP",
-            "port": server_port,
-            "state": "configured",
+            "protocol": "TCP", "port": server_port, "state": "configured",
         }),
         json!({
-            "id": "query",
-            "name": "Query",
+            "id": "query", "name": "Query",
             "description": if query_enabled { "Game Query habilitado." } else { "Game Query deshabilitado." },
-            "protocol": "UDP",
-            "port": query_port,
+            "protocol": "UDP", "port": query_port,
             "state": if query_enabled { "configured" } else { "disabled" },
         }),
         json!({
-            "id": "rcon",
-            "name": "RCON",
+            "id": "rcon", "name": "RCON",
             "description": if rcon_enabled { "Consola remota habilitada." } else { "RCON deshabilitado." },
-            "protocol": "TCP",
-            "port": rcon_port,
+            "protocol": "TCP", "port": rcon_port,
             "state": if rcon_enabled { "configured" } else { "disabled" },
         }),
     ];
@@ -2111,14 +2167,12 @@ async fn server_status(State(st): State<LocalState>) -> Response {
 }
 
 async fn find_server_jar(root: &Path, preferred: &str) -> Option<PathBuf> {
-    // 1. Preferido
     if !preferred.is_empty() {
         let p = root.join(preferred);
         if p.is_file() {
             return Some(p);
         }
     }
-    // 2. Cualquier .jar que no sea installer
     if let Ok(mut rd) = tokio::fs::read_dir(root).await {
         let mut jars = Vec::new();
         while let Ok(Some(ent)) = rd.next_entry().await {
@@ -2231,7 +2285,6 @@ async fn start_server(
         .arg(format!("-Xms{}M", min_mem))
         .arg(format!("-Xmx{}M", max_mem));
 
-    // extra_args
     for token in cfg.extra_args.split_whitespace() {
         cmd.arg(token);
     }
@@ -2414,3 +2467,409 @@ async fn send_command(
     }
     Ok(json_ok(json!({})))
 }
+
+/* ══════════════════════════════════════════════
+   VERSIONS
+   ══════════════════════════════════════════════ */
+
+async fn versions_software() -> Response {
+    json_ok(json!({
+        "software": [
+            { "id": "paper", "label": "Paper", "category": "plugins", "desc": "Servidor de alto rendimiento compatible con plugins." },
+            { "id": "purpur", "label": "Purpur", "category": "plugins", "desc": "Fork de Paper con configuración avanzada." },
+            { "id": "folia", "label": "Folia", "category": "plugins", "desc": "Fork de Paper con multithreading regional." },
+            { "id": "fabric", "label": "Fabric", "category": "mods", "desc": "Loader ligero para mods." },
+            { "id": "velocity", "label": "Velocity", "category": "proxy", "desc": "Proxy moderno." },
+            { "id": "waterfall", "label": "Waterfall", "category": "proxy", "desc": "Proxy basado en BungeeCord." },
+            { "id": "forge", "label": "Forge", "category": "mods", "desc": "Loader clásico para mods." },
+            { "id": "neoforge", "label": "NeoForge", "category": "mods", "desc": "Loader moderno para mods." },
+            { "id": "vanilla", "label": "Vanilla", "category": "vanilla", "desc": "Servidor oficial de Mojang." }
+        ]
+    }))
+}
+
+#[derive(Deserialize)]
+struct VersionsListQuery {
+    software: Option<String>,
+}
+
+async fn versions_list(Query(q): Query<VersionsListQuery>) -> Response {
+    let sw = q.software.unwrap_or_default();
+    if sw.is_empty() {
+        return json_fail("software requerido");
+    }
+
+    let res: Result<Vec<String>, String> = match sw.as_str() {
+        "paper" | "folia" | "velocity" | "waterfall" => list_papermc_versions(&sw).await,
+        "purpur" => list_purpur_versions().await,
+        "fabric" => list_fabric_versions().await,
+        "vanilla" => list_vanilla_versions().await,
+        "forge" => list_forge_versions().await,
+        "neoforge" => list_neoforge_versions().await,
+        _ => Err(format!("Software no soportado: {sw}")),
+    };
+
+    match res {
+        Ok(v) => json_ok(json!({ "versions": v })),
+        Err(e) => json_fail(&e),
+    }
+}
+
+async fn list_papermc_versions(sw: &str) -> Result<Vec<String>, String> {
+    let url = format!("https://fill.papermc.io/v3/projects/{sw}");
+    let v = fetch_json(&url).await?;
+    let mut all: Vec<String> = Vec::new();
+    if let Some(versions) = v.get("versions").and_then(|v| v.as_object()) {
+        for group in versions.values() {
+            if let Some(arr) = group.as_array() {
+                for item in arr {
+                    if let Some(s) = item.as_str() {
+                        all.push(s.to_string());
+                    }
+                }
+            }
+        }
+    }
+    all.sort_by(|a, b| semver_cmp(b, a));
+    Ok(all)
+}
+
+async fn list_purpur_versions() -> Result<Vec<String>, String> {
+    let v = fetch_json("https://api.purpurmc.org/v2/purpur").await?;
+    let arr = v.get("versions").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let mut out: Vec<String> = arr
+        .into_iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+    out.reverse();
+    Ok(out)
+}
+
+async fn list_fabric_versions() -> Result<Vec<String>, String> {
+    let v = fetch_json("https://meta.fabricmc.net/v2/versions/game").await?;
+    Ok(v.as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|item| item.get("stable").and_then(|s| s.as_bool()).unwrap_or(false))
+        .filter_map(|item| item.get("version").and_then(|s| s.as_str()).map(|s| s.to_string()))
+        .collect())
+}
+
+async fn list_vanilla_versions() -> Result<Vec<String>, String> {
+    let v = fetch_json("https://launchermeta.mojang.com/mc/game/version_manifest_v2.json").await?;
+    Ok(v.get("versions")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|item| item.get("type").and_then(|t| t.as_str()) == Some("release"))
+        .filter_map(|item| item.get("id").and_then(|s| s.as_str()).map(|s| s.to_string()))
+        .collect())
+}
+
+async fn list_forge_versions() -> Result<Vec<String>, String> {
+    let v = fetch_json("https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json").await?;
+    let mut all: Vec<String> = v
+        .as_object()
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default();
+    all.sort_by(|a, b| semver_cmp(b, a));
+    Ok(all)
+}
+
+async fn list_neoforge_versions() -> Result<Vec<String>, String> {
+    let xml = fetch_text("https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml").await?;
+    let re = regex::Regex::new(r"<version>([^<]+)</version>").unwrap();
+    let mut all: Vec<String> = re
+        .captures_iter(&xml)
+        .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
+        .collect();
+    all.reverse();
+    Ok(all)
+}
+
+#[derive(Deserialize)]
+struct VersionsBuildsQuery {
+    software: Option<String>,
+    version: Option<String>,
+}
+
+async fn versions_builds(Query(q): Query<VersionsBuildsQuery>) -> Response {
+    let sw = q.software.unwrap_or_default();
+    let version = q.version.unwrap_or_default();
+    if sw.is_empty() || version.is_empty() {
+        return json_fail("software y version requeridos");
+    }
+
+    let res: Result<Vec<serde_json::Value>, String> = match sw.as_str() {
+        "paper" | "folia" | "velocity" | "waterfall" => builds_papermc(&sw, &version).await,
+        "purpur" => builds_purpur(&version).await,
+        "fabric" => builds_fabric(&version).await,
+        "vanilla" => builds_vanilla(&version).await,
+        "forge" => builds_forge(&version).await,
+        "neoforge" => builds_neoforge(&version).await,
+        _ => Err(format!("Software no soportado: {sw}")),
+    };
+
+    match res {
+        Ok(v) => json_ok(json!({ "builds": v })),
+        Err(e) => json_fail(&e),
+    }
+}
+
+async fn builds_papermc(sw: &str, version: &str) -> Result<Vec<serde_json::Value>, String> {
+    let url = format!(
+        "https://fill.papermc.io/v3/projects/{}/versions/{}/builds",
+        sw, version
+    );
+    let v = fetch_json(&url).await?;
+    let mut out = Vec::new();
+    if let Some(arr) = v.as_array() {
+        for b in arr {
+            let build = b.get("build").and_then(|v| v.as_i64()).unwrap_or(0);
+            let channel = b.get("channel").and_then(|c| c.as_str()).unwrap_or("STABLE");
+            let time = b.get("time").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            let download = b
+                .get("downloads")
+                .and_then(|d| d.get("server:default"))
+                .cloned()
+                .unwrap_or_default();
+            let url = download.get("url").and_then(|u| u.as_str()).unwrap_or("").to_string();
+            let sha256 = download.get("sha256").and_then(|s| s.as_str()).unwrap_or("").to_string();
+            let changes: Vec<String> = b
+                .get("changes")
+                .and_then(|c| c.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|item| item.get("summary").and_then(|s| s.as_str()).map(|s| s.to_string()))
+                        .take(3)
+                        .collect()
+                })
+                .unwrap_or_default();
+            out.push(json!({
+                "build": build, "channel": channel, "time": time,
+                "url": url, "sha256": sha256, "changes": changes.join(" · "),
+            }));
+        }
+    }
+    out.sort_by(|a, b| {
+        let ba = a.get("build").and_then(|v| v.as_i64()).unwrap_or(0);
+        let bb = b.get("build").and_then(|v| v.as_i64()).unwrap_or(0);
+        bb.cmp(&ba)
+    });
+    Ok(out)
+}
+
+async fn builds_purpur(version: &str) -> Result<Vec<serde_json::Value>, String> {
+    let url = format!("https://api.purpurmc.org/v2/purpur/{}", version);
+    let v = fetch_json(&url).await?;
+    let all = v
+        .get("builds")
+        .and_then(|b| b.get("all"))
+        .and_then(|a| a.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for item in all.iter().rev() {
+        let b = item.as_str().unwrap_or("");
+        out.push(json!({
+            "build": b, "channel": "STABLE", "time": null,
+            "url": format!("https://api.purpurmc.org/v2/purpur/{}/{}/download", version, b),
+            "sha256": null, "changes": "",
+        }));
+    }
+    Ok(out)
+}
+
+async fn builds_fabric(version: &str) -> Result<Vec<serde_json::Value>, String> {
+    let url = format!("https://meta.fabricmc.net/v2/versions/loader/{}", version);
+    let v = fetch_json(&url).await?;
+    let mut out = Vec::new();
+    if let Some(arr) = v.as_array() {
+        for item in arr {
+            let loader = item.get("loader").cloned().unwrap_or_default();
+            if !loader.get("stable").and_then(|s| s.as_bool()).unwrap_or(false) {
+                continue;
+            }
+            let lv = loader.get("version").and_then(|v| v.as_str()).unwrap_or("");
+            let build = loader.get("build").and_then(|v| v.as_i64()).unwrap_or(0);
+            out.push(json!({
+                "build": build, "channel": "STABLE", "loaderVersion": lv,
+                "time": null, "url": null, "sha256": null,
+                "changes": format!("Fabric Loader {}", lv),
+            }));
+        }
+    }
+    Ok(out)
+}
+
+async fn builds_vanilla(version: &str) -> Result<Vec<serde_json::Value>, String> {
+    let manifest = fetch_json("https://launchermeta.mojang.com/mc/game/version_manifest_v2.json").await?;
+    let entry = manifest
+        .get("versions")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.iter().find(|item| item.get("id").and_then(|i| i.as_str()) == Some(version)))
+        .cloned()
+        .ok_or_else(|| format!("Versión {} no encontrada", version))?;
+    let version_url = entry
+        .get("url")
+        .and_then(|u| u.as_str())
+        .ok_or_else(|| "URL de versión no disponible".to_string())?;
+    let data = fetch_json(version_url).await?;
+    let server = data
+        .get("downloads")
+        .and_then(|d| d.get("server"))
+        .cloned()
+        .ok_or_else(|| "No hay descarga de servidor".to_string())?;
+    let url = server.get("url").and_then(|u| u.as_str()).unwrap_or("").to_string();
+    let sha1 = server.get("sha1").and_then(|s| s.as_str()).unwrap_or("").to_string();
+    let release_time = entry.get("releaseTime").and_then(|t| t.as_str()).unwrap_or("");
+    Ok(vec![json!({
+        "build": 1, "channel": "STABLE", "time": release_time,
+        "url": url, "sha256": sha1,
+        "changes": format!("Minecraft {} — oficial de Mojang", version),
+    })])
+}
+
+async fn builds_forge(version: &str) -> Result<Vec<serde_json::Value>, String> {
+    let v = fetch_json("https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json").await?;
+    let arr = v.get(version).and_then(|x| x.as_array()).cloned().unwrap_or_default();
+    let mut out = Vec::new();
+    for item in arr.iter().rev() {
+        let forge_version = item.as_str().unwrap_or("");
+        let full = if forge_version.starts_with(version) {
+            forge_version.to_string()
+        } else {
+            format!("{}-{}", version, forge_version)
+        };
+        out.push(json!({
+            "build": full, "channel": "RELEASE", "time": null,
+            "loaderVersion": full,
+            "url": format!(
+                "https://maven.minecraftforge.net/net/minecraftforge/forge/{0}/forge-{0}-installer.jar",
+                full
+            ),
+            "sha256": null,
+            "changes": format!("Forge {} para Minecraft {}", full, version),
+        }));
+    }
+    Ok(out)
+}
+
+async fn builds_neoforge(version: &str) -> Result<Vec<serde_json::Value>, String> {
+    let build = version;
+    Ok(vec![json!({
+        "build": build,
+        "channel": if build.contains("-beta") || build.contains("-alpha") { "PRERELEASE" } else { "RELEASE" },
+        "time": null,
+        "url": format!(
+            "https://maven.neoforged.net/releases/net/neoforged/neoforge/{0}/neoforge-{0}-installer.jar",
+            build
+        ),
+        "sha256": null,
+        "changes": format!("NeoForge {} · instalador oficial", build),
+    })])
+}
+
+#[derive(Deserialize)]
+struct VersionsInstallBody {
+    software: Option<String>,
+    version: Option<String>,
+    build: Option<String>,
+    url: Option<String>,
+    #[serde(rename = "loaderVersion")]
+    loader_version: Option<String>,
+}
+
+async fn versions_install(
+    State(st): State<LocalState>,
+    headers: HeaderMap,
+    Json(body): Json<VersionsInstallBody>,
+) -> Response {
+    {
+        let s = st.app.read().await;
+        if check_auth(&headers, &s.config.local_token).is_err() {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+    }
+
+    let sw = body.software.unwrap_or_default();
+    let version = body.version.unwrap_or_default();
+    if sw.is_empty() || version.is_empty() {
+        return json_fail("software y version requeridos");
+    }
+
+    let server_dir = {
+        let s = st.app.read().await;
+        s.config.server_dir.clone()
+    };
+
+    if sw == "fabric" {
+        let loader = body.loader_version.unwrap_or_default();
+        if loader.is_empty() {
+            return json_fail("loaderVersion requerido para Fabric");
+        }
+        let inst_url = match fetch_json("https://meta.fabricmc.net/v2/versions/installer").await {
+            Ok(v) => v
+                .as_array()
+                .and_then(|arr| arr.iter().find(|i| i.get("stable").and_then(|s| s.as_bool()).unwrap_or(false)))
+                .and_then(|i| i.get("url").and_then(|u| u.as_str()).map(|s| s.to_string()))
+                .unwrap_or_default(),
+            Err(_) => String::new(),
+        };
+        if inst_url.is_empty() {
+            return json_fail("No se encontró installer de Fabric");
+        }
+        let inst_name = "fabric-installer.jar".to_string();
+        let inst_path = server_dir.join(&inst_name);
+        if !inst_path.exists() {
+            if let Err(e) = download_to(&inst_url, &inst_path).await {
+                return json_fail(&format!("Descarga installer falló: {e}"));
+            }
+        }
+        return json_ok(json!({
+            "type": "fabric-installer",
+            "installCmd": format!(
+                "java -jar {} server -mcversion {} -loader {} -downloadMinecraft",
+                inst_name, version, loader
+            ),
+            "jarName": "fabric-server-launch.jar",
+            "note": "Fabric preparado. Ejecuta el comando desde la carpeta del servidor para completar la instalación.",
+        }));
+    }
+
+    if sw == "forge" || sw == "neoforge" {
+        let b = body.build.unwrap_or_default();
+        if b.is_empty() {
+            return json_fail("build requerido");
+        }
+        let url = body.url.unwrap_or_else(|| {
+            if sw == "forge" {
+                format!(
+                    "https://maven.minecraftforge.net/net/minecraftforge/forge/{0}/forge-{0}-installer.jar",
+                    b
+                )
+            } else {
+                format!(
+                    "https://maven.neoforged.net/releases/net/neoforged/neoforge/{0}/neoforge-{0}-installer.jar",
+                    b
+                )
+            }
+        });
+        let inst_name = format!("{}-installer.jar", sw);
+        let inst_path = server_dir.join(&inst_name);
+        if !inst_path.exists() {
+            if let Err(e) = download_to(&url, &inst_path).await {
+                return json_fail(&format!("Descarga installer falló: {e}"));
+            }
+        }
+        return json_ok(json!({
+            "type": format!("{}-installer", sw),
+            "installCmd": format!("java -jar {} --installServer", inst_name),
+            "jarName": "run.bat",
+            "note": format!("{} descargado. Ejecuta el comando para completar la instalación.", sw),
+        }));
+    }
+
+    let url = match body.url {
