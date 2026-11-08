@@ -1,8 +1,8 @@
 [package]
 name = "moonwolf-agent"
 version = "0.1.0"
-edition = "2021"
-description = "MoonWolf Agent — cliente nativo en Rust (sin Node.js)"
+edition = "2026"
+description = "MoonWolf Agent"
 authors = ["Santyxs"]
 license = "MIT"
 repository = "https://github.com/Santyxs/MoonWolf-Panel"
@@ -14,7 +14,6 @@ path = "src/main.rs"
 [features]
 default = ["gui"]
 gui = ["dep:wry", "dep:tao", "dep:muda", "dep:tray-icon", "dep:image"]
-webrtc = ["dep:webrtc"]
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "net", "time", "sync", "io-util", "process", "signal"] }
@@ -57,7 +56,6 @@ tao = { version = "0.30", optional = true }
 muda = { version = "0.15", optional = true }
 tray-icon = { version = "0.19", optional = true }
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
-webrtc = { version = "0.11", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -73,4 +71,3 @@ lto = true
 codegen-units = 1
 strip = true
 opt-level = "z"
-panic = "abort"
