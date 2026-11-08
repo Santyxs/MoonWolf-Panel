@@ -1,5 +1,4 @@
 //! Cliente Socket.IO hacia MoonWolf Cloud.
-//! RPC: el panel espera bodyBase64 (no body JSON).
 
 use std::sync::Arc;
 use std::time::Duration;
