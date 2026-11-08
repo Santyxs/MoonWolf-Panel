@@ -141,8 +141,8 @@ function ensureSocketIo() {
 
     const script = document.createElement('script');
 
-    script.src = '/socket.io/socket.io.js';
-    script.async = true;
+   script.src = 'https://cdn.socket.io/4.8.1/socket.io.min.js';
+   script.async = true;
     script.dataset.moonwolfSocketio = '1';
 
     script.onload = resolve;
