@@ -160,7 +160,7 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     let window_icon = match image::load_from_memory(TRAY_ICON_PNG) {
         Ok(img) => {
             let rgba = img.into_rgba8();
-            let (w, h) = rgba.dimensions();
+            let (w, h) = (rgba.width(), rgba.height());
             match tao::window::Icon::from_rgba(rgba.into_raw(), w, h) {
                 Ok(icon) => Some(icon),
                 Err(e) => {
@@ -194,7 +194,7 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     let tray_icon_img = match image::load_from_memory(TRAY_ICON_PNG) {
         Ok(img) => {
             let rgba = img.into_rgba8();
-            let (w, h) = rgba.dimensions();
+            let (w, h) = (rgba.width(), rgba.height());
             match tray_icon::Icon::from_rgba(rgba.into_raw(), w, h) {
                 Ok(icon) => Some(icon),
                 Err(e) => {
