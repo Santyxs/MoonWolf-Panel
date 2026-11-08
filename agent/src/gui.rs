@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 use tracing::{error, info};
 use wry::WebViewBuilder;
 
-use crate::state::AppState;
+use crate::state::{AgentConfig, AppState};
 
 const WINDOW_TITLE: &str = "MoonWolf Agent";
 const PANEL_URL: &str = "https://moonwolf-panel.onrender.com";
@@ -109,7 +109,7 @@ fn assemble_ui() -> String {
 fn setup_webview2_data_dir() {
     #[cfg(windows)]
     {
-        let dir = crate::config::AgentConfig::config_dir().join("WebView2");
+        let dir = AgentConfig::config_dir().join("WebView2");
         let _ = std::fs::create_dir_all(&dir);
         std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &dir);
         info!("WebView2 data folder: {}", dir.display());
@@ -170,7 +170,6 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         .with_resizable(true)
         .build(&event_loop)?;
 
-    // Configurar bandeja del sistema (tray-icon)
     let tray_menu = muda::Menu::new();
     let item_open = muda::MenuItem::with_id("tray_open", "Abrir MoonWolf Agent", true, None);
     let item_quit = muda::MenuItem::with_id("tray_quit", "Salir", true, None);
@@ -324,7 +323,7 @@ fn handle_ipc(
             let _ = open_url(PANEL_URL);
         }
         "open_config_dir" | "open_config" => {
-            let dir = crate::config::AgentConfig::config_dir();
+            let dir = AgentConfig::config_dir();
             let _ = open_path(&dir);
         }
         "open_server_folder" => {
@@ -374,7 +373,7 @@ fn handle_ipc(
                         .iter()
                         .map(|l| format!("[{}] {}", l.level, l.message))
                         .collect();
-                    (crate::config::AgentConfig::config_dir(), lines.join("\n"))
+                    (AgentConfig::config_dir(), lines.join("\n"))
                 };
                 let path = dir.join("agent.log");
                 let _ = std::fs::write(&path, text);
