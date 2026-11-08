@@ -2,6 +2,9 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -16,6 +19,9 @@ use tracing::info;
 
 use crate::state::AppState;
 use crate::util::sleep_ms;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Clone)]
 struct LocalState {
@@ -484,10 +490,24 @@ async fn start_server(
     let root = s.config.server_dir.clone();
     drop(s);
 
+    // 1) Comprobar si el proceso sigue realmente vivo (no sólo is_some)
     {
-        let mc = st.mc.read().await;
-        if mc.is_some() {
-            return Ok(json_fail("El servidor ya está arrancando o en ejecución"));
+        let mut mc = st.mc.write().await;
+        if let Some(child) = mc.as_mut() {
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    // ya terminó: limpiar y permitir arrancar de nuevo
+                    *mc = None;
+                }
+                Ok(None) => {
+                    return Ok(json_fail(
+                        "El servidor ya está arrancando o en ejecución",
+                    ));
+                }
+                Err(_) => {
+                    *mc = None;
+                }
+            }
         }
     }
 
@@ -516,22 +536,103 @@ async fn start_server(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    match cmd.spawn() {
-        Ok(child) => {
-            *st.mc.write().await = Some(child);
-            {
-                let mut s = st.app.write().await;
-                s.add_log(
-                    "info",
-                    format!("Servidor Minecraft arrancado ({})", jar.display()),
-                );
-            }
-            Ok(json_ok(json!({})))
-        }
-        Err(e) => Ok(json_fail(&format!(
-            "No se pudo arrancar Java: {e}. ¿Está Java instalado y en el PATH?"
-        ))),
+    // 2) En Windows: no abrir consola nueva
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
     }
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(json_fail(&format!(
+                "No se pudo arrancar Java: {e}. ¿Está Java instalado y en el PATH?"
+            )));
+        }
+    };
+
+    // 3) Sacar stdout/stderr ANTES de guardar el child
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    *st.mc.write().await = Some(child);
+
+    {
+        let mut s = st.app.write().await;
+        s.add_log(
+            "info",
+            format!("Servidor Minecraft arrancado ({})", jar.display()),
+        );
+    }
+
+    // Tarea que lee stdout y lo vuelca a los logs
+    if let Some(stdout) = stdout {
+        let app = Arc::clone(&st.app);
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let reader = BufReader::new(stdout);
+            let mut lines = reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let mut s = app.write().await;
+                s.add_log("info", line);
+            }
+        });
+    }
+
+    // Tarea que lee stderr y lo vuelca a los logs
+    if let Some(stderr) = stderr {
+        let app = Arc::clone(&st.app);
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let reader = BufReader::new(stderr);
+            let mut lines = reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let mut s = app.write().await;
+                s.add_log("error", line);
+            }
+        });
+    }
+
+    // Tarea vigía: limpia `mc` cuando el proceso termina
+    {
+        let mc = Arc::clone(&st.mc);
+        let app = Arc::clone(&st.app);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                let mut lock = mc.write().await;
+                let Some(child) = lock.as_mut() else { break };
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        *lock = None;
+                        drop(lock);
+                        let mut s = app.write().await;
+                        s.add_log(
+                            "warn",
+                            format!(
+                                "Servidor Minecraft terminó (código {:?})",
+                                status.code()
+                            ),
+                        );
+                        break;
+                    }
+                    Ok(None) => drop(lock),
+                    Err(_) => {
+                        *lock = None;
+                        drop(lock);
+                        let mut s = app.write().await;
+                        s.add_log(
+                            "warn",
+                            "No se pudo comprobar el estado del servidor",
+                        );
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    Ok(json_ok(json!({})))
 }
 
 async fn stop_server(
