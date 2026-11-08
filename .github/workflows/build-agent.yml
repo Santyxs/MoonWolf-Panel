@@ -171,7 +171,8 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          sed -i "0,/^version = /s//version = \"$VERSION\"/" Cargo.toml
+          # Reemplaza la línea version = "..." del [package] (no append)
+          sed -i -E "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
           grep '^version = ' Cargo.toml
 
           if [[ ! -f Cargo.lock ]]; then
