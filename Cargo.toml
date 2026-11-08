@@ -7,7 +7,7 @@ license = "MIT"
 
 [[bin]]
 name = "moonwolf-panel"
-path = "src/main.rs"
+path = "server.rs"
 
 [dependencies]
 anyhow = "1"
