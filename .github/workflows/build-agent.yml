@@ -41,12 +41,12 @@ jobs:
       # ─────────────────────────────
 
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
       # ─────────────────────────────
-      # VERIFY
+      # VERIFY (sin exigir Cargo.lock todavía)
       # ─────────────────────────────
 
       - name: Verify Agent files
@@ -185,10 +185,10 @@ jobs:
           echo "Cargo.lock listo."
 
       # ─────────────────────────────
-      # BUILD
+      # BUILD (MSVC + optimizaciones)
       # ─────────────────────────────
 
-      - name: Build executable
+      - name: Build optimized executable
         working-directory: agent
         shell: pwsh
         env:
@@ -244,9 +244,9 @@ jobs:
       # ─────────────────────────────
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
-          name: MoonWolf-Agent
+          name: MoonWolf-Agent-Windows
           path: |
             dist/MoonWolf-Agent.exe
             dist/SHA256SUMS.txt
@@ -276,21 +276,12 @@ jobs:
           fi
 
           if [[ -n "$PREVIOUS_TAG" ]]; then
-            CHANGELOG_LINE="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREVIOUS_TAG}...${TAG_NAME}"
+            NOTES="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREVIOUS_TAG}...${TAG_NAME}"
           else
-            CHANGELOG_LINE="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/commits/${TAG_NAME}"
+            NOTES="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/commits/${TAG_NAME}"
           fi
 
-          cat > release-notes.md << EOF
-          ## MoonWolf Agent v${VERSION}
-
-          - Native Windows executable (MSVC).
-          - Optimized release build (opt-level=3, LTO, strip).
-          - Embedded application icon.
-          - SHA256 checksum included.
-
-          ${CHANGELOG_LINE}
-          EOF
+          printf '%s\n' "$NOTES" > release-notes.md
 
           gh release create "$TAG_NAME" \
             dist/MoonWolf-Agent.exe \
