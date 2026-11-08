@@ -111,6 +111,10 @@ fn setup_webview2_data_dir() {
     {
         let dir = AgentConfig::config_dir().join("WebView2");
         let _ = std::fs::create_dir_all(&dir);
+
+        // Limpiar caches/pesados de ejecuciones anteriores (antes de abrir WebView2).
+        prune_webview2_caches(&dir);
+
         // SAFETY: se ejecuta al principio del arranque de la GUI; el resto
         // de hilos (local/cloud/update) no leen esta variable de entorno.
         unsafe {
@@ -119,6 +123,81 @@ fn setup_webview2_data_dir() {
         info!("WebView2 data folder: {}", dir.display());
     }
 }
+
+/// Elimina carpetas de caché típicas de EBWebView para reducir basura en disco.
+#[cfg(windows)]
+fn prune_webview2_caches(root: &std::path::Path) {
+    // Nombres habituales bajo …/WebView2/EBWebView[/Default]/
+    const CACHE_DIR_NAMES: &[&str] = &[
+        "Cache",
+        "Code Cache",
+        "GPUCache",
+        "GrShaderCache",
+        "GraphiteDawnCache",
+        "DawnGraphiteCache",
+        "DawnWebGPUCache",
+        "ShaderCache",
+        "Service Worker",
+        "VideoDecodeStats",
+        "Local Storage",
+        "Session Storage",
+        "IndexedDB",
+        "File System",
+        "Platform Notifications",
+        "shared_proto_db",
+        "Shared Dictionary",
+        "optimization_guide_hint_cache_store",
+        "BudgetDatabase",
+        "Download Service",
+        "Feature Engagement Tracker",
+        "Site Characteristics Database",
+        "AutofillAiModelCache",
+        "AutofillStrikeDatabase",
+        "JumpListIconsMostVisited",
+        "JumpListIconsRecentClosed",
+        "WebStorage",
+        "blob_storage",
+        "Crashpad",
+        "CrashpadMetrics-active.pma",
+    ];
+
+    fn walk_and_prune(dir: &std::path::Path, depth: u32) {
+        if depth > 6 {
+            return;
+        }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+
+            if CACHE_DIR_NAMES.iter().any(|n| name_str.eq_ignore_ascii_case(n)) {
+                let _ = std::fs::remove_dir_all(&path);
+                continue;
+            }
+            // Logs / dumps sueltos
+            if name_str.ends_with(".log")
+                || name_str.ends_with(".dmp")
+                || name_str.ends_with(".tmp")
+                || name_str.starts_with("CrashpadMetrics")
+            {
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
+            if path.is_dir() {
+                walk_and_prune(&path, depth + 1);
+            }
+        }
+    }
+
+    walk_and_prune(root, 0);
+}
+
+#[cfg(not(windows))]
+fn prune_webview2_caches(_root: &std::path::Path) {}
 
 pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     setup_webview2_data_dir();
@@ -257,13 +336,25 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     let app_for_ipc = Arc::clone(&app);
     let proxy_for_ipc = proxy.clone();
 
-    let webview = WebViewBuilder::new(&window)
+    let mut webview_builder = WebViewBuilder::new(&window)
         .with_html(&index_html)
         .with_ipc_handler(move |req| {
             let body = req.body().clone();
             handle_ipc(body, Arc::clone(&app_for_ipc), proxy_for_ipc.clone());
-        })
-        .build()?;
+        });
+
+    // Limitar basura de Chromium/WebView2 en disco (cachés, redes, componentes…).
+    #[cfg(windows)]
+    {
+        use wry::WebViewBuilderExtWindows;
+        // with_additional_browser_args SUSTITUYE los args por defecto de wry;
+        // hay que incluir msWebOOUI / msPdfOOUI / msSmartScreenProtection.
+        webview_builder = webview_builder.with_additional_browser_args(
+            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,TranslateUI,BackgroundFetch,InterestFeedContentSuggestions,MediaRouter,CalculatorHistory              --disk-cache-size=1048576              --media-cache-size=1048576              --disable-gpu-shader-disk-cache              --disable-breakpad              --disable-component-update              --disable-domain-reliability              --disable-sync              --disable-background-networking              --disable-client-side-phishing-detection              --disable-default-apps              --disable-extensions              --disable-hang-monitor              --disable-popup-blocking              --disable-prompt-on-repost              --disable-renderer-backgrounding              --disable-background-timer-throttling              --metrics-recording-only              --no-first-run              --no-default-browser-check",
+        );
+    }
+
+    let webview = webview_builder.build()?;
 
     info!("Ventana GUI lista");
 
