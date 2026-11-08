@@ -2,9 +2,6 @@
 
 mod local;
 mod cloud;
-mod versions;
-mod plugins;
-mod databases;
 
 #[cfg(feature = "gui")]
 mod gui;
@@ -315,7 +312,7 @@ impl AppState {
     pub fn add_console_log(&mut self, level: &str, message: impl Into<String>) {
         let text: String = message.into();
         self.console_seq = self.console_seq.saturating_add(1);
-        let console_entry = LogEntry {
+        let entry = LogEntry {
             time: Utc::now(),
             level: level.to_string(),
             message: text.clone(),
@@ -324,7 +321,7 @@ impl AppState {
         if self.console_logs.len() >= MAX_LOGS {
             self.console_logs.pop_front();
         }
-        self.console_logs.push_back(console_entry);
+        self.console_logs.push_back(entry);
         self.add_log(level, text);
     }
 
@@ -472,7 +469,10 @@ async fn download_and_stage(
         s.update_status = "ready".into();
         s.update_progress = 1.0;
         s.update_file = Some(dest.clone());
-        s.add_log("info", format!("Actualización v{} descargada", info_update.version));
+        s.add_log(
+            "info",
+            format!("Actualización v{} descargada", info_update.version),
+        );
     }
     Ok(())
 }
