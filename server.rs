@@ -439,7 +439,6 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
             socket.join(format!("agent:{agent_id}"));
             notify_agent_state(&io, &agent_id_for_connect, true).await;
 
-            // El Agent solicita un código corto de un solo uso para vincular el panel.
             let state_pair = state.clone();
             let agent_id_pair = agent_id.clone();
             socket.on("pairing_create", move |socket: SocketRef| {
@@ -457,7 +456,6 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
                 }
             });
 
-            // Eventos del Agent: estado, estadísticas y consola.
             let state_event = state.clone();
             let io_event = io.clone();
             let agent_id_event = agent_id.clone();
@@ -596,7 +594,6 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
                 "permission":session.permission,"kind":session.kind,"expiresAt":session.exp
             }));
 
-            // Una sesión no puede mantenerse abierta después de su expiración firmada.
             let exp_socket = socket.clone();
             let exp_delay = session.exp.saturating_sub(now_ms()).max(0) as u64;
             tokio::spawn(async move {
@@ -1023,8 +1020,6 @@ fn load_session_secret() -> String {
         warn!("SESSION_SECRET existe pero tiene menos de 32 caracteres; se ignorará.");
     }
 
-    // Mantiene el mismo archivo de respaldo que el servidor Node anterior.
-    // En Render es preferible configurar SESSION_SECRET como variable persistente.
     let app_dir = env::var_os("APPDATA")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
@@ -1074,8 +1069,6 @@ async fn main() -> anyhow::Result<()> {
     let local_agent_token = env::var("LOCAL_AGENT_TOKEN").ok().filter(|v| !v.is_empty());
     let state = Arc::new(AppState::new(load_session_secret(), local_agent_token, share_db));
 
-    // Socket.IO v4: mantiene el path /socket.io y admite payloads grandes para
-    // las operaciones RPC de archivos ya implementadas por el Agent Rust.
     let (socket_layer, io) = SocketIo::builder()
         .max_payload(MAX_SOCKET_PAYLOAD)
         .max_buffer_size(512)
@@ -1087,7 +1080,6 @@ async fn main() -> anyhow::Result<()> {
         async move { auth_middleware(state, socket, auth).await }
     };
 
-    // Limpieza periódica de ventanas de rate limit y códigos caducados.
     let cleanup_state = state.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(5 * 60));
