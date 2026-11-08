@@ -1,7 +1,7 @@
 //! Cliente Socket.IO hacia MoonWolf Cloud.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use chrono::TimeZone;
@@ -16,23 +16,32 @@ use crate::{sleep_ms, AppState, LogEntry, LOCAL_PORT};
 
 const RECONNECT_BASE_MS: u64 = 1_000;
 const RECONNECT_MAX_MS: u64 = 30_000;
+const CONNECT_WAIT_MS: u64 = 5_000;
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const HEALTHY_CONNECTION: Duration = Duration::from_secs(60);
 
 pub async fn run(app: Arc<RwLock<AppState>>, panel_url: &str) {
     let mut backoff = RECONNECT_BASE_MS;
     let mut attempt: u32 = 0;
 
     loop {
-        {
-            let s = app.read().await;
-            if s.shutting_down {
-                break;
-            }
+        if app.read().await.shutting_down {
+            break;
         }
 
         attempt += 1;
-        match connect_once(Arc::clone(&app), panel_url, attempt).await {
+        let started = Instant::now();
+        let result = connect_once(Arc::clone(&app), panel_url, attempt).await;
+        let duration = started.elapsed();
+
+        if app.read().await.shutting_down {
+            break;
+        }
+
+        match &result {
             Ok(()) => {
-                backoff = RECONNECT_BASE_MS;
+                info!("Cloud: conexión cerrada tras {:?}", duration);
             }
             Err(e) => {
                 error!("Cloud: {e:#}");
@@ -43,11 +52,10 @@ pub async fn run(app: Arc<RwLock<AppState>>, panel_url: &str) {
             }
         }
 
-        {
-            let s = app.read().await;
-            if s.shutting_down {
-                break;
-            }
+        if duration >= HEALTHY_CONNECTION {
+            backoff = RECONNECT_BASE_MS;
+        } else {
+            backoff = (backoff * 2).min(RECONNECT_MAX_MS);
         }
 
         info!("Reintento de Cloud en {backoff} ms…");
@@ -56,7 +64,6 @@ pub async fn run(app: Arc<RwLock<AppState>>, panel_url: &str) {
             s.add_log("warn", format!("Reconexión programada en {backoff} ms"));
         }
         sleep_ms(backoff).await;
-        backoff = (backoff * 2).min(RECONNECT_MAX_MS);
     }
 }
 
@@ -99,7 +106,7 @@ async fn connect_once(
 
     let client = ClientBuilder::new(panel_url)
         .namespace("/")
-        .transport_type(TransportType::WebsocketUpgrade)
+        .transport_type(TransportType::Websocket)
         .auth(auth)
         .on(Event::Connect, move |_, socket: Client| {
             let app = Arc::clone(&app_on_connect);
@@ -137,6 +144,8 @@ async fn connect_once(
                 let msg = payload_debug(&payload);
                 warn!("Cloud error event: {msg}");
                 let mut s = app.write().await;
+                s.cloud_connected = false;
+                s.pairing_code = None;
                 s.add_log("error", format!("Error Cloud: {msg}"));
             }
             .boxed()
@@ -222,10 +231,19 @@ async fn connect_once(
         .await
         .map_err(|e| anyhow::anyhow!("connect falló: {e}"))?;
 
-    let (initial_logs, mut last_seq) = {
+    let wait_start = Instant::now();
+    while !app.read().await.cloud_connected {
+        if wait_start.elapsed() > Duration::from_millis(CONNECT_WAIT_MS) {
+            let _ = client.disconnect().await;
+            anyhow::bail!("timeout esperando handshake de Socket.IO");
+        }
+        sleep_ms(100).await;
+    }
+
+    let (initial_logs, mut last_console_seq) = {
         let s = app.read().await;
-        let logs: Vec<_> = s.logs.iter().map(log_to_panel).collect();
-        (logs, s.log_seq)
+        let logs: Vec<_> = s.console_logs.iter().map(log_to_panel).collect();
+        (logs, s.console_seq)
     };
     if !initial_logs.is_empty() {
         let _ = client
@@ -239,57 +257,48 @@ async fn connect_once(
             .await;
     }
 
-    let mut last_mc_running = {
-        let s = app.read().await;
-        s.mc_running
-    };
+    let mut last_mc_running = app.read().await.mc_running;
+    let mut last_heartbeat = Instant::now();
+    let mut last_activity = Instant::now();
 
-    // Loop de polling: envía logs nuevos y cambios de estado al Cloud
     loop {
         sleep_ms(500).await;
 
-        let (shutting_down, connected, log_seq, mc_running) = {
+        let (shutting_down, connected, console_seq, mc_running) = {
             let s = app.read().await;
-            (s.shutting_down, s.cloud_connected, s.log_seq, s.mc_running)
+            (s.shutting_down, s.cloud_connected, s.console_seq, s.mc_running)
         };
 
         if shutting_down || !connected {
             break;
         }
 
-        if log_seq > last_seq {
+        if console_seq > last_console_seq {
             let new_logs: Vec<_> = {
                 let s = app.read().await;
-                s.logs
+                s.console_logs
                     .iter()
-                    .filter(|l| l.seq > last_seq)
+                    .filter(|l| l.seq > last_console_seq)
                     .map(log_to_panel)
                     .collect()
             };
             if !new_logs.is_empty() {
-                if new_logs.len() == 1 {
-                    let _ = client
-                        .emit(
-                            "event",
-                            json!({
-                                "name": "log",
-                                "payload": new_logs[0],
-                            }),
-                        )
-                        .await;
+                let event_name = if new_logs.len() == 1 { "log" } else { "log_batch" };
+                let payload = if new_logs.len() == 1 {
+                    new_logs[0].clone()
                 } else {
-                    let _ = client
-                        .emit(
-                            "event",
-                            json!({
-                                "name": "log_batch",
-                                "payload": new_logs,
-                            }),
-                        )
-                        .await;
+                    json!(new_logs)
+                };
+                if let Err(e) = client
+                    .emit("event", json!({ "name": event_name, "payload": payload }))
+                    .await
+                {
+                    warn!("emit log falló: {e}");
+                    break;
                 }
+                last_activity = Instant::now();
             }
-            last_seq = log_seq;
+            last_console_seq = console_seq;
         }
 
         if mc_running != last_mc_running {
@@ -303,6 +312,34 @@ async fn connect_once(
                 )
                 .await;
             last_mc_running = mc_running;
+            last_activity = Instant::now();
+        }
+
+        if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
+            match client
+                .emit(
+                    "event",
+                    json!({
+                        "name": "status",
+                        "payload": if mc_running { "online" } else { "offline" },
+                    }),
+                )
+                .await
+            {
+                Ok(_) => {
+                    last_heartbeat = Instant::now();
+                    last_activity = Instant::now();
+                }
+                Err(e) => {
+                    warn!("heartbeat falló: {e}");
+                    break;
+                }
+            }
+        }
+
+        if last_activity.elapsed() >= IDLE_TIMEOUT {
+            warn!("Sin actividad en 60 s; cerrando socket para reconectar");
+            break;
         }
     }
 
