@@ -1,17 +1,21 @@
-name: Build Agent (Rust)
+name: "MoonWolf Agent"
 
 on:
   workflow_dispatch:
+
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
-      - 'agent/**'
-      - '.github/workflows/build-agent.yml'
+      - "agent/**"
+      - ".github/workflows/build-agent.yml"
+
   release:
-    types: [published]
+    types:
+      - published
 
 concurrency:
-  group: build-agent-rust-${{ github.ref }}
+  group: moonwolf-agent-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -19,34 +23,70 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  BUILD_TARGET: x86_64-pc-windows-msvc
 
 jobs:
   build-windows:
+    name: "Build Windows"
     runs-on: windows-latest
+
+    if: >-
+      github.event_name != 'release' ||
+      startsWith(github.event.release.tag_name, 'agent-v')
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      # ─────────────────────────────
+      # CHECKOUT
+      # ─────────────────────────────
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
 
-      - name: Verify UI assets
-        shell: bash
+      # ─────────────────────────────
+      # VERIFY
+      # ─────────────────────────────
+
+      - name: Verify Agent files
+        shell: pwsh
         run: |
-          test -f agent/ui/index.html
-          test -f agent/ui/style.css
-          test -f agent/ui/app.js
-          wc -c agent/ui/index.html agent/ui/style.css agent/ui/app.js
+          $required = @(
+            "agent/Cargo.toml",
+            "agent/Cargo.lock",
+            "agent/src/main.rs",
+            "agent/ui/index.html",
+            "agent/ui/style.css",
+            "agent/ui/app.js"
+          )
 
-      - name: Install Rust stable
+          foreach ($file in $required) {
+            if (!(Test-Path $file -PathType Leaf)) {
+              throw "Missing required file: $file"
+            }
+          }
+
+          Write-Host "Agent files verified."
+
+      # ─────────────────────────────
+      # RUST TOOLCHAIN
+      # ─────────────────────────────
+
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Cache cargo
+      - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: agent
-          shared-key: moonwolf-agent-windows
+          shared-key: moonwolf-agent-windows-x64
+
+      # ─────────────────────────────
+      # VERSION
+      # ─────────────────────────────
 
       - name: Determine version
         id: version
@@ -54,95 +94,201 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
+          if [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
             tag="${{ github.event.release.tag_name }}"
             ver="${tag#agent-v}"
-            dots=$(echo "$ver" | tr -cd '.' | wc -c)
-            if [ "$dots" -eq 0 ]; then ver="${ver}.0.0"
-            elif [ "$dots" -eq 1 ]; then ver="${ver}.0"
-            fi
-            echo "tag=$tag" >> "$GITHUB_OUTPUT"
-            echo "version=$ver" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          latest=$(
-            gh release list --limit 50 --exclude-drafts --exclude-pre-releases \
-              --json tagName \
-              --jq '[.[] | .tagName | select(startswith("agent-v"))] | sort_by(sub("^agent-v"; "") | split(".") | map(tonumber)) | last // empty' \
-            2>/dev/null || true
-          )
-          if [ -z "$latest" ]; then
-            next="agent-v1.0"; ver="1.0.0"
+
+            IFS='.' read -r major minor patch <<< "$ver"
+
+            minor="${minor:-0}"
+            patch="${patch:-0}"
+
+            ver="${major}.${minor}.${patch}"
+
           else
-            version="${latest#agent-v}"
-            major="${version%%.*}"; rest="${version#*.}"; minor="${rest%%.*}"
-            if [ "$rest" = "$version" ]; then major="$version"; minor=0; fi
-            minor=$((minor + 1))
-            if [ "$minor" -ge 99 ]; then major=$((major + 1)); minor=0; fi
-            next="agent-v${major}.${minor}"; ver="${major}.${minor}.0"
+            latest=$(
+              gh release list \
+                --limit 100 \
+                --json tagName,isDraft,isPrerelease \
+                --jq '
+                  [
+                    .[]
+                    | select(
+                        (.isDraft | not) and
+                        (.isPrerelease | not) and
+                        (.tagName | startswith("agent-v"))
+                      )
+                  ]
+                  | sort_by(
+                      .tagName
+                      | ltrimstr("agent-v")
+                      | split(".")
+                      | map(tonumber)
+                    )
+                  | last
+                  | .tagName // empty
+                '
+            )
+
+            if [[ -z "$latest" ]]; then
+              major=1
+              minor=0
+            else
+              ver="${latest#agent-v}"
+
+              IFS='.' read -r major minor patch <<< "$ver"
+
+              minor="${minor:-0}"
+              minor=$((minor + 1))
+
+              if (( minor >= 99 )); then
+                major=$((major + 1))
+                minor=0
+              fi
+            fi
+
+            tag="agent-v${major}.${minor}"
+            ver="${major}.${minor}.0"
           fi
-          echo "tag=$next" >> "$GITHUB_OUTPUT"
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$ver" >> "$GITHUB_OUTPUT"
 
-      - name: Set crate version
+          echo "Building MoonWolf Agent v$ver"
+
+      # ─────────────────────────────
+      # UPDATE CRATE VERSION
+      # ─────────────────────────────
+
+      - name: Set Rust package version
+        working-directory: agent
         shell: bash
         env:
-          VER: ${{ steps.version.outputs.version }}
-        working-directory: agent
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          VER="$VER"
-          dots=$(echo "$VER" | tr -cd '.' | wc -c)
-          if [ "$dots" -eq 0 ]; then VER="${VER}.0.0"
-          elif [ "$dots" -eq 1 ]; then VER="${VER}.0"
-          fi
-          sed -i "s/^version = \".*\"/version = \"${VER}\"/" Cargo.toml
+          sed -i "0,/^version = /s//version = \"$VERSION\"/" Cargo.toml
 
-      - name: Build release
+          grep '^version = ' Cargo.toml
+
+      # ─────────────────────────────
+      # BUILD
+      # ─────────────────────────────
+
+      - name: Build optimized executable
         working-directory: agent
-        shell: bash
+        shell: pwsh
         run: |
-          cargo build --release
-          test -f target/release/moonwolf-agent.exe
+          cargo build `
+            --release `
+            --locked `
+            --target $env:BUILD_TARGET
 
-      - name: Stage artifact
+          if ($LASTEXITCODE -ne 0) {
+            throw "Rust compilation failed."
+          }
+
+          $exe = "target/$env:BUILD_TARGET/release/moonwolf-agent.exe"
+
+          if (!(Test-Path $exe)) {
+            throw "Compiled executable not found."
+          }
+
+          Write-Host "Rust compilation successful."
+
+      # ─────────────────────────────
+      # PACKAGE
+      # ─────────────────────────────
+
+      - name: Package executable
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item -LiteralPath "agent/target/release/moonwolf-agent.exe" -Destination "dist/MoonWolf-Agent.exe" -Force
-          $size = (Get-Item "dist/MoonWolf-Agent.exe").Length
-          Write-Host "MoonWolf-Agent.exe: $size bytes"
-          if ($size -lt 500KB) { throw "Executable suspiciously small" }
 
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+          $source = "agent/target/$env:BUILD_TARGET/release/moonwolf-agent.exe"
+          $destination = "dist/MoonWolf-Agent.exe"
+
+          Copy-Item $source $destination -Force
+
+          $file = Get-Item $destination
+
+          if ($file.Length -lt 500KB) {
+            throw "Executable suspiciously small."
+          }
+
+          $hash = (Get-FileHash $destination -Algorithm SHA256).Hash
+
+          Write-Host "Executable: $($file.Length) bytes"
+          Write-Host "SHA256: $hash"
+
+          "$hash  MoonWolf-Agent.exe" |
+            Out-File "dist/SHA256SUMS.txt" -Encoding ascii
+
+      # ─────────────────────────────
+      # WORKFLOW ARTIFACT
+      # ─────────────────────────────
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
         with:
           name: MoonWolf-Agent-Windows
-          path: dist/MoonWolf-Agent.exe
+          path: |
+            dist/MoonWolf-Agent.exe
+            dist/SHA256SUMS.txt
           if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
 
-      - name: Create tag + GitHub Release
+      # ─────────────────────────────
+      # AUTOMATIC RELEASE
+      # ─────────────────────────────
+
+      - name: Create or update GitHub Release
         if: github.event_name != 'release'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release upload "$TAG_NAME" dist/MoonWolf-Agent.exe --clobber
+            gh release upload "$TAG_NAME" \
+              dist/MoonWolf-Agent.exe \
+              dist/SHA256SUMS.txt \
+              --clobber
             exit 0
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag "$TAG_NAME" "$GITHUB_SHA" || true
-          git push origin "$TAG_NAME" || true
-          gh release create "$TAG_NAME" dist/MoonWolf-Agent.exe \
-            --title "MoonWolf Agent v${TAG_NAME#agent-v} (Rust)" \
-            --notes "Agent nativo Rust. UI original.\n**Commit:** ${GITHUB_SHA}"
 
-      - name: Upload asset to existing release
+          cat > release-notes.md << EOF
+          ## MoonWolf Agent v${VERSION}
+
+          - Native Windows executable.
+          - Optimized release build.
+          - Original MoonWolf interface.
+          - SHA256 checksum included.
+
+          **Commit:** ${GITHUB_SHA}
+          **Target:** x86_64-pc-windows-msvc
+          EOF
+
+          gh release create "$TAG_NAME" \
+            dist/MoonWolf-Agent.exe \
+            dist/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" \
+            --title "MoonWolf Agent v${VERSION}" \
+            --notes-file release-notes.md
+
+      # ─────────────────────────────
+      # EXISTING RELEASE
+      # ─────────────────────────────
+
+      - name: Upload to published release
         if: github.event_name == 'release'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.event.release.tag_name }}
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" dist/MoonWolf-Agent.exe --clobber
+          gh release upload "$TAG_NAME" \
+            dist/MoonWolf-Agent.exe \
+            dist/SHA256SUMS.txt \
+            --clobber
