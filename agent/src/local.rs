@@ -1,6 +1,3 @@
-//! API HTTP local del Agent (Axum).
-//! Compatible con las rutas que usa el panel vía RPC.
-
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -10,7 +7,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 use tokio::process::{Child, Command};
 use tokio::sync::RwLock;
