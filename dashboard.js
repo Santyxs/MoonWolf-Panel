@@ -1092,19 +1092,30 @@ async function waitForDirectReady(timeoutMs = DIRECT_OPEN_TIMEOUT_MS) {
   }
 }
 
+/**
+ * Enruta una petición HTTP.
+ *
+ * WebRTC no está implementado en el agente Rust, así que cualquier fallo del
+ * canal directo cae a `rpcCloud`. Eso garantiza que las rutas de archivos
+ * (`/api/files`, `/api/files/download`, `/api/files/upload-chunk`, etc.)
+ * llegan siempre al backend, aunque tarden un poco más por ir vía Cloud.
+ */
 function rpcHttp(pathname, init = {}) {
   const method = String(init.method || 'GET').toUpperCase();
 
   if (isDirectRoute(method, pathname)) {
     return waitForDirectReady().then(() =>
-      directRequest(method, pathname, init.body, { onProgress: init.onProgress, onHeaders: init.onHeaders, onChunk: init.onChunk, signal: init.signal }).catch(error => {
-        if (init.signal?.aborted || error?.name === 'AbortError') throw error;
-        throw new Error(
-          'La conexión directa se ha interrumpido durante la operación. Comprueba WebRTC e inténtalo de nuevo.',
-          { cause: error }
-        );
+      directRequest(method, pathname, init.body, {
+        onProgress: init.onProgress,
+        onHeaders: init.onHeaders,
+        onChunk: init.onChunk,
+        signal: init.signal,
       })
-    );
+    ).catch(error => {
+      if (init.signal?.aborted || error?.name === 'AbortError') throw error;
+      console.warn('[moonwolf] WebRTC no disponible, usando Cloud:', error.message);
+      return rpcCloud(pathname, init);
+    });
   }
 
   return rpcCloud(pathname, init);
@@ -2511,8 +2522,6 @@ async function downloadUrlWithProgress(pathname, filename, title = 'Descargando 
   };
 
   try {
-    // En Chromium compatible, escribir cada bloque directamente al archivo evita
-    // mantener el archivo entero en RAM y crear copias adicionales en un Blob.
     let writable = null;
     let saveHandle = null;
     const canStreamToDisk = typeof window.showSaveFilePicker === 'function';
@@ -4086,7 +4095,6 @@ async function pollBackupProgress() {
       width: percent,
     });
   } catch {
-    /* el siguiente sondeo lo reintenta */
   }
 }
 
@@ -5260,4 +5268,3 @@ if (document.readyState === 'loading') {
 } else {
   bindEvents();
 }
-
