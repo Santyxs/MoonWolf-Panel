@@ -338,7 +338,8 @@ function renderLogs(force = false) {
   if (errors) parts.push(`${errors} error${errors === 1 ? '' : 'es'}`);
   if (visible.length !== logs.length) parts.push(`${visible.length} visibles`);
 
-  $('logs-count').textContent = parts.join(' · ');
+  const logsCount = $('logs-count');
+  if (logsCount) logsCount.textContent = parts.join(' · ');
 
   const last = logs[logs.length - 1];
   const key = [
@@ -494,6 +495,11 @@ function bindEvents() {
 
       renderLogs(true);
     });
+  });
+
+  $('logs-filter')?.addEventListener('change', event => {
+    logsFilter = event.currentTarget.value || 'all';
+    renderLogs(true);
   });
 
   $('close-logs')?.addEventListener(
