@@ -2,9 +2,6 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -460,6 +457,12 @@ async fn server_status(State(st): State<LocalState>) -> Response {
             false
         }
     };
+
+    {
+        let mut s = st.app.write().await;
+        s.mc_running = running;
+    }
+
     json_ok(json!({
         "status": if running { "online" } else { "offline" },
         "running": running,
@@ -553,6 +556,7 @@ async fn start_server(
 
     {
         let mut s = st.app.write().await;
+        s.mc_running = true;
         s.add_log(
             "info",
             format!("Servidor Minecraft arrancado ({})", jar.display()),
@@ -598,6 +602,7 @@ async fn start_server(
                         *lock = None;
                         drop(lock);
                         let mut s = app.write().await;
+                        s.mc_running = false;
                         s.add_log(
                             "warn",
                             format!(
@@ -612,6 +617,7 @@ async fn start_server(
                         *lock = None;
                         drop(lock);
                         let mut s = app.write().await;
+                        s.mc_running = false;
                         s.add_log(
                             "warn",
                             "No se pudo comprobar el estado del servidor",
@@ -657,6 +663,7 @@ async fn stop_server(
 
     {
         let mut s = st.app.write().await;
+        s.mc_running = false;
         s.add_log("info", "Servidor detenido");
     }
     Ok(json_ok(json!({})))
