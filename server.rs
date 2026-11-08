@@ -1,8 +1,4 @@
-//! MoonWolf Panel — backend cloud en Rust.
-//!
-//! Sustituye el servidor Express de `server.js` en el despliegue remoto.
-//! La API de Minecraft/archivos/backups vive en `agent/src/local.rs`; este
-//! proceso mantiene el panel web, autenticación, accesos compartidos y Socket.IO.
+//! MoonWolf Panel — backend cloud.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -995,8 +991,7 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response {
     headers.insert("origin-agent-cluster", HeaderValue::from_static("?1"));
     headers.insert("permissions-policy", HeaderValue::from_static("camera=(), microphone=(), geolocation=()"));
     headers.insert("content-security-policy", HeaderValue::from_static(
-        "default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' wss://moonwolf-panel.onrender.com ws://moonwolf-panel.onrender.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests"
-    ));
+        "default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com https://cdn.socket.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' wss://moonwolf-panel.onrender.com ws://moonwolf-panel.onrender.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests"    ));
     if is_api { headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store")); }
     response
 }
