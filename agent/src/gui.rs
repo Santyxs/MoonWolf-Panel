@@ -111,7 +111,11 @@ fn setup_webview2_data_dir() {
     {
         let dir = AgentConfig::config_dir().join("WebView2");
         let _ = std::fs::create_dir_all(&dir);
-        std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &dir);
+        // SAFETY: se ejecuta al principio del arranque de la GUI; el resto
+        // de hilos (local/cloud/update) no leen esta variable de entorno.
+        unsafe {
+            std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &dir);
+        }
         info!("WebView2 data folder: {}", dir.display());
     }
 }
@@ -170,6 +174,7 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         .with_resizable(true)
         .build(&event_loop)?;
 
+    // Configurar bandeja del sistema (tray-icon)
     let tray_menu = muda::Menu::new();
     let item_open = muda::MenuItem::with_id("tray_open", "Abrir MoonWolf Agent", true, None);
     let item_quit = muda::MenuItem::with_id("tray_quit", "Salir", true, None);
