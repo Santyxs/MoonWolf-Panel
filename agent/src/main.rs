@@ -24,7 +24,7 @@ use uuid::Uuid;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PANEL_URL: &str = "https://moonwolf-panel.onrender.com";
-const LOCAL_PORT: u16 = 10000;
+pub const LOCAL_PORT: u16 = 10000;
 
 const AGENT_TOKEN_MIN_LEN: usize = 43;
 const MAX_LOGS: usize = 500;
@@ -205,6 +205,8 @@ pub struct LogEntry {
     pub time: DateTime<Utc>,
     pub level: String,
     pub message: String,
+    #[serde(skip)]
+    pub seq: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -242,6 +244,8 @@ pub struct AppState {
     pub local_ready: bool,
     pub pairing_code: Option<String>,
     pub logs: VecDeque<LogEntry>,
+    pub log_seq: u64,
+    pub mc_running: bool,
     pub update_available: Option<UpdateInfo>,
     pub update_status: String,
     pub update_progress: f32,
@@ -260,6 +264,8 @@ impl AppState {
             local_ready: false,
             pairing_code: None,
             logs: VecDeque::with_capacity(MAX_LOGS),
+            log_seq: 0,
+            mc_running: false,
             update_available: None,
             update_status: "idle".into(),
             update_progress: 0.0,
@@ -271,10 +277,12 @@ impl AppState {
     }
 
     pub fn add_log(&mut self, level: &str, message: impl Into<String>) {
+        self.log_seq = self.log_seq.saturating_add(1);
         let entry = LogEntry {
             time: Utc::now(),
             level: level.to_string(),
             message: message.into(),
+            seq: self.log_seq,
         };
         match level {
             "error" => tracing::error!("{}", entry.message),
