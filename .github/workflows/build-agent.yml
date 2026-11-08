@@ -41,12 +41,12 @@ jobs:
       # ─────────────────────────────
 
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
       # ─────────────────────────────
-      # VERIFY
+      # VERIFY (sin exigir Cargo.lock todavía)
       # ─────────────────────────────
 
       - name: Verify Agent files
@@ -54,8 +54,9 @@ jobs:
         run: |
           $required = @(
             "agent/Cargo.toml",
-            "agent/Cargo.lock",
             "agent/src/main.rs",
+            "agent/build.rs",
+            "agent/assets/MoonWolf-Agent.ico",
             "agent/ui/index.html",
             "agent/ui/style.css",
             "agent/ui/app.js"
@@ -70,7 +71,7 @@ jobs:
           Write-Host "Agent files verified."
 
       # ─────────────────────────────
-      # RUST TOOLCHAIN
+      # RUST TOOLCHAIN (MSVC)
       # ─────────────────────────────
 
       - name: Install Rust
@@ -157,7 +158,7 @@ jobs:
           echo "Building MoonWolf Agent v$ver"
 
       # ─────────────────────────────
-      # UPDATE CRATE VERSION
+      # UPDATE CRATE VERSION + env
       # ─────────────────────────────
 
       - name: Set Rust package version
@@ -166,17 +167,28 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          # Actualiza version en Cargo.toml
           sed -i "0,/^version = /s//version = \"$VERSION\"/" Cargo.toml
-
           grep '^version = ' Cargo.toml
 
+          # Genera Cargo.lock si aún no existe (requerido por --locked)
+          if [[ ! -f Cargo.lock ]]; then
+            echo "Cargo.lock no encontrado → generando con cargo generate-lockfile"
+            cargo generate-lockfile
+          fi
+
+          test -f Cargo.lock || { echo "ERROR: no se pudo generar Cargo.lock"; exit 1; }
+          echo "Cargo.lock listo."
+
       # ─────────────────────────────
-      # BUILD
+      # BUILD (MSVC + optimizaciones)
       # ─────────────────────────────
 
       - name: Build optimized executable
         working-directory: agent
         shell: pwsh
+        env:
+          MOONWOLF_AGENT_VERSION: ${{ steps.version.outputs.version }}
         run: |
           cargo build `
             --release `
@@ -228,7 +240,7 @@ jobs:
       # ─────────────────────────────
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: MoonWolf-Agent-Windows
           path: |
@@ -261,9 +273,9 @@ jobs:
           cat > release-notes.md << EOF
           ## MoonWolf Agent v${VERSION}
 
-          - Native Windows executable.
-          - Optimized release build.
-          - Original MoonWolf interface.
+          - Native Windows executable (MSVC).
+          - Optimized release build (opt-level=3, LTO, strip).
+          - Embedded application icon.
           - SHA256 checksum included.
 
           **Commit:** ${GITHUB_SHA}
