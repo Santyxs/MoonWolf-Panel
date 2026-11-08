@@ -482,6 +482,70 @@ async fn find_server_jar(dir: &Path) -> Option<PathBuf> {
     jars.into_iter().next()
 }
 
+/* ══════════════════════════════════════════════
+   AUTO-DETECCIÓN DE JAVA
+   ══════════════════════════════════════════════ */
+
+fn java_runtimes_dir() -> PathBuf {
+    crate::AgentConfig::config_dir().join("runtimes")
+}
+
+fn find_best_java_runtime() -> Option<(u32, PathBuf)> {
+    let dir = java_runtimes_dir();
+    let entries = std::fs::read_dir(&dir).ok()?;
+    let mut best: Option<(u32, PathBuf)> = None;
+
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+            continue;
+        }
+
+        let name = entry.file_name().to_string_lossy().to_string();
+        let major = match name.strip_prefix("java").and_then(|s| s.parse::<u32>().ok()) {
+            Some(v) => v,
+            None => continue,
+        };
+
+        let java_exe = if cfg!(windows) {
+            entry.path().join("bin").join("java.exe")
+        } else {
+            entry.path().join("bin").join("java")
+        };
+
+        if !java_exe.is_file() {
+            continue;
+        }
+
+        match best {
+            Some((best_major, _)) if best_major >= major => {}
+            _ => best = Some((major, java_exe)),
+        }
+    }
+
+    best
+}
+
+fn resolve_java_binary(config_java_path: &str) -> (PathBuf, String) {
+    let configured = config_java_path.trim();
+
+    if !configured.is_empty() && configured != "java" {
+        let p = PathBuf::from(configured);
+        if p.is_absolute() && p.is_file() {
+            return (p, "ruta configurada".to_string());
+        }
+    }
+
+    if let Some((major, path)) = find_best_java_runtime() {
+        return (path, format!("runtimes/java{}", major));
+    }
+
+    (PathBuf::from("java"), "PATH del sistema".to_string())
+}
+
+/* ══════════════════════════════════════════════
+   ARRANQUE DEL SERVIDOR
+   ══════════════════════════════════════════════ */
+
 async fn start_server(
     State(st): State<LocalState>,
     headers: HeaderMap,
@@ -528,7 +592,26 @@ async fn start_server(
         }
     };
 
-    let mut cmd = Command::new("java");
+    let (java_bin, java_source) = {
+        let s = st.app.read().await;
+        let configured = s.config.java_path.clone();
+        drop(s);
+        resolve_java_binary(&configured)
+    };
+
+    {
+        let mut s = st.app.write().await;
+        s.add_console_log(
+            "info",
+            format!(
+                "Usando Java desde {} ({})",
+                java_bin.display(),
+                java_source
+            ),
+        );
+    }
+
+    let mut cmd = Command::new(&java_bin);
     cmd.current_dir(&root)
         .arg("-Xms1G")
         .arg("-Xmx2G")
@@ -542,6 +625,7 @@ async fn start_server(
 
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
@@ -550,7 +634,10 @@ async fn start_server(
         Err(e) => {
             let mut s = st.app.write().await;
             let msg = format!(
-                "No se pudo arrancar Java: {e}. ¿Está Java instalado y en el PATH?"
+                "No se pudo arrancar Java desde {} ({}): {e}. \
+                 Instala un JDK compatible o revisa la ruta.",
+                java_bin.display(),
+                java_source
             );
             s.add_console_log("error", msg.clone());
             return Ok(json_fail(&msg));
