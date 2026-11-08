@@ -154,8 +154,8 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
 
     let window = WindowBuilder::new()
         .with_title(WINDOW_TITLE)
-        .with_inner_size(tao::dpi::LogicalSize::new(420u32, 720u32))
-        .with_min_inner_size(tao::dpi::LogicalSize::new(380u32, 600u32))
+        .with_inner_size(tao::dpi::LogicalSize::new(420u32, 570u32))
+        .with_min_inner_size(tao::dpi::LogicalSize::new(380u32, 500u32))
         .with_resizable(true)
         .build(&event_loop)?;
 
