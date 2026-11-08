@@ -132,8 +132,8 @@ async fn clear_logs(
 ) -> Result<Response, StatusCode> {
     let mut s = st.app.write().await;
     check_auth(&headers, &s.config.local_token)?;
-    s.logs.clear();
-    s.add_log("info", "Registro de logs limpiado");
+    s.console_logs.clear();
+    s.add_console_log("info", "Consola del servidor limpiada");
     Ok(json_ok(json!({})))
 }
 
@@ -517,6 +517,11 @@ async fn start_server(
     let jar = match find_server_jar(&root).await {
         Some(j) => j,
         None => {
+            let mut s = st.app.write().await;
+            s.add_console_log(
+                "error",
+                "No se encontró ningún .jar en la carpeta del servidor",
+            );
             return Ok(json_fail(
                 "No se encontró ningún .jar en la carpeta del servidor",
             ));
@@ -543,9 +548,12 @@ async fn start_server(
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            return Ok(json_fail(&format!(
+            let mut s = st.app.write().await;
+            let msg = format!(
                 "No se pudo arrancar Java: {e}. ¿Está Java instalado y en el PATH?"
-            )));
+            );
+            s.add_console_log("error", msg.clone());
+            return Ok(json_fail(&msg));
         }
     };
 
@@ -557,7 +565,7 @@ async fn start_server(
     {
         let mut s = st.app.write().await;
         s.mc_running = true;
-        s.add_log(
+        s.add_console_log(
             "info",
             format!("Servidor Minecraft arrancado ({})", jar.display()),
         );
@@ -571,7 +579,7 @@ async fn start_server(
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let mut s = app.write().await;
-                s.add_log("info", line);
+                s.add_console_log("info", line);
             }
         });
     }
@@ -584,7 +592,7 @@ async fn start_server(
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let mut s = app.write().await;
-                s.add_log("error", line);
+                s.add_console_log("error", line);
             }
         });
     }
@@ -603,7 +611,7 @@ async fn start_server(
                         drop(lock);
                         let mut s = app.write().await;
                         s.mc_running = false;
-                        s.add_log(
+                        s.add_console_log(
                             "warn",
                             format!(
                                 "Servidor Minecraft terminó (código {:?})",
@@ -618,7 +626,7 @@ async fn start_server(
                         drop(lock);
                         let mut s = app.write().await;
                         s.mc_running = false;
-                        s.add_log(
+                        s.add_console_log(
                             "warn",
                             "No se pudo comprobar el estado del servidor",
                         );
@@ -664,7 +672,7 @@ async fn stop_server(
     {
         let mut s = st.app.write().await;
         s.mc_running = false;
-        s.add_log("info", "Servidor detenido");
+        s.add_console_log("info", "Servidor detenido");
     }
     Ok(json_ok(json!({})))
 }
