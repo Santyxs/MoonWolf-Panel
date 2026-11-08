@@ -1,6 +1,4 @@
 //! Interfaz gráfica con WebView (wry + tao).
-//! Fuentes separadas: ui/index.html + ui/style.css + ui/app.js
-//! En runtime se ensamblan (WebView no puede cargar href locales del .exe).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -210,7 +208,7 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
 
     {
         let proxy = proxy.clone();
-        tray_icon::TrayIconEvent::set_event_handler(Some(move |event| {
+        tray_icon::TrayIconEvent::set_event_handler(Some(move |event: tray_icon::TrayIconEvent| {
             if let tray_icon::TrayIconEvent::Click {
                 button: tray_icon::MouseButton::Left,
                 button_state: tray_icon::MouseButtonState::Up,
@@ -224,7 +222,7 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
 
     {
         let proxy = proxy.clone();
-        muda::MenuEvent::set_event_handler(Some(move |event| {
+        muda::MenuEvent::set_event_handler(Some(move |event: muda::MenuEvent| {
             if event.id.0 == "tray_open" {
                 let _ = proxy.send_event(GuiEvent::RestoreFromTray);
             } else if event.id.0 == "tray_quit" {
