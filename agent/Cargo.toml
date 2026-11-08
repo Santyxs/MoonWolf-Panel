@@ -6,6 +6,7 @@ description = "MoonWolf Agent"
 authors = ["Santyxs"]
 license = "MIT"
 repository = "https://github.com/Santyxs/MoonWolf-Panel"
+build = "build.rs"
 
 [[bin]]
 name = "moonwolf-agent"
@@ -69,8 +70,12 @@ windows-sys = { version = "0.59", features = [
   "Win32_System_Console",
 ] }
 
+[build-dependencies]
+winres = "0.1"
+
 [profile.release]
+opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
-opt-level = "z"
+panic = "abort"
