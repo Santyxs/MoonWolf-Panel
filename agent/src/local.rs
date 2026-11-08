@@ -2873,3 +2873,777 @@ async fn versions_install(
     }
 
     let url = match body.url {
+        Some(u) if !u.is_empty() => u,
+        _ => return json_fail("URL de descarga requerida"),
+    };
+
+    let temp = server_dir.join(format!(".moonwolf-server-download-{}", std::process::id()));
+    if let Err(e) = download_to(&url, &temp).await {
+        let _ = tokio::fs::remove_file(&temp).await;
+        return json_fail(&format!("Descarga falló: {e}"));
+    }
+
+    let current = server_dir.join("server.jar");
+    let backup = server_dir.join(format!("server.bak_{}.jar", chrono::Utc::now().timestamp()));
+
+    if current.exists() {
+        let _ = tokio::fs::rename(&current, &backup).await;
+    }
+    if let Err(e) = tokio::fs::rename(&temp, &current).await {
+        if backup.exists() {
+            let _ = tokio::fs::rename(&backup, &current).await;
+        }
+        return json_fail(&format!("No se pudo mover el nuevo server.jar: {e}"));
+    }
+
+    let size_mb = tokio::fs::metadata(&current)
+        .await
+        .map(|m| m.len() as f64 / 1024.0 / 1024.0)
+        .unwrap_or(0.0);
+
+    json_ok(json!({
+        "type": "direct",
+        "filename": "server.jar",
+        "size": format!("{:.2} MB", size_mb),
+        "software": sw,
+        "version": version,
+        "note": "server.jar actualizado correctamente.",
+    }))
+}
+
+/* ══════════════════════════════════════════════
+   PLUGINS
+   ══════════════════════════════════════════════ */
+
+fn plugins_dir(server_dir: &Path) -> PathBuf {
+    server_dir.join("plugins")
+}
+
+#[derive(Deserialize)]
+struct PluginsSearchQuery {
+    q: Option<String>,
+    source: Option<String>,
+}
+
+async fn plugins_search(Query(q): Query<PluginsSearchQuery>) -> Response {
+    let query = q.q.unwrap_or_default();
+    if query.trim().is_empty() {
+        return json_fail("Query vacía");
+    }
+    let source = q.source.unwrap_or_else(|| "all".into());
+    let q_enc = urlencode(&query);
+
+    let mut results = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    if source == "all" || source == "modrinth" {
+        if let Err(e) = search_modrinth(&q_enc, &mut results).await {
+            errors.push(format!("Modrinth: {e}"));
+        }
+    }
+    if source == "all" || source == "spigot" {
+        if let Err(e) = search_spiget(&q_enc, &mut results).await {
+            errors.push(format!("SpigotMC: {e}"));
+        }
+    }
+    if source == "all" || source == "hangar" {
+        if let Err(e) = search_hangar(&q_enc, &mut results).await {
+            errors.push(format!("Hangar: {e}"));
+        }
+    }
+
+    json_ok(json!({ "results": results, "errors": errors }))
+}
+
+async fn search_modrinth(q: &str, out: &mut Vec<serde_json::Value>) -> Result<(), String> {
+    let url = format!(
+        "https://api.modrinth.com/v2/search?query={}&limit=10&facets=[[\"project_type:plugin\"]]",
+        q
+    );
+    let v = fetch_json(&url).await?;
+    if let Some(hits) = v.get("hits").and_then(|h| h.as_array()) {
+        for p in hits {
+            out.push(json!({
+                "id": p.get("project_id").and_then(|x| x.as_str()).unwrap_or(""),
+                "name": p.get("title").and_then(|x| x.as_str()).unwrap_or(""),
+                "description": p.get("description").and_then(|x| x.as_str()).unwrap_or(""),
+                "icon": p.get("icon_url").and_then(|x| x.as_str()),
+                "downloads": p.get("downloads").and_then(|x| x.as_i64()).unwrap_or(0),
+                "source": "modrinth",
+                "gameVersions": p.get("game_versions").cloned().unwrap_or(json!([])),
+                "categories": p.get("categories").cloned().unwrap_or(json!([])),
+                "premium": false,
+                "external": false,
+            }));
+        }
+    }
+    Ok(())
+}
+
+async fn search_spiget(q: &str, out: &mut Vec<serde_json::Value>) -> Result<(), String> {
+    let url = format!(
+        "https://api.spiget.org/v2/search/resources/{}?size=10&field=name",
+        q
+    );
+    let v = fetch_json(&url).await?;
+    if let Some(arr) = v.as_array() {
+        for p in arr {
+            let id = p.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
+            let name = p.get("name").and_then(|x| x.as_str()).unwrap_or("");
+            let tag = p.get("tag").and_then(|x| x.as_str()).unwrap_or("Plugin desde SpigotMC");
+            let downloads = p.get("downloads").and_then(|x| x.as_i64()).unwrap_or(0);
+            let external = p.get("external").and_then(|x| x.as_bool()).unwrap_or(false);
+            let premium = p.get("premium").and_then(|x| x.as_bool()).unwrap_or(false);
+            out.push(json!({
+                "id": id.to_string(),
+                "name": name,
+                "description": tag,
+                "icon": format!("https://api.spiget.org/v2/resources/{}/icon", id),
+                "downloads": downloads,
+                "source": "spigot",
+                "external": external,
+                "premium": premium,
+                "gameVersions": [],
+                "categories": [],
+            }));
+        }
+    }
+    Ok(())
+}
+
+async fn search_hangar(q: &str, out: &mut Vec<serde_json::Value>) -> Result<(), String> {
+    let url = format!(
+        "https://hangar.papermc.io/api/v1/projects?limit=10&offset=0&q={}&sort=-stars",
+        q
+    );
+    let v = fetch_json(&url).await?;
+    if let Some(arr) = v.get("result").and_then(|r| r.as_array()) {
+        for p in arr {
+            let ns = p.get("namespace").cloned().unwrap_or_default();
+            let owner = ns.get("owner").and_then(|x| x.as_str()).unwrap_or("");
+            let slug = ns.get("slug").and_then(|x| x.as_str()).unwrap_or("");
+            let downloads = p
+                .get("stats")
+                .and_then(|s| s.get("downloads"))
+                .and_then(|d| d.as_i64())
+                .unwrap_or(0);
+            out.push(json!({
+                "id": format!("{}/{}", owner, slug),
+                "name": p.get("name").and_then(|x| x.as_str()).unwrap_or(""),
+                "description": p.get("description").and_then(|x| x.as_str()).unwrap_or(""),
+                "icon": p.get("avatarUrl").and_then(|x| x.as_str()),
+                "downloads": downloads,
+                "source": "hangar",
+                "gameVersions": [],
+                "categories": p.get("category").and_then(|c| c.as_str()).map(|c| json!([c])).unwrap_or(json!([])),
+                "premium": false,
+                "external": false,
+            }));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct PluginsVersionsQuery {
+    id: Option<String>,
+    source: Option<String>,
+}
+
+async fn plugins_versions(Query(q): Query<PluginsVersionsQuery>) -> Response {
+    let id = q.id.unwrap_or_default();
+    let source = q.source.unwrap_or_default();
+    if id.is_empty() || source.is_empty() {
+        return json_fail("id y source requeridos");
+    }
+
+    let res: Result<Vec<serde_json::Value>, String> = match source.as_str() {
+        "modrinth" => plugin_versions_modrinth(&id).await,
+        "spigot" => plugin_versions_spiget(&id).await,
+        "hangar" => plugin_versions_hangar(&id).await,
+        _ => Err(format!("Fuente no soportada: {source}")),
+    };
+
+    match res {
+        Ok(v) => json_ok(json!({ "versions": v })),
+        Err(e) => json_fail(&e),
+    }
+}
+
+async fn plugin_versions_modrinth(id: &str) -> Result<Vec<serde_json::Value>, String> {
+    let url = format!("https://api.modrinth.com/v2/project/{}/version", id);
+    let v = fetch_json(&url).await?;
+    let mut out = Vec::new();
+    if let Some(arr) = v.as_array() {
+        for ver in arr {
+            let files = ver.get("files").and_then(|f| f.as_array()).cloned().unwrap_or_default();
+            let files_json: Vec<serde_json::Value> = files
+                .into_iter()
+                .map(|f| {
+                    json!({
+                        "primary": f.get("primary").and_then(|p| p.as_bool()).unwrap_or(false),
+                        "url": f.get("url").and_then(|u| u.as_str()).unwrap_or(""),
+                        "filename": f.get("filename").and_then(|n| n.as_str()).unwrap_or(""),
+                    })
+                })
+                .collect();
+            out.push(json!({
+                "versionId": ver.get("id").and_then(|x| x.as_str()).unwrap_or(""),
+                "versionNumber": ver.get("version_number").and_then(|x| x.as_str()).unwrap_or(""),
+                "name": ver.get("name").and_then(|x| x.as_str()).unwrap_or(""),
+                "downloads": ver.get("downloads").and_then(|x| x.as_i64()).unwrap_or(0),
+                "published": ver.get("date_published").and_then(|x| x.as_str()),
+                "gameVersions": ver.get("game_versions").cloned().unwrap_or(json!([])),
+                "loaders": ver.get("loaders").cloned().unwrap_or(json!([])),
+                "changelog": ver.get("changelog").and_then(|c| c.as_str()),
+                "files": files_json,
+                "isExternal": false,
+            }));
+        }
+    }
+    Ok(out)
+}
+
+async fn plugin_versions_spiget(id: &str) -> Result<Vec<serde_json::Value>, String> {
+    let resource = fetch_json(&format!("https://api.spiget.org/v2/resources/{}", id)).await?;
+    let premium = resource.get("premium").and_then(|p| p.as_bool()).unwrap_or(false);
+    let external = resource.get("external").and_then(|p| p.as_bool()).unwrap_or(false);
+    let can_download = !premium && !external;
+    let resource_page = format!("https://www.spigotmc.org/resources/{}/", id);
+
+    let raw = fetch_json(&format!(
+        "https://api.spiget.org/v2/resources/{}/versions?size=20&sort=-releaseDate",
+        id
+    ))
+    .await?;
+
+    let mut out = Vec::new();
+    if let Some(arr) = raw.as_array() {
+        for ver in arr {
+            let vid = ver.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
+            let label = ver.get("name").and_then(|x| x.as_str()).unwrap_or("");
+            let published = ver.get("releaseDate").and_then(|x| x.as_i64()).map(|s| s * 1000);
+            let downloads = ver.get("downloads").and_then(|x| x.as_i64()).unwrap_or(0);
+            let safe_name = format!("plugin-{}-{}.jar", id, vid);
+            out.push(json!({
+                "versionId": vid.to_string(),
+                "versionNumber": label,
+                "published": published,
+                "downloads": downloads,
+                "isExternal": !can_download,
+                "externalUrl": if !can_download { Some(resource_page.clone()) } else { None },
+                "changelog": null,
+                "changelogIsHtml": false,
+                "files": if can_download {
+                    vec![json!({
+                        "primary": true,
+                        "url": format!("https://api.spiget.org/v2/resources/{}/versions/{}/download", id, vid),
+                        "filename": safe_name,
+                    })]
+                } else {
+                    vec![]
+                },
+            }));
+        }
+    }
+
+    if out.is_empty() {
+        out.push(json!({
+            "versionId": "external",
+            "versionNumber": "Ver en SpigotMC",
+            "isExternal": true,
+            "externalUrl": resource_page,
+            "files": [],
+        }));
+    }
+    Ok(out)
+}
+
+async fn plugin_versions_hangar(id: &str) -> Result<Vec<serde_json::Value>, String> {
+    let (owner, slug) = id
+        .split_once('/')
+        .ok_or_else(|| "ID de Hangar inválido (formato owner/slug)".to_string())?;
+    let project_page = format!("https://hangar.papermc.io/{}/{}", owner, slug);
+    let raw = fetch_json(&format!(
+        "https://hangar.papermc.io/api/v1/projects/{}/{}/versions?limit=20&offset=0",
+        owner, slug
+    ))
+    .await?;
+
+    let mut out = Vec::new();
+    if let Some(arr) = raw.get("result").and_then(|r| r.as_array()) {
+        for ver in arr {
+            let name = ver.get("name").and_then(|x| x.as_str()).unwrap_or("");
+            let created = ver.get("createdAt").and_then(|x| x.as_str());
+            let downloads = ver.get("downloads").cloned().unwrap_or_default();
+            let platforms: Vec<&str> = downloads
+                .as_object()
+                .map(|o| o.keys().map(|s| s.as_str()).collect())
+                .unwrap_or_default();
+            let platform = platforms
+                .iter()
+                .find(|p| **p == "PAPER")
+                .copied()
+                .or_else(|| platforms.first().copied());
+
+            let is_external = platform.is_none();
+            let file_url = platform.map(|p| {
+                format!(
+                    "https://hangar.papermc.io/api/v1/projects/{}/{}/versions/{}/{}/download",
+                    owner, slug, name, p
+                )
+            });
+            out.push(json!({
+                "versionId": name,
+                "versionNumber": name,
+                "published": created,
+                "isExternal": is_external,
+                "externalUrl": if is_external { Some(format!("{}/versions/{}", project_page, name)) } else { None },
+                "changelog": ver.get("description").and_then(|x| x.as_str()),
+                "changelogIsHtml": false,
+                "files": if !is_external {
+                    vec![json!({
+                        "primary": true,
+                        "url": file_url.unwrap_or_default(),
+                        "filename": format!("{}-{}.jar", slug, name),
+                    })]
+                } else {
+                    vec![]
+                },
+            }));
+        }
+    }
+
+    if out.is_empty() {
+        out.push(json!({
+            "versionId": "external",
+            "versionNumber": "Ver en Hangar",
+            "isExternal": true,
+            "externalUrl": project_page,
+            "files": [],
+        }));
+    }
+    Ok(out)
+}
+
+#[derive(Deserialize)]
+struct PluginsInstallBody {
+    url: Option<String>,
+    filename: Option<String>,
+}
+
+async fn plugins_install(
+    State(st): State<LocalState>,
+    headers: HeaderMap,
+    Json(body): Json<PluginsInstallBody>,
+) -> Response {
+    {
+        let s = st.app.read().await;
+        if check_auth(&headers, &s.config.local_token).is_err() {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+    }
+
+    let url = body.url.unwrap_or_default();
+    let filename = body.filename.unwrap_or_default();
+
+    if url.is_empty() || filename.is_empty() {
+        return json_fail("url y filename requeridos");
+    }
+    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
+        return json_fail("Nombre de archivo no válido");
+    }
+    if !filename.to_lowercase().ends_with(".jar") {
+        return json_fail("El archivo debe ser .jar");
+    }
+
+    let server_dir = {
+        let s = st.app.read().await;
+        s.config.server_dir.clone()
+    };
+
+    let dir = plugins_dir(&server_dir);
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        return json_fail(&format!("No se pudo crear plugins/: {e}"));
+    }
+
+    let dest = dir.join(&filename);
+
+    if let Err(e) = download_to(&url, &dest).await {
+        return json_fail(&format!("Descarga falló: {e}"));
+    }
+
+    let size_mb = tokio::fs::metadata(&dest)
+        .await
+        .map(|m| m.len() as f64 / 1024.0 / 1024.0)
+        .unwrap_or(0.0);
+
+    json_ok(json!({
+        "filename": filename,
+        "size": format!("{:.2} MB", size_mb),
+    }))
+}
+
+async fn plugins_installed(State(st): State<LocalState>) -> Response {
+    let server_dir = {
+        let s = st.app.read().await;
+        s.config.server_dir.clone()
+    };
+    let dir = plugins_dir(&server_dir);
+    if !dir.exists() {
+        return json_ok(json!({ "plugins": [] }));
+    }
+
+    let mut rd = match tokio::fs::read_dir(&dir).await {
+        Ok(r) => r,
+        Err(_) => return json_ok(json!({ "plugins": [] })),
+    };
+
+    let mut plugins = Vec::new();
+    while let Ok(Some(ent)) = rd.next_entry().await {
+        let name = ent.file_name().to_string_lossy().to_string();
+        if !name.to_lowercase().ends_with(".jar") {
+            continue;
+        }
+        let meta = match ent.metadata().await {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let size_mb = meta.len() as f64 / 1024.0 / 1024.0;
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| {
+                chrono::DateTime::from_timestamp(d.as_secs() as i64, 0)
+                    .map(|dt| dt.format("%d/%m/%Y, %H:%M:%S").to_string())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+        plugins.push(json!({
+            "filename": name,
+            "size": format!("{:.2} MB", size_mb),
+            "modified": modified,
+        }));
+    }
+
+    plugins.sort_by(|a, b| {
+        a.get("filename")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .cmp(b.get("filename").and_then(|x| x.as_str()).unwrap_or(""))
+    });
+
+    json_ok(json!({ "plugins": plugins }))
+}
+
+async fn plugins_delete(
+    State(st): State<LocalState>,
+    headers: HeaderMap,
+    AxumPath(filename): AxumPath<String>,
+) -> Response {
+    {
+        let s = st.app.read().await;
+        if check_auth(&headers, &s.config.local_token).is_err() {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+    }
+
+    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
+        return json_fail("Nombre no válido");
+    }
+    if !filename.to_lowercase().ends_with(".jar") {
+        return json_fail("Solo se pueden borrar archivos .jar");
+    }
+
+    let server_dir = {
+        let s = st.app.read().await;
+        s.config.server_dir.clone()
+    };
+    let path = plugins_dir(&server_dir).join(&filename);
+    if !path.is_file() {
+        return json_fail("El plugin no existe");
+    }
+
+    match tokio::fs::remove_file(&path).await {
+        Ok(()) => json_ok(json!({})),
+        Err(e) => json_fail(&format!("No se pudo eliminar: {e}")),
+    }
+}
+
+/* ══════════════════════════════════════════════
+   DATABASES
+   ══════════════════════════════════════════════ */
+
+fn mysql_pool() -> Pool {
+    let host = std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
+    let port = std::env::var("MOONWOLF_MYSQL_PORT").unwrap_or_else(|_| "3306".into());
+    let user = std::env::var("MOONWOLF_MYSQL_USER").unwrap_or_else(|_| "root".into());
+    let password = std::env::var("MOONWOLF_MYSQL_PASSWORD").unwrap_or_default();
+
+    let url = format!(
+        "mysql://{}:{}@{}:{}/",
+        urlencode(&user),
+        urlencode(&password),
+        host,
+        port
+    );
+    let opts = Opts::from_url(&url).unwrap_or_else(|_| Opts::default());
+    Pool::new(opts)
+}
+
+fn valid_db_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 48
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !matches!(
+            name.to_ascii_lowercase().as_str(),
+            "information_schema" | "mysql" | "performance_schema" | "sys"
+        )
+}
+
+fn gen_db_password() -> String {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let mut bytes = [0u8; 18];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+    STANDARD
+        .encode(&bytes)
+        .replace(['+', '/', '='], "")
+        .chars()
+        .take(20)
+        .collect()
+}
+
+async fn db_status() -> Response {
+    let host = std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
+    let port = std::env::var("MOONWOLF_MYSQL_PORT").unwrap_or_else(|_| "3306".into());
+
+    let pool = mysql_pool();
+    match pool.get_conn().await {
+        Ok(mut conn) => {
+            let ok_row: Result<Option<i32>, _> = conn.query_first("SELECT 1").await;
+            match ok_row {
+                Ok(_) => json_ok(json!({
+                    "connected": true,
+                    "host": host,
+                    "port": port,
+                })),
+                Err(e) => json_ok(json!({
+                    "connected": false,
+                    "error": e.to_string(),
+                    "host": host,
+                    "port": port,
+                })),
+            }
+        }
+        Err(e) => json_ok(json!({
+            "connected": false,
+            "error": e.to_string(),
+            "host": host,
+            "port": port,
+        })),
+    }
+}
+
+async fn db_list() -> Response {
+    let pool = mysql_pool();
+    let mut conn = match pool.get_conn().await {
+        Ok(c) => c,
+        Err(e) => return json_fail(&format!("MySQL: {e}")),
+    };
+
+    let query = "SELECT s.SCHEMA_NAME AS name, \
+        COALESCE(SUM(t.DATA_LENGTH + t.INDEX_LENGTH), 0) AS sizeBytes, \
+        COUNT(t.TABLE_NAME) AS tableCount \
+        FROM information_schema.SCHEMATA s \
+        LEFT JOIN information_schema.TABLES t ON t.TABLE_SCHEMA = s.SCHEMA_NAME \
+        WHERE s.SCHEMA_NAME NOT IN ('information_schema','mysql','performance_schema','sys') \
+        GROUP BY s.SCHEMA_NAME ORDER BY s.SCHEMA_NAME";
+
+    let result: Result<Vec<mysql_async::Row>, _> = conn.query(query).await;
+    let rows = match result {
+        Ok(r) => r,
+        Err(e) => return json_fail(&format!("MySQL: {e}")),
+    };
+
+    let mut databases = Vec::new();
+    for row in rows {
+        let name: String = row.get("name").unwrap_or_default();
+        let size_bytes: u64 = row.get::<u64, _>("sizeBytes").unwrap_or(0);
+        let tables: u64 = row.get::<u64, _>("tableCount").unwrap_or(0);
+
+        let username: String = name.chars().take(32).collect();
+        let user: Option<String> = conn
+            .exec_first(
+                "SELECT user FROM mysql.user WHERE user = ?",
+                (&username,),
+            )
+            .await
+            .ok()
+            .flatten();
+
+        databases.push(json!({
+            "name": name,
+            "sizeMb": format!("{:.2}", size_bytes as f64 / 1024.0 / 1024.0),
+            "tables": tables,
+            "user": user,
+        }));
+    }
+
+    json_ok(json!({ "databases": databases }))
+}
+
+#[derive(Deserialize)]
+struct DbCreateBody {
+    name: Option<String>,
+    #[serde(rename = "createUser")]
+    create_user: Option<bool>,
+}
+
+async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
+    let name = body.name.unwrap_or_default().trim().to_string();
+    let create_user = body.create_user.unwrap_or(true);
+
+    if !valid_db_name(&name) {
+        return json_fail("Nombre no válido. Usa solo letras, números y guion bajo (máx. 48 caracteres).");
+    }
+
+    let pool = mysql_pool();
+    let mut conn = match pool.get_conn().await {
+        Ok(c) => c,
+        Err(e) => return json_fail(&format!("MySQL: {e}")),
+    };
+
+    let exists: Option<String> = conn
+        .exec_first(
+            "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?",
+            (&name,),
+        )
+        .await
+        .ok()
+        .flatten();
+    if exists.is_some() {
+        return json_fail("Ya existe una base de datos con ese nombre.");
+    }
+
+    if let Err(e) = conn
+        .query_drop(format!(
+            "CREATE DATABASE `{}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+            name.replace('`', "``")
+        ))
+        .await
+    {
+        return json_fail(&format!("No se pudo crear: {e}"));
+    }
+
+    let mut credentials = None;
+
+    if create_user {
+        let username = name.chars().take(32).collect::<String>();
+        let password = gen_db_password();
+
+        let q_user = format!(
+            "CREATE USER IF NOT EXISTS '{}'@'%' IDENTIFIED BY '{}'",
+            username.replace('\'', "''"),
+            password.replace('\'', "''")
+        );
+        let _ = conn.query_drop(&q_user).await;
+
+        let q_alter = format!(
+            "ALTER USER '{}'@'%' IDENTIFIED BY '{}'",
+            username.replace('\'', "''"),
+            password.replace('\'', "''")
+        );
+        let _ = conn.query_drop(&q_alter).await;
+
+        let q_grant = format!(
+            "GRANT ALL PRIVILEGES ON `{}`.* TO '{}'@'%'",
+            name.replace('`', "``"),
+            username.replace('\'', "''")
+        );
+        let _ = conn.query_drop(&q_grant).await;
+
+        let _ = conn.query_drop("FLUSH PRIVILEGES").await;
+
+        let host = std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
+        let port = std::env::var("MOONWOLF_MYSQL_PORT").unwrap_or_else(|_| "3306".into());
+
+        credentials = Some(json!({
+            "user": username,
+            "password": password,
+            "host": host,
+            "port": port,
+            "database": name,
+        }));
+    }
+
+    json_ok(json!({ "name": name, "credentials": credentials }))
+}
+
+async fn db_reset(AxumPath(name): AxumPath<String>) -> Response {
+    if !valid_db_name(&name) {
+        return json_fail("Nombre no válido.");
+    }
+
+    let pool = mysql_pool();
+    let mut conn = match pool.get_conn().await {
+        Ok(c) => c,
+        Err(e) => return json_fail(&format!("MySQL: {e}")),
+    };
+
+    let username: String = name.chars().take(32).collect();
+    let exists: Option<String> = conn
+        .exec_first("SELECT user FROM mysql.user WHERE user = ?", (&username,))
+        .await
+        .ok()
+        .flatten();
+    if exists.is_none() {
+        return json_fail("Esta base de datos no tiene un usuario asociado.");
+    }
+
+    let password = gen_db_password();
+    let q_alter = format!(
+        "ALTER USER '{}'@'%' IDENTIFIED BY '{}'",
+        username.replace('\'', "''"),
+        password.replace('\'', "''")
+    );
+    let _ = conn.query_drop(&q_alter).await;
+    let _ = conn.query_drop("FLUSH PRIVILEGES").await;
+
+    let host = std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
+    let port = std::env::var("MOONWOLF_MYSQL_PORT").unwrap_or_else(|_| "3306".into());
+
+    json_ok(json!({
+        "credentials": {
+            "user": username,
+            "password": password,
+            "host": host,
+            "port": port,
+            "database": name,
+        }
+    }))
+}
+
+async fn db_delete(AxumPath(name): AxumPath<String>) -> Response {
+    if !valid_db_name(&name) {
+        return json_fail("Nombre no válido.");
+    }
+
+    let pool = mysql_pool();
+    let mut conn = match pool.get_conn().await {
+        Ok(c) => c,
+        Err(e) => return json_fail(&format!("MySQL: {e}")),
+    };
+
+    let q_drop = format!("DROP DATABASE `{}`", name.replace('`', "``"));
+    if let Err(e) = conn.query_drop(&q_drop).await {
+        return json_fail(&format!("No se pudo eliminar: {e}"));
+    }
+
+    let username: String = name.chars().take(32).collect();
+    let q_drop_user = format!("DROP USER IF EXISTS '{}'@'%'", username.replace('\'', "''"));
+    let _ = conn.query_drop(&q_drop_user).await;
+    let _ = conn.query_drop("FLUSH PRIVILEGES").await;
+
+    json_ok(json!({}))
+}
