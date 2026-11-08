@@ -157,14 +157,23 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         });
     }
 
-    let window_icon = image::load_from_memory(TRAY_ICON_PNG)
-        .ok()
-        .map(|img| {
+    let window_icon = match image::load_from_memory(TRAY_ICON_PNG) {
+        Ok(img) => {
             let rgba = img.into_rgba8();
-            let (w, h) = image::GenericImageView::dimensions(&rgba);
-            tao::window::Icon::from_rgba(rgba.into_raw(), w, h).ok()
-        })
-        .flatten();
+            let (w, h) = rgba.dimensions();
+            match tao::window::Icon::from_rgba(rgba.into_raw(), w, h) {
+                Ok(icon) => Some(icon),
+                Err(e) => {
+                    error!("No se pudo crear icono de ventana: {e}");
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            error!("No se pudo cargar tray.png para icono de ventana: {e}");
+            None
+        }
+    };
 
     let window = WindowBuilder::new()
         .with_title(WINDOW_TITLE)
@@ -182,13 +191,23 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     let _ = tray_menu.append(&muda::PredefinedMenuItem::separator());
     let _ = tray_menu.append(&item_quit);
 
-    let tray_icon_img = image::load_from_memory(TRAY_ICON_PNG)
-        .ok()
-        .and_then(|img| {
+    let tray_icon_img = match image::load_from_memory(TRAY_ICON_PNG) {
+        Ok(img) => {
             let rgba = img.into_rgba8();
-            let (w, h) = image::GenericImageView::dimensions(&rgba);
-            tray_icon::Icon::from_rgba(rgba.into_raw(), w, h).ok()
-        });
+            let (w, h) = rgba.dimensions();
+            match tray_icon::Icon::from_rgba(rgba.into_raw(), w, h) {
+                Ok(icon) => Some(icon),
+                Err(e) => {
+                    error!("No se pudo crear icono de bandeja: {e}");
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            error!("No se pudo cargar tray.png para bandeja: {e}");
+            None
+        }
+    };
 
     let mut tray_builder = tray_icon::TrayIconBuilder::new()
         .with_tooltip(WINDOW_TITLE)
