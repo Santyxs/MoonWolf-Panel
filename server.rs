@@ -509,9 +509,23 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
                     if state.rate_limited(format!("agent-rpc-result:{agent_id}"), 240, 60_000).await { return; }
                     let Some(id) = result.get("id") else { return; };
                     let id_key = id.to_string();
-                    let mut panels = state.panels.lock().await;
-                    let target = panels.iter_mut().find(|(_, panel)| panel.agent_id == agent_id && panel.pending_rpc.remove(&id_key));
-                    if let Some((_, panel)) = target { let _ = panel.socket.emit("rpc_result", &result); }
+                    let target_socket = {
+                        let mut panels = state.panels.lock().await;
+                        let mut target_socket = None;
+
+                        for panel in panels.values_mut() {
+                            if panel.agent_id == agent_id && panel.pending_rpc.remove(&id_key) {
+                                target_socket = Some(panel.socket.clone());
+                                break;
+                            }
+                        }
+
+                        target_socket
+                    };
+
+                    if let Some(socket) = target_socket {
+                        let _ = socket.emit("rpc_result", &result);
+                    }
                 }
             });
 
