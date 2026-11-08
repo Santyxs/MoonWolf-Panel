@@ -22,7 +22,13 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Version resolved at compile time.
+/// Prefer `MOONWOLF_AGENT_VERSION` (set by CI) over the package version from Cargo.toml.
+const VERSION: &str = match option_env!("MOONWOLF_AGENT_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 const PANEL_URL: &str = "https://moonwolf-panel.onrender.com";
 pub const LOCAL_PORT: u16 = 10000;
 
