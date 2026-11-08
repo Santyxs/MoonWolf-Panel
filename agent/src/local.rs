@@ -17,8 +17,7 @@ use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
-use crate::state::AppState;
-use crate::util::sleep_ms;
+use crate::state::{sleep_ms, AppState};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -189,7 +188,6 @@ async fn list_files(
         let _ = tokio::fs::create_dir_all(&root).await;
     }
 
-    // Panel usa ?dir= ; nosotros también aceptamos ?path=
     let rel = q.dir.or(q.path).unwrap_or_default();
     let dir = match resolve_safe(&root, &rel) {
         Ok(p) => p,
@@ -490,13 +488,11 @@ async fn start_server(
     let root = s.config.server_dir.clone();
     drop(s);
 
-    // 1) Comprobar si el proceso sigue realmente vivo (no sólo is_some)
     {
         let mut mc = st.mc.write().await;
         if let Some(child) = mc.as_mut() {
             match child.try_wait() {
                 Ok(Some(_)) => {
-                    // ya terminó: limpiar y permitir arrancar de nuevo
                     *mc = None;
                 }
                 Ok(None) => {
@@ -536,7 +532,6 @@ async fn start_server(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    // 2) En Windows: no abrir consola nueva
     #[cfg(windows)]
     {
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -551,7 +546,6 @@ async fn start_server(
         }
     };
 
-    // 3) Sacar stdout/stderr ANTES de guardar el child
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
@@ -565,7 +559,6 @@ async fn start_server(
         );
     }
 
-    // Tarea que lee stdout y lo vuelca a los logs
     if let Some(stdout) = stdout {
         let app = Arc::clone(&st.app);
         tokio::spawn(async move {
@@ -579,7 +572,6 @@ async fn start_server(
         });
     }
 
-    // Tarea que lee stderr y lo vuelca a los logs
     if let Some(stderr) = stderr {
         let app = Arc::clone(&st.app);
         tokio::spawn(async move {
@@ -593,7 +585,6 @@ async fn start_server(
         });
     }
 
-    // Tarea vigía: limpia `mc` cuando el proceso termina
     {
         let mc = Arc::clone(&st.mc);
         let app = Arc::clone(&st.app);
@@ -653,7 +644,6 @@ async fn stop_server(
         let _ = stdin.write_all(b"stop\n").await;
     }
 
-    // Esperar un poco y forzar si hace falta
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     match child.try_wait() {
         Ok(Some(_)) => {
