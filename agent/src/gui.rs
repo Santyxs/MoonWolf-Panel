@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 use tracing::{error, info};
 use wry::WebViewBuilder;
 
-use crate::state::{AgentConfig, AppState};
+use crate::{AgentConfig, AppState};
 
 const WINDOW_TITLE: &str = "MoonWolf Agent";
 const PANEL_URL: &str = "https://moonwolf-panel.onrender.com";
@@ -383,7 +383,7 @@ fn handle_ipc(
         }
         "check_update" => {
             spawn_async(app, |app| async move {
-                if let Err(e) = crate::update::check_once(Arc::clone(&app)).await {
+                if let Err(e) = crate::check_update_once(Arc::clone(&app)).await {
                     let mut s = app.write().await;
                     s.add_log("error", format!("Error buscando actualización: {e}"));
                 }
@@ -396,7 +396,7 @@ fn handle_ipc(
                     (std::env::current_exe().ok(), s.update_file.clone())
                 };
                 if let (Some(cur), Some(new_path)) = (current, new_exe) {
-                    if let Err(e) = crate::update::apply_update(&cur, &new_path).await {
+                    if let Err(e) = crate::apply_update(&cur, &new_path).await {
                         let mut s = app.write().await;
                         s.add_log("error", format!("No se pudo aplicar update: {e}"));
                     } else {
