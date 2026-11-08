@@ -205,16 +205,23 @@ function renderUpdateBanner() {
 
   const version = `v${available.version}`;
   const status = String(state.updateStatus || 'idle');
-  const progress = Number(state.updateProgress) || 0;
+  // Backend envía 0.0–1.0; toleramos también 0–100 por si cambia
+  const rawProgress = Number(state.updateProgress);
+  const progressPct = Number.isFinite(rawProgress)
+    ? Math.max(0, Math.min(100, rawProgress <= 1 ? Math.round(rawProgress * 100) : Math.round(rawProgress)))
+    : 0;
 
   if (status === 'downloading') {
     if (title) title.textContent = `Descargando ${version}…`;
-    if (description) description.textContent = `${progress}% completado`;
-    if (track) track.classList.remove('hidden');
-    if (fill) fill.style.width = `${progress}%`;
+    if (description) description.textContent = `${progressPct}% completado`;
+    if (track) {
+      track.classList.remove('hidden');
+      track.setAttribute('aria-valuenow', String(progressPct));
+    }
+    if (fill) fill.style.width = `${progressPct}%`;
     if (applyButton) {
       applyButton.disabled = true;
-      applyButton.innerHTML = '<span>⬇</span>Descargando';
+      applyButton.innerHTML = `<span>⬇</span>${progressPct}%`;
     }
     return;
   }
