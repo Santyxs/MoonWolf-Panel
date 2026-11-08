@@ -171,11 +171,9 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          # Actualiza version en Cargo.toml
           sed -i "0,/^version = /s//version = \"$VERSION\"/" Cargo.toml
           grep '^version = ' Cargo.toml
 
-          # Genera Cargo.lock si aún no existe (requerido por --locked)
           if [[ ! -f Cargo.lock ]]; then
             echo "Cargo.lock no encontrado → generando con cargo generate-lockfile"
             cargo generate-lockfile
