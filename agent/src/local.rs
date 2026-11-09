@@ -9,8 +9,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use mysql_async::prelude::*;
-use mysql_async::{Opts, Pool};
+use sqlx::Row;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -3626,25 +3625,34 @@ async fn plugins_delete(
 DATABASES
 ══════════════════════════════════════════════ */
 
-static MYSQL_POOL: OnceLock<Pool> = OnceLock::new();
+static MYSQL_POOL: tokio::sync::OnceCell<sqlx::MySqlPool> = tokio::sync::OnceCell::const_new();
 
-fn mysql_pool() -> &'static Pool {
-    let host = std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
-    let port = std::env::var("MOONWOLF_MYSQL_PORT").unwrap_or_else(|_| "3306".into());
-    let user = std::env::var("MOONWOLF_MYSQL_USER").unwrap_or_else(|_| "root".into());
-    let password = std::env::var("MOONWOLF_MYSQL_PASSWORD").unwrap_or_default();
+async fn mysql_pool() -> Result<&'static sqlx::MySqlPool, sqlx::Error> {
+    MYSQL_POOL
+        .get_or_try_init(|| async {
+            let host =
+                std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
+            let port = std::env::var("MOONWOLF_MYSQL_PORT").unwrap_or_else(|_| "3306".into());
+            let user = std::env::var("MOONWOLF_MYSQL_USER").unwrap_or_else(|_| "root".into());
+            let password = std::env::var("MOONWOLF_MYSQL_PASSWORD").unwrap_or_default();
 
-    MYSQL_POOL.get_or_init(|| {
-        let url = format!(
-            "mysql://{}:{}@{}:{}/?pool_min=0&pool_max=8&conn_ttl=1800&tcp_keepalive=30000&stmt_cache_size=32",
-            urlencode(&user),
-            urlencode(&password),
-            host,
-            port
-        );
-        let opts = Opts::from_url(&url).unwrap_or_else(|_| Opts::default());
-        Pool::new(opts)
-    })
+            let url = format!(
+                "mysql://{}:{}@{}:{}/",
+                urlencode(&user),
+                urlencode(&password),
+                host,
+                port
+            );
+
+            sqlx::mysql::MySqlPoolOptions::new()
+                .max_connections(8)
+                .min_connections(0)
+                .acquire_timeout(std::time::Duration::from_secs(10))
+                .idle_timeout(std::time::Duration::from_secs(1800))
+                .connect(&url)
+                .await
+        })
+        .await
 }
 
 fn valid_db_name(name: &str) -> bool {
@@ -3671,24 +3679,23 @@ async fn db_status() -> Response {
     let host = std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
     let port = std::env::var("MOONWOLF_MYSQL_PORT").unwrap_or_else(|_| "3306".into());
 
-    let pool = mysql_pool();
-    match pool.get_conn().await {
-        Ok(mut conn) => {
-            let ok_row: Result<Option<i32>, _> = conn.query_first("SELECT 1").await;
-            match ok_row {
-                Ok(_) => json_ok(json!({
-                    "connected": true,
-                    "host": host,
-                    "port": port,
-                })),
-                Err(e) => json_ok(json!({
-                    "connected": false,
-                    "error": e.to_string(),
-                    "host": host,
-                    "port": port,
-                })),
-            }
-        }
+    match mysql_pool().await {
+        Ok(pool) => match sqlx::query_scalar::<_, i64>("SELECT 1")
+            .fetch_one(pool)
+            .await
+        {
+            Ok(_) => json_ok(json!({
+                "connected": true,
+                "host": host,
+                "port": port,
+            })),
+            Err(e) => json_ok(json!({
+                "connected": false,
+                "error": e.to_string(),
+                "host": host,
+                "port": port,
+            })),
+        },
         Err(e) => json_ok(json!({
             "connected": false,
             "error": e.to_string(),
@@ -3699,9 +3706,8 @@ async fn db_status() -> Response {
 }
 
 async fn db_list() -> Response {
-    let pool = mysql_pool();
-    let mut conn = match pool.get_conn().await {
-        Ok(c) => c,
+    let pool = match mysql_pool().await {
+        Ok(p) => p,
         Err(e) => return json_fail(&format!("MySQL: {e}")),
     };
 
@@ -3713,28 +3719,28 @@ async fn db_list() -> Response {
         WHERE s.SCHEMA_NAME NOT IN ('information_schema','mysql','performance_schema','sys') \
         GROUP BY s.SCHEMA_NAME ORDER BY s.SCHEMA_NAME";
 
-    let result: Result<Vec<mysql_async::Row>, _> = conn.query(query).await;
-    let rows = match result {
+    let rows = match sqlx::query(query).fetch_all(pool).await {
         Ok(r) => r,
         Err(e) => return json_fail(&format!("MySQL: {e}")),
     };
 
-    let users: HashMap<String, String> = match conn.query("SELECT user FROM mysql.user").await {
-        Ok(rows) => rows
-            .into_iter()
-            .filter_map(|row: mysql_async::Row| {
-                let user: String = row.get("user")?;
-                Some((user.clone(), user))
-            })
-            .collect(),
-        Err(_) => HashMap::new(),
-    };
+    let users: HashMap<String, String> =
+        match sqlx::query("SELECT user FROM mysql.user").fetch_all(pool).await {
+            Ok(user_rows) => user_rows
+                .into_iter()
+                .filter_map(|row| {
+                    let user: String = row.try_get("user").ok()?;
+                    Some((user.clone(), user))
+                })
+                .collect(),
+            Err(_) => HashMap::new(),
+        };
 
     let mut databases = Vec::new();
     for row in rows {
-        let name: String = row.get("name").unwrap_or_default();
-        let size_bytes: u64 = row.get::<u64, _>("sizeBytes").unwrap_or(0);
-        let tables: u64 = row.get::<u64, _>("tableCount").unwrap_or(0);
+        let name: String = row.try_get("name").unwrap_or_default();
+        let size_bytes: i64 = row.try_get("sizeBytes").unwrap_or(0);
+        let tables: i64 = row.try_get("tableCount").unwrap_or(0);
 
         let username: String = name.chars().take(32).collect();
         let user = users.get(&username).cloned();
@@ -3767,31 +3773,28 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
         );
     }
 
-    let pool = mysql_pool();
-    let mut conn = match pool.get_conn().await {
-        Ok(c) => c,
+    let pool = match mysql_pool().await {
+        Ok(p) => p,
         Err(e) => return json_fail(&format!("MySQL: {e}")),
     };
 
-    let exists: Option<String> = conn
-        .exec_first(
-            "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?",
-            (&name,),
-        )
-        .await
-        .ok()
-        .flatten();
+    let exists: Option<String> = sqlx::query_scalar(
+        "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?",
+    )
+    .bind(&name)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
     if exists.is_some() {
         return json_fail("Ya existe una base de datos con ese nombre.");
     }
 
-    if let Err(e) = conn
-        .query_drop(format!(
-            "CREATE DATABASE `{}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
-            name.replace('`', "``")
-        ))
-        .await
-    {
+    let create_db = format!(
+        "CREATE DATABASE `{}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+        name.replace('`', "``")
+    );
+    if let Err(e) = sqlx::query(&create_db).execute(pool).await {
         return json_fail(&format!("No se pudo crear: {e}"));
     }
 
@@ -3806,23 +3809,24 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
             username.replace('\'', "''"),
             password.replace('\'', "''")
         );
-        let _ = conn.query_drop(&q_user).await;
+        let _ = sqlx::query(&q_user).execute(pool).await;
 
         let q_alter = format!(
             "ALTER USER '{}'@'%' IDENTIFIED BY '{}'",
             username.replace('\'', "''"),
             password.replace('\'', "''")
         );
-        let _ = conn.query_drop(&q_alter).await;
+        let _ = sqlx::query(&q_alter).execute(pool).await;
 
         let q_grant = format!(
             "GRANT ALL PRIVILEGES ON `{}`.* TO '{}'@'%'",
             name.replace('`', "``"),
             username.replace('\'', "''")
         );
-        let _ = conn.query_drop(&q_grant).await;
+        let _ = sqlx::query(&q_grant).execute(pool).await;
 
-        let host = std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
+        let host =
+            std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
         let port = std::env::var("MOONWOLF_MYSQL_PORT").unwrap_or_else(|_| "3306".into());
 
         credentials = Some(json!({
@@ -3842,18 +3846,19 @@ async fn db_reset(AxumPath(name): AxumPath<String>) -> Response {
         return json_fail("Nombre no válido.");
     }
 
-    let pool = mysql_pool();
-    let mut conn = match pool.get_conn().await {
-        Ok(c) => c,
+    let pool = match mysql_pool().await {
+        Ok(p) => p,
         Err(e) => return json_fail(&format!("MySQL: {e}")),
     };
 
     let username: String = name.chars().take(32).collect();
-    let exists: Option<String> = conn
-        .exec_first("SELECT user FROM mysql.user WHERE user = ?", (&username,))
-        .await
-        .ok()
-        .flatten();
+    let exists: Option<String> =
+        sqlx::query_scalar("SELECT user FROM mysql.user WHERE user = ?")
+            .bind(&username)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
     if exists.is_none() {
         return json_fail("Esta base de datos no tiene un usuario asociado.");
     }
@@ -3864,7 +3869,7 @@ async fn db_reset(AxumPath(name): AxumPath<String>) -> Response {
         username.replace('\'', "''"),
         password.replace('\'', "''")
     );
-    let _ = conn.query_drop(&q_alter).await;
+    let _ = sqlx::query(&q_alter).execute(pool).await;
 
     let host = std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
     let port = std::env::var("MOONWOLF_MYSQL_PORT").unwrap_or_else(|_| "3306".into());
@@ -3885,20 +3890,23 @@ async fn db_delete(AxumPath(name): AxumPath<String>) -> Response {
         return json_fail("Nombre no válido.");
     }
 
-    let pool = mysql_pool();
-    let mut conn = match pool.get_conn().await {
-        Ok(c) => c,
+    let pool = match mysql_pool().await {
+        Ok(p) => p,
         Err(e) => return json_fail(&format!("MySQL: {e}")),
     };
 
     let q_drop = format!("DROP DATABASE `{}`", name.replace('`', "``"));
-    if let Err(e) = conn.query_drop(&q_drop).await {
+    if let Err(e) = sqlx::query(&q_drop).execute(pool).await {
         return json_fail(&format!("No se pudo eliminar: {e}"));
     }
 
     let username: String = name.chars().take(32).collect();
-    let q_drop_user = format!("DROP USER IF EXISTS '{}'@'%'", username.replace('\'', "''"));
-    let _ = conn.query_drop(&q_drop_user).await;
+    let q_drop_user = format!(
+        "DROP USER IF EXISTS '{}'@'%'",
+        username.replace('\'', "''")
+    );
+    let _ = sqlx::query(&q_drop_user).execute(pool).await;
 
     json_ok(json!({}))
 }
+
