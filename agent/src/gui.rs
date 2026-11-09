@@ -519,10 +519,18 @@ fn handle_ipc(
                     if let Err(e) = crate::apply_update(&cur, &new_path).await {
                         let mut s = app.write().await;
                         s.add_log("error", format!("No se pudo aplicar update: {e}"));
+                        s.update_status = "error".into();
+                        s.update_error = Some(e.to_string());
                     } else {
-                        let mut s = app.write().await;
-                        s.shutting_down = true;
-                        s.add_log("info", "Actualización aplicada. Reiniciando…");
+                        {
+                            let mut s = app.write().await;
+                            s.shutting_down = true;
+                            s.add_log("info", "Actualización aplicada. Reiniciando…");
+                        }
+                        // Dar tiempo a flush de logs y salir de verdad para que el
+                        // script de reinicio detecte el PID muerto y relance el Agent.
+                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                        std::process::exit(0);
                     }
                 } else {
                     let mut s = app.write().await;
