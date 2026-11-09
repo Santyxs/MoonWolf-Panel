@@ -20,11 +20,9 @@ gui = ["dep:wry", "dep:tao", "dep:muda", "dep:tray-icon", "dep:image"]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "net", "time", "sync", "io-util", "process", "signal"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 futures = "0.3"
-async-trait = "0.1"
 
 axum = { version = "0.7", features = ["multipart"] }
-tower = "0.5"
-tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
+tower-http = { version = "0.5", features = ["cors"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "gzip"] }
 
 mysql_async = { version = "0.35", default-features = false, features = ["default-rustls"] }
@@ -43,32 +41,17 @@ regex = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-flate2 = "1"
-brotli = "6"
 walkdir = "2"
-sha2 = "0.10"
 hex = "0.4"
 
 chrono = { version = "0.4", features = ["serde"] }
-thiserror = "1"
 anyhow = "1"
-once_cell = "1"
-parking_lot = "0.12"
 
 wry = { version = "0.45", optional = true }
 tao = { version = "0.30", optional = true }
 muda = { version = "0.15", optional = true }
 tray-icon = { version = "0.19", optional = true }
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
-  "Win32_Foundation",
-  "Win32_UI_Shell",
-  "Win32_UI_WindowsAndMessaging",
-  "Win32_System_Threading",
-  "Win32_System_Console",
-] }
 
 [build-dependencies]
 winres = "0.1"
