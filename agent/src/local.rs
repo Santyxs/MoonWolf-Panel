@@ -3400,7 +3400,7 @@ fn valid_db_name(name: &str) -> bool {
 }
 
 fn gen_db_password() -> String {
-        let mut bytes = [0u8; 18];
+    let mut bytes = [0u8; 18];
     rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
     crate::b64_std_encode(&bytes)
         .replace(['+', '/', '='], "")
