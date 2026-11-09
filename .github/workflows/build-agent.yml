@@ -29,8 +29,6 @@ concurrency:
   group: moonwolf-agent-${{ github.ref }}
   cancel-in-progress: true
 
-# El build no necesita permisos de escritura. El job de release los concede
-# únicamente al paso que publica artefactos en GitHub.
 permissions:
   contents: read
 
@@ -65,6 +63,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 1
+          persist-credentials: false
 
       # ─────────────────────────────
       # VERIFY
@@ -75,8 +74,8 @@ jobs:
         run: |
           $required = @(
             "agent/Cargo.toml",
-            "agent/src/main.rs",
             "agent/build.rs",
+            "agent/src/main.rs",
             "agent/assets/MoonWolf-Agent.ico",
             "agent/ui/index.html",
             "agent/ui/style.css",
@@ -87,6 +86,13 @@ jobs:
             if (!(Test-Path $file -PathType Leaf)) {
               throw "Missing required file: $file"
             }
+          }
+
+          # Sin Cargo.lock versionado a propósito: las dependencias se resuelven
+          # en cada build. Si alguien lo commitea, esto lo detecta.
+          git ls-files --error-unmatch agent/Cargo.lock 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            throw "agent/Cargo.lock está versionado. Este repo compila sin lockfile: bórralo del índice (git rm --cached agent/Cargo.lock)."
           }
 
           Write-Host "Agent files verified."
@@ -105,6 +111,7 @@ jobs:
         with:
           workspaces: agent
           shared-key: moonwolf-agent-windows-x64
+          cache-on-failure: true
 
       - name: Check Rust formatting
         working-directory: agent
@@ -117,6 +124,7 @@ jobs:
 
       - name: Determine version
         id: version
+        if: github.event_name != 'pull_request'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -181,6 +189,13 @@ jobs:
             ver="${major}.${minor}.0"
           fi
 
+          # Windows exige versión numérica X.Y.Z (build.rs la completa a X.Y.Z.W)
+          ver="${ver#v}"
+          if ! [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: versión no numérica tras normalizar: '$ver'" >&2
+            exit 1
+          fi
+
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$ver" >> "$GITHUB_OUTPUT"
           echo "previous_tag=$previous" >> "$GITHUB_OUTPUT"
@@ -188,32 +203,28 @@ jobs:
           echo "Building MoonWolf Agent v$ver"
 
       # ─────────────────────────────
-      # UPDATE CRATE VERSION + env
+      # VALIDACIÓN EN PULL REQUESTS
       # ─────────────────────────────
 
-      - name: Set Rust package version
+      - name: Validate Agent
+        if: github.event_name == 'pull_request'
         working-directory: agent
-        shell: bash
+        shell: pwsh
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          MOONWOLF_AGENT_VERSION: "0.0.0"
         run: |
-          # Reemplaza la línea version = "..." del [package] (no append)
-          sed -i -E "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
-          grep '^version = ' Cargo.toml
+          cargo check --target $env:BUILD_TARGET
 
-          if [[ ! -f Cargo.lock ]]; then
-            echo "Cargo.lock no encontrado → generando con cargo generate-lockfile"
-            cargo generate-lockfile
-          fi
-
-          test -f Cargo.lock || { echo "ERROR: no se pudo generar Cargo.lock"; exit 1; }
-          echo "Cargo.lock listo."
+          if ($LASTEXITCODE -ne 0) {
+            throw "cargo check failed."
+          }
 
       # ─────────────────────────────
       # BUILD
       # ─────────────────────────────
 
       - name: Build executable
+        if: github.event_name != 'pull_request'
         working-directory: agent
         shell: pwsh
         env:
@@ -221,7 +232,6 @@ jobs:
         run: |
           cargo build `
             --release `
-            --locked `
             --target $env:BUILD_TARGET
 
           if ($LASTEXITCODE -ne 0) {
@@ -234,6 +244,15 @@ jobs:
             throw "Compiled executable not found."
           }
 
+          # La versión del .exe la inyecta build.rs desde MOONWOLF_AGENT_VERSION.
+          $vi = (Get-Item $exe).VersionInfo
+          Write-Host "FileVersion:    $($vi.FileVersion)"
+          Write-Host "ProductVersion: $($vi.ProductVersion)"
+
+          if (-not "$($vi.FileVersion)".StartsWith("$env:MOONWOLF_AGENT_VERSION.")) {
+            Write-Warning "La versión embebida no coincide con MOONWOLF_AGENT_VERSION=$env:MOONWOLF_AGENT_VERSION"
+          }
+
           Write-Host "Rust compilation successful."
 
       # ─────────────────────────────
@@ -241,6 +260,7 @@ jobs:
       # ─────────────────────────────
 
       - name: Package executable
+        if: github.event_name != 'pull_request'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
@@ -269,6 +289,7 @@ jobs:
       # ─────────────────────────────
 
       - name: Upload build artifacts
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v7
         with:
           name: MoonWolf-Agent
