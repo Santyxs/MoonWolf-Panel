@@ -2,6 +2,7 @@
 name = "moonwolf-panel"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.94"
 description = "MoonWolf Panel cloud backend"
 license = "MIT"
 
@@ -10,18 +11,18 @@ name = "moonwolf-panel"
 path = "server.rs"
 
 [dependencies]
-anyhow = "1"
-axum = "0.8"
-hmac = "0.12"
-rand = "0.8"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha1 = "0.10"
-sha2 = "0.10"
-socketioxide = "0.18.9"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres"] }
-subtle = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "time", "sync", "signal"] }
-tower-http = { version = "0.6", features = ["cors", "compression-gzip"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0.104"
+axum = "0.8.9"
+hmac = "0.13.0"
+rand = { version = "0.10.3", features = ["thread_rng"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha1 = "0.11.0"
+sha2 = "0.11.1"
+socketioxide = "0.18.7"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres"] }
+subtle = "2.6.1"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "fs", "time", "sync", "signal"] }
+tower-http = { version = "0.7.1", features = ["cors", "compression-gzip"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
