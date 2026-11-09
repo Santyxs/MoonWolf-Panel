@@ -203,7 +203,7 @@ fn json_fail(msg: &str) -> Response {
     Json(json!({ "ok": false, "error": msg })).into_response()
 }
 
-fn resolve_safe(root: &Path, rel: &str) -> Result<PathBuf, String> {
+fn resolve_safe_sync(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let rel = rel.trim_start_matches(['/', '\\']);
     let joined = if rel.is_empty() {
         root.to_path_buf()
@@ -229,6 +229,14 @@ fn resolve_safe(root: &Path, rel: &str) -> Result<PathBuf, String> {
         }
         Ok(joined)
     }
+}
+
+async fn resolve_safe(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let root = root.to_path_buf();
+    let rel = rel.to_owned();
+    tokio::task::spawn_blocking(move || resolve_safe_sync(&root, &rel))
+        .await
+        .map_err(|e| format!("tarea de ruta falló: {e}"))?
 }
 
 fn http_client() -> &'static reqwest::Client {
@@ -376,12 +384,12 @@ async fn list_files(
     let root = s.config.server_dir.clone();
     drop(s);
 
-    if !root.exists() {
+    if tokio::fs::metadata(&root).await.is_err() {
         let _ = tokio::fs::create_dir_all(&root).await;
     }
 
     let rel = q.dir.or(q.path).unwrap_or_default();
-    let dir = match resolve_safe(&root, &rel) {
+    let dir = match resolve_safe(&root, &rel).await {
         Ok(p) => p,
         Err(e) => return Ok(json_fail(&e)),
     };
@@ -470,7 +478,7 @@ async fn get_file_content(
     drop(s);
 
     let rel = q.path.unwrap_or_default();
-    let path = match resolve_safe(&root, &rel) {
+    let path = match resolve_safe(&root, &rel).await {
         Ok(p) => p,
         Err(e) => return Ok(json_fail(&e)),
     };
@@ -502,7 +510,7 @@ async fn put_file_content(
     let root = s.config.server_dir.clone();
     drop(s);
 
-    let path = match resolve_safe(&root, &body.path) {
+    let path = match resolve_safe(&root, &body.path).await {
         Ok(p) => p,
         Err(e) => return Ok(json_fail(&e)),
     };
@@ -530,7 +538,7 @@ async fn download_file(
     drop(s);
 
     let rel = q.path.unwrap_or_default();
-    let path = match resolve_safe(&root, &rel) {
+    let path = match resolve_safe(&root, &rel).await {
         Ok(p) => p,
         Err(_) => return Err(StatusCode::FORBIDDEN),
     };
@@ -579,7 +587,7 @@ async fn delete_files(
         .collect();
 
     for rel in paths {
-        if let Ok(p) = resolve_safe(&root, &rel) {
+        if let Ok(p) = resolve_safe(&root, &rel).await {
             if p.is_dir() {
                 let _ = tokio::fs::remove_dir_all(&p).await;
             } else {
@@ -609,7 +617,7 @@ async fn create_file(
     let root = s.config.server_dir.clone();
     drop(s);
 
-    let path = match resolve_safe(&root, &body.path) {
+    let path = match resolve_safe(&root, &body.path).await {
         Ok(p) => p,
         Err(e) => return Ok(json_fail(&e)),
     };
@@ -686,7 +694,7 @@ async fn upload_chunk(
         return Ok(json_fail("El bloque excede el tamaño indicado"));
     }
 
-    let full = match resolve_safe(&root, &q.path) {
+    let full = match resolve_safe(&root, &q.path).await {
         Ok(p) => p,
         Err(e) => return Ok(json_fail(&e)),
     };
@@ -858,7 +866,7 @@ async fn rename_file(
         return Ok(json_fail("Nombre no válido"));
     }
 
-    let from = match resolve_safe(&root, &body.path) {
+    let from = match resolve_safe(&root, &body.path).await {
         Ok(p) => p,
         Err(e) => return Ok(json_fail(&e)),
     };
@@ -871,7 +879,7 @@ async fn rename_file(
     } else {
         format!("{}/{}", parent_rel, body.new_name)
     };
-    let to = match resolve_safe(&root, &target_rel) {
+    let to = match resolve_safe(&root, &target_rel).await {
         Ok(p) => p,
         Err(e) => return Ok(json_fail(&e)),
     };
@@ -898,11 +906,11 @@ async fn copy_file(
     let root = s.config.server_dir.clone();
     drop(s);
 
-    let src = match resolve_safe(&root, &body.path) {
+    let src = match resolve_safe(&root, &body.path).await {
         Ok(p) => p,
         Err(e) => return Ok(json_fail(&e)),
     };
-    let dst = match resolve_safe(&root, &body.dest) {
+    let dst = match resolve_safe(&root, &body.dest).await {
         Ok(p) => p,
         Err(e) => return Ok(json_fail(&e)),
     };
@@ -957,11 +965,11 @@ async fn move_file(
     let root = s.config.server_dir.clone();
     drop(s);
 
-    let src = match resolve_safe(&root, &body.path) {
+    let src = match resolve_safe(&root, &body.path).await {
         Ok(p) => p,
         Err(e) => return Ok(json_fail(&e)),
     };
-    let dst = match resolve_safe(&root, &body.dest) {
+    let dst = match resolve_safe(&root, &body.dest).await {
         Ok(p) => p,
         Err(e) => return Ok(json_fail(&e)),
     };
@@ -991,7 +999,7 @@ async fn compress_file(
     let root = s.config.server_dir.clone();
     drop(s);
 
-    let src = match resolve_safe(&root, &body.path) {
+    let src = match resolve_safe(&root, &body.path).await {
         Ok(p) => p,
         Err(e) => return Ok(json_fail(&e)),
     };
@@ -1090,7 +1098,7 @@ async fn bulk_action(
 
     for item in &body.items {
         let result: anyhow::Result<()> = async {
-            let full = resolve_safe(&root, &item.path).map_err(|e| anyhow::anyhow!("{}", e))?;
+            let full = resolve_safe(&root, &item.path).await.map_err(|e| anyhow::anyhow!("{}", e))?;
             if !full.exists() {
                 anyhow::bail!("No existe");
             }
@@ -1113,7 +1121,7 @@ async fn bulk_action(
                     } else {
                         format!("{}/{}", body.destination.trim_end_matches('/'), name)
                     };
-                    let dst = resolve_safe(&root, &target_rel).map_err(|e| anyhow::anyhow!("{}", e))?;
+                    let dst = resolve_safe(&root, &target_rel).await.map_err(|e| anyhow::anyhow!("{}", e))?;
                     if let Some(p) = dst.parent() {
                         let _ = tokio::fs::create_dir_all(p).await;
                     }
@@ -1742,7 +1750,7 @@ fn startup_config_path(root: &Path) -> PathBuf {
     root.join(".moonwolf").join("startup.json")
 }
 
-fn load_startup_config(root: &Path) -> StartupConfig {
+fn load_startup_config_sync(root: &Path) -> StartupConfig {
     let path = startup_config_path(root);
     if let Ok(raw) = std::fs::read_to_string(&path) {
         if let Ok(cfg) = serde_json::from_str::<StartupConfig>(&raw) {
@@ -1752,13 +1760,28 @@ fn load_startup_config(root: &Path) -> StartupConfig {
     StartupConfig::default()
 }
 
-fn save_startup_config(root: &Path, cfg: &StartupConfig) -> std::io::Result<()> {
+fn save_startup_config_sync(root: &Path, cfg: &StartupConfig) -> std::io::Result<()> {
     let path = startup_config_path(root);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let json = serde_json::to_string_pretty(cfg).map_err(std::io::Error::other)?;
     std::fs::write(&path, json)
+}
+
+async fn load_startup_config(root: &Path) -> StartupConfig {
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || load_startup_config_sync(&root))
+        .await
+        .unwrap_or_default()
+}
+
+async fn save_startup_config(root: &Path, cfg: &StartupConfig) -> std::io::Result<()> {
+    let root = root.to_path_buf();
+    let cfg = cfg.clone();
+    tokio::task::spawn_blocking(move || save_startup_config_sync(&root, &cfg))
+        .await
+        .map_err(|e| std::io::Error::other(format!("tarea de configuración falló: {e}")))?
 }
 
 async fn list_jars(root: &Path) -> Vec<String> {
@@ -1784,7 +1807,7 @@ async fn get_startup(
     let root = s.config.server_dir.clone();
     drop(s);
 
-    let cfg = load_startup_config(&root);
+    let cfg = load_startup_config(&root).await;
     let jars = list_jars(&root).await;
 
     let props = read_properties(&root.join("server.properties")).await;
@@ -1850,7 +1873,7 @@ async fn save_startup(
         )));
     }
 
-    let mut cfg = load_startup_config(&root);
+    let mut cfg = load_startup_config(&root).await;
     cfg.jar = jar;
     if let Some(v) = body.java_mode { cfg.java_mode = v; }
     if let Some(v) = body.java_override_path { cfg.java_override_path = v; }
@@ -1864,7 +1887,7 @@ async fn save_startup(
     if let Some(v) = body.auto_restart_on_crash { cfg.auto_restart_on_crash = v; }
     if let Some(v) = body.auto_start_on_boot { cfg.auto_start_on_boot = v; }
 
-    if let Err(e) = save_startup_config(&root, &cfg) {
+    if let Err(e) = save_startup_config(&root, &cfg).await {
         return Ok(json_fail(&format!("No se pudo guardar startup: {e}")));
     }
 
@@ -1899,7 +1922,7 @@ async fn detect_version(
     let root = s.config.server_dir.clone();
     drop(s);
 
-    let cfg = load_startup_config(&root);
+    let cfg = load_startup_config(&root).await;
     let jar = body
         .jar
         .filter(|s| !s.is_empty())
@@ -1918,9 +1941,9 @@ async fn detect_version(
         && body.persist.unwrap_or(true)
         && (body.force || cfg.minecraft_version.is_empty())
     {
-        let mut cfg2 = load_startup_config(&root);
+        let mut cfg2 = load_startup_config(&root).await;
         cfg2.minecraft_version = version_str.clone();
-        if save_startup_config(&root, &cfg2).is_ok() {
+        if save_startup_config(&root, &cfg2).await.is_ok() {
             persisted = true;
         }
     }
@@ -2252,11 +2275,11 @@ async fn start_server(
         }
     }
 
-    if !root.exists() {
+    if tokio::fs::metadata(&root).await.is_err() {
         let _ = tokio::fs::create_dir_all(&root).await;
     }
 
-    let cfg = load_startup_config(&root);
+    let cfg = load_startup_config(&root).await;
     let jar = match find_server_jar(&root, &cfg.jar).await {
         Some(j) => j,
         None => {
@@ -2266,7 +2289,14 @@ async fn start_server(
         }
     };
 
-    let (java_bin, java_source) = resolve_java_binary(&java_configured);
+    let (java_bin, java_source) = tokio::task::spawn_blocking(move || {
+        resolve_java_binary(&java_configured)
+    })
+    .await
+    .map_err(|e| {
+        tracing::error!("Detección de Java falló: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     {
         let mut s = st.app.write().await;
         s.add_console_log(
@@ -2397,7 +2427,7 @@ async fn stop_server(
     let root = s.config.server_dir.clone();
     drop(s);
 
-    let stop_cmd = load_startup_config(&root).stop_command;
+    let stop_cmd = load_startup_config(&root).await.stop_command;
 
     let mut mc = st.mc.write().await;
     let Some(child) = mc.as_mut() else {

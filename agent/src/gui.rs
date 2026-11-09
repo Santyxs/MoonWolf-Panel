@@ -458,21 +458,36 @@ fn handle_ipc(
         "set_server_dir" => {
             if let Some(dir) = path_arg {
                 spawn_async(app, move |app| async move {
-                    let mut s = app.write().await;
                     let path = PathBuf::from(&dir);
-                    if let Err(e) = std::fs::create_dir_all(&path) {
+                    if let Err(e) = tokio::fs::create_dir_all(&path).await {
+                        let mut s = app.write().await;
                         s.add_log("error", format!("No se pudo crear carpeta: {e}"));
                         return;
                     }
-                    s.config.server_dir = path;
-                    if let Err(e) = s.config.save() {
-                        s.add_log("error", format!("No se pudo guardar config: {e}"));
-                    } else {
-                        s.restart_required = true;
-                        s.add_log(
-                            "warn",
-                            "Carpeta del servidor actualizada. Reinicia el Agent.",
-                        );
+
+                    let mut config = {
+                        let s = app.read().await;
+                        s.config.clone()
+                    };
+                    config.server_dir = path.clone();
+                    match tokio::task::spawn_blocking(move || config.save()).await {
+                        Ok(Ok(())) => {
+                            let mut s = app.write().await;
+                            s.config.server_dir = path;
+                            s.restart_required = true;
+                            s.add_log(
+                                "warn",
+                                "Carpeta del servidor actualizada. Reinicia el Agent.",
+                            );
+                        }
+                        Ok(Err(e)) => {
+                            let mut s = app.write().await;
+                            s.add_log("error", format!("No se pudo guardar config: {e}"));
+                        }
+                        Err(e) => {
+                            let mut s = app.write().await;
+                            s.add_log("error", format!("No se pudo guardar config: {e}"));
+                        }
                     }
                 });
             }
@@ -496,7 +511,7 @@ fn handle_ipc(
                     (AgentConfig::config_dir(), lines.join("\n"))
                 };
                 let path = dir.join("agent.log");
-                let _ = std::fs::write(&path, text);
+                let _ = tokio::fs::write(&path, text).await;
                 let mut s = app.write().await;
                 s.add_log("info", format!("Logs guardados en {}", path.display()));
             });
