@@ -107,16 +107,7 @@ fn assemble_ui() -> String {
 }
 
 fn webview2_data_dir() -> PathBuf {
-    // Preferir TEMP local: no ensucia AppData\Roaming y el SO puede purgarlo.
-    #[cfg(windows)]
-    {
-        if let Some(tmp) = std::env::var_os("TEMP").or_else(|| std::env::var_os("TMP")) {
-            return PathBuf::from(tmp).join("MoonWolf").join("WebView2");
-        }
-        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(local).join("MoonWolf").join("WebView2");
-        }
-    }
+    // AppData\Roaming\MoonWolf\WebView2
     AgentConfig::config_dir().join("WebView2")
 }
 
@@ -125,11 +116,12 @@ fn setup_webview2_data_dir() {
     {
         let dir = webview2_data_dir();
 
-        // Migración: borrar el perfil viejo en Roaming si existe (ya no se usa).
-        let legacy = AgentConfig::config_dir().join("WebView2");
-        if legacy.exists() && legacy != dir {
-            let _ = std::fs::remove_dir_all(&legacy);
-            info!("WebView2 legacy Roaming eliminado: {}", legacy.display());
+        // También limpiar restos en TEMP de la versión anterior (si existían).
+        if let Some(tmp) = std::env::var_os("TEMP").or_else(|| std::env::var_os("TMP")) {
+            let legacy_tmp = PathBuf::from(tmp).join("MoonWolf").join("WebView2");
+            if legacy_tmp.exists() {
+                let _ = std::fs::remove_dir_all(&legacy_tmp);
+            }
         }
 
         wipe_webview2_user_data(&dir);
