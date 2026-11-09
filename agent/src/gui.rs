@@ -392,15 +392,10 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
 }
 
 fn mark_shutdown(app: Arc<RwLock<AppState>>) {
-    if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        rt.block_on(async {
-            let mut s = app.write().await;
-            s.shutting_down = true;
-        });
-    }
+    spawn_async(app, |app| async move {
+        let mut s = app.write().await;
+        s.shutting_down = true;
+    });
 }
 
 fn handle_ipc(
