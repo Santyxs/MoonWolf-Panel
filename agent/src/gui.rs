@@ -106,52 +106,66 @@ fn assemble_ui() -> String {
     html
 }
 
+fn webview2_data_dir() -> PathBuf {
+    // Preferir TEMP local: no ensucia AppData\Roaming y el SO puede purgarlo.
+    #[cfg(windows)]
+    {
+        if let Some(tmp) = std::env::var_os("TEMP").or_else(|| std::env::var_os("TMP")) {
+            return PathBuf::from(tmp).join("MoonWolf").join("WebView2");
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            return PathBuf::from(local).join("MoonWolf").join("WebView2");
+        }
+    }
+    AgentConfig::config_dir().join("WebView2")
+}
+
 fn setup_webview2_data_dir() {
     #[cfg(windows)]
     {
-        let dir = AgentConfig::config_dir().join("WebView2");
+        let dir = webview2_data_dir();
 
-        // La UI es 100% local (HTML embebido): no necesitamos perfil persistente.
-        // Vaciar la carpeta en cada arranque evita que EBWebView acumule decenas
-        // de subcarpetas (Cache, Crashpad, GPUCache, Service Worker, etc.).
+        // Migración: borrar el perfil viejo en Roaming si existe (ya no se usa).
+        let legacy = AgentConfig::config_dir().join("WebView2");
+        if legacy.exists() && legacy != dir {
+            let _ = std::fs::remove_dir_all(&legacy);
+            info!("WebView2 legacy Roaming eliminado: {}", legacy.display());
+        }
+
         wipe_webview2_user_data(&dir);
-
         let _ = std::fs::create_dir_all(&dir);
 
-        // SAFETY: se ejecuta al principio del arranque de la GUI; el resto
-        // de hilos (local/cloud/update) no leen esta variable de entorno.
+        // SAFETY: solo al inicio de la GUI.
         unsafe {
             std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &dir);
         }
-        info!("WebView2 data folder (limpia): {}", dir.display());
+        info!("WebView2 data folder: {}", dir.display());
     }
 }
 
-/// Borra por completo el user-data de WebView2 y lo recrea vacío.
 #[cfg(windows)]
 fn wipe_webview2_user_data(root: &std::path::Path) {
-    if root.exists() {
-        // Reintentos suaves por si quedó algún handle de una instancia anterior.
-        for attempt in 0..3 {
-            match std::fs::remove_dir_all(root) {
-                Ok(()) => break,
-                Err(e) => {
-                    if attempt == 2 {
-                        // Fallback: borrar contenido entrada a entrada.
-                        if let Ok(entries) = std::fs::read_dir(root) {
-                            for entry in entries.flatten() {
-                                let p = entry.path();
-                                if p.is_dir() {
-                                    let _ = std::fs::remove_dir_all(&p);
-                                } else {
-                                    let _ = std::fs::remove_file(&p);
-                                }
+    if !root.exists() {
+        return;
+    }
+    for attempt in 0..3 {
+        match std::fs::remove_dir_all(root) {
+            Ok(()) => return,
+            Err(e) => {
+                if attempt == 2 {
+                    if let Ok(entries) = std::fs::read_dir(root) {
+                        for entry in entries.flatten() {
+                            let p = entry.path();
+                            if p.is_dir() {
+                                let _ = std::fs::remove_dir_all(&p);
+                            } else {
+                                let _ = std::fs::remove_file(&p);
                             }
                         }
-                        tracing::warn!("No se pudo borrar WebView2 por completo: {e}");
-                    } else {
-                        std::thread::sleep(std::time::Duration::from_millis(80));
                     }
+                    tracing::warn!("Wipe parcial de WebView2: {e}");
+                } else {
+                    std::thread::sleep(std::time::Duration::from_millis(80));
                 }
             }
         }
@@ -350,6 +364,9 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         );
     }
 
+    // Sin cookies/storage persistente: menos escrituras en disco.
+    let webview_builder = webview_builder.with_incognito(true);
+
     let webview = webview_builder.build()?;
 
     info!("Ventana GUI lista");
@@ -367,14 +384,6 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
                 }
             }
             Event::UserEvent(GuiEvent::Quit) => {
-                // Intento de limpieza; si hay locks, el próximo arranque hará wipe completo.
-                #[cfg(windows)]
-                {
-                    let dir = crate::AgentConfig::config_dir().join("WebView2");
-                    // No borrar mientras el webview vive: solo al salir del proceso es fiable
-                    // el wipe del próximo arranque. Aquí no forzamos remove_dir_all.
-                    let _ = dir;
-                }
                 *control_flow = ControlFlow::Exit;
             }
             Event::UserEvent(GuiEvent::MinimizeToTray) => {
