@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
+
+static UPDATE_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 /// Version resolved at compile time.
 /// Prefer `MOONWOLF_AGENT_VERSION` (set by CI) over the package version from Cargo.toml.
@@ -548,9 +550,14 @@ pub async fn check_update_once(app: Arc<RwLock<AppState>>) -> anyhow::Result<()>
     };
 
     let url = format!("https://api.github.com/repos/{UPDATE_REPO}/releases/latest");
-    let client = reqwest::Client::builder()
-        .user_agent(format!("MoonWolf-Agent/{current}"))
-        .build()?;
+    let client = UPDATE_HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent("MoonWolf-Agent")
+            .connect_timeout(Duration::from_secs(10))
+            .pool_max_idle_per_host(4)
+            .build()
+            .expect("reqwest client")
+    });
     let release: GhRelease = client.get(&url).send().await?.error_for_status()?.json().await?;
 
     let tag = release.tag_name.trim_start_matches("agent-v").to_string();
@@ -607,9 +614,14 @@ async fn download_and_stage(
     tokio::fs::create_dir_all(&dir).await?;
     let dest = dir.join(format!("MoonWolf-Agent-v{}.exe", info_update.version));
 
-    let client = reqwest::Client::builder()
-        .user_agent("MoonWolf-Agent")
-        .build()?;
+    let client = UPDATE_HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent("MoonWolf-Agent")
+            .connect_timeout(Duration::from_secs(10))
+            .pool_max_idle_per_host(4)
+            .build()
+            .expect("reqwest client")
+    });
     let mut resp = client
         .get(&info_update.download_url)
         .send()

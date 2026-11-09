@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path as AxumPath, Query, State};
@@ -36,6 +36,7 @@ const BACKUP_EXCLUDES: &[&str] = &[".moonwolf", ".moonwolf-uploads"];
 const BACKUP_RETENTION: usize = 10;
 
 const PANEL_UA: &str = "MoonWolfPanel/2.0 (contact@moonwolf.local)";
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 /* ══════════════════════════════════════════════
    ESTADO
@@ -154,8 +155,9 @@ pub async fn serve(app: Arc<RwLock<AppState>>, port: u16) -> anyhow::Result<()> 
 
 pub async fn wait_ready(port: u16, max_attempts: u32) -> anyhow::Result<()> {
     let url = format!("http://127.0.0.1:{port}/api/health");
+    let client = http_client();
     for attempt in 1..=max_attempts {
-        if let Ok(resp) = reqwest::get(&url).await {
+        if let Ok(resp) = client.get(&url).send().await {
             if resp.status().is_success() {
                 return Ok(());
             }
@@ -229,12 +231,16 @@ fn resolve_safe(root: &Path, rel: &str) -> Result<PathBuf, String> {
     }
 }
 
-fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .user_agent(PANEL_UA)
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .expect("reqwest client")
+fn http_client() -> &'static reqwest::Client {
+    HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent(PANEL_UA)
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(60))
+            .pool_max_idle_per_host(16)
+            .build()
+            .expect("reqwest client")
+    })
 }
 
 async fn fetch_json(url: &str) -> Result<serde_json::Value, String> {

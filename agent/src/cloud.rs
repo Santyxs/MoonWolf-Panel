@@ -1,6 +1,6 @@
 //! Cliente Socket.IO hacia MoonWolf Cloud.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use futures::future::FutureExt;
@@ -18,6 +18,7 @@ const CONNECT_WAIT_MS: u64 = 20_000;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const HEALTHY_CONNECTION: Duration = Duration::from_secs(60);
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 pub async fn run(app: Arc<RwLock<AppState>>, panel_url: &str) {
     let mut backoff = RECONNECT_BASE_MS;
@@ -413,7 +414,13 @@ async fn handle_rpc(app: &Arc<RwLock<AppState>>, payload: &Payload) -> serde_jso
     };
 
     let url = format!("http://127.0.0.1:{}{}", LOCAL_PORT, path);
-    let client = reqwest::Client::new();
+    let client = HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .pool_max_idle_per_host(8)
+            .build()
+            .expect("reqwest client")
+    });
     let mut builder = match method.as_str() {
         "POST" => client.post(&url),
         "PUT" => client.put(&url),
