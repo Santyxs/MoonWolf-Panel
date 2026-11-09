@@ -1,4 +1,3 @@
-
 [package]
 name = "moonwolf-agent"
 version = "0.1.0"
@@ -15,44 +14,35 @@ path = "src/main.rs"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+slint = { version = "1.13", default-features = false, features = ["std", "backend-winit", "renderer-software"], optional = true }
+tray-icon = { version = "0.26", optional = true }
+muda = { version = "0.21", optional = true }
+image = { version = "0.25", default-features = false, features = ["ico", "png"], optional = true }
 
 [features]
 default = ["gui"]
-gui = ["dep:wry", "dep:tao", "dep:muda", "dep:tray-icon", "dep:image"]
+gui = ["dep:slint", "dep:muda", "dep:tray-icon", "dep:image"]
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "net", "time", "sync", "io-util", "process", "signal"] }
 zip = { version = "9.5", default-features = false, features = ["deflate"] }
 futures = "0.3"
-
 axum = { version = "0.8", features = ["multipart"] }
 tower-http = { version = "0.7", features = ["cors"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream", "gzip"] }
-
 mysql_async = { version = "0.37", default-features = false, features = ["default-rustls"] }
-
 rust_socketio = { version = "0.6", features = ["async"] }
-
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
 rand = "0.10"
-
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
 walkdir = "2"
-
 anyhow = "1"
-
-wry = { version = "0.57", optional = true }
-tao = { version = "0.37", optional = true }
-muda = { version = "0.21", optional = true }
-tray-icon = { version = "0.26", optional = true }
-image = { version = "0.25", default-features = false, features = ["ico", "png"], optional = true }
 
 [build-dependencies]
 winres = "0.1"
+slint-build = "1.13"
 
 [profile.release]
 opt-level = 3

@@ -1,563 +1,231 @@
-//! Interfaz gráfica con WebView (wry + tao).
+//! Interfaz nativa de MoonWolf Agent implementada con Slint (Windows).
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{path::PathBuf, process::Command, sync::Arc, time::Duration};
 
-use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
-use tao::window::WindowBuilder;
+use slint::{ComponentHandle, Timer, TimerMode};
 use tokio::sync::RwLock;
-use tracing::{error, info};
-use wry::WebViewBuilder;
+use tracing::info;
 
 use crate::{AgentConfig, AppState};
 
-const WINDOW_TITLE: &str = "MoonWolf Agent";
+slint::include_modules!();
+
 const PANEL_URL: &str = "https://moonwolf-panel.onrender.com";
-
-const UI_HTML: &str = include_str!("../ui/index.html");
-const UI_CSS: &str = include_str!("../ui/style.css");
-const UI_JS: &str = include_str!("../ui/app.js");
-const TRAY_ICON_ICO: &[u8] = include_bytes!("../assets/MoonWolf-Agent.ico");
-
-const NATIVE_BRIDGE: &str = r#"
-(function () {
-  function post(action, extra) {
-    var payload = Object.assign({ action: action }, extra || {});
-    var msg = JSON.stringify(payload);
-    try {
-      if (window.ipc && window.ipc.postMessage) {
-        window.ipc.postMessage(msg);
-        return;
-      }
-    } catch (e) {}
-    try {
-      if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage) {
-        window.chrome.webview.postMessage(msg);
-        return;
-      }
-    } catch (e) {}
-  }
-  var lastState = null;
-  window.__applyState = function (json) {
-    try {
-      var state = typeof json === 'string' ? JSON.parse(json) : json;
-      lastState = state;
-      window.dispatchEvent(new CustomEvent('moonwolf-state', { detail: state }));
-    } catch (e) {
-      console.error(e);
-    }
-  };
-  window.native = {
-    getState: function () { return lastState || {}; },
-    openPanel: function () { post('open_panel'); return { ok: true }; },
-    openServerFolder: function () { post('open_server_folder'); return { ok: true }; },
-    openConfig: function () { post('open_config_dir'); return { ok: true }; },
-    setServerDir: function (dir) {
-      post('set_server_dir', { path: dir });
-      return Promise.resolve({ ok: true, restartRequired: true });
-    },
-    clearLogs: function () { post('clear_logs'); return true; },
-    saveLogs: function () { post('save_logs'); return true; },
-    hideToTray: function () { post('hide_to_tray'); return { ok: true }; },
-    restart: function () { post('restart'); return true; },
-    checkForUpdates: function () {
-      post('check_update');
-      return Promise.resolve({ ok: true });
-    },
-    applyUpdate: function () {
-      post('apply_update');
-      return Promise.resolve({ ok: true });
-    },
-    close: function () { post('quit'); return { ok: true }; }
-  };
-})();
-"#;
-
-#[derive(Debug)]
-enum GuiEvent {
-    StateJson(String),
-    MinimizeToTray,
-    RestoreFromTray,
-    Quit,
-}
-
-fn assemble_ui() -> String {
-    let mut html = UI_HTML.to_string();
-
-    html = html.replace("<link rel=\"stylesheet\" href=\"style.css\">", "");
-    html = html.replace("<link rel='stylesheet' href='style.css'>", "");
-    html = html.replace("<script src=\"app.js\"></script>", "");
-    html = html.replace("<script src='app.js'></script>", "");
-
-    if let Some(pos) = html.find("</head>") {
-        let style_tag = format!("<style>\n{}\n</style>\n", UI_CSS);
-        html.insert_str(pos, &style_tag);
-    }
-
-    if let Some(pos) = html.rfind("</body>") {
-        let scripts = format!(
-            "<script>\n{}\n</script>\n<script>\n{}\n</script>\n",
-            NATIVE_BRIDGE, UI_JS
-        );
-        html.insert_str(pos, &scripts);
-    }
-
-    html
-}
-
-fn webview2_data_dir() -> PathBuf {
-    // AppData\Roaming\MoonWolf\WebView2
-    AgentConfig::config_dir().join("WebView2")
-}
-
-fn setup_webview2_data_dir() {
-    #[cfg(windows)]
-    {
-        let dir = webview2_data_dir();
-
-        if let Some(tmp) = std::env::var_os("TEMP").or_else(|| std::env::var_os("TMP")) {
-            let legacy_tmp = PathBuf::from(tmp).join("MoonWolf").join("WebView2");
-            if legacy_tmp.exists() {
-                let _ = std::fs::remove_dir_all(&legacy_tmp);
-            }
-        }
-
-        wipe_webview2_user_data(&dir);
-        let _ = std::fs::create_dir_all(&dir);
-
-        unsafe {
-            std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &dir);
-        }
-        info!("WebView2 data folder: {}", dir.display());
-    }
-}
-
-#[cfg(windows)]
-fn wipe_webview2_user_data(root: &std::path::Path) {
-    if !root.exists() {
-        return;
-    }
-    for attempt in 0..3 {
-        match std::fs::remove_dir_all(root) {
-            Ok(()) => return,
-            Err(e) => {
-                if attempt == 2 {
-                    if let Ok(entries) = std::fs::read_dir(root) {
-                        for entry in entries.flatten() {
-                            let p = entry.path();
-                            if p.is_dir() {
-                                let _ = std::fs::remove_dir_all(&p);
-                            } else {
-                                let _ = std::fs::remove_file(&p);
-                            }
-                        }
-                    }
-                    tracing::warn!("Wipe parcial de WebView2: {e}");
-                } else {
-                    std::thread::sleep(std::time::Duration::from_millis(80));
-                }
-            }
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn wipe_webview2_user_data(_root: &std::path::Path) {}
+const WINDOW_TITLE: &str = "MoonWolf Agent";
 
 pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
-    setup_webview2_data_dir();
+    let ui = MainWindow::new()?;
+    let weak = ui.as_weak();
 
-    let index_html = assemble_ui();
-    let event_loop = EventLoopBuilder::<GuiEvent>::with_user_event().build();
-    let proxy = event_loop.create_proxy();
+    // Icono y menú de bandeja nativos; no dependen de WebView2.
+    let tray_menu = muda::Menu::new();
+    let tray_open = muda::MenuItem::with_id("tray_open", "Abrir MoonWolf Agent", true, None);
+    let tray_quit = muda::MenuItem::with_id("tray_quit", "Salir", true, None);
+    let _ = tray_menu.append(&tray_open);
+    let _ = tray_menu.append(&muda::PredefinedMenuItem::separator());
+    let _ = tray_menu.append(&tray_quit);
+    let tray_image = image::load_from_memory(include_bytes!("../assets/MoonWolf-Agent.ico"))?;
+    let tray_rgba = tray_image.into_rgba8();
+    let (tray_width, tray_height) = (tray_rgba.width(), tray_rgba.height());
+    let tray_icon = tray_icon::Icon::from_rgba(tray_rgba.into_raw(), tray_width, tray_height)?;
+    let _tray = tray_icon::TrayIconBuilder::new()
+        .with_tooltip(WINDOW_TITLE)
+        .with_icon(tray_icon)
+        .with_menu(Box::new(tray_menu))
+        .with_menu_on_left_click(false)
+        .build()?;
+
+    let weak_tray = weak.clone();
+    tray_icon::TrayIconEvent::set_event_handler(Some(move |event| {
+        if matches!(event, tray_icon::TrayIconEvent::Click {
+            button: tray_icon::MouseButton::Left,
+            button_state: tray_icon::MouseButtonState::Up,
+            ..
+        }) {
+            let weak = weak_tray.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = weak.upgrade() { let _ = ui.window().show(); }
+            });
+        }
+    }));
+    let weak_menu = weak.clone();
+    muda::MenuEvent::set_event_handler(Some(move |event| {
+        let weak = weak_menu.clone();
+        match event.id.0.as_str() {
+            "tray_open" => { let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = weak.upgrade() { let _ = ui.window().show(); } }); }
+            "tray_quit" => { let _ = slint::invoke_from_event_loop(move || { let _ = slint::quit_event_loop(); }); }
+            _ => {}
+        }
+    }));
+
+    {
+        ui.on_open_panel(move || { let _ = open_target(PANEL_URL); });
+        let app_config = Arc::clone(&app);
+        ui.on_open_config(move || { let _ = open_target(&AgentConfig::config_dir().to_string_lossy()); });
+        ui.on_open_server(move || {
+            let app = Arc::clone(&app_config);
+            spawn_async(app, |app| async move {
+                let path = app.read().await.config.server_dir.clone();
+                let _ = open_target(&path.to_string_lossy());
+            });
+        });
+    }
 
     {
         let app = Arc::clone(&app);
-        let proxy = proxy.clone();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("rt");
-            rt.block_on(async move {
-                let mut last = String::new();
-                loop {
-                    {
-                        let s = app.read().await;
-                        if s.shutting_down {
-                            let _ = proxy.send_event(GuiEvent::Quit);
-                            break;
-                        }
-                        if let Ok(json) = serde_json::to_string(&s.snapshot()) {
-                            if json != last {
-                                last = json.clone();
-                                let _ = proxy.send_event(GuiEvent::StateJson(json));
-                            }
-                        }
+        ui.on_change_server(move |value| {
+            let path = PathBuf::from(value.to_string());
+            let app = Arc::clone(&app);
+            spawn_async(app, move |app| async move {
+                if let Err(e) = tokio::fs::create_dir_all(&path).await {
+                    app.write().await.add_log("error", format!("No se pudo crear carpeta: {e}"));
+                    return;
+                }
+                let mut config = app.read().await.config.clone();
+                config.server_dir = path.clone();
+                match tokio::task::spawn_blocking(move || config.save()).await {
+                    Ok(Ok(())) => {
+                        let mut state = app.write().await;
+                        state.config.server_dir = path;
+                        state.restart_required = true;
+                        state.add_log("warn", "Carpeta del servidor actualizada. Reinicia el Agent.");
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                    Ok(Err(e)) => app.write().await.add_log("error", format!("No se pudo guardar config: {e}")),
+                    Err(e) => app.write().await.add_log("error", format!("No se pudo guardar config: {e}")),
                 }
             });
         });
     }
 
-    let window_icon = match image::load_from_memory(TRAY_ICON_ICO) {
-        Ok(img) => {
-            let rgba = img.into_rgba8();
-            let (w, h) = (rgba.width(), rgba.height());
-            match tao::window::Icon::from_rgba(rgba.into_raw(), w, h) {
-                Ok(icon) => Some(icon),
-                Err(e) => {
-                    error!("No se pudo crear icono de ventana: {e}");
-                    None
-                }
-            }
-        }
-        Err(e) => {
-            error!("No se pudo cargar MoonWolf-Agent.ico para icono de ventana: {e}");
-            None
-        }
-    };
-
-    let window = WindowBuilder::new()
-        .with_title(WINDOW_TITLE)
-        .with_inner_size(tao::dpi::LogicalSize::new(420u32, 570u32))
-        .with_min_inner_size(tao::dpi::LogicalSize::new(380u32, 500u32))
-        .with_window_icon(window_icon)
-        .with_resizable(true)
-        .build(&event_loop)?;
-
-    let tray_menu = muda::Menu::new();
-    let item_open = muda::MenuItem::with_id("tray_open", "Abrir MoonWolf Agent", true, None);
-    let item_quit = muda::MenuItem::with_id("tray_quit", "Salir", true, None);
-    let _ = tray_menu.append(&item_open);
-    let _ = tray_menu.append(&muda::PredefinedMenuItem::separator());
-    let _ = tray_menu.append(&item_quit);
-
-    let tray_icon_img = match image::load_from_memory(TRAY_ICON_ICO) {
-        Ok(img) => {
-            let rgba = img.into_rgba8();
-            let (w, h) = (rgba.width(), rgba.height());
-            match tray_icon::Icon::from_rgba(rgba.into_raw(), w, h) {
-                Ok(icon) => Some(icon),
-                Err(e) => {
-                    error!("No se pudo crear icono de bandeja: {e}");
-                    None
-                }
-            }
-        }
-        Err(e) => {
-            error!("No se pudo cargar MoonWolf-Agent.ico para bandeja: {e}");
-            None
-        }
-    };
-
-    let mut tray_builder = tray_icon::TrayIconBuilder::new()
-        .with_tooltip(WINDOW_TITLE)
-        .with_menu(Box::new(tray_menu))
-        .with_menu_on_left_click(false);
-
-    if let Some(ti) = tray_icon_img {
-        tray_builder = tray_builder.with_icon(ti);
-    }
-
-    let _tray_icon = match tray_builder.build() {
-        Ok(t) => {
-            info!("Bandeja del sistema inicializada");
-            Some(t)
-        }
-        Err(e) => {
-            error!("Error inicializando bandeja: {e}");
-            None
-        }
-    };
-
     {
-        let proxy = proxy.clone();
-        tray_icon::TrayIconEvent::set_event_handler(Some(
-            move |event: tray_icon::TrayIconEvent| {
-                if let tray_icon::TrayIconEvent::Click {
-                    button: tray_icon::MouseButton::Left,
-                    button_state: tray_icon::MouseButtonState::Up,
-                    ..
-                } = event
-                {
-                    let _ = proxy.send_event(GuiEvent::RestoreFromTray);
+        let app = Arc::clone(&app);
+        ui.on_copy_pairing(move || {
+            let app = Arc::clone(&app);
+            spawn_async(app, |app| async move {
+                let code = app.read().await.pairing_code.clone().unwrap_or_default();
+                if !code.is_empty() {
+                    #[cfg(windows)] {
+                        use std::os::windows::process::CommandExt;
+                        const CREATE_NO_WINDOW: u32 = 0x08000000;
+                        if let Ok(mut child) = Command::new("clip").creation_flags(CREATE_NO_WINDOW).stdin(std::process::Stdio::piped()).spawn() {
+                            use std::io::Write;
+                            if let Some(mut stdin) = child.stdin.take() { let _ = stdin.write_all(code.as_bytes()); }
+                        }
+                    }
                 }
-            },
-        ));
-    }
-
-    {
-        let proxy = proxy.clone();
-        muda::MenuEvent::set_event_handler(Some(move |event: muda::MenuEvent| {
-            if event.id.0 == "tray_open" {
-                let _ = proxy.send_event(GuiEvent::RestoreFromTray);
-            } else if event.id.0 == "tray_quit" {
-                let _ = proxy.send_event(GuiEvent::Quit);
-            }
-        }));
-    }
-
-    let app_for_ipc = Arc::clone(&app);
-    let proxy_for_ipc = proxy.clone();
-
-    let mut webview_builder = WebViewBuilder::new()
-        .with_html(&index_html)
-        .with_ipc_handler(move |req| {
-            let body = req.body().clone();
-            handle_ipc(body, Arc::clone(&app_for_ipc), proxy_for_ipc.clone());
+            });
         });
+    }
 
-    #[cfg(windows)]
+    let app_for_clear = Arc::clone(&app);
+    ui.on_clear_logs(move || spawn_async(Arc::clone(&app_for_clear), |app| async move {
+        let mut state = app.write().await;
+        state.logs.clear();
+        state.add_log("info", "Registro de logs limpiado");
+    }));
+
+    let app_for_save = Arc::clone(&app);
+    ui.on_save_logs(move || spawn_async(Arc::clone(&app_for_save), |app| async move {
+        let (dir, text) = {
+            let state = app.read().await;
+            let lines: Vec<String> = state.logs.iter().map(|l| format!("[{}] {}", l.level, l.message)).collect();
+            (AgentConfig::config_dir(), lines.join("\n"))
+        };
+        let path = dir.join("agent.log");
+        if let Err(e) = tokio::fs::write(&path, text).await {
+            app.write().await.add_log("error", format!("No se pudieron guardar los logs: {e}"));
+        } else {
+            app.write().await.add_log("info", format!("Logs guardados en {}", path.display()));
+        }
+    }));
+
+    let app_for_update = Arc::clone(&app);
+    ui.on_check_update(move || spawn_async(Arc::clone(&app_for_update), |app| async move {
+        if let Err(e) = crate::check_update_once(Arc::clone(&app)).await {
+            app.write().await.add_log("error", format!("Error buscando actualización: {e}"));
+        }
+    }));
+
+    let app_for_apply = Arc::clone(&app);
+    ui.on_apply_update(move || spawn_async(Arc::clone(&app_for_apply), |app| async move {
+        let (current, new_exe) = {
+            let state = app.read().await;
+            (std::env::current_exe().ok(), state.update_file.clone())
+        };
+        if let (Some(current), Some(new_exe)) = (current, new_exe) {
+            if let Err(e) = crate::apply_update(&current, &new_exe).await {
+                let mut state = app.write().await;
+                state.add_log("error", format!("No se pudo aplicar update: {e}"));
+                state.update_status = "error".into();
+                state.update_error = Some(e.to_string());
+            }
+        }
+    }));
+
+    let app_for_restart = Arc::clone(&app);
+    ui.on_restart_agent(move || {
+        if let Ok(exe) = std::env::current_exe() { let _ = Command::new(exe).spawn(); }
+        spawn_async(Arc::clone(&app_for_restart), |app| async move {
+            app.write().await.shutting_down = true;
+        });
+        let _ = slint::quit_event_loop();
+    });
+
+    let weak_for_hide = ui.as_weak();
+    ui.on_hide_tray(move || {
+        if let Some(ui) = weak_for_hide.upgrade() { let _ = ui.window().hide(); }
+    });
+
+    let app_for_quit = Arc::clone(&app);
+    ui.on_quit_agent(move || {
+        spawn_async(Arc::clone(&app_for_quit), |app| async move {
+            let mut state = app.write().await;
+            state.shutting_down = true;
+            state.add_log("info", "Cierre solicitado desde la interfaz");
+        });
+        let _ = slint::quit_event_loop();
+    });
+
+    // Actualiza la vista desde el estado compartido sin bloquear el hilo gráfico.
+    let timer = Timer::default();
+    let weak_for_timer = weak.clone();
+    let app_for_timer = Arc::clone(&app);
+    timer.start(TimerMode::Repeated, Duration::from_millis(450), move || {
+        let weak = weak_for_timer.clone();
+        let app = Arc::clone(&app_for_timer);
+        spawn_async(app, move |app| async move {
+            let snapshot = app.read().await.snapshot();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_status_title(if snapshot.cloud_connected { "Conectado".into() } else { "Desconectado".into() });
+                    ui.set_status_description(if snapshot.cloud_connected { "Conexión con MoonWolf Cloud activa".into() } else { "Esperando conexión con MoonWolf Cloud".into() });
+                    ui.set_cloud_connected(snapshot.cloud_connected);
+                    ui.set_local_ready(snapshot.local_server_ready);
+                    ui.set_pairing_code(if snapshot.pairing_code.is_empty() { "—".into() } else { snapshot.pairing_code.into() });
+                    ui.set_server_dir(snapshot.server_dir.into());
+                    ui.set_version(snapshot.version.into());
+                    ui.set_agent_id(snapshot.agent_id.into());
+                    ui.set_config_dir(snapshot.config_path.into());
+                    ui.set_restart_visible(snapshot.restart_required);
+                    ui.set_update_visible(snapshot.update_available.is_some());
+                    let update = snapshot.update_available.map(|u| format!("Actualización disponible: v{}", u.version)).unwrap_or_else(|| snapshot.update_error.unwrap_or_default());
+                    ui.set_update_text(update.into());
+                    let logs = snapshot.logs.iter().map(|l| format!("[{}] {}", l.level.to_uppercase(), l.message)).collect::<Vec<_>>().join("\n");
+                    ui.set_logs_text(logs.into());
+                }
+            });
+        });
+    });
+
+    info!("Iniciando interfaz nativa Slint");
+    ui.run()?;
+    timer.stop();
     {
-        use wry::WebViewBuilderExtWindows;
-        webview_builder = webview_builder.with_additional_browser_args(concat!(
-            "--disable-features=",
-            "msWebOOUI,msPdfOOUI,msSmartScreenProtection,",
-            "TranslateUI,BackgroundFetch,InterestFeedContentSuggestions,",
-            "MediaRouter,CalculatorHistory,msEdgeShoppingUI,msEdgeSidebar,",
-            "msEdgeCollections,msEdgeHubAppActiveFrameCheck,",
-            "AudioServiceOutOfProcess ",
-            "--disk-cache-size=0 ",
-            "--media-cache-size=0 ",
-            "--disable-gpu-shader-disk-cache ",
-            "--disable-breakpad ",
-            "--disable-crash-reporter ",
-            "--disable-component-update ",
-            "--disable-component-extensions-with-background-pages ",
-            "--disable-domain-reliability ",
-            "--disable-sync ",
-            "--disable-background-networking ",
-            "--disable-background-mode ",
-            "--disable-client-side-phishing-detection ",
-            "--disable-default-apps ",
-            "--disable-extensions ",
-            "--disable-hang-monitor ",
-            "--disable-ipc-flooding-protection ",
-            "--disable-popup-blocking ",
-            "--disable-prompt-on-repost ",
-            "--disable-renderer-backgrounding ",
-            "--disable-background-timer-throttling ",
-            "--metrics-recording-only ",
-            "--no-first-run ",
-            "--no-default-browser-check ",
-            "--no-pings ",
-            "--no-service-autorun ",
-            "--password-store=basic ",
-            "--use-mock-keychain"
-        ));
+        let mut state = app.write().await;
+        state.shutting_down = true;
+        state.add_log("info", "MoonWolf Agent cerrado");
     }
-
-    let webview_builder = webview_builder.with_incognito(true);
-
-    let webview = webview_builder.build(&window)?;
-
-    info!("Ventana GUI lista");
-
-    event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
-        match event {
-            Event::UserEvent(GuiEvent::StateJson(json)) => {
-                let safe = json
-                    .replace('\u{2028}', "\\u2028")
-                    .replace('\u{2029}', "\\u2029");
-                let script = format!("window.__applyState && window.__applyState({safe});");
-                if let Err(e) = webview.evaluate_script(&script) {
-                    error!("evaluate_script: {e}");
-                }
-            }
-            Event::UserEvent(GuiEvent::Quit) => {
-                *control_flow = ControlFlow::Exit;
-            }
-            Event::UserEvent(GuiEvent::MinimizeToTray) => {
-                window.set_visible(false);
-            }
-            Event::UserEvent(GuiEvent::RestoreFromTray) => {
-                window.set_visible(true);
-                window.set_minimized(false);
-                window.set_focus();
-            }
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } => {
-                mark_shutdown(Arc::clone(&app));
-                *control_flow = ControlFlow::Exit;
-            }
-            _ => {}
-        }
-    });
-}
-
-fn mark_shutdown(app: Arc<RwLock<AppState>>) {
-    spawn_async(app, |app| async move {
-        let mut s = app.write().await;
-        s.shutting_down = true;
-    });
-}
-
-fn handle_ipc(
-    body: String,
-    app: Arc<RwLock<AppState>>,
-    proxy: tao::event_loop::EventLoopProxy<GuiEvent>,
-) {
-    let body = body.trim().to_string();
-    let (action, path_arg) = if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-        (
-            v.get("action")
-                .and_then(|a| a.as_str())
-                .unwrap_or("")
-                .to_string(),
-            v.get("path")
-                .and_then(|p| p.as_str())
-                .map(|s| s.to_string()),
-        )
-    } else {
-        (body.clone(), None)
-    };
-
-    match action.as_str() {
-        "quit" | "close" => {
-            spawn_async(app, |app| async move {
-                let mut s = app.write().await;
-                s.shutting_down = true;
-                s.add_log("info", "Cierre solicitado desde la interfaz");
-            });
-            let _ = proxy.send_event(GuiEvent::Quit);
-        }
-        "open_panel" => {
-            let _ = open_url(PANEL_URL);
-        }
-        "open_config_dir" | "open_config" => {
-            let dir = AgentConfig::config_dir();
-            let _ = open_path(&dir);
-        }
-        "open_server_folder" => {
-            spawn_async(app, |app| async move {
-                let dir = {
-                    let s = app.read().await;
-                    s.config.server_dir.clone()
-                };
-                let _ = open_path(&dir);
-            });
-        }
-        "set_server_dir" => {
-            if let Some(dir) = path_arg {
-                spawn_async(app, move |app| async move {
-                    let path = PathBuf::from(&dir);
-                    if let Err(e) = tokio::fs::create_dir_all(&path).await {
-                        let mut s = app.write().await;
-                        s.add_log("error", format!("No se pudo crear carpeta: {e}"));
-                        return;
-                    }
-
-                    let mut config = {
-                        let s = app.read().await;
-                        s.config.clone()
-                    };
-                    config.server_dir = path.clone();
-                    match tokio::task::spawn_blocking(move || config.save()).await {
-                        Ok(Ok(())) => {
-                            let mut s = app.write().await;
-                            s.config.server_dir = path;
-                            s.restart_required = true;
-                            s.add_log(
-                                "warn",
-                                "Carpeta del servidor actualizada. Reinicia el Agent.",
-                            );
-                        }
-                        Ok(Err(e)) => {
-                            let mut s = app.write().await;
-                            s.add_log("error", format!("No se pudo guardar config: {e}"));
-                        }
-                        Err(e) => {
-                            let mut s = app.write().await;
-                            s.add_log("error", format!("No se pudo guardar config: {e}"));
-                        }
-                    }
-                });
-            }
-        }
-        "clear_logs" => {
-            spawn_async(app, |app| async move {
-                let mut s = app.write().await;
-                s.logs.clear();
-                s.add_log("info", "Registro de logs limpiado");
-            });
-        }
-        "save_logs" => {
-            spawn_async(app, |app| async move {
-                let (dir, text) = {
-                    let s = app.read().await;
-                    let lines: Vec<String> = s
-                        .logs
-                        .iter()
-                        .map(|l| format!("[{}] {}", l.level, l.message))
-                        .collect();
-                    (AgentConfig::config_dir(), lines.join("\n"))
-                };
-                let path = dir.join("agent.log");
-                let _ = tokio::fs::write(&path, text).await;
-                let mut s = app.write().await;
-                s.add_log("info", format!("Logs guardados en {}", path.display()));
-            });
-        }
-        "check_update" => {
-            spawn_async(app, |app| async move {
-                if let Err(e) = crate::check_update_once(Arc::clone(&app)).await {
-                    let mut s = app.write().await;
-                    s.add_log("error", format!("Error buscando actualización: {e}"));
-                }
-            });
-        }
-        "apply_update" => {
-            spawn_async(app, |app| async move {
-                let (current, new_exe) = {
-                    let s = app.read().await;
-                    (std::env::current_exe().ok(), s.update_file.clone())
-                };
-                if let (Some(cur), Some(new_path)) = (current, new_exe) {
-                    if let Err(e) = crate::apply_update(&cur, &new_path).await {
-                        let mut s = app.write().await;
-                        s.add_log("error", format!("No se pudo aplicar update: {e}"));
-                        s.update_status = "error".into();
-                        s.update_error = Some(e.to_string());
-                    } else {
-                        {
-                            let mut s = app.write().await;
-                            s.shutting_down = true;
-                            s.add_log("info", "Actualización aplicada. Reiniciando…");
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-                        std::process::exit(0);
-                    }
-                } else {
-                    let mut s = app.write().await;
-                    s.add_log("error", "No hay actualización lista para aplicar");
-                }
-            });
-        }
-        "restart" => {
-            if let Ok(exe) = std::env::current_exe() {
-                let _ = std::process::Command::new(&exe).spawn();
-            }
-            spawn_async(app, |app| async move {
-                let mut s = app.write().await;
-                s.shutting_down = true;
-            });
-            let _ = proxy.send_event(GuiEvent::Quit);
-        }
-        "hide_to_tray" => {
-            info!("hide_to_tray / minimizar a segundo plano solicitado");
-            let _ = proxy.send_event(GuiEvent::MinimizeToTray);
-        }
-        other if !other.is_empty() => {
-            tracing::debug!("IPC action: {other}");
-        }
-        _ => {}
-    }
+    Ok(())
 }
 
 fn spawn_async<F, Fut>(app: Arc<RwLock<AppState>>, f: F)
@@ -566,46 +234,17 @@ where
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
     std::thread::spawn(move || {
-        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
+        if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
             rt.block_on(f(app));
         }
     });
 }
 
-fn open_url(url: &str) -> bool {
-    open_path_str(url)
-}
-
-fn open_path(path: &std::path::Path) -> bool {
-    open_path_str(&path.to_string_lossy())
-}
-
-fn open_path_str(target: &str) -> bool {
-    #[cfg(windows)]
-    {
+fn open_target(target: &str) -> bool {
+    #[cfg(windows)] {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", target])
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .is_ok()
+        Command::new("cmd").args(["/C", "start", "", target]).creation_flags(CREATE_NO_WINDOW).spawn().is_ok()
     }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(target)
-            .spawn()
-            .is_ok()
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(target)
-            .spawn()
-            .is_ok()
-    }
+    #[cfg(not(windows))] { let _ = target; false }
 }

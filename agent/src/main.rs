@@ -3,7 +3,7 @@
 mod cloud;
 mod local;
 
-#[cfg(feature = "gui")]
+#[cfg(all(feature = "gui", windows))]
 mod gui;
 
 use std::cmp::Ordering;
@@ -854,20 +854,20 @@ async fn run() -> anyhow::Result<()> {
         })
     };
 
-    #[cfg(feature = "gui")]
+    #[cfg(all(feature = "gui", windows))]
     {
-        info!("Iniciando interfaz gráfica…");
+        info!("Iniciando interfaz gráfica Slint…");
         if let Err(e) = gui::run(Arc::clone(&state)).await {
             error!("GUI: {e:#}");
             fatal_error(&format!(
-                "La interfaz gráfica no pudo iniciarse:\n\n{e:#}\n\nComprueba que el WebView2 Runtime de Windows esté instalado."
+                "La interfaz gráfica Slint no pudo iniciarse:\n\n{e:#}"
             ));
         }
     }
 
-    #[cfg(not(feature = "gui"))]
+    #[cfg(any(not(feature = "gui"), not(windows)))]
     {
-        info!("Modo headless (sin feature `gui`). Ctrl+C para salir.");
+        info!("Modo headless (la interfaz Slint solo está disponible en Windows). Ctrl+C para salir.");
         tokio::signal::ctrl_c().await?;
         tracing::warn!("Señal de salida recibida");
     }
