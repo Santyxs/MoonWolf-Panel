@@ -16,7 +16,7 @@ use crate::{sleep_ms, AppState, LogEntry, LOCAL_PORT};
 
 const RECONNECT_BASE_MS: u64 = 1_000;
 const RECONNECT_MAX_MS: u64 = 30_000;
-const CONNECT_WAIT_MS: u64 = 5_000;
+const CONNECT_WAIT_MS: u64 = 20_000;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const HEALTHY_CONNECTION: Duration = Duration::from_secs(60);
@@ -48,7 +48,7 @@ pub async fn run(app: Arc<RwLock<AppState>>, panel_url: &str) {
                 let mut s = app.write().await;
                 s.cloud_connected = false;
                 s.pairing_code = None;
-                s.add_log("error", format!("Error de conexión con Cloud: {e}"));
+                s.add_log("error", humanize_cloud_error(&format!("{e}")));
             }
         }
 
@@ -106,7 +106,7 @@ async fn connect_once(
 
     let client = ClientBuilder::new(panel_url)
         .namespace("/")
-        .transport_type(TransportType::Websocket)
+        .transport_type(TransportType::Any) // polling primero; upgrade a websocket si se puede
         .auth(auth)
         .on(Event::Connect, move |_, socket: Client| {
             let app = Arc::clone(&app_on_connect);
@@ -146,7 +146,7 @@ async fn connect_once(
                 let mut s = app.write().await;
                 s.cloud_connected = false;
                 s.pairing_code = None;
-                s.add_log("error", format!("Error Cloud: {msg}"));
+                s.add_log("error", humanize_cloud_error(&msg));
             }
             .boxed()
         })
@@ -160,7 +160,7 @@ async fn connect_once(
                     let mut s = app.write().await;
                     s.cloud_connected = false;
                     s.pairing_code = None;
-                    s.add_log("error", format!("connect_error: {msg}"));
+                    s.add_log("error", humanize_cloud_error(&format!("connect_error: {msg}")));
                 }
                 .boxed()
             }
@@ -383,6 +383,21 @@ fn payload_debug(payload: &Payload) -> String {
         Payload::Binary(b) => format!("<binary {} bytes>", b.len()),
         _ => format!("{payload:?}"),
     }
+}
+
+
+fn humanize_cloud_error(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    if lower.contains("engineio") || lower.contains("engine.io") || lower.contains("incomplete response") {
+        return "No se pudo establecer la conexión con Cloud (Engine.IO). El panel puede estar reiniciando o la red bloquea WebSocket; reintentando…".into();
+    }
+    if lower.contains("timeout") {
+        return "Tiempo de espera agotado al conectar con Cloud. Reintentando…".into();
+    }
+    if lower.contains("connect_error") || lower.contains("unauthorized") || lower.contains("auth") {
+        return format!("Cloud rechazó la conexión: {raw}");
+    }
+    raw.to_string()
 }
 
 async fn handle_rpc(app: &Arc<RwLock<AppState>>, payload: &Payload) -> serde_json::Value {
