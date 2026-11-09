@@ -1,7 +1,2 @@
 /target
-**/*.rs.bk
-.idea/
-.vscode/
-*.exe
-*.pdb
 Cargo.lock
