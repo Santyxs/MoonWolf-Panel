@@ -1,3 +1,4 @@
+
 name: "MoonWolf Agent"
 
 on:
@@ -89,13 +90,13 @@ jobs:
 
           $trackedLock = git ls-files -- 'agent/Cargo.lock'
           if (-not [string]::IsNullOrWhiteSpace($trackedLock)) {
-            throw "agent/Cargo.lock está versionado. Este repo compila sin lockfile: bórralo del índice (git rm --cached agent/Cargo.lock)."
+            throw "agent/Cargo.lock está versionado. Este repo compila sin lockfile: bórralo del índice."
           }
 
           Write-Host "Agent files verified."
 
       # ─────────────────────────────
-      # RUST TOOLCHAIN (MSVC)
+      # RUST TOOLCHAIN
       # ─────────────────────────────
 
       - name: Install Rust
@@ -110,10 +111,15 @@ jobs:
           shared-key: moonwolf-agent-windows-x64
           cache-on-failure: true
 
+      # ─────────────────────────────
+      # FORMAT
+      # ─────────────────────────────
+
       - name: Format Code
+        working-directory: agent
         shell: bash
         run: cargo fmt --all
-        
+
       # ─────────────────────────────
       # VERSION
       # ─────────────────────────────
@@ -186,6 +192,7 @@ jobs:
           fi
 
           ver="${ver#v}"
+
           if ! [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "ERROR: versión no numérica tras normalizar: '$ver'" >&2
             exit 1
@@ -239,7 +246,6 @@ jobs:
             throw "Compiled executable not found."
           }
 
-          # La versión del .exe la inyecta build.rs desde MOONWOLF_AGENT_VERSION.
           $vi = (Get-Item $exe).VersionInfo
           Write-Host "FileVersion:    $($vi.FileVersion)"
           Write-Host "ProductVersion: $($vi.ProductVersion)"
@@ -294,13 +300,11 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
-      
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-    
+
+  # ─────────────────────────────
+  # PUBLISH RELEASE
+  # ─────────────────────────────
+
   publish-release:
     name: "Publish GitHub release"
     needs: build-windows
@@ -316,11 +320,29 @@ jobs:
       contents: write
 
     steps:
+      # ─────────────────────────────
+      # CHECKOUT
+      # ─────────────────────────────
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      # ─────────────────────────────
+      # DOWNLOAD ARTIFACTS
+      # ─────────────────────────────
+
       - name: Download build artifacts
         uses: actions/download-artifact@v7
         with:
           name: MoonWolf-Agent
           path: dist
+
+      # ─────────────────────────────
+      # VERIFY ARTIFACTS
+      # ─────────────────────────────
 
       - name: Verify build artifacts
         shell: bash
@@ -347,23 +369,22 @@ jobs:
               dist/MoonWolf-Agent.exe \
               dist/SHA256SUMS.txt \
               --clobber
-            exit 0
-          fi
-
-          if [[ -n "$PREVIOUS_TAG" ]]; then
-            NOTES="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREVIOUS_TAG}...${TAG_NAME}"
           else
-            NOTES="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/commits/${TAG_NAME}"
+            if [[ -n "$PREVIOUS_TAG" ]]; then
+              NOTES="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREVIOUS_TAG}...${TAG_NAME}"
+            else
+              NOTES="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/commits/${TAG_NAME}"
+            fi
+
+            printf '%s\n' "$NOTES" > release-notes.md
+
+            gh release create "$TAG_NAME" \
+              dist/MoonWolf-Agent.exe \
+              dist/SHA256SUMS.txt \
+              --target "$GITHUB_SHA" \
+              --title "MoonWolf Agent v${VERSION}" \
+              --notes-file release-notes.md
           fi
-
-          printf '%s\n' "$NOTES" > release-notes.md
-
-          gh release create "$TAG_NAME" \
-            dist/MoonWolf-Agent.exe \
-            dist/SHA256SUMS.txt \
-            --target "$GITHUB_SHA" \
-            --title "MoonWolf Agent v${VERSION}" \
-            --notes-file release-notes.md
 
       # ─────────────────────────────
       # EXISTING RELEASE
