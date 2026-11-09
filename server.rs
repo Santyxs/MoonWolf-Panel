@@ -17,8 +17,8 @@ use axum::{
     routing::{get, patch, post},
     Json, Router,
 };
-use hmac::{Hmac, Mac};
-use rand::{rngs::OsRng, RngCore};
+use getrandom::fill as os_fill;
+use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha1::Sha1;
@@ -133,7 +133,7 @@ fn hex_encode(data: &[u8]) -> String {
 
 fn new_uuid_v4() -> String {
     let mut b = [0u8; 16];
-    OsRng.fill_bytes(&mut b);
+    os_fill(&mut b).expect("system entropy source failed");
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
     format!(
@@ -390,7 +390,7 @@ fn hash_token(token: &str) -> String {
 
 fn random_code(length: usize) -> String {
     let mut bytes = vec![0_u8; length];
-    OsRng.fill_bytes(&mut bytes);
+    os_fill(&mut bytes).expect("system entropy source failed");
     bytes.iter().map(|b| TOKEN_ALPHABET[(*b as usize) % TOKEN_ALPHABET.len()] as char).collect()
 }
 
@@ -406,7 +406,7 @@ fn make_share_token() -> String {
 
 fn make_secret() -> String {
     let mut bytes = [0_u8; 32];
-    OsRng.fill_bytes(&mut bytes);
+    os_fill(&mut bytes).expect("system entropy source failed");
     b64_url_encode(&bytes)
 }
 
@@ -421,7 +421,7 @@ fn create_panel_session(secret: &str, agent_id: &str, permission: &str, kind: &s
     let normal_exp = now.saturating_add(SESSION_TTL_MS);
     let exp = requested_exp.map(|v| v.min(normal_exp)).unwrap_or(normal_exp);
     let mut nonce = [0_u8; 16];
-    OsRng.fill_bytes(&mut nonce);
+    os_fill(&mut nonce).expect("system entropy source failed");
     let session = PanelSession {
         agent_id: agent_id.to_owned(),
         permission: permission.to_owned(),
