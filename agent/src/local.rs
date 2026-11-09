@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
@@ -1063,8 +1062,6 @@ async fn compress_file(
 #[derive(Deserialize)]
 struct BulkItem {
     path: String,
-    #[serde(default, rename = "isDir")]
-    is_dir: bool,
 }
 
 #[derive(Deserialize)]
@@ -2327,7 +2324,6 @@ async fn start_server(
 
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
