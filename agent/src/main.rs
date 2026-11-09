@@ -22,9 +22,6 @@ use tracing_subscriber::EnvFilter;
 
 static UPDATE_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
-/// Version resolved at compile time.
-/// Prefer `MOONWOLF_AGENT_VERSION` (set by CI) over the package version from Cargo.toml.
-
 fn home_dir() -> Option<std::path::PathBuf> {
     if let Some(h) = std::env::var_os("HOME") {
         return Some(std::path::PathBuf::from(h));
@@ -35,7 +32,7 @@ fn home_dir() -> Option<std::path::PathBuf> {
     None
 }
 
-/* ── Base64 nativo (standard + URL-safe sin padding) ── */
+/* ── Base64 nativo (standard + URL-safe) ── */
 
 const B64_STD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const B64_URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -121,27 +118,13 @@ fn hex_encode(data: &[u8]) -> String {
 
 fn new_uuid_v4() -> String {
     let mut b = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut b);
+    rand::rng().fill_bytes(&mut b);
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        b[0],
-        b[1],
-        b[2],
-        b[3],
-        b[4],
-        b[5],
-        b[6],
-        b[7],
-        b[8],
-        b[9],
-        b[10],
-        b[11],
-        b[12],
-        b[13],
-        b[14],
-        b[15]
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
     )
 }
 
@@ -157,27 +140,23 @@ fn now_secs() -> i64 {
     now_ms() / 1000
 }
 
-/// Formatea epoch segundos → "dd/mm/YYYY, HH:MM:SS" (UTC).
 pub fn format_datetime_secs(secs: i64) -> String {
     let (y, m, d, hh, mm, ss) = civil_from_secs(secs);
     format!("{d:02}/{m:02}/{y}, {hh:02}:{mm:02}:{ss:02}")
 }
 
-/// Formatea epoch millis → "HH:MM:SS" (UTC).
 pub fn format_hms_ms(ms: i64) -> String {
     let secs = ms.div_euclid(1000);
     let (_, _, _, hh, mm, ss) = civil_from_secs(secs);
     format!("{hh:02}:{mm:02}:{ss:02}")
 }
 
-/// Timestamp de archivo: "YYYY-mm-ddTHH-MM-SS" (UTC).
 pub fn format_file_stamp() -> String {
     let (y, m, d, hh, mm, ss) = civil_from_secs(now_secs());
     format!("{y:04}-{m:02}-{d:02}T{hh:02}-{mm:02}-{ss:02}")
 }
 
 fn civil_from_secs(secs: i64) -> (i32, u32, u32, u32, u32, u32) {
-    // Algoritmo civil UTC (Howard Hinnant / epoch days).
     let secs = secs;
     let days = secs.div_euclid(86_400);
     let tod = secs.rem_euclid(86_400) as u32;
@@ -290,7 +269,7 @@ impl AgentConfig {
 
     fn make_secret() -> String {
         let mut bytes = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
         b64_url_encode(&bytes)
     }
 
@@ -370,7 +349,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
         std::process::id(),
         hex_encode(&{
             let mut x = [0u8; 6];
-            rand::thread_rng().fill_bytes(&mut x);
+            rand::rng().fill_bytes(&mut x);
             x
         })
     ));
@@ -683,12 +662,10 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
     let old = current_exe.with_extension("exe.old");
     let _ = tokio::fs::remove_file(&old).await;
 
-    // En Windows se puede renombrar un .exe en uso; luego copiamos el nuevo en su lugar.
     tokio::fs::rename(&current_exe, &old).await.map_err(|e| {
         anyhow::anyhow!("No se pudo renombrar el ejecutable actual (¿en uso?): {e}")
     })?;
     tokio::fs::copy(&new_exe, &current_exe).await.map_err(|e| {
-        // Intentar revertir
         let _ = std::fs::rename(&old, &current_exe);
         anyhow::anyhow!("No se pudo copiar el nuevo ejecutable: {e}")
     })?;
@@ -696,8 +673,6 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
     let pid = std::process::id();
     let exe_str = current_exe.to_string_lossy().replace('"', "");
 
-    // Script auxiliar DETACHED: espera a que muera este PID y relanza el Agent.
-    // Así no chocamos con el puerto local ni con locks del proceso actual.
     let dir = AgentConfig::config_dir().join("updates");
     tokio::fs::create_dir_all(&dir).await?;
     let bat_path = dir.join("restart-after-update.bat");
@@ -736,7 +711,6 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
     Ok(())
 }
 
-/// Si se lanza con --wait-pid <pid>, espera a que ese proceso termine antes de arrancar.
 fn maybe_wait_for_previous_instance() {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -754,11 +728,10 @@ fn maybe_wait_for_previous_instance() {
 #[cfg(windows)]
 fn wait_for_pid(pid: u32) {
     use std::os::windows::process::CommandExt;
-    // Espera activa breve; el .bat es la vía principal, esto es fallback.
     for _ in 0..120 {
         let running = std::process::Command::new("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .creation_flags(0x08000000)
             .output()
             .ok()
             .map(|o| {
@@ -786,10 +759,6 @@ pub async fn apply_update(_current_exe: &PathBuf, _new_exe: &PathBuf) -> anyhow:
 5. BOOTSTRAP
 ══════════════════════════════════════════════ */
 
-/// Muestra un error fatal al usuario y lo registra en un archivo de log.
-///
-/// El agente se compila con `windows_subsystem = "windows"` (sin consola), así que
-/// sin esto cualquier fallo de arranque sería invisible: el proceso muere en silencio.
 pub fn fatal_error(msg: &str) {
     let config_dir = AgentConfig::config_dir();
     let _ = std::fs::create_dir_all(&config_dir);
