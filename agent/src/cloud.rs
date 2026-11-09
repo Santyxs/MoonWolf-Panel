@@ -10,7 +10,7 @@ use serde_json::json;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-use crate::{sleep_ms, AppState, LogEntry, LOCAL_PORT};
+use crate::{AppState, LOCAL_PORT, LogEntry, sleep_ms};
 
 const RECONNECT_BASE_MS: u64 = 1_000;
 const RECONNECT_MAX_MS: u64 = 30_000;
@@ -159,7 +159,10 @@ async fn connect_once(
                     let mut s = app.write().await;
                     s.cloud_connected = false;
                     s.pairing_code = None;
-                    s.add_log("error", humanize_cloud_error(&format!("connect_error: {msg}")));
+                    s.add_log(
+                        "error",
+                        humanize_cloud_error(&format!("connect_error: {msg}")),
+                    );
                 }
                 .boxed()
             }
@@ -182,7 +185,10 @@ async fn connect_once(
                     }
                     let mut s = app.write().await;
                     s.pairing_code = Some(code.clone());
-                    s.add_log("info", format!("Código de emparejamiento disponible: {code}"));
+                    s.add_log(
+                        "info",
+                        format!("Código de emparejamiento disponible: {code}"),
+                    );
                 }
                 .boxed()
             }
@@ -265,7 +271,12 @@ async fn connect_once(
 
         let (shutting_down, connected, console_seq, mc_running) = {
             let s = app.read().await;
-            (s.shutting_down, s.cloud_connected, s.console_seq, s.mc_running)
+            (
+                s.shutting_down,
+                s.cloud_connected,
+                s.console_seq,
+                s.mc_running,
+            )
         };
 
         if shutting_down || !connected {
@@ -282,7 +293,11 @@ async fn connect_once(
                     .collect()
             };
             if !new_logs.is_empty() {
-                let event_name = if new_logs.len() == 1 { "log" } else { "log_batch" };
+                let event_name = if new_logs.len() == 1 {
+                    "log"
+                } else {
+                    "log_batch"
+                };
                 let payload = if new_logs.len() == 1 {
                     new_logs[0].clone()
                 } else {
@@ -380,10 +395,12 @@ fn payload_debug(payload: &Payload) -> String {
     }
 }
 
-
 fn humanize_cloud_error(raw: &str) -> String {
     let lower = raw.to_lowercase();
-    if lower.contains("engineio") || lower.contains("engine.io") || lower.contains("incomplete response") {
+    if lower.contains("engineio")
+        || lower.contains("engine.io")
+        || lower.contains("incomplete response")
+    {
         return "No se pudo establecer la conexión con Cloud (Engine.IO). El panel puede estar reiniciando o la red bloquea WebSocket; reintentando…".into();
     }
     if lower.contains("timeout") {

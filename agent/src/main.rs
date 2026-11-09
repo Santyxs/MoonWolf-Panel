@@ -1,7 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-mod local;
 mod cloud;
+mod local;
 
 #[cfg(feature = "gui")]
 mod gui;
@@ -34,7 +34,6 @@ fn home_dir() -> Option<std::path::PathBuf> {
     }
     None
 }
-
 
 /* ── Base64 nativo (standard + URL-safe sin padding) ── */
 
@@ -127,11 +126,24 @@ fn new_uuid_v4() -> String {
     b[8] = (b[8] & 0x3f) | 0x80;
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+        b[0],
+        b[1],
+        b[2],
+        b[3],
+        b[4],
+        b[5],
+        b[6],
+        b[7],
+        b[8],
+        b[9],
+        b[10],
+        b[11],
+        b[12],
+        b[13],
+        b[14],
+        b[15]
     )
 }
-
-
 
 fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -201,8 +213,8 @@ const UPDATE_REPO: &str = "Santyxs/MoonWolf-Panel";
 const UPDATE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
 /* ══════════════════════════════════════════════
-   1. UTILIDADES
-   ══════════════════════════════════════════════ */
+1. UTILIDADES
+══════════════════════════════════════════════ */
 
 pub async fn sleep_ms(ms: u64) {
     tokio::time::sleep(Duration::from_millis(ms)).await;
@@ -229,8 +241,8 @@ pub fn compare_versions(a: &str, b: &str) -> Ordering {
 }
 
 /* ══════════════════════════════════════════════
-   2. CONFIGURACIÓN PERSISTENTE
-   ══════════════════════════════════════════════ */
+2. CONFIGURACIÓN PERSISTENTE
+══════════════════════════════════════════════ */
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -290,8 +302,7 @@ impl AgentConfig {
 
     pub fn load_or_create() -> Result<Self> {
         let dir = Self::config_dir();
-        fs::create_dir_all(&dir)
-            .with_context(|| format!("No se pudo crear {}", dir.display()))?;
+        fs::create_dir_all(&dir).with_context(|| format!("No se pudo crear {}", dir.display()))?;
 
         let path = Self::config_path();
         let mut config = Self::try_read(&path)
@@ -353,16 +364,17 @@ impl AgentConfig {
     }
 }
 
-
-
 pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     let tmp = path.with_extension(format!(
         "tmp-{}-{}",
         std::process::id(),
-        hex_encode(&{ let mut x = [0u8; 6]; rand::thread_rng().fill_bytes(&mut x); x })
+        hex_encode(&{
+            let mut x = [0u8; 6];
+            rand::thread_rng().fill_bytes(&mut x);
+            x
+        })
     ));
-    fs::write(&tmp, data)
-        .with_context(|| format!("No se pudo escribir {}", tmp.display()))?;
+    fs::write(&tmp, data).with_context(|| format!("No se pudo escribir {}", tmp.display()))?;
     fs::rename(&tmp, path).or_else(|e| {
         let _ = fs::remove_file(path);
         fs::rename(&tmp, path).map_err(|_| e)
@@ -371,8 +383,8 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
 }
 
 /* ══════════════════════════════════════════════
-   3. ESTADO
-   ══════════════════════════════════════════════ */
+3. ESTADO
+══════════════════════════════════════════════ */
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -513,8 +525,8 @@ impl AppState {
 }
 
 /* ══════════════════════════════════════════════
-   4. AUTO-ACTUALIZACIÓN
-   ══════════════════════════════════════════════ */
+4. AUTO-ACTUALIZACIÓN
+══════════════════════════════════════════════ */
 
 #[derive(Debug, Deserialize)]
 struct GhRelease {
@@ -558,7 +570,13 @@ pub async fn check_update_once(app: Arc<RwLock<AppState>>) -> anyhow::Result<()>
             .build()
             .expect("reqwest client")
     });
-    let release: GhRelease = client.get(&url).send().await?.error_for_status()?.json().await?;
+    let release: GhRelease = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
 
     let tag = release.tag_name.trim_start_matches("agent-v").to_string();
     if compare_versions(&tag, &current) != Ordering::Greater {
@@ -657,7 +675,9 @@ async fn download_and_stage(
 pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::Result<()> {
     use std::os::windows::process::CommandExt;
 
-    let current_exe = current_exe.canonicalize().unwrap_or_else(|_| current_exe.clone());
+    let current_exe = current_exe
+        .canonicalize()
+        .unwrap_or_else(|_| current_exe.clone());
     let new_exe = new_exe.canonicalize().unwrap_or_else(|_| new_exe.clone());
 
     let old = current_exe.with_extension("exe.old");
@@ -763,8 +783,8 @@ pub async fn apply_update(_current_exe: &PathBuf, _new_exe: &PathBuf) -> anyhow:
 }
 
 /* ══════════════════════════════════════════════
-   5. BOOTSTRAP
-   ══════════════════════════════════════════════ */
+5. BOOTSTRAP
+══════════════════════════════════════════════ */
 
 /// Muestra un error fatal al usuario y lo registra en un archivo de log.
 ///
@@ -774,15 +794,15 @@ pub fn fatal_error(msg: &str) {
     let config_dir = AgentConfig::config_dir();
     let _ = std::fs::create_dir_all(&config_dir);
     let log_path = config_dir.join("agent-error.log");
-    let _ = std::fs::write(
-        &log_path,
-        format!("MoonWolf Agent v{VERSION}\n\n{msg}\n"),
-    );
-    info!(\"{msg}\");
+    let _ = std::fs::write(&log_path, format!("MoonWolf Agent v{VERSION}\n\n{msg}\n"));
+    info!("{msg}");
 
     #[cfg(windows)]
     {
-        let title: Vec<u16> = \"MoonWolf Agent\".encode_utf16().chain(std::iter::once(0)).collect();
+        let title: Vec<u16> = "MoonWolf Agent"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let text: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
         unsafe {
             windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
@@ -795,18 +815,18 @@ pub fn fatal_error(msg: &str) {
     }
     #[cfg(not(windows))]
     {
-        eprintln!(\"{msg}\");
+        eprintln!("{msg}");
     }
 }
 
 #[tokio::main]
 async fn main() {
     std::panic::set_hook(Box::new(|info| {
-        fatal_error(&format!(\"Error inesperado (panic):\\n\\n{info}\"));
+        fatal_error(&format!("Error inesperado (panic):\n\n{info}"));
     }));
 
     if let Err(e) = run().await {
-        fatal_error(&format!(\"MoonWolf Agent no pudo iniciarse:\\n\\n{e:#}\"));
+        fatal_error(&format!("MoonWolf Agent no pudo iniciarse:\n\n{e:#}"));
     }
 }
 
@@ -870,7 +890,9 @@ async fn run() -> anyhow::Result<()> {
         info!("Iniciando interfaz gráfica…");
         if let Err(e) = gui::run(Arc::clone(&state)).await {
             error!("GUI: {e:#}");
-            fatal_error(&format!("La interfaz gráfica no pudo iniciarse:\n\n{e:#}\n\nComprueba que el WebView2 Runtime de Windows esté instalado."));
+            fatal_error(&format!(
+                "La interfaz gráfica no pudo iniciarse:\n\n{e:#}\n\nComprueba que el WebView2 Runtime de Windows esté instalado."
+            ));
         }
     }
 

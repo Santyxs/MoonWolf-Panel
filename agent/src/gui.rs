@@ -278,16 +278,18 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
 
     {
         let proxy = proxy.clone();
-        tray_icon::TrayIconEvent::set_event_handler(Some(move |event: tray_icon::TrayIconEvent| {
-            if let tray_icon::TrayIconEvent::Click {
-                button: tray_icon::MouseButton::Left,
-                button_state: tray_icon::MouseButtonState::Up,
-                ..
-            } = event
-            {
-                let _ = proxy.send_event(GuiEvent::RestoreFromTray);
-            }
-        }));
+        tray_icon::TrayIconEvent::set_event_handler(Some(
+            move |event: tray_icon::TrayIconEvent| {
+                if let tray_icon::TrayIconEvent::Click {
+                    button: tray_icon::MouseButton::Left,
+                    button_state: tray_icon::MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    let _ = proxy.send_event(GuiEvent::RestoreFromTray);
+                }
+            },
+        ));
     }
 
     {
@@ -317,43 +319,41 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         use wry::WebViewBuilderExtWindows;
         // with_additional_browser_args SUSTITUYE los args por defecto de wry;
         // hay que incluir msWebOOUI / msPdfOOUI / msSmartScreenProtection.
-        webview_builder = webview_builder.with_additional_browser_args(
-            concat!(
-                "--disable-features=",
-                "msWebOOUI,msPdfOOUI,msSmartScreenProtection,",
-                "TranslateUI,BackgroundFetch,InterestFeedContentSuggestions,",
-                "MediaRouter,CalculatorHistory,msEdgeShoppingUI,msEdgeSidebar,",
-                "msEdgeCollections,msEdgeHubAppActiveFrameCheck,",
-                "AudioServiceOutOfProcess ",
-                "--disk-cache-size=0 ",
-                "--media-cache-size=0 ",
-                "--disable-gpu-shader-disk-cache ",
-                "--disable-breakpad ",
-                "--disable-crash-reporter ",
-                "--disable-component-update ",
-                "--disable-component-extensions-with-background-pages ",
-                "--disable-domain-reliability ",
-                "--disable-sync ",
-                "--disable-background-networking ",
-                "--disable-background-mode ",
-                "--disable-client-side-phishing-detection ",
-                "--disable-default-apps ",
-                "--disable-extensions ",
-                "--disable-hang-monitor ",
-                "--disable-ipc-flooding-protection ",
-                "--disable-popup-blocking ",
-                "--disable-prompt-on-repost ",
-                "--disable-renderer-backgrounding ",
-                "--disable-background-timer-throttling ",
-                "--metrics-recording-only ",
-                "--no-first-run ",
-                "--no-default-browser-check ",
-                "--no-pings ",
-                "--no-service-autorun ",
-                "--password-store=basic ",
-                "--use-mock-keychain"
-            )
-        );
+        webview_builder = webview_builder.with_additional_browser_args(concat!(
+            "--disable-features=",
+            "msWebOOUI,msPdfOOUI,msSmartScreenProtection,",
+            "TranslateUI,BackgroundFetch,InterestFeedContentSuggestions,",
+            "MediaRouter,CalculatorHistory,msEdgeShoppingUI,msEdgeSidebar,",
+            "msEdgeCollections,msEdgeHubAppActiveFrameCheck,",
+            "AudioServiceOutOfProcess ",
+            "--disk-cache-size=0 ",
+            "--media-cache-size=0 ",
+            "--disable-gpu-shader-disk-cache ",
+            "--disable-breakpad ",
+            "--disable-crash-reporter ",
+            "--disable-component-update ",
+            "--disable-component-extensions-with-background-pages ",
+            "--disable-domain-reliability ",
+            "--disable-sync ",
+            "--disable-background-networking ",
+            "--disable-background-mode ",
+            "--disable-client-side-phishing-detection ",
+            "--disable-default-apps ",
+            "--disable-extensions ",
+            "--disable-hang-monitor ",
+            "--disable-ipc-flooding-protection ",
+            "--disable-popup-blocking ",
+            "--disable-prompt-on-repost ",
+            "--disable-renderer-backgrounding ",
+            "--disable-background-timer-throttling ",
+            "--metrics-recording-only ",
+            "--no-first-run ",
+            "--no-default-browser-check ",
+            "--no-pings ",
+            "--no-service-autorun ",
+            "--password-store=basic ",
+            "--use-mock-keychain"
+        ));
     }
 
     // Sin cookies/storage persistente: menos escrituras en disco.
@@ -610,10 +610,16 @@ fn open_path_str(target: &str) -> bool {
     }
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open").arg(target).spawn().is_ok()
+        std::process::Command::new("open")
+            .arg(target)
+            .spawn()
+            .is_ok()
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        std::process::Command::new("xdg-open").arg(target).spawn().is_ok()
+        std::process::Command::new("xdg-open")
+            .arg(target)
+            .spawn()
+            .is_ok()
     }
 }
