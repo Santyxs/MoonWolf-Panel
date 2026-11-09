@@ -17,7 +17,6 @@ use axum::{
     routing::{get, patch, post},
     Json, Router,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use hmac::{Hmac, Mac};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -46,6 +45,81 @@ const MAX_CACHED_LOGS: usize = 300;
 const ICE_SERVERS: [&str; 2] = ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"];
 const TOKEN_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 type HmacSha256 = Hmac<Sha256>;
+
+/* ── Base64 nativo (standard + URL-safe sin padding) ── */
+
+const B64_STD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64_URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+fn b64_encode(data: &[u8], alphabet: &[u8; 64], pad: bool) -> String {
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut i = 0;
+    while i + 3 <= data.len() {
+        let n = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8) | (data[i + 2] as u32);
+        out.push(alphabet[((n >> 18) & 63) as usize] as char);
+        out.push(alphabet[((n >> 12) & 63) as usize] as char);
+        out.push(alphabet[((n >> 6) & 63) as usize] as char);
+        out.push(alphabet[(n & 63) as usize] as char);
+        i += 3;
+    }
+    let rem = data.len() - i;
+    if rem == 1 {
+        let n = (data[i] as u32) << 16;
+        out.push(alphabet[((n >> 18) & 63) as usize] as char);
+        out.push(alphabet[((n >> 12) & 63) as usize] as char);
+        if pad {
+            out.push('=');
+            out.push('=');
+        }
+    } else if rem == 2 {
+        let n = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8);
+        out.push(alphabet[((n >> 18) & 63) as usize] as char);
+        out.push(alphabet[((n >> 12) & 63) as usize] as char);
+        out.push(alphabet[((n >> 6) & 63) as usize] as char);
+        if pad {
+            out.push('=');
+        }
+    }
+    out
+}
+
+fn b64_decode(input: &str) -> Option<Vec<u8>> {
+    let mut buf = Vec::with_capacity(input.len() * 3 / 4);
+    let mut val: u32 = 0;
+    let mut val_b: i8 = -8;
+    for &c in input.as_bytes() {
+        let d = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            b'=' => break,
+            b' ' | b'\n' | b'\r' | b'\t' => continue,
+            _ => return None,
+        } as u32;
+        val = (val << 6) | d;
+        val_b += 6;
+        if val_b >= 0 {
+            buf.push(((val >> val_b) & 0xFF) as u8);
+            val_b -= 8;
+        }
+    }
+    Some(buf)
+}
+
+fn b64_std_encode(data: &[u8]) -> String {
+    b64_encode(data, B64_STD, true)
+}
+
+fn b64_url_encode(data: &[u8]) -> String {
+    b64_encode(data, B64_URL, false)
+}
+
+fn b64_url_decode(input: &str) -> Option<Vec<u8>> {
+    b64_decode(input)
+}
+
 
 fn hex_encode(data: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -335,13 +409,13 @@ fn make_share_token() -> String {
 fn make_secret() -> String {
     let mut bytes = [0_u8; 32];
     OsRng.fill_bytes(&mut bytes);
-    URL_SAFE_NO_PAD.encode(bytes)
+    b64_url_encode(bytes)
 }
 
 fn session_signature(secret: &str, payload: &str) -> anyhow::Result<String> {
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes())?;
     mac.update(payload.as_bytes());
-    Ok(URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
+    Ok(b64_url_encode(mac.finalize().into_bytes()))
 }
 
 fn create_panel_session(secret: &str, agent_id: &str, permission: &str, kind: &str, share_token_id: Option<String>, requested_exp: Option<i64>) -> anyhow::Result<String> {
@@ -359,18 +433,18 @@ fn create_panel_session(secret: &str, agent_id: &str, permission: &str, kind: &s
         exp,
         nonce: hex_encode(&nonce),
     };
-    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&session)?);
+    let payload = b64_url_encode(serde_json::to_vec(&session)?);
     let signature = session_signature(secret, &payload)?;
     Ok(format!("{payload}.{signature}"))
 }
 
 fn verify_panel_session(secret: &str, token: &str) -> Option<PanelSession> {
     let (payload, signature) = token.split_once('.')?;
-    let signature_bytes = URL_SAFE_NO_PAD.decode(signature).ok()?;
+    let signature_bytes = b64_url_decode(signature)?;
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).ok()?;
     mac.update(payload.as_bytes());
     mac.verify_slice(&signature_bytes).ok()?;
-    let payload_bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let payload_bytes = b64_url_decode(payload)?;
     let session: PanelSession = serde_json::from_slice(&payload_bytes).ok()?;
     if session.agent_id.is_empty() || session.exp <= now_ms() {
         return None;
@@ -829,11 +903,10 @@ async fn handle_panel_signal(state: Arc<AppState>, socket: SocketRef, panel_id: 
 }
 
 fn emit_rpc_error(socket: &SocketRef, id: Option<Value>, status: u16, message: &str) {
-    use base64::engine::general_purpose::STANDARD;
-    let body = serde_json::to_vec(&json!({"ok":false,"error":message})).unwrap_or_default();
+        let body = serde_json::to_vec(&json!({"ok":false,"error":message})).unwrap_or_default();
     let response = json!({
         "id":id.unwrap_or(Value::Null),"ok":false,"status":status,
-        "contentType":"application/json","bodyBase64":STANDARD.encode(body)
+        "contentType":"application/json","bodyBase64":b64_std_encode(&body)
     });
     let _ = socket.emit("rpc_result", &response);
 }
