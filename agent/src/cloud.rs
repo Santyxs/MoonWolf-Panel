@@ -3,7 +3,6 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use futures::future::FutureExt;
 use rust_socketio::asynchronous::{Client, ClientBuilder};
 use rust_socketio::{Event, Payload, TransportType};
@@ -449,7 +448,7 @@ async fn handle_rpc(app: &Arc<RwLock<AppState>>, payload: &Payload) -> serde_jso
                 "ok": ok,
                 "status": status,
                 "contentType": content_type,
-                "bodyBase64": B64.encode(&bytes),
+                "bodyBase64": crate::b64_std_encode(&bytes),
             })
         }
         Err(e) => {
@@ -461,7 +460,7 @@ async fn handle_rpc(app: &Arc<RwLock<AppState>>, payload: &Payload) -> serde_jso
                 "ok": false,
                 "status": 502,
                 "contentType": "application/json",
-                "bodyBase64": B64.encode(&bytes),
+                "bodyBase64": crate::b64_std_encode(&bytes),
             })
         }
     }
