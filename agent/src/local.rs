@@ -2580,11 +2580,20 @@ async fn list_forge_versions() -> Result<Vec<String>, String> {
 
 async fn list_neoforge_versions() -> Result<Vec<String>, String> {
     let xml = fetch_text("https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml").await?;
-    let re = regex::Regex::new(r"<version>([^<]+)</version>").unwrap();
-    let mut all: Vec<String> = re
-        .captures_iter(&xml)
-        .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
-        .collect();
+    let mut all: Vec<String> = Vec::new();
+    let mut rest = xml.as_str();
+    while let Some(start) = rest.find("<version>") {
+        rest = &rest[start + 9..];
+        if let Some(end) = rest.find("</version>") {
+            let ver = rest[..end].trim();
+            if !ver.is_empty() {
+                all.push(ver.to_string());
+            }
+            rest = &rest[end + 10..];
+        } else {
+            break;
+        }
+    }
     all.reverse();
     Ok(all)
 }
