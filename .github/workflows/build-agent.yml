@@ -294,7 +294,13 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
-
+      
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+    
   publish-release:
     name: "Publish GitHub release"
     needs: build-windows
