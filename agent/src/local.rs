@@ -3400,11 +3400,9 @@ fn valid_db_name(name: &str) -> bool {
 }
 
 fn gen_db_password() -> String {
-    use base64::{engine::general_purpose::STANDARD, Engine};
-    let mut bytes = [0u8; 18];
+        let mut bytes = [0u8; 18];
     rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
-    STANDARD
-        .encode(&bytes)
+    crate::b64_std_encode(&bytes)
         .replace(['+', '/', '='], "")
         .chars()
         .take(20)
