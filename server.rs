@@ -409,13 +409,13 @@ fn make_share_token() -> String {
 fn make_secret() -> String {
     let mut bytes = [0_u8; 32];
     OsRng.fill_bytes(&mut bytes);
-    b64_url_encode(bytes)
+    b64_url_encode(&bytes)
 }
 
 fn session_signature(secret: &str, payload: &str) -> anyhow::Result<String> {
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes())?;
     mac.update(payload.as_bytes());
-    Ok(b64_url_encode(mac.finalize().into_bytes()))
+    Ok(b64_url_encode(mac.finalize().into_bytes().as_slice()))
 }
 
 fn create_panel_session(secret: &str, agent_id: &str, permission: &str, kind: &str, share_token_id: Option<String>, requested_exp: Option<i64>) -> anyhow::Result<String> {
@@ -433,7 +433,7 @@ fn create_panel_session(secret: &str, agent_id: &str, permission: &str, kind: &s
         exp,
         nonce: hex_encode(&nonce),
     };
-    let payload = b64_url_encode(serde_json::to_vec(&session)?);
+    let payload = b64_url_encode(&serde_json::to_vec(&session)?);
     let signature = session_signature(secret, &payload)?;
     Ok(format!("{payload}.{signature}"))
 }
