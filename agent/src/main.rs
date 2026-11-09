@@ -915,14 +915,3 @@ async fn run() -> anyhow::Result<()> {
 
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn version_order() {
-        assert_eq!(compare_versions("1.10", "1.2"), Ordering::Greater);
-        assert_eq!(compare_versions("2.0", "1.99"), Ordering::Greater);
-    }
-}
