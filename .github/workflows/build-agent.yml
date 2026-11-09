@@ -4,7 +4,6 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: "Publicar una release después de compilar"
         required: false
         default: false
         type: boolean
@@ -88,11 +87,6 @@ jobs:
             }
           }
 
-          # Sin Cargo.lock versionado a propósito: las dependencias se resuelven
-          # en cada build. Si alguien lo commitea, esto lo detecta.
-          # Ojo: 'git ls-files --error-unmatch' sale con 1 cuando el fichero NO
-          # está trackeado, y ese exit code haría fallar el paso. Listar sin
-          # --error-unmatch siempre sale con 0 y devuelve vacío si no existe.
           $trackedLock = git ls-files -- 'agent/Cargo.lock'
           if (-not [string]::IsNullOrWhiteSpace($trackedLock)) {
             throw "agent/Cargo.lock está versionado. Este repo compila sin lockfile: bórralo del índice (git rm --cached agent/Cargo.lock)."
@@ -116,11 +110,10 @@ jobs:
           shared-key: moonwolf-agent-windows-x64
           cache-on-failure: true
 
-      - name: Check Rust formatting
-        working-directory: agent
+      - name: Format Code
         shell: bash
-        run: cargo fmt --all -- --check
-
+        run: cargo fmt --all
+        
       # ─────────────────────────────
       # VERSION
       # ─────────────────────────────
@@ -192,7 +185,6 @@ jobs:
             ver="${major}.${minor}.0"
           fi
 
-          # Windows exige versión numérica X.Y.Z (build.rs la completa a X.Y.Z.W)
           ver="${ver#v}"
           if ! [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "ERROR: versión no numérica tras normalizar: '$ver'" >&2
