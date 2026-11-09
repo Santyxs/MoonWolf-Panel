@@ -1,3 +1,4 @@
+
 [package]
 name = "moonwolf-agent"
 version = "0.1.0"
@@ -21,11 +22,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "net", "
 zip = { version = "2", default-features = false, features = ["deflate"] }
 futures = "0.3"
 
-axum = { version = "0.7", features = ["multipart"] }
-tower-http = { version = "0.5", features = ["cors"] }
+axum = { version = "0.8", features = ["multipart"] }
+tower-http = { version = "0.6", features = ["cors"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "gzip"] }
 
-mysql_async = { version = "0.35", default-features = false, features = ["default-rustls"] }
+mysql_async = { version = "0.37", default-features = false, features = ["default-rustls"] }
 
 rust_socketio = { version = "0.6", features = ["async"] }
 
