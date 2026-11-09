@@ -17,7 +17,6 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     let ui = MainWindow::new()?;
     let weak = ui.as_weak();
 
-    // Icono y menú de bandeja nativos; no dependen de WebView2.
     let tray_menu = muda::Menu::new();
     let tray_open = muda::MenuItem::with_id("tray_open", "Abrir MoonWolf Agent", true, None);
     let tray_quit = muda::MenuItem::with_id("tray_quit", "Salir", true, None);
@@ -49,7 +48,7 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         }
     }));
     let weak_menu = weak.clone();
-    muda::MenuEvent::set_event_handler(Some(move |event| {
+    muda::MenuEvent::set_event_handler(Some(move |event: muda::MenuEvent| {
         let weak = weak_menu.clone();
         match event.id.0.as_str() {
             "tray_open" => { let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = weak.upgrade() { let _ = ui.window().show(); } }); }
@@ -186,7 +185,6 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         let _ = slint::quit_event_loop();
     });
 
-    // Actualiza la vista desde el estado compartido sin bloquear el hilo gráfico.
     let timer = Timer::default();
     let weak_for_timer = weak.clone();
     let app_for_timer = Arc::clone(&app);
