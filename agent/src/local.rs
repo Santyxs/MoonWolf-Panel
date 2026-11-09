@@ -10,7 +10,6 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use chrono::Utc;
 use mysql_async::prelude::*;
 use mysql_async::{Opts, Pool};
 use serde::{Deserialize, Serialize};
@@ -415,12 +414,7 @@ async fn list_files(
         };
         let date = mtime
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| {
-                let secs = d.as_secs() as i64;
-                chrono::DateTime::from_timestamp(secs, 0)
-                    .map(|dt| dt.format("%d/%m/%Y, %H:%M:%S").to_string())
-                    .unwrap_or_default()
-            })
+            .map(|d| crate::format_datetime_secs(d.as_secs() as i64))
             .unwrap_or_default();
 
         items.push(json!({
@@ -1272,9 +1266,7 @@ async fn list_backups(
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        let date = chrono::DateTime::from_timestamp(mtime, 0)
-            .map(|dt| dt.format("%d/%m/%Y, %H:%M:%S").to_string())
-            .unwrap_or_default();
+        let date = crate::format_datetime_secs(mtime);
         backups.push(json!({
             "name": name,
             "sizeMb": format!("{:.2}", meta.len() as f64 / 1024.0 / 1024.0),
@@ -1330,7 +1322,7 @@ async fn create_backup(
             p.processed_bytes = 0;
             p.total_bytes = compute_total_bytes(&root).await;
             p.percent = 0;
-            p.started_at = Some(Utc::now().timestamp_millis());
+            p.started_at = Some(crate::now_ms());
             p.error = None;
         }
 
@@ -1347,7 +1339,7 @@ async fn create_backup(
         }
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-        let timestamp = Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
+        let timestamp = crate::format_file_stamp();
         let safe_label = if label.is_empty() {
             "backup".to_string()
         } else {
@@ -2893,7 +2885,7 @@ async fn versions_install(
     }
 
     let current = server_dir.join("server.jar");
-    let backup = server_dir.join(format!("server.bak_{}.jar", chrono::Utc::now().timestamp()));
+    let backup = server_dir.join(format!("server.bak_{}.jar", crate::now_secs()));
 
     if current.exists() {
         let _ = tokio::fs::rename(&current, &backup).await;
@@ -3323,11 +3315,7 @@ async fn plugins_installed(State(st): State<LocalState>) -> Response {
             .modified()
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| {
-                chrono::DateTime::from_timestamp(d.as_secs() as i64, 0)
-                    .map(|dt| dt.format("%d/%m/%Y, %H:%M:%S").to_string())
-                    .unwrap_or_default()
-            })
+            .map(|d| crate::format_datetime_secs(d.as_secs() as i64))
             .unwrap_or_default();
         plugins.push(json!({
             "filename": name,
