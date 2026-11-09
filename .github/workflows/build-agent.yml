@@ -71,9 +71,7 @@ jobs:
             "agent/build.rs",
             "agent/src/main.rs",
             "agent/assets/MoonWolf-Agent.ico",
-            "agent/ui/index.html",
-            "agent/ui/style.css",
-            "agent/ui/app.js"
+            "agent/ui/main.slint"
           )
 
           foreach ($file in $required) {
