@@ -90,8 +90,11 @@ jobs:
 
           # Sin Cargo.lock versionado a propósito: las dependencias se resuelven
           # en cada build. Si alguien lo commitea, esto lo detecta.
-          git ls-files --error-unmatch agent/Cargo.lock 2>$null | Out-Null
-          if ($LASTEXITCODE -eq 0) {
+          # Ojo: 'git ls-files --error-unmatch' sale con 1 cuando el fichero NO
+          # está trackeado, y ese exit code haría fallar el paso. Listar sin
+          # --error-unmatch siempre sale con 0 y devuelve vacío si no existe.
+          $trackedLock = git ls-files -- 'agent/Cargo.lock'
+          if (-not [string]::IsNullOrWhiteSpace($trackedLock)) {
             throw "agent/Cargo.lock está versionado. Este repo compila sin lockfile: bórralo del índice (git rm --cached agent/Cargo.lock)."
           }
 
