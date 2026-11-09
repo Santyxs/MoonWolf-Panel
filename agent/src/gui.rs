@@ -110,94 +110,56 @@ fn setup_webview2_data_dir() {
     #[cfg(windows)]
     {
         let dir = AgentConfig::config_dir().join("WebView2");
-        let _ = std::fs::create_dir_all(&dir);
 
-        // Limpiar caches/pesados de ejecuciones anteriores (antes de abrir WebView2).
-        prune_webview2_caches(&dir);
+        // La UI es 100% local (HTML embebido): no necesitamos perfil persistente.
+        // Vaciar la carpeta en cada arranque evita que EBWebView acumule decenas
+        // de subcarpetas (Cache, Crashpad, GPUCache, Service Worker, etc.).
+        wipe_webview2_user_data(&dir);
+
+        let _ = std::fs::create_dir_all(&dir);
 
         // SAFETY: se ejecuta al principio del arranque de la GUI; el resto
         // de hilos (local/cloud/update) no leen esta variable de entorno.
         unsafe {
             std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &dir);
         }
-        info!("WebView2 data folder: {}", dir.display());
+        info!("WebView2 data folder (limpia): {}", dir.display());
     }
 }
 
-/// Elimina carpetas de caché típicas de EBWebView para reducir basura en disco.
+/// Borra por completo el user-data de WebView2 y lo recrea vacío.
 #[cfg(windows)]
-fn prune_webview2_caches(root: &std::path::Path) {
-    // Nombres habituales bajo …/WebView2/EBWebView[/Default]/
-    const CACHE_DIR_NAMES: &[&str] = &[
-        "Cache",
-        "Code Cache",
-        "GPUCache",
-        "GrShaderCache",
-        "GraphiteDawnCache",
-        "DawnGraphiteCache",
-        "DawnWebGPUCache",
-        "ShaderCache",
-        "Service Worker",
-        "VideoDecodeStats",
-        "Local Storage",
-        "Session Storage",
-        "IndexedDB",
-        "File System",
-        "Platform Notifications",
-        "shared_proto_db",
-        "Shared Dictionary",
-        "optimization_guide_hint_cache_store",
-        "BudgetDatabase",
-        "Download Service",
-        "Feature Engagement Tracker",
-        "Site Characteristics Database",
-        "AutofillAiModelCache",
-        "AutofillStrikeDatabase",
-        "JumpListIconsMostVisited",
-        "JumpListIconsRecentClosed",
-        "WebStorage",
-        "blob_storage",
-        "Crashpad",
-        "CrashpadMetrics-active.pma",
-    ];
-
-    fn walk_and_prune(dir: &std::path::Path, depth: u32) {
-        if depth > 6 {
-            return;
-        }
-        let entries = match std::fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(_) => return,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-
-            if CACHE_DIR_NAMES.iter().any(|n| name_str.eq_ignore_ascii_case(n)) {
-                let _ = std::fs::remove_dir_all(&path);
-                continue;
-            }
-            // Logs / dumps sueltos
-            if name_str.ends_with(".log")
-                || name_str.ends_with(".dmp")
-                || name_str.ends_with(".tmp")
-                || name_str.starts_with("CrashpadMetrics")
-            {
-                let _ = std::fs::remove_file(&path);
-                continue;
-            }
-            if path.is_dir() {
-                walk_and_prune(&path, depth + 1);
+fn wipe_webview2_user_data(root: &std::path::Path) {
+    if root.exists() {
+        // Reintentos suaves por si quedó algún handle de una instancia anterior.
+        for attempt in 0..3 {
+            match std::fs::remove_dir_all(root) {
+                Ok(()) => break,
+                Err(e) => {
+                    if attempt == 2 {
+                        // Fallback: borrar contenido entrada a entrada.
+                        if let Ok(entries) = std::fs::read_dir(root) {
+                            for entry in entries.flatten() {
+                                let p = entry.path();
+                                if p.is_dir() {
+                                    let _ = std::fs::remove_dir_all(&p);
+                                } else {
+                                    let _ = std::fs::remove_file(&p);
+                                }
+                            }
+                        }
+                        tracing::warn!("No se pudo borrar WebView2 por completo: {e}");
+                    } else {
+                        std::thread::sleep(std::time::Duration::from_millis(80));
+                    }
+                }
             }
         }
     }
-
-    walk_and_prune(root, 0);
 }
 
 #[cfg(not(windows))]
-fn prune_webview2_caches(_root: &std::path::Path) {}
+fn wipe_webview2_user_data(_root: &std::path::Path) {}
 
 pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     setup_webview2_data_dir();
@@ -350,7 +312,41 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         // with_additional_browser_args SUSTITUYE los args por defecto de wry;
         // hay que incluir msWebOOUI / msPdfOOUI / msSmartScreenProtection.
         webview_builder = webview_builder.with_additional_browser_args(
-            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,TranslateUI,BackgroundFetch,InterestFeedContentSuggestions,MediaRouter,CalculatorHistory              --disk-cache-size=1048576              --media-cache-size=1048576              --disable-gpu-shader-disk-cache              --disable-breakpad              --disable-component-update              --disable-domain-reliability              --disable-sync              --disable-background-networking              --disable-client-side-phishing-detection              --disable-default-apps              --disable-extensions              --disable-hang-monitor              --disable-popup-blocking              --disable-prompt-on-repost              --disable-renderer-backgrounding              --disable-background-timer-throttling              --metrics-recording-only              --no-first-run              --no-default-browser-check",
+            concat!(
+                "--disable-features=",
+                "msWebOOUI,msPdfOOUI,msSmartScreenProtection,",
+                "TranslateUI,BackgroundFetch,InterestFeedContentSuggestions,",
+                "MediaRouter,CalculatorHistory,msEdgeShoppingUI,msEdgeSidebar,",
+                "msEdgeCollections,msEdgeHubAppActiveFrameCheck,",
+                "AudioServiceOutOfProcess ",
+                "--disk-cache-size=0 ",
+                "--media-cache-size=0 ",
+                "--disable-gpu-shader-disk-cache ",
+                "--disable-breakpad ",
+                "--disable-crash-reporter ",
+                "--disable-component-update ",
+                "--disable-component-extensions-with-background-pages ",
+                "--disable-domain-reliability ",
+                "--disable-sync ",
+                "--disable-background-networking ",
+                "--disable-background-mode ",
+                "--disable-client-side-phishing-detection ",
+                "--disable-default-apps ",
+                "--disable-extensions ",
+                "--disable-hang-monitor ",
+                "--disable-ipc-flooding-protection ",
+                "--disable-popup-blocking ",
+                "--disable-prompt-on-repost ",
+                "--disable-renderer-backgrounding ",
+                "--disable-background-timer-throttling ",
+                "--metrics-recording-only ",
+                "--no-first-run ",
+                "--no-default-browser-check ",
+                "--no-pings ",
+                "--no-service-autorun ",
+                "--password-store=basic ",
+                "--use-mock-keychain"
+            )
         );
     }
 
@@ -371,6 +367,14 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
                 }
             }
             Event::UserEvent(GuiEvent::Quit) => {
+                // Intento de limpieza; si hay locks, el próximo arranque hará wipe completo.
+                #[cfg(windows)]
+                {
+                    let dir = crate::AgentConfig::config_dir().join("WebView2");
+                    // No borrar mientras el webview vive: solo al salir del proceso es fiable
+                    // el wipe del próximo arranque. Aquí no forzamos remove_dir_all.
+                    let _ = dir;
+                }
                 *control_flow = ControlFlow::Exit;
             }
             Event::UserEvent(GuiEvent::MinimizeToTray) => {
