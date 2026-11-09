@@ -33,6 +33,81 @@ fn home_dir() -> Option<std::path::PathBuf> {
     None
 }
 
+
+/* ── Base64 nativo (standard + URL-safe sin padding) ── */
+
+const B64_STD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64_URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+fn b64_encode(data: &[u8], alphabet: &[u8; 64], pad: bool) -> String {
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut i = 0;
+    while i + 3 <= data.len() {
+        let n = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8) | (data[i + 2] as u32);
+        out.push(alphabet[((n >> 18) & 63) as usize] as char);
+        out.push(alphabet[((n >> 12) & 63) as usize] as char);
+        out.push(alphabet[((n >> 6) & 63) as usize] as char);
+        out.push(alphabet[(n & 63) as usize] as char);
+        i += 3;
+    }
+    let rem = data.len() - i;
+    if rem == 1 {
+        let n = (data[i] as u32) << 16;
+        out.push(alphabet[((n >> 18) & 63) as usize] as char);
+        out.push(alphabet[((n >> 12) & 63) as usize] as char);
+        if pad {
+            out.push('=');
+            out.push('=');
+        }
+    } else if rem == 2 {
+        let n = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8);
+        out.push(alphabet[((n >> 18) & 63) as usize] as char);
+        out.push(alphabet[((n >> 12) & 63) as usize] as char);
+        out.push(alphabet[((n >> 6) & 63) as usize] as char);
+        if pad {
+            out.push('=');
+        }
+    }
+    out
+}
+
+fn b64_decode(input: &str) -> Option<Vec<u8>> {
+    let mut buf = Vec::with_capacity(input.len() * 3 / 4);
+    let mut val: u32 = 0;
+    let mut val_b: i8 = -8;
+    for &c in input.as_bytes() {
+        let d = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            b'=' => break,
+            b' ' | b'\n' | b'\r' | b'\t' => continue,
+            _ => return None,
+        } as u32;
+        val = (val << 6) | d;
+        val_b += 6;
+        if val_b >= 0 {
+            buf.push(((val >> val_b) & 0xFF) as u8);
+            val_b -= 8;
+        }
+    }
+    Some(buf)
+}
+
+pub fn b64_std_encode(data: &[u8]) -> String {
+    b64_encode(data, B64_STD, true)
+}
+
+pub fn b64_url_encode(data: &[u8]) -> String {
+    b64_encode(data, B64_URL, false)
+}
+
+pub fn b64_url_decode(input: &str) -> Option<Vec<u8>> {
+    b64_decode(input)
+}
+
 fn hex_encode(data: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(data.len() * 2);
@@ -202,7 +277,7 @@ impl AgentConfig {
     fn make_secret() -> String {
         let mut bytes = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut bytes);
-        base64_url_encode(&bytes)
+        b64_url_encode(&bytes)
     }
 
     fn is_valid_token(s: &str) -> bool {
@@ -276,10 +351,7 @@ impl AgentConfig {
     }
 }
 
-fn base64_url_encode(data: &[u8]) -> String {
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-    URL_SAFE_NO_PAD.encode(data)
-}
+
 
 pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     let tmp = path.with_extension(format!(
