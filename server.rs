@@ -47,6 +47,87 @@ const ICE_SERVERS: [&str; 2] = ["stun:stun.l.google.com:19302", "stun:stun.cloud
 const TOKEN_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 type HmacSha256 = Hmac<Sha256>;
 
+fn hex_encode(data: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(data.len() * 2);
+    for &b in data {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn new_uuid_v4() -> String {
+    let mut b = [0u8; 16];
+    OsRng.fill_bytes(&mut b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+    )
+}
+
+fn normalize_rpc_path(path_raw: &str) -> Option<String> {
+    if path_raw.contains("://") || path_raw.starts_with("//") {
+        return None;
+    }
+    let path = path_raw.split('#').next().unwrap_or(path_raw);
+    let (path_part, query) = match path.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (path, None),
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in path_part.split('/') {
+        if seg.is_empty() || seg == "." {
+            continue;
+        }
+        if seg == ".." {
+            let _ = parts.pop();
+            continue;
+        }
+        if seg.contains('\\') {
+            return None;
+        }
+        parts.push(seg);
+    }
+    let normalized = format!("/{}", parts.join("/"));
+    if !normalized.starts_with("/api/") {
+        return None;
+    }
+    Some(match query {
+        Some(q) if !q.is_empty() => format!("{normalized}?{q}"),
+        _ => normalized,
+    })
+}
+
+fn stamp_asset_version(html: &str, asset: &str, version: &str) -> String {
+    let mut out = String::with_capacity(html.len() + 16);
+    let bytes = html.as_bytes();
+    let needle = asset.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + needle.len() <= bytes.len() && &bytes[i..i + needle.len()] == needle {
+            out.push_str(asset);
+            i += needle.len();
+            if i < bytes.len() && bytes[i] == b'?' {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' && bytes[i] != b'\'' {
+                    i += 1;
+                }
+            }
+            out.push_str("?v=");
+            out.push_str(version);
+            continue;
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+
+
 #[derive(Clone)]
 struct AppState {
     session_secret: Arc<String>,
@@ -224,11 +305,15 @@ fn share_from_row(row: sqlx::postgres::PgRow) -> anyhow::Result<ShareToken> {
 }
 
 fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 fn hash_token(token: &str) -> String {
-    hex::encode(Sha256::digest(token.as_bytes()))
+    hex_encode(Sha256::digest(token.as_bytes()).as_slice())
 }
 
 fn random_code(length: usize) -> String {
@@ -272,7 +357,7 @@ fn create_panel_session(secret: &str, agent_id: &str, permission: &str, kind: &s
         share_token_id,
         iat: now,
         exp,
-        nonce: hex::encode(nonce),
+        nonce: hex_encode(&nonce),
     };
     let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&session)?);
     let signature = session_signature(secret, &payload)?;
@@ -665,16 +750,10 @@ async fn handle_panel_rpc(state: Arc<AppState>, socket: SocketRef, panel_id: Str
         emit_rpc_error(&socket, Some(id), 400, "Método no válido.");
         return;
     }
-    let base_url = url::Url::parse("http://moonwolf.invalid/").expect("URL base válida");
-    let url = match base_url.join(path_raw) {
-        Ok(u) => u,
-        Err(_) => { emit_rpc_error(&socket, Some(id), 400, "Petición no válida."); return; }
-    };
-    if url.origin().ascii_serialization() != "http://moonwolf.invalid" || !url.path().starts_with("/api/") {
+    let Some(path) = normalize_rpc_path(path_raw) else {
         emit_rpc_error(&socket, Some(id), 400, "Ruta no válida.");
         return;
-    }
-    let path = format!("{}{}", url.path(), url.query().map(|q| format!("?{q}")).unwrap_or_default());
+    };
     let mut permission = initial_session.permission.clone();
     if initial_session.kind == "share" {
         let Some(token_id) = initial_session.share_token_id.as_deref() else {
@@ -847,7 +926,7 @@ async fn create_share_token(State(state): State<Arc<AppState>>, headers: HeaderM
     let requested_label = body.label.unwrap_or_default().trim().chars().take(60).collect::<String>();
     let label = if requested_label.is_empty() { "Acceso compartido".to_owned() } else { requested_label };
     let record = ShareToken {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: new_uuid_v4(),
         agent_id: session.agent_id.clone(),
         token_hash: hash_token(&token),
         label,
@@ -940,11 +1019,10 @@ async fn index() -> Response {
     let mut output = html;
     for asset in ["dashboard.js", "styles.css"] {
         let version = match read_asset(asset).await {
-            Ok(bytes) => hex::encode(Sha1::digest(bytes))[..10].to_owned(),
+            Ok(bytes) => hex_encode(Sha1::digest(&bytes).as_slice())[..10].to_owned(),
             Err(_) => "unknown".into(),
         };
-        let pattern = regex::Regex::new(&format!(r#"{}\?v=[^"']*"#, regex::escape(asset))).expect("regex estática válida");
-        output = pattern.replace_all(&output, format!("{asset}?v={version}")).into_owned();
+        output = stamp_asset_version(&output, asset, &version);
     }
     static_response(output.into_bytes(), "text/html; charset=utf-8", "no-store")
 }
@@ -952,7 +1030,7 @@ async fn index() -> Response {
 async fn dashboard_js(Query(query): Query<HashMap<String, String>>) -> Response {
     match read_asset("dashboard.js").await {
         Ok(bytes) => {
-            let version = hex::encode(Sha1::digest(&bytes))[..10].to_owned();
+            let version = hex_encode(Sha1::digest(&bytes).as_slice())[..10].to_owned();
             let cache = if query.get("v").map(String::as_str) == Some(version.as_str()) { "public, max-age=31536000, immutable" } else { "public, max-age=300" };
             static_response(bytes, "text/javascript; charset=utf-8", cache)
         }
@@ -963,7 +1041,7 @@ async fn dashboard_js(Query(query): Query<HashMap<String, String>>) -> Response 
 async fn styles_css(Query(query): Query<HashMap<String, String>>) -> Response {
     match read_asset("styles.css").await {
         Ok(bytes) => {
-            let version = hex::encode(Sha1::digest(&bytes))[..10].to_owned();
+            let version = hex_encode(Sha1::digest(&bytes).as_slice())[..10].to_owned();
             let cache = if query.get("v").map(String::as_str) == Some(version.as_str()) { "public, max-age=31536000, immutable" } else { "public, max-age=300" };
             static_response(bytes, "text/css; charset=utf-8", cache)
         }
