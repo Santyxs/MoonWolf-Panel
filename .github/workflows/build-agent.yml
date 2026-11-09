@@ -198,7 +198,7 @@ jobs:
           echo "Building MoonWolf Agent v$ver"
 
       # ─────────────────────────────
-      # VALIDACIÓN EN PULL REQUESTS
+      # VALIDATION IN PULL REQUESTS
       # ─────────────────────────────
 
       - name: Validate Agent
