@@ -116,7 +116,6 @@ fn setup_webview2_data_dir() {
     {
         let dir = webview2_data_dir();
 
-        // También limpiar restos en TEMP de la versión anterior (si existían).
         if let Some(tmp) = std::env::var_os("TEMP").or_else(|| std::env::var_os("TMP")) {
             let legacy_tmp = PathBuf::from(tmp).join("MoonWolf").join("WebView2");
             if legacy_tmp.exists() {
@@ -127,7 +126,6 @@ fn setup_webview2_data_dir() {
         wipe_webview2_user_data(&dir);
         let _ = std::fs::create_dir_all(&dir);
 
-        // SAFETY: solo al inicio de la GUI.
         unsafe {
             std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &dir);
         }
@@ -230,7 +228,6 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         .with_resizable(true)
         .build(&event_loop)?;
 
-    // Configurar bandeja del sistema (tray-icon)
     let tray_menu = muda::Menu::new();
     let item_open = muda::MenuItem::with_id("tray_open", "Abrir MoonWolf Agent", true, None);
     let item_quit = muda::MenuItem::with_id("tray_quit", "Salir", true, None);
@@ -306,19 +303,16 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     let app_for_ipc = Arc::clone(&app);
     let proxy_for_ipc = proxy.clone();
 
-    let mut webview_builder = WebViewBuilder::new(&window)
+    let mut webview_builder = WebViewBuilder::new()
         .with_html(&index_html)
         .with_ipc_handler(move |req| {
             let body = req.body().clone();
             handle_ipc(body, Arc::clone(&app_for_ipc), proxy_for_ipc.clone());
         });
 
-    // Limitar basura de Chromium/WebView2 en disco (cachés, redes, componentes…).
     #[cfg(windows)]
     {
         use wry::WebViewBuilderExtWindows;
-        // with_additional_browser_args SUSTITUYE los args por defecto de wry;
-        // hay que incluir msWebOOUI / msPdfOOUI / msSmartScreenProtection.
         webview_builder = webview_builder.with_additional_browser_args(concat!(
             "--disable-features=",
             "msWebOOUI,msPdfOOUI,msSmartScreenProtection,",
@@ -356,10 +350,9 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         ));
     }
 
-    // Sin cookies/storage persistente: menos escrituras en disco.
     let webview_builder = webview_builder.with_incognito(true);
 
-    let webview = webview_builder.build()?;
+    let webview = webview_builder.build(&window)?;
 
     info!("Ventana GUI lista");
 
@@ -542,8 +535,6 @@ fn handle_ipc(
                             s.shutting_down = true;
                             s.add_log("info", "Actualización aplicada. Reiniciando…");
                         }
-                        // Dar tiempo a flush de logs y salir de verdad para que el
-                        // script de reinicio detecte el PID muerto y relance el Agent.
                         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
                         std::process::exit(0);
                     }
