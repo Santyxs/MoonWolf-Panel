@@ -20,10 +20,41 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
-use uuid::Uuid;
 
 /// Version resolved at compile time.
 /// Prefer `MOONWOLF_AGENT_VERSION` (set by CI) over the package version from Cargo.toml.
+
+fn home_dir() -> Option<std::path::PathBuf> {
+    if let Some(h) = std::env::var_os("HOME") {
+        return Some(std::path::PathBuf::from(h));
+    }
+    if let Some(h) = std::env::var_os("USERPROFILE") {
+        return Some(std::path::PathBuf::from(h));
+    }
+    None
+}
+
+fn hex_encode(data: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(data.len() * 2);
+    for &b in data {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn new_uuid_v4() -> String {
+    let mut b = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+    )
+}
+
 const VERSION: &str = match option_env!("MOONWOLF_AGENT_VERSION") {
     Some(v) => v,
     None => env!("CARGO_PKG_VERSION"),
@@ -96,7 +127,7 @@ impl AgentConfig {
                 return PathBuf::from(appdata).join("MoonWolf");
             }
         }
-        dirs::home_dir()
+        home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("AppData")
             .join("Roaming")
@@ -108,7 +139,7 @@ impl AgentConfig {
     }
 
     pub fn default_server_dir() -> PathBuf {
-        dirs::home_dir()
+        home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("MoonWolf")
             .join("server")
@@ -135,7 +166,7 @@ impl AgentConfig {
         let mut config = Self::try_read(&path)
             .or_else(|| Self::try_read(&path.with_extension("json.bak")))
             .unwrap_or_else(|| Self {
-                agent_id: Uuid::new_v4().to_string(),
+                agent_id: new_uuid_v4(),
                 agent_token: Self::make_secret(),
                 local_token: Self::make_secret(),
                 session_secret: Self::make_secret(),
@@ -145,7 +176,7 @@ impl AgentConfig {
             });
 
         if config.agent_id.is_empty() {
-            config.agent_id = Uuid::new_v4().to_string();
+            config.agent_id = new_uuid_v4();
         }
         if !Self::is_valid_token(&config.agent_token) {
             config.agent_token = Self::make_secret();
@@ -200,7 +231,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     let tmp = path.with_extension(format!(
         "tmp-{}-{}",
         std::process::id(),
-        hex::encode(&rand::random::<[u8; 6]>())
+        hex_encode(&{ let mut x = [0u8; 6]; rand::thread_rng().fill_bytes(&mut x); x })
     ));
     fs::write(&tmp, data)
         .with_context(|| format!("No se pudo escribir {}", tmp.display()))?;
