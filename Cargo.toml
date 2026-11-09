@@ -12,7 +12,6 @@ path = "server.rs"
 [dependencies]
 anyhow = "1"
 axum = "0.8"
-base64 = "0.22"
 hmac = "0.12"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
