@@ -176,31 +176,29 @@ fn normalize_rpc_path(path_raw: &str) -> Option<String> {
 }
 
 fn stamp_asset_version(html: &str, asset: &str, version: &str) -> String {
-    let mut out = String::with_capacity(html.len() + 16);
-    let bytes = html.as_bytes();
-    let needle = asset.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if i + needle.len() <= bytes.len() && &bytes[i..i + needle.len()] == needle {
-            out.push_str(asset);
-            i += needle.len();
-            if i < bytes.len() && bytes[i] == b'?' {
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'"' && bytes[i] != b'\'' {
-                    i += 1;
-                }
-            }
-            out.push_str("?v=");
-            out.push_str(version);
-            continue;
+    let mut out = String::with_capacity(html.len() + 32);
+    let mut rest = html;
+
+    while let Some(idx) = rest.find(asset) {
+        out.push_str(&rest[..idx]);
+        out.push_str(asset);
+        out.push_str("?v=");
+        out.push_str(version);
+
+        let mut after = &rest[idx + asset.len()..];
+
+        if after.starts_with('?') {
+            let end = after
+                .find(|c: char| c == '"' || c == '\'')
+                .unwrap_or(after.len());
+            after = &after[end..];
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        rest = after;
     }
+
+    out.push_str(rest);
     out
 }
-
-
 
 #[derive(Clone)]
 struct AppState {
@@ -652,7 +650,6 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
                 }
             });
 
-            // Resultados RPC: devuelve la respuesta únicamente al panel que originó la petición.
             let state_rpc_result = state.clone();
             let agent_id_rpc_result = agent_id.clone();
             socket.on("rpc_result", move |_socket: SocketRef, Data(result): Data<Value>| {
@@ -1324,5 +1321,25 @@ mod tests {
         assert!(code.starts_with("MW-P"));
         assert_eq!(code.len(), 12);
         assert_eq!(code.chars().filter(|c| *c == '-').count(), 2);
+    }
+
+    #[test]
+    fn stamp_asset_version_preserves_utf8() {
+        let html = r#"<link rel="stylesheet" href="styles.css"><script src="dashboard.js"></script><p>▶ ó 🌙 📂</p>"#;
+        let out = stamp_asset_version(html, "styles.css", "abc123");
+        let out = stamp_asset_version(&out, "dashboard.js", "def456");
+        assert!(out.contains("▶ ó 🌙 📂"), "caracteres UTF-8 corruptos: {out}");
+        assert!(out.contains("styles.css?v=abc123"));
+        assert!(out.contains("dashboard.js?v=def456"));
+    }
+
+    #[test]
+    fn stamp_asset_version_replaces_existing_query() {
+        let html = r#"<link rel="stylesheet" href="styles.css?v=old"><script src="dashboard.js?v=old"></script>"#;
+        let out = stamp_asset_version(html, "styles.css", "new1");
+        let out = stamp_asset_version(&out, "dashboard.js", "new2");
+        assert!(out.contains("styles.css?v=new1"));
+        assert!(out.contains("dashboard.js?v=new2"));
+        assert!(!out.contains("v=old"));
     }
 }
