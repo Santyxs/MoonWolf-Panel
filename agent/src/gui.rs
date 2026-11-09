@@ -18,7 +18,7 @@ const PANEL_URL: &str = "https://moonwolf-panel.onrender.com";
 const UI_HTML: &str = include_str!("../ui/index.html");
 const UI_CSS: &str = include_str!("../ui/style.css");
 const UI_JS: &str = include_str!("../ui/app.js");
-const TRAY_ICON_PNG: &[u8] = include_bytes!("../assets/tray.png");
+const TRAY_ICON_ICO: &[u8] = include_bytes!("../assets/MoonWolf-Agent.ico");
 
 const NATIVE_BRIDGE: &str = r#"
 (function () {
@@ -204,7 +204,7 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         });
     }
 
-    let window_icon = match image::load_from_memory(TRAY_ICON_PNG) {
+    let window_icon = match image::load_from_memory(TRAY_ICON_ICO) {
         Ok(img) => {
             let rgba = img.into_rgba8();
             let (w, h) = (rgba.width(), rgba.height());
@@ -217,7 +217,7 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
             }
         }
         Err(e) => {
-            error!("No se pudo cargar tray.png para icono de ventana: {e}");
+            error!("No se pudo cargar MoonWolf-Agent.ico para icono de ventana: {e}");
             None
         }
     };
@@ -238,7 +238,7 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     let _ = tray_menu.append(&muda::PredefinedMenuItem::separator());
     let _ = tray_menu.append(&item_quit);
 
-    let tray_icon_img = match image::load_from_memory(TRAY_ICON_PNG) {
+    let tray_icon_img = match image::load_from_memory(TRAY_ICON_ICO) {
         Ok(img) => {
             let rgba = img.into_rgba8();
             let (w, h) = (rgba.width(), rgba.height());
@@ -251,7 +251,7 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
             }
         }
         Err(e) => {
-            error!("No se pudo cargar tray.png para bandeja: {e}");
+            error!("No se pudo cargar MoonWolf-Agent.ico para bandeja: {e}");
             None
         }
     };

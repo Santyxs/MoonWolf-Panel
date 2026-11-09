@@ -45,7 +45,7 @@ wry = { version = "0.45", optional = true }
 tao = { version = "0.30", optional = true }
 muda = { version = "0.15", optional = true }
 tray-icon = { version = "0.19", optional = true }
-image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+image = { version = "0.25", default-features = false, features = ["ico", "png"], optional = true }
 
 [build-dependencies]
 winres = "0.1"
