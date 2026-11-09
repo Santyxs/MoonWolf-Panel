@@ -1,9 +1,11 @@
+
 name: "MoonWolf Agent"
 
 on:
   workflow_dispatch:
     inputs:
       publish_release:
+        description: "Publish a GitHub Release"
         required: false
         default: false
         type: boolean
@@ -33,6 +35,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
   BUILD_TARGET: x86_64-pc-windows-msvc
 
 jobs:
@@ -40,6 +43,7 @@ jobs:
     name: "Build Windows"
     runs-on: windows-latest
     timeout-minutes: 25
+
     permissions:
       contents: read
 
@@ -62,8 +66,6 @@ jobs:
       - name: Verify Agent files
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-
           $required = @(
             "agent/Cargo.toml",
             "agent/build.rs",
@@ -75,15 +77,12 @@ jobs:
           )
 
           foreach ($file in $required) {
-            if (!(Test-Path -LiteralPath $file -PathType Leaf)) {
+            if (!(Test-Path $file -PathType Leaf)) {
               throw "Missing required file: $file"
             }
           }
 
           $trackedLock = git ls-files -- 'agent/Cargo.lock'
-          if ($LASTEXITCODE -ne 0) {
-            throw "Unable to inspect tracked files with Git."
-          }
 
           if (-not [string]::IsNullOrWhiteSpace($trackedLock)) {
             throw "agent/Cargo.lock está versionado. Este repositorio compila sin lockfile."
@@ -103,14 +102,23 @@ jobs:
           shared-key: moonwolf-agent-windows-x64
           cache-on-failure: true
 
-      - name: Check Rust formatting
+      - name: Format Code
         working-directory: agent
         shell: pwsh
         run: |
-          cargo fmt --all -- --check
+          cargo fmt --all
+
           if ($LASTEXITCODE -ne 0) {
-            throw "Rust formatting check failed. Run 'cargo fmt --all' locally."
+            throw "Rust formatting failed."
           }
+
+          cargo fmt --all -- --check
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Rust formatting verification failed."
+          }
+
+          Write-Host "Rust formatting successful."
 
       - name: Determine version
         id: version
@@ -119,72 +127,59 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          $ErrorActionPreference = "Stop"
-          $previousTag = ""
-
           if ($env:GITHUB_EVENT_NAME -eq "release") {
-            $tag = $env:RELEASE_TAG
+            $tag = "${{ github.event.release.tag_name }}"
 
-            if ($tag -notmatch '^agent-v(?<version>\d+\.\d+(?:\.\d+)?)$') {
-              throw "Invalid Agent release tag: '$tag'. Expected agent-vMAJOR.MINOR[.PATCH]."
+            if ($tag -notmatch '^agent-v(\d+)\.(\d+)(?:\.(\d+))?$') {
+              throw "Invalid Agent release tag: $tag"
             }
 
-            $versionParts = $Matches.version.Split('.')
-            if ($versionParts.Count -eq 2) {
-              $version = "$($versionParts[0]).$($versionParts[1]).0"
-            }
-            else {
-              $version = $Matches.version
-            }
+            $major = [int]$Matches[1]
+            $minor = [int]$Matches[2]
+            $patch = if ($Matches[3]) { [int]$Matches[3] } else { 0 }
+
+            $previous = ""
           }
           else {
             $releaseJson = gh release list --limit 100 --json tagName,isDraft,isPrerelease
+
             if ($LASTEXITCODE -ne 0) {
-              throw "Unable to retrieve existing GitHub Releases."
+              throw "Failed to retrieve GitHub releases."
             }
 
             $releases = @($releaseJson | ConvertFrom-Json)
+
             $validReleases = foreach ($release in $releases) {
-              if ($release.isDraft -or $release.isPrerelease) {
-                continue
-              }
+              if (
+                !$release.isDraft -and
+                !$release.isPrerelease -and
+                $release.tagName -match '^agent-v(\d+)\.(\d+)(?:\.(\d+))?$'
+              ) {
+                $releaseMajor = [int]$Matches[1]
+                $releaseMinor = [int]$Matches[2]
+                $releasePatch = if ($Matches[3]) { [int]$Matches[3] } else { 0 }
 
-              $releaseTag = [string]$release.tagName
-              if ($releaseTag -notmatch '^agent-v(?<version>\d+\.\d+(?:\.\d+)?)$') {
-                continue
-              }
-
-              $parts = $Matches.version.Split('.')
-              if ($parts.Count -eq 2) {
-                $normalizedVersion = "$($parts[0]).$($parts[1]).0"
-              }
-              else {
-                $normalizedVersion = $Matches.version
-              }
-
-              try {
-                [pscustomobject]@{
-                  Tag     = $releaseTag
-                  Version = [version]$normalizedVersion
+                [PSCustomObject]@{
+                  Tag = $release.tagName
+                  Version = [version]"$releaseMajor.$releaseMinor.$releasePatch"
                 }
-              }
-              catch {
-                continue
               }
             }
 
-            $latest = $validReleases | Sort-Object -Property Version | Select-Object -Last 1
+            $latest = $validReleases |
+              Sort-Object Version -Descending |
+              Select-Object -First 1
 
             if ($null -eq $latest) {
               $major = 1
               $minor = 0
+              $previous = ""
             }
             else {
-              $previousTag = $latest.Tag
               $major = $latest.Version.Major
               $minor = $latest.Version.Minor + 1
+              $previous = $latest.Tag
 
               if ($minor -ge 99) {
                 $major++
@@ -192,31 +187,33 @@ jobs:
               }
             }
 
+            $patch = 0
             $tag = "agent-v$major.$minor"
-            $version = "$major.$minor.0"
           }
+
+          $version = "$major.$minor.$patch"
 
           if ($version -notmatch '^\d+\.\d+\.\d+$') {
-            throw "Invalid normalized Agent version: '$version'."
+            throw "Invalid normalized version: $version"
           }
 
-          $output = "tag=$tag`nversion=$version`nprevious_tag=$previousTag`n"
-          [System.IO.File]::AppendAllText(
-            $env:GITHUB_OUTPUT,
-            $output,
-            [System.Text.UTF8Encoding]::new($false)
-          )
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "previous_tag=$previous" >> $env:GITHUB_OUTPUT
 
-          Write-Host "Building MoonWolf Agent v$version ($tag)"
+          Write-Host "Building MoonWolf Agent v$version"
 
       - name: Validate Agent
         if: github.event_name == 'pull_request'
         working-directory: agent
         shell: pwsh
+        env:
+          MOONWOLF_AGENT_VERSION: "0.0.0"
         run: |
           cargo check --target $env:BUILD_TARGET
+
           if ($LASTEXITCODE -ne 0) {
-            throw "cargo check failed."
+            throw "Cargo check failed."
           }
 
       - name: Build executable
@@ -226,23 +223,27 @@ jobs:
         env:
           MOONWOLF_AGENT_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          cargo build --release --target $env:BUILD_TARGET
+          cargo build `
+            --release `
+            --target $env:BUILD_TARGET
+
           if ($LASTEXITCODE -ne 0) {
             throw "Rust compilation failed."
           }
 
           $exe = "target/$env:BUILD_TARGET/release/moonwolf-agent.exe"
-          if (!(Test-Path -LiteralPath $exe -PathType Leaf)) {
-            throw "Compiled executable not found: $exe"
+
+          if (!(Test-Path $exe -PathType Leaf)) {
+            throw "Compiled executable not found."
           }
 
-          $versionInfo = (Get-Item -LiteralPath $exe).VersionInfo
-          Write-Host "FileVersion:    $($versionInfo.FileVersion)"
-          Write-Host "ProductVersion: $($versionInfo.ProductVersion)"
+          $vi = (Get-Item $exe).VersionInfo
 
-          $fileVersion = [string]$versionInfo.FileVersion
-          if (-not $fileVersion.StartsWith("$env:MOONWOLF_AGENT_VERSION.")) {
-            throw "Embedded executable version does not match $env:MOONWOLF_AGENT_VERSION."
+          Write-Host "FileVersion:    $($vi.FileVersion)"
+          Write-Host "ProductVersion: $($vi.ProductVersion)"
+
+          if (-not "$($vi.FileVersion)".StartsWith("$env:MOONWOLF_AGENT_VERSION.")) {
+            throw "Executable version does not match the expected version."
           }
 
           Write-Host "Rust compilation successful."
@@ -251,33 +252,30 @@ jobs:
         if: github.event_name != 'pull_request'
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
 
           $source = "agent/target/$env:BUILD_TARGET/release/moonwolf-agent.exe"
           $destination = "dist/MoonWolf-Agent.exe"
 
-          if (!(Test-Path -LiteralPath $source -PathType Leaf)) {
-            throw "Build output missing: $source"
+          if (!(Test-Path $source -PathType Leaf)) {
+            throw "Compiled executable not found."
           }
 
-          Copy-Item -LiteralPath $source -Destination $destination -Force
-          $file = Get-Item -LiteralPath $destination
+          Copy-Item $source $destination -Force
+
+          $file = Get-Item $destination
 
           if ($file.Length -lt 500KB) {
-            throw "Executable suspiciously small: $($file.Length) bytes."
+            throw "Executable suspiciously small."
           }
 
-          $hash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
+          $hash = (Get-FileHash $destination -Algorithm SHA256).Hash
+
           Write-Host "Executable: $($file.Length) bytes"
           Write-Host "SHA256: $hash"
 
-          $checksumLine = "$hash  MoonWolf-Agent.exe`n"
-          [System.IO.File]::WriteAllText(
-            "dist/SHA256SUMS.txt",
-            $checksumLine,
-            [System.Text.Encoding]::ASCII
-          )
+          "$hash  MoonWolf-Agent.exe" |
+            Out-File "dist/SHA256SUMS.txt" -Encoding ascii
 
       - name: Upload build artifacts
         if: github.event_name != 'pull_request'
@@ -315,29 +313,25 @@ jobs:
       - name: Verify build artifacts
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
           $exe = "dist/MoonWolf-Agent.exe"
           $checksumFile = "dist/SHA256SUMS.txt"
 
-          foreach ($file in @($exe, $checksumFile)) {
-            if (!(Test-Path -LiteralPath $file -PathType Leaf)) {
-              throw "Required artifact missing: $file"
-            }
+          if (!(Test-Path $exe -PathType Leaf)) {
+            throw "Executable missing."
           }
 
-          $checksumLine = (Get-Content -LiteralPath $checksumFile -Raw).Trim()
-          if ($checksumLine -notmatch '^(?<hash>[A-Fa-f0-9]{64})\s+MoonWolf-Agent\.exe$') {
-            throw "Invalid SHA256SUMS.txt format."
+          if (!(Test-Path $checksumFile -PathType Leaf)) {
+            throw "Checksum file missing."
           }
 
-          $expectedHash = $Matches.hash.ToUpperInvariant()
-          $actualHash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+          $expected = ((Get-Content $checksumFile -Raw).Trim() -split '\s+')[0]
+          $actual = (Get-FileHash $exe -Algorithm SHA256).Hash
 
-          if ($actualHash -ne $expectedHash) {
-            throw "SHA256 verification failed. Expected $expectedHash; received $actualHash."
+          if ($actual -ne $expected) {
+            throw "SHA256 verification failed."
           }
 
-          Write-Host "SHA256 verified: $actualHash"
+          Write-Host "SHA256 verified: $actual"
 
       - name: Create or update GitHub Release
         if: github.event_name != 'release'
@@ -349,9 +343,7 @@ jobs:
           VERSION: ${{ needs.build-windows.outputs.version }}
           PREVIOUS_TAG: ${{ needs.build-windows.outputs.previous_tag }}
         run: |
-          $ErrorActionPreference = "Stop"
-
-          gh release view $env:TAG_NAME --json tagName *> $null
+          gh release view $env:TAG_NAME --json tagName 1>$null 2>$null
           $releaseExists = ($LASTEXITCODE -eq 0)
 
           if ($releaseExists) {
@@ -361,24 +353,18 @@ jobs:
               --clobber
 
             if ($LASTEXITCODE -ne 0) {
-              throw "Failed to upload assets to release $env:TAG_NAME."
+              throw "Failed to upload assets to existing release."
             }
-
-            Write-Host "Updated release $env:TAG_NAME."
           }
           else {
-            if (-not [string]::IsNullOrWhiteSpace($env:PREVIOUS_TAG)) {
+            if ($env:PREVIOUS_TAG) {
               $notes = "**Full Changelog**: https://github.com/$env:GITHUB_REPOSITORY/compare/$env:PREVIOUS_TAG...$env:TAG_NAME"
             }
             else {
               $notes = "**Full Changelog**: https://github.com/$env:GITHUB_REPOSITORY/commits/$env:TAG_NAME"
             }
 
-            [System.IO.File]::WriteAllText(
-              "release-notes.md",
-              $notes,
-              [System.Text.UTF8Encoding]::new($false)
-            )
+            $notes | Set-Content -Path release-notes.md -Encoding utf8
 
             gh release create $env:TAG_NAME `
               dist/MoonWolf-Agent.exe `
@@ -388,11 +374,11 @@ jobs:
               --notes-file release-notes.md
 
             if ($LASTEXITCODE -ne 0) {
-              throw "Failed to create GitHub Release $env:TAG_NAME."
+              throw "Failed to create GitHub Release."
             }
-
-            Write-Host "Created release $env:TAG_NAME."
           }
+
+          Write-Host "GitHub Release operation successful."
 
       - name: Upload to published release
         if: github.event_name == 'release'
@@ -408,7 +394,7 @@ jobs:
             --clobber
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Failed to upload assets to published release $env:TAG_NAME."
+            throw "Failed to upload assets to published release."
           }
 
-          Write-Host "Assets uploaded to published release $env:TAG_NAME."
+          Write-Host "Published release updated successfully."
