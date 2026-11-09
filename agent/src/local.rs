@@ -3489,10 +3489,9 @@ async fn db_list() -> Response {
 
     let query = "SELECT s.SCHEMA_NAME AS name, \
         COALESCE(SUM(t.DATA_LENGTH + t.INDEX_LENGTH), 0) AS sizeBytes, \
-        COUNT(t.TABLE_NAME) AS tableCount, MAX(u.user) AS dbUser \
+        COUNT(t.TABLE_NAME) AS tableCount \
         FROM information_schema.SCHEMATA s \
         LEFT JOIN information_schema.TABLES t ON t.TABLE_SCHEMA = s.SCHEMA_NAME \
-        LEFT JOIN (SELECT DISTINCT user FROM mysql.user) u ON u.user = LEFT(s.SCHEMA_NAME, 32) \
         WHERE s.SCHEMA_NAME NOT IN ('information_schema','mysql','performance_schema','sys') \
         GROUP BY s.SCHEMA_NAME ORDER BY s.SCHEMA_NAME";
 
@@ -3502,13 +3501,25 @@ async fn db_list() -> Response {
         Err(e) => return json_fail(&format!("MySQL: {e}")),
     };
 
+    let users: HashMap<String, String> = match conn.query("SELECT user FROM mysql.user").await {
+        Ok(rows) => rows
+            .into_iter()
+            .filter_map(|row: mysql_async::Row| {
+                let user: String = row.get("user")?;
+                Some((user.clone(), user))
+            })
+            .collect(),
+        Err(_) => HashMap::new(),
+    };
+
     let mut databases = Vec::new();
     for row in rows {
         let name: String = row.get("name").unwrap_or_default();
         let size_bytes: u64 = row.get::<u64, _>("sizeBytes").unwrap_or(0);
         let tables: u64 = row.get::<u64, _>("tableCount").unwrap_or(0);
 
-        let user: Option<String> = row.get("dbUser");
+        let username: String = name.chars().take(32).collect();
+        let user = users.get(&username).cloned();
 
         databases.push(json!({
             "name": name,
