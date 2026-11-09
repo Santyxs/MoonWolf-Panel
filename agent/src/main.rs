@@ -14,7 +14,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -53,6 +52,61 @@ fn new_uuid_v4() -> String {
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
     )
+}
+
+
+
+fn now_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn now_secs() -> i64 {
+    now_ms() / 1000
+}
+
+/// Formatea epoch segundos → "dd/mm/YYYY, HH:MM:SS" (UTC).
+pub fn format_datetime_secs(secs: i64) -> String {
+    let (y, m, d, hh, mm, ss) = civil_from_secs(secs);
+    format!("{d:02}/{m:02}/{y}, {hh:02}:{mm:02}:{ss:02}")
+}
+
+/// Formatea epoch millis → "HH:MM:SS" (UTC).
+pub fn format_hms_ms(ms: i64) -> String {
+    let secs = ms.div_euclid(1000);
+    let (_, _, _, hh, mm, ss) = civil_from_secs(secs);
+    format!("{hh:02}:{mm:02}:{ss:02}")
+}
+
+/// Timestamp de archivo: "YYYY-mm-ddTHH-MM-SS" (UTC).
+pub fn format_file_stamp() -> String {
+    let (y, m, d, hh, mm, ss) = civil_from_secs(now_secs());
+    format!("{y:04}-{m:02}-{d:02}T{hh:02}-{mm:02}-{ss:02}")
+}
+
+fn civil_from_secs(secs: i64) -> (i32, u32, u32, u32, u32, u32) {
+    // Algoritmo civil UTC (Howard Hinnant / epoch days).
+    let secs = secs;
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400) as u32;
+    let hh = tod / 3600;
+    let mm = (tod % 3600) / 60;
+    let ss = tod % 60;
+
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y as i32, m as u32, d as u32, hh, mm, ss)
 }
 
 const VERSION: &str = match option_env!("MOONWOLF_AGENT_VERSION") {
@@ -249,7 +303,8 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogEntry {
-    pub time: DateTime<Utc>,
+    /// Epoch millis UTC
+    pub time: i64,
     pub level: String,
     pub message: String,
     #[serde(skip)]
@@ -330,7 +385,7 @@ impl AppState {
     pub fn add_log(&mut self, level: &str, message: impl Into<String>) {
         self.log_seq = self.log_seq.saturating_add(1);
         let entry = LogEntry {
-            time: Utc::now(),
+            time: now_ms(),
             level: level.to_string(),
             message: message.into(),
             seq: self.log_seq,
@@ -350,7 +405,7 @@ impl AppState {
         let text: String = message.into();
         self.console_seq = self.console_seq.saturating_add(1);
         let entry = LogEntry {
-            time: Utc::now(),
+            time: now_ms(),
             level: level.to_string(),
             message: text.clone(),
             seq: self.console_seq,
