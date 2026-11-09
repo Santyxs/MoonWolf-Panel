@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use chrono::TimeZone;
 use futures::future::FutureExt;
 use rust_socketio::asynchronous::{Client, ClientBuilder};
 use rust_socketio::{Event, Payload, TransportType};
@@ -348,11 +347,7 @@ async fn connect_once(
 }
 
 fn log_to_panel(entry: &LogEntry) -> serde_json::Value {
-    let time = entry
-        .time
-        .with_timezone(&chrono::Local)
-        .format("%H:%M:%S")
-        .to_string();
+    let time = crate::format_hms_ms(entry.time);
     let type_str = match entry.level.as_str() {
         "error" => "error",
         "warn" => "warn",
