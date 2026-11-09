@@ -120,9 +120,9 @@ pub async fn serve(app: Arc<RwLock<AppState>>, port: u16) -> anyhow::Result<()> 
         // Backups
         .route("/api/backups", get(list_backups).post(create_backup))
         .route("/api/backups/progress", get(get_backup_progress))
-        .route("/api/backups/download/:name", get(download_backup))
-        .route("/api/backups/:name", delete(delete_backup))
-        .route("/api/backups/:name/restore", post(restore_backup))
+        .route("/api/backups/download/{name}", get(download_backup))
+        .route("/api/backups/{name}", delete(delete_backup))
+        .route("/api/backups/{name}/restore", post(restore_backup))
         // Startup
         .route("/api/startup", get(get_startup).post(save_startup))
         .route("/api/startup/detect-version", post(detect_version))
@@ -138,12 +138,12 @@ pub async fn serve(app: Arc<RwLock<AppState>>, port: u16) -> anyhow::Result<()> 
         .route("/api/plugins/versions", get(plugins_versions))
         .route("/api/plugins/install", post(plugins_install))
         .route("/api/plugins/installed", get(plugins_installed))
-        .route("/api/plugins/installed/:file", delete(plugins_delete))
+        .route("/api/plugins/installed/{file}", delete(plugins_delete))
         // Databases
         .route("/api/databases/status", get(db_status))
         .route("/api/databases", get(db_list).post(db_create))
-        .route("/api/databases/:name/reset-password", post(db_reset))
-        .route("/api/databases/:name", delete(db_delete))
+        .route("/api/databases/{name}/reset-password", post(db_reset))
+        .route("/api/databases/{name}", delete(db_delete))
         .layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT))
         .with_state(state)
         .layer(cors);
