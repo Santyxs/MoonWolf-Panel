@@ -33,7 +33,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
   BUILD_TARGET: x86_64-pc-windows-msvc
 
 jobs:
@@ -54,23 +53,17 @@ jobs:
       previous_tag: ${{ steps.version.outputs.previous_tag }}
 
     steps:
-      # ─────────────────────────────
-      # CHECKOUT
-      # ─────────────────────────────
-
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           fetch-depth: 1
           persist-credentials: false
 
-      # ─────────────────────────────
-      # VERIFY
-      # ─────────────────────────────
-
       - name: Verify Agent files
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           $required = @(
             "agent/Cargo.toml",
             "agent/build.rs",
@@ -82,21 +75,21 @@ jobs:
           )
 
           foreach ($file in $required) {
-            if (!(Test-Path $file -PathType Leaf)) {
+            if (!(Test-Path -LiteralPath $file -PathType Leaf)) {
               throw "Missing required file: $file"
             }
           }
 
           $trackedLock = git ls-files -- 'agent/Cargo.lock'
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to inspect tracked files with Git."
+          }
+
           if (-not [string]::IsNullOrWhiteSpace($trackedLock)) {
-            throw "agent/Cargo.lock está versionado. Este repo compila sin lockfile: bórralo del índice."
+            throw "agent/Cargo.lock está versionado. Este repositorio compila sin lockfile."
           }
 
           Write-Host "Agent files verified."
-
-      # ─────────────────────────────
-      # RUST TOOLCHAIN
-      # ─────────────────────────────
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -110,119 +103,121 @@ jobs:
           shared-key: moonwolf-agent-windows-x64
           cache-on-failure: true
 
-      # ─────────────────────────────
-      # FORMAT
-      # ─────────────────────────────
-
-      - name: Format Code
+      - name: Check Rust formatting
         working-directory: agent
-        shell: bash
-        run: cargo fmt --all
-
-      # ─────────────────────────────
-      # VERSION
-      # ─────────────────────────────
+        shell: pwsh
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) {
+            throw "Rust formatting check failed. Run 'cargo fmt --all' locally."
+          }
 
       - name: Determine version
         id: version
         if: github.event_name != 'pull_request'
-        shell: bash
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
-            tag="${{ github.event.release.tag_name }}"
-            ver="${tag#agent-v}"
+          $ErrorActionPreference = "Stop"
+          $previousTag = ""
 
-            IFS='.' read -r major minor patch <<< "$ver"
+          if ($env:GITHUB_EVENT_NAME -eq "release") {
+            $tag = $env:RELEASE_TAG
 
-            minor="${minor:-0}"
-            patch="${patch:-0}"
+            if ($tag -notmatch '^agent-v(?<version>\d+\.\d+(?:\.\d+)?)$') {
+              throw "Invalid Agent release tag: '$tag'. Expected agent-vMAJOR.MINOR[.PATCH]."
+            }
 
-            ver="${major}.${minor}.${patch}"
-            previous=""
+            $versionParts = $Matches.version.Split('.')
+            if ($versionParts.Count -eq 2) {
+              $version = "$($versionParts[0]).$($versionParts[1]).0"
+            }
+            else {
+              $version = $Matches.version
+            }
+          }
+          else {
+            $releaseJson = gh release list --limit 100 --json tagName,isDraft,isPrerelease
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to retrieve existing GitHub Releases."
+            }
 
-          else
-            latest=$(
-              gh release list \
-                --limit 100 \
-                --json tagName,isDraft,isPrerelease \
-                --jq '
-                  [
-                    .[]
-                    | select(
-                        (.isDraft | not) and
-                        (.isPrerelease | not) and
-                        (.tagName | startswith("agent-v"))
-                      )
-                  ]
-                  | sort_by(
-                      .tagName
-                      | ltrimstr("agent-v")
-                      | split(".")
-                      | map(tonumber)
-                    )
-                  | last
-                  | .tagName // empty
-                '
-            )
+            $releases = @($releaseJson | ConvertFrom-Json)
+            $validReleases = foreach ($release in $releases) {
+              if ($release.isDraft -or $release.isPrerelease) {
+                continue
+              }
 
-            previous="$latest"
+              $releaseTag = [string]$release.tagName
+              if ($releaseTag -notmatch '^agent-v(?<version>\d+\.\d+(?:\.\d+)?)$') {
+                continue
+              }
 
-            if [[ -z "$latest" ]]; then
-              major=1
-              minor=0
-            else
-              ver="${latest#agent-v}"
+              $parts = $Matches.version.Split('.')
+              if ($parts.Count -eq 2) {
+                $normalizedVersion = "$($parts[0]).$($parts[1]).0"
+              }
+              else {
+                $normalizedVersion = $Matches.version
+              }
 
-              IFS='.' read -r major minor patch <<< "$ver"
+              try {
+                [pscustomobject]@{
+                  Tag     = $releaseTag
+                  Version = [version]$normalizedVersion
+                }
+              }
+              catch {
+                continue
+              }
+            }
 
-              minor="${minor:-0}"
-              minor=$((minor + 1))
+            $latest = $validReleases | Sort-Object -Property Version | Select-Object -Last 1
 
-              if (( minor >= 99 )); then
-                major=$((major + 1))
-                minor=0
-              fi
-            fi
+            if ($null -eq $latest) {
+              $major = 1
+              $minor = 0
+            }
+            else {
+              $previousTag = $latest.Tag
+              $major = $latest.Version.Major
+              $minor = $latest.Version.Minor + 1
 
-            tag="agent-v${major}.${minor}"
-            ver="${major}.${minor}.0"
-          fi
+              if ($minor -ge 99) {
+                $major++
+                $minor = 0
+              }
+            }
 
-          ver="${ver#v}"
+            $tag = "agent-v$major.$minor"
+            $version = "$major.$minor.0"
+          }
 
-          if ! [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "ERROR: versión no numérica tras normalizar: '$ver'" >&2
-            exit 1
-          fi
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Invalid normalized Agent version: '$version'."
+          }
 
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=$ver" >> "$GITHUB_OUTPUT"
-          echo "previous_tag=$previous" >> "$GITHUB_OUTPUT"
+          $output = "tag=$tag`nversion=$version`nprevious_tag=$previousTag`n"
+          [System.IO.File]::AppendAllText(
+            $env:GITHUB_OUTPUT,
+            $output,
+            [System.Text.UTF8Encoding]::new($false)
+          )
 
-          echo "Building MoonWolf Agent v$ver"
-
-      # ─────────────────────────────
-      # VALIDATION IN PULL REQUESTS
-      # ─────────────────────────────
+          Write-Host "Building MoonWolf Agent v$version ($tag)"
 
       - name: Validate Agent
         if: github.event_name == 'pull_request'
         working-directory: agent
         shell: pwsh
-        env:
-          MOONWOLF_AGENT_VERSION: "0.0.0"
         run: |
           cargo check --target $env:BUILD_TARGET
-
           if ($LASTEXITCODE -ne 0) {
             throw "cargo check failed."
           }
-
-      # ─────────────────────────────
-      # BUILD
-      # ─────────────────────────────
 
       - name: Build executable
         if: github.event_name != 'pull_request'
@@ -231,62 +226,58 @@ jobs:
         env:
           MOONWOLF_AGENT_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          cargo build `
-            --release `
-            --target $env:BUILD_TARGET
-
+          cargo build --release --target $env:BUILD_TARGET
           if ($LASTEXITCODE -ne 0) {
             throw "Rust compilation failed."
           }
 
           $exe = "target/$env:BUILD_TARGET/release/moonwolf-agent.exe"
-
-          if (!(Test-Path $exe)) {
-            throw "Compiled executable not found."
+          if (!(Test-Path -LiteralPath $exe -PathType Leaf)) {
+            throw "Compiled executable not found: $exe"
           }
 
-          $vi = (Get-Item $exe).VersionInfo
-          Write-Host "FileVersion:    $($vi.FileVersion)"
-          Write-Host "ProductVersion: $($vi.ProductVersion)"
+          $versionInfo = (Get-Item -LiteralPath $exe).VersionInfo
+          Write-Host "FileVersion:    $($versionInfo.FileVersion)"
+          Write-Host "ProductVersion: $($versionInfo.ProductVersion)"
 
-          if (-not "$($vi.FileVersion)".StartsWith("$env:MOONWOLF_AGENT_VERSION.")) {
-            Write-Warning "La versión embebida no coincide con MOONWOLF_AGENT_VERSION=$env:MOONWOLF_AGENT_VERSION"
+          $fileVersion = [string]$versionInfo.FileVersion
+          if (-not $fileVersion.StartsWith("$env:MOONWOLF_AGENT_VERSION.")) {
+            throw "Embedded executable version does not match $env:MOONWOLF_AGENT_VERSION."
           }
 
           Write-Host "Rust compilation successful."
-
-      # ─────────────────────────────
-      # PACKAGE
-      # ─────────────────────────────
 
       - name: Package executable
         if: github.event_name != 'pull_request'
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
 
           $source = "agent/target/$env:BUILD_TARGET/release/moonwolf-agent.exe"
           $destination = "dist/MoonWolf-Agent.exe"
 
-          Copy-Item $source $destination -Force
-
-          $file = Get-Item $destination
-
-          if ($file.Length -lt 500KB) {
-            throw "Executable suspiciously small."
+          if (!(Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw "Build output missing: $source"
           }
 
-          $hash = (Get-FileHash $destination -Algorithm SHA256).Hash
+          Copy-Item -LiteralPath $source -Destination $destination -Force
+          $file = Get-Item -LiteralPath $destination
 
+          if ($file.Length -lt 500KB) {
+            throw "Executable suspiciously small: $($file.Length) bytes."
+          }
+
+          $hash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
           Write-Host "Executable: $($file.Length) bytes"
           Write-Host "SHA256: $hash"
 
-          "$hash  MoonWolf-Agent.exe" |
-            Out-File "dist/SHA256SUMS.txt" -Encoding ascii
-
-      # ─────────────────────────────
-      # WORKFLOW ARTIFACT
-      # ─────────────────────────────
+          $checksumLine = "$hash  MoonWolf-Agent.exe`n"
+          [System.IO.File]::WriteAllText(
+            "dist/SHA256SUMS.txt",
+            $checksumLine,
+            [System.Text.Encoding]::ASCII
+          )
 
       - name: Upload build artifacts
         if: github.event_name != 'pull_request'
@@ -300,14 +291,10 @@ jobs:
           compression-level: 0
           retention-days: 30
 
-  # ─────────────────────────────
-  # PUBLISH RELEASE
-  # ─────────────────────────────
-
   publish-release:
     name: "Publish GitHub release"
     needs: build-windows
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 10
 
     if: >-
@@ -319,84 +306,109 @@ jobs:
       contents: write
 
     steps:
-      # ─────────────────────────────
-      # CHECKOUT
-      # ─────────────────────────────
-
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-
-      # ─────────────────────────────
-      # DOWNLOAD ARTIFACTS
-      # ─────────────────────────────
-
       - name: Download build artifacts
         uses: actions/download-artifact@v7
         with:
           name: MoonWolf-Agent
           path: dist
 
-      # ─────────────────────────────
-      # VERIFY ARTIFACTS
-      # ─────────────────────────────
-
       - name: Verify build artifacts
-        shell: bash
+        shell: pwsh
         run: |
-          test -s dist/MoonWolf-Agent.exe
-          test -s dist/SHA256SUMS.txt
-          (cd dist && sha256sum -c SHA256SUMS.txt)
+          $ErrorActionPreference = "Stop"
+          $exe = "dist/MoonWolf-Agent.exe"
+          $checksumFile = "dist/SHA256SUMS.txt"
 
-      # ─────────────────────────────
-      # AUTOMATIC RELEASE
-      # ─────────────────────────────
+          foreach ($file in @($exe, $checksumFile)) {
+            if (!(Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Required artifact missing: $file"
+            }
+          }
+
+          $checksumLine = (Get-Content -LiteralPath $checksumFile -Raw).Trim()
+          if ($checksumLine -notmatch '^(?<hash>[A-Fa-f0-9]{64})\s+MoonWolf-Agent\.exe$') {
+            throw "Invalid SHA256SUMS.txt format."
+          }
+
+          $expectedHash = $Matches.hash.ToUpperInvariant()
+          $actualHash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+
+          if ($actualHash -ne $expectedHash) {
+            throw "SHA256 verification failed. Expected $expectedHash; received $actualHash."
+          }
+
+          Write-Host "SHA256 verified: $actualHash"
 
       - name: Create or update GitHub Release
         if: github.event_name != 'release'
-        shell: bash
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ needs.build-windows.outputs.tag }}
           VERSION: ${{ needs.build-windows.outputs.version }}
           PREVIOUS_TAG: ${{ needs.build-windows.outputs.previous_tag }}
         run: |
-          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release upload "$TAG_NAME" \
-              dist/MoonWolf-Agent.exe \
-              dist/SHA256SUMS.txt \
+          $ErrorActionPreference = "Stop"
+
+          gh release view $env:TAG_NAME --json tagName *> $null
+          $releaseExists = ($LASTEXITCODE -eq 0)
+
+          if ($releaseExists) {
+            gh release upload $env:TAG_NAME `
+              dist/MoonWolf-Agent.exe `
+              dist/SHA256SUMS.txt `
               --clobber
-          else
-            if [[ -n "$PREVIOUS_TAG" ]]; then
-              NOTES="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREVIOUS_TAG}...${TAG_NAME}"
-            else
-              NOTES="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/commits/${TAG_NAME}"
-            fi
 
-            printf '%s\n' "$NOTES" > release-notes.md
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to upload assets to release $env:TAG_NAME."
+            }
 
-            gh release create "$TAG_NAME" \
-              dist/MoonWolf-Agent.exe \
-              dist/SHA256SUMS.txt \
-              --target "$GITHUB_SHA" \
-              --title "MoonWolf Agent v${VERSION}" \
+            Write-Host "Updated release $env:TAG_NAME."
+          }
+          else {
+            if (-not [string]::IsNullOrWhiteSpace($env:PREVIOUS_TAG)) {
+              $notes = "**Full Changelog**: https://github.com/$env:GITHUB_REPOSITORY/compare/$env:PREVIOUS_TAG...$env:TAG_NAME"
+            }
+            else {
+              $notes = "**Full Changelog**: https://github.com/$env:GITHUB_REPOSITORY/commits/$env:TAG_NAME"
+            }
+
+            [System.IO.File]::WriteAllText(
+              "release-notes.md",
+              $notes,
+              [System.Text.UTF8Encoding]::new($false)
+            )
+
+            gh release create $env:TAG_NAME `
+              dist/MoonWolf-Agent.exe `
+              dist/SHA256SUMS.txt `
+              --target $env:GITHUB_SHA `
+              --title "MoonWolf Agent v$env:VERSION" `
               --notes-file release-notes.md
-          fi
 
-      # ─────────────────────────────
-      # EXISTING RELEASE
-      # ─────────────────────────────
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to create GitHub Release $env:TAG_NAME."
+            }
+
+            Write-Host "Created release $env:TAG_NAME."
+          }
 
       - name: Upload to published release
         if: github.event_name == 'release'
-        shell: bash
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ github.event.release.tag_name }}
         run: |
-          gh release upload "$TAG_NAME" \
-            dist/MoonWolf-Agent.exe \
-            dist/SHA256SUMS.txt \
+          gh release upload $env:TAG_NAME `
+            dist/MoonWolf-Agent.exe `
+            dist/SHA256SUMS.txt `
             --clobber
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to upload assets to published release $env:TAG_NAME."
+          }
+
+          Write-Host "Assets uploaded to published release $env:TAG_NAME."
