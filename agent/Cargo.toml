@@ -13,6 +13,9 @@ build = "build.rs"
 name = "moonwolf-agent"
 path = "src/main.rs"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
 [features]
 default = ["gui"]
 gui = ["dep:wry", "dep:tao", "dep:muda", "dep:tray-icon", "dep:image"]

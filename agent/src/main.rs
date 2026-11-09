@@ -766,8 +766,51 @@ pub async fn apply_update(_current_exe: &PathBuf, _new_exe: &PathBuf) -> anyhow:
    5. BOOTSTRAP
    ══════════════════════════════════════════════ */
 
+/// Muestra un error fatal al usuario y lo registra en un archivo de log.
+///
+/// El agente se compila con `windows_subsystem = "windows"` (sin consola), así que
+/// sin esto cualquier fallo de arranque sería invisible: el proceso muere en silencio.
+pub fn fatal_error(msg: &str) {
+    let config_dir = AgentConfig::config_dir();
+    let _ = std::fs::create_dir_all(&config_dir);
+    let log_path = config_dir.join("agent-error.log");
+    let _ = std::fs::write(
+        &log_path,
+        format!("MoonWolf Agent v{VERSION}\n\n{msg}\n"),
+    );
+    info!(\"{msg}\");
+
+    #[cfg(windows)]
+    {
+        let title: Vec<u16> = \"MoonWolf Agent\".encode_utf16().chain(std::iter::once(0)).collect();
+        let text: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+                std::ptr::null_mut(),
+                text.as_ptr(),
+                title.as_ptr(),
+                windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        eprintln!(\"{msg}\");
+    }
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() {
+    std::panic::set_hook(Box::new(|info| {
+        fatal_error(&format!(\"Error inesperado (panic):\\n\\n{info}\"));
+    }));
+
+    if let Err(e) = run().await {
+        fatal_error(&format!(\"MoonWolf Agent no pudo iniciarse:\\n\\n{e:#}\"));
+    }
+}
+
+async fn run() -> anyhow::Result<()> {
     maybe_wait_for_previous_instance();
 
     tracing_subscriber::fmt()
@@ -827,6 +870,7 @@ async fn main() -> anyhow::Result<()> {
         info!("Iniciando interfaz gráfica…");
         if let Err(e) = gui::run(Arc::clone(&state)).await {
             error!("GUI: {e:#}");
+            fatal_error(&format!("La interfaz gráfica no pudo iniciarse:\n\n{e:#}\n\nComprueba que el WebView2 Runtime de Windows esté instalado."));
         }
     }
 
