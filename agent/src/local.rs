@@ -3408,21 +3408,25 @@ async fn plugins_delete(
    DATABASES
    ══════════════════════════════════════════════ */
 
-fn mysql_pool() -> Pool {
+static MYSQL_POOL: OnceLock<Pool> = OnceLock::new();
+
+fn mysql_pool() -> &'static Pool {
     let host = std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
     let port = std::env::var("MOONWOLF_MYSQL_PORT").unwrap_or_else(|_| "3306".into());
     let user = std::env::var("MOONWOLF_MYSQL_USER").unwrap_or_else(|_| "root".into());
     let password = std::env::var("MOONWOLF_MYSQL_PASSWORD").unwrap_or_default();
 
-    let url = format!(
-        "mysql://{}:{}@{}:{}/",
-        urlencode(&user),
-        urlencode(&password),
-        host,
-        port
-    );
-    let opts = Opts::from_url(&url).unwrap_or_else(|_| Opts::default());
-    Pool::new(opts)
+    MYSQL_POOL.get_or_init(|| {
+        let url = format!(
+            "mysql://{}:{}@{}:{}/?pool_min=0&pool_max=8&conn_ttl=1800&tcp_keepalive=30000&stmt_cache_size=32",
+            urlencode(&user),
+            urlencode(&password),
+            host,
+            port
+        );
+        let opts = Opts::from_url(&url).unwrap_or_else(|_| Opts::default());
+        Pool::new(opts)
+    })
 }
 
 fn valid_db_name(name: &str) -> bool {
@@ -3485,9 +3489,10 @@ async fn db_list() -> Response {
 
     let query = "SELECT s.SCHEMA_NAME AS name, \
         COALESCE(SUM(t.DATA_LENGTH + t.INDEX_LENGTH), 0) AS sizeBytes, \
-        COUNT(t.TABLE_NAME) AS tableCount \
+        COUNT(t.TABLE_NAME) AS tableCount, MAX(u.user) AS dbUser \
         FROM information_schema.SCHEMATA s \
         LEFT JOIN information_schema.TABLES t ON t.TABLE_SCHEMA = s.SCHEMA_NAME \
+        LEFT JOIN (SELECT DISTINCT user FROM mysql.user) u ON u.user = LEFT(s.SCHEMA_NAME, 32) \
         WHERE s.SCHEMA_NAME NOT IN ('information_schema','mysql','performance_schema','sys') \
         GROUP BY s.SCHEMA_NAME ORDER BY s.SCHEMA_NAME";
 
@@ -3503,15 +3508,7 @@ async fn db_list() -> Response {
         let size_bytes: u64 = row.get::<u64, _>("sizeBytes").unwrap_or(0);
         let tables: u64 = row.get::<u64, _>("tableCount").unwrap_or(0);
 
-        let username: String = name.chars().take(32).collect();
-        let user: Option<String> = conn
-            .exec_first(
-                "SELECT user FROM mysql.user WHERE user = ?",
-                (&username,),
-            )
-            .await
-            .ok()
-            .flatten();
+        let user: Option<String> = row.get("dbUser");
 
         databases.push(json!({
             "name": name,
@@ -3594,8 +3591,6 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
         );
         let _ = conn.query_drop(&q_grant).await;
 
-        let _ = conn.query_drop("FLUSH PRIVILEGES").await;
-
         let host = std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
         let port = std::env::var("MOONWOLF_MYSQL_PORT").unwrap_or_else(|_| "3306".into());
 
@@ -3639,7 +3634,7 @@ async fn db_reset(AxumPath(name): AxumPath<String>) -> Response {
         password.replace('\'', "''")
     );
     let _ = conn.query_drop(&q_alter).await;
-    let _ = conn.query_drop("FLUSH PRIVILEGES").await;
+
 
     let host = std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
     let port = std::env::var("MOONWOLF_MYSQL_PORT").unwrap_or_else(|_| "3306".into());
@@ -3674,7 +3669,7 @@ async fn db_delete(AxumPath(name): AxumPath<String>) -> Response {
     let username: String = name.chars().take(32).collect();
     let q_drop_user = format!("DROP USER IF EXISTS '{}'@'%'", username.replace('\'', "''"));
     let _ = conn.query_drop(&q_drop_user).await;
-    let _ = conn.query_drop("FLUSH PRIVILEGES").await;
+
 
     json_ok(json!({}))
 }
