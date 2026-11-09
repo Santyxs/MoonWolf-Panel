@@ -485,16 +485,107 @@ async fn download_and_stage(
 
 #[cfg(windows)]
 pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::Result<()> {
+    use std::os::windows::process::CommandExt;
+
+    let current_exe = current_exe.canonicalize().unwrap_or_else(|_| current_exe.clone());
+    let new_exe = new_exe.canonicalize().unwrap_or_else(|_| new_exe.clone());
+
     let old = current_exe.with_extension("exe.old");
     let _ = tokio::fs::remove_file(&old).await;
-    tokio::fs::rename(current_exe, &old).await?;
-    tokio::fs::copy(new_exe, current_exe).await?;
-    let _ = std::process::Command::new(current_exe)
-        .arg("--wait-pid")
-        .arg(std::process::id().to_string())
+
+    // En Windows se puede renombrar un .exe en uso; luego copiamos el nuevo en su lugar.
+    tokio::fs::rename(&current_exe, &old).await.map_err(|e| {
+        anyhow::anyhow!("No se pudo renombrar el ejecutable actual (¿en uso?): {e}")
+    })?;
+    tokio::fs::copy(&new_exe, &current_exe).await.map_err(|e| {
+        // Intentar revertir
+        let _ = std::fs::rename(&old, &current_exe);
+        anyhow::anyhow!("No se pudo copiar el nuevo ejecutable: {e}")
+    })?;
+
+    let pid = std::process::id();
+    let exe_str = current_exe.to_string_lossy().replace('"', "");
+
+    // Script auxiliar DETACHED: espera a que muera este PID y relanza el Agent.
+    // Así no chocamos con el puerto local ni con locks del proceso actual.
+    let dir = AgentConfig::config_dir().join("updates");
+    tokio::fs::create_dir_all(&dir).await?;
+    let bat_path = dir.join("restart-after-update.bat");
+    let bat = format!(
+        "@echo off\r\n\
+         setlocal\r\n\
+         set PID={pid}\r\n\
+         set EXE={exe}\r\n\
+         :wait\r\n\
+         tasklist /FI \"PID eq %PID%\" 2>NUL | findstr /I \"%PID%\" >NUL\r\n\
+         if not errorlevel 1 (\r\n\
+           timeout /t 1 /nobreak >NUL\r\n\
+           goto wait\r\n\
+         )\r\n\
+         timeout /t 1 /nobreak >NUL\r\n\
+         start \"\" \"%EXE%\"\r\n\
+         del \"%~f0\" >NUL 2>&1\r\n\
+         endlocal\r\n",
+        pid = pid,
+        exe = exe_str,
+    );
+    tokio::fs::write(&bat_path, bat).await?;
+
+    // CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    const FLAGS: u32 = 0x08000000 | 0x00000008 | 0x00000200;
+    let status = std::process::Command::new("cmd.exe")
+        .args(["/C", &bat_path.to_string_lossy()])
+        .creation_flags(FLAGS)
         .spawn();
+
+    if let Err(e) = status {
+        anyhow::bail!("No se pudo lanzar el reinicio post-update: {e}");
+    }
+
+    info!("Actualización lista; reinicio programado tras cerrar PID {pid}");
     Ok(())
 }
+
+/// Si se lanza con --wait-pid <pid>, espera a que ese proceso termine antes de arrancar.
+fn maybe_wait_for_previous_instance() {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--wait-pid" {
+            if let Some(pid_s) = args.next() {
+                if let Ok(pid) = pid_s.parse::<u32>() {
+                    wait_for_pid(pid);
+                }
+            }
+            break;
+        }
+    }
+}
+
+#[cfg(windows)]
+fn wait_for_pid(pid: u32) {
+    use std::os::windows::process::CommandExt;
+    // Espera activa breve; el .bat es la vía principal, esto es fallback.
+    for _ in 0..120 {
+        let running = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .output()
+            .ok()
+            .map(|o| {
+                let s = String::from_utf8_lossy(&o.stdout);
+                s.contains(&pid.to_string())
+            })
+            .unwrap_or(false);
+        if !running {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(400));
+}
+
+#[cfg(not(windows))]
+fn wait_for_pid(_pid: u32) {}
 
 #[cfg(not(windows))]
 pub async fn apply_update(_current_exe: &PathBuf, _new_exe: &PathBuf) -> anyhow::Result<()> {
@@ -507,6 +598,8 @@ pub async fn apply_update(_current_exe: &PathBuf, _new_exe: &PathBuf) -> anyhow:
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    maybe_wait_for_previous_instance();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
