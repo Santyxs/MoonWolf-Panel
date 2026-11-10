@@ -40,7 +40,7 @@ component FieldRow inherits Rectangle {
     in property <string> action-label;
     callback action-clicked();
 
-    height: 69px;
+    height: 60px;
     background: #111426;
     border-width: 1px;
     border-color: #242844;
@@ -81,9 +81,9 @@ export component MainWindow inherits Window {
     min-width: 410px;
     preferred-width: 470px;
     max-width: 520px;
-    min-height: 650px;
-    preferred-height: 745px;
-    max-height: 820px;
+    min-height: 575px;
+    preferred-height: 625px;
+    max-height: 720px;
     background: #0b0c17;
 
     callback open-panel();
@@ -126,14 +126,14 @@ export component MainWindow inherits Window {
         VerticalBox {
             padding-left: 28px;
             padding-right: 28px;
-            padding-top: 27px;
-            padding-bottom: 18px;
-            spacing: 13px;
+            padding-top: 18px;
+            padding-bottom: 12px;
+            spacing: 10px;
 
             // Marca compacta, como en la referencia
             VerticalBox {
-                height: 118px;
-                spacing: 8px;
+                height: 100px;
+                spacing: 5px;
                 alignment: center;
 
                 HorizontalBox {
@@ -188,7 +188,7 @@ export component MainWindow inherits Window {
 
             // Estado de conexión
             Rectangle {
-                height: 77px;
+                height: 68px;
                 border-radius: 15px;
                 background: #111426;
                 border-width: 1px;
@@ -197,7 +197,7 @@ export component MainWindow inherits Window {
                 HorizontalBox {
                     padding-left: 17px;
                     padding-right: 17px;
-                    spacing: 13px;
+                    spacing: 12px;
                     alignment: center;
 
                     Rectangle {
@@ -234,7 +234,7 @@ export component MainWindow inherits Window {
                 border-color: #292b48;
 
                 VerticalBox {
-                    padding: 14px;
+                    padding: 12px;
                     spacing: 0px;
 
                     FieldRow {
@@ -256,7 +256,7 @@ export component MainWindow inherits Window {
                     }
                     Rectangle { height: 1px; background: #252840; }
                     Rectangle {
-                        height: 69px;
+                        height: 60px;
                         background: #111426;
                         HorizontalBox {
                             padding-left: 15px;
@@ -294,13 +294,13 @@ export component MainWindow inherits Window {
             Button {
                 text: "↗  Abrir Panel";
                 primary: true;
-                height: 55px;
+                height: 50px;
                 clicked => { root.open-panel(); }
             }
 
             // Acciones inferiores
             HorizontalBox {
-                height: 50px;
+                height: 44px;
                 spacing: 10px;
                 PillButton {
                     label: "Configuración";
@@ -352,7 +352,6 @@ export component MainWindow inherits Window {
                 }
             }
 
-            Rectangle { vertical-stretch: 1; min-height: 3px; }
             Text {
                 text: "MoonWolf Agent  ·  Windows  ·  v" + root.version;
                 color: #565770;
