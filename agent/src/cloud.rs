@@ -105,7 +105,10 @@ async fn connect_once(
 
     let client = ClientBuilder::new(panel_url)
         .namespace("/")
-        .transport_type(TransportType::Any) // polling primero; upgrade a websocket si se puede
+        // El endpoint de Render/Cloudflare mantiene WebSocket extremo a extremo;
+        // usarlo directamente evita que rust_engineio intente parsear chunks
+        // HTTP fragmentados del polling como si fueran paquetes completos.
+        .transport_type(TransportType::Websocket)
         .auth(auth)
         .on(Event::Connect, move |_, socket: Client| {
             let app = Arc::clone(&app_on_connect);
@@ -234,7 +237,7 @@ async fn connect_once(
         })
         .connect()
         .await
-        .map_err(|e| anyhow::anyhow!("connect falló: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("connect falló: {e:?}"))?;
 
     let wait_start = Instant::now();
     while !app.read().await.cloud_connected {
