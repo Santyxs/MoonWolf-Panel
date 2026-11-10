@@ -2,9 +2,11 @@ import { Button, LineEdit, VerticalBox, HorizontalBox, ScrollView } from "std-wi
 
 export component MainWindow inherits Window {
     title: "MoonWolf Agent";
-    min-width: 390px;
-    min-height: 560px;
-    background: #0c1019;
+    min-width: 420px;
+    preferred-width: 440px;
+    min-height: 640px;
+    preferred-height: 720px;
+    background: #0a0e16;
 
     callback open-panel();
     callback open-config();
@@ -39,147 +41,510 @@ export component MainWindow inherits Window {
     in-out property <string> serverdir-input: "";
 
     Rectangle {
-        x: 0; y: 0; width: parent.width; height: parent.height;
-        background: #0c1019;
+        width: 100%; height: 100%;
+        background: #0a0e16;
     }
 
     VerticalBox {
-        padding: 22px;
-        spacing: 14px;
+        padding: 20px;
+        spacing: 12px;
 
+        // ── HEADER / LOGO ──────────────────────────────
         HorizontalBox {
             alignment: center;
-            spacing: 12px;
+            spacing: 14px;
+
+            // Logo: media luna dibujada con rectángulos
             Rectangle {
-                width: 48px; height: 48px; border-radius: 14px;
-                background: #18283a;
-                Text { text: "MW"; color: #68d9ff; font-size: 19px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                width: 52px; height: 52px;
+                border-radius: 16px;
+                background: #121c2a;
+                border-width: 1px;
+                border-color: #1e3a52;
+
+                Rectangle {
+                    x: 2px; y: 2px; width: 48px; height: 48px;
+                    border-radius: 14px;
+                    background: #0e1824;
+                }
+                // Disco de luna
+                Rectangle {
+                    x: 10px; y: 10px; width: 28px; height: 28px;
+                    border-radius: 14px;
+                    background: #3ec8ff;
+                }
+                // Sombra → media luna
+                Rectangle {
+                    x: 18px; y: 8px; width: 24px; height: 24px;
+                    border-radius: 12px;
+                    background: #0e1824;
+                }
+                // Brillo
+                Rectangle {
+                    x: 14px; y: 14px; width: 5px; height: 5px;
+                    border-radius: 3px;
+                    background: #a8ecff;
+                }
             }
+
             VerticalBox {
                 alignment: center;
-                Text { text: "MoonWolf"; color: #f2f5fb; font-size: 23px; font-weight: 700; }
-                Text { text: "AGENT"; color: #8c9bb0; font-size: 10px; letter-spacing: 3px; }
+                spacing: 2px;
+                Text {
+                    text: "MoonWolf";
+                    color: #f0f4fa;
+                    font-size: 22px;
+                    font-weight: 700;
+                }
+                Text {
+                    text: "AGENT";
+                    color: #5a9fc4;
+                    font-size: 11px;
+                    letter-spacing: 3px;
+                    font-weight: 600;
+                }
             }
+
             Rectangle { horizontal-stretch: 1; }
-            Text { text: root.version; color: #8291a8; font-size: 11px; }
+
+            Rectangle {
+                border-radius: 8px;
+                background: #121c2a;
+                border-width: 1px;
+                border-color: #1e3a52;
+                HorizontalBox {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    padding-top: 6px;
+                    padding-bottom: 6px;
+                    Text {
+                        text: "v" + root.version;
+                        color: #7a90a8;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
         }
 
+        // ── ESTADO CLOUD ───────────────────────────────
         Rectangle {
-            height: 72px; border-radius: 12px;
-            background: #151e2c;
-            border-width: 1px; border-color: root.cloud-connected ? #236b68 : #344256;
+            height: 70px;
+            border-radius: 14px;
+            background: #111925;
+            border-width: 1px;
+            border-color: root.cloud-connected ? #1a6b5c : #2a3a4e;
+
+            HorizontalBox {
+                padding: 14px;
+                spacing: 12px;
+                alignment: center;
+
+                Rectangle {
+                    width: 12px; height: 12px;
+                    border-radius: 6px;
+                    background: root.cloud-connected ? #3dd6a5 : #e4ae55;
+                }
+
+                VerticalBox {
+                    alignment: center;
+                    spacing: 3px;
+                    Text {
+                        text: root.status-title;
+                        color: #f0f4fa;
+                        font-size: 15px;
+                        font-weight: 700;
+                    }
+                    Text {
+                        text: root.status-description;
+                        color: #8fa0b5;
+                        font-size: 11px;
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+
+        // ── EMPAREJAMIENTO + SERVIDOR ──────────────────
+        Rectangle {
+            border-radius: 14px;
+            background: #111925;
+            border-width: 1px;
+            border-color: #1c2a3c;
+
             VerticalBox {
-                padding: 12px; spacing: 4px;
+                padding: 16px;
+                spacing: 10px;
+
+                Text {
+                    text: "EMPAREJAMIENTO";
+                    color: #6b8299;
+                    font-size: 10px;
+                    letter-spacing: 1.2px;
+                    font-weight: 600;
+                }
+
+                HorizontalBox {
+                    spacing: 10px;
+                    alignment: center;
+                    Text {
+                        text: root.pairing-code;
+                        color: #5ed0ff;
+                        font-size: 22px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Button {
+                        text: "Copiar";
+                        primary: true;
+                        clicked => { root.copy-pairing(); }
+                    }
+                }
+
+                Rectangle { height: 1px; background: #1c2a3c; }
+
+                Text {
+                    text: "CARPETA DEL SERVIDOR";
+                    color: #6b8299;
+                    font-size: 10px;
+                    letter-spacing: 1.2px;
+                    font-weight: 600;
+                }
+
                 HorizontalBox {
                     spacing: 8px;
-                    Rectangle { width: 9px; height: 9px; border-radius: 5px; background: root.cloud-connected ? #42d6a4 : #e4ae55; }
-                    Text { text: root.status-title; color: #f2f5fb; font-size: 14px; font-weight: 700; }
+                    alignment: center;
+                    Text {
+                        text: root.server-dir;
+                        color: #d0dbe8;
+                        font-size: 12px;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                    Button {
+                        text: "Abrir";
+                        clicked => { root.open-server(); }
+                    }
                 }
-                Text { text: root.status-description; color: #a5b2c4; font-size: 11px; }
+
+                HorizontalBox {
+                    spacing: 8px;
+                    alignment: center;
+                    Text {
+                        text: "SERVIDOR LOCAL";
+                        color: #6b8299;
+                        font-size: 10px;
+                        letter-spacing: 1px;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Rectangle {
+                        border-radius: 8px;
+                        background: root.local-ready ? #0d2a22 : #2a2418;
+                        border-width: 1px;
+                        border-color: root.local-ready ? #1a6b5c : #5a4a20;
+                        HorizontalBox {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            padding-top: 4px;
+                            padding-bottom: 4px;
+                            Text {
+                                text: root.local-ready ? "● Listo" : "● Iniciando";
+                                color: root.local-ready ? #3dd6a5 : #e4ae55;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        Rectangle {
-            border-radius: 12px; background: #151e2c;
-            VerticalBox {
-                padding: 14px;
-                spacing: 9px;
-                Text { text: "EMPAREJAMIENTO"; color: #8294ad; font-size: 10px; letter-spacing: 1px; }
-                HorizontalBox {
-                    Text { text: root.pairing-code; color: #73d7ff; font-size: 21px; font-weight: 700; }
-                    Rectangle { horizontal-stretch: 1; }
-                    Button { text: "Copiar"; clicked => { root.copy-pairing(); } }
-                }
-                Rectangle { height: 1px; background: #29374a; }
-                Text { text: "CARPETA DEL SERVIDOR"; color: #8294ad; font-size: 10px; letter-spacing: 1px; }
-                HorizontalBox {
-                    Text { text: root.server-dir; color: #e3eaf4; font-size: 11px; overflow: elide; horizontal-stretch: 1; }
-                    Button { text: "Abrir"; clicked => { root.open-server(); } }
-                }
-                HorizontalBox {
-                    Text { text: "SERVIDOR LOCAL"; color: #8294ad; font-size: 10px; }
-                    Rectangle { horizontal-stretch: 1; }
-                    Text { text: root.local-ready ? "Listo" : "Iniciando"; color: root.local-ready ? #42d6a4 : #e4ae55; font-size: 11px; }
-                }
-            }
-        }
-
+        // ── UPDATE BANNER ──────────────────────────────
         if root.update-visible : Rectangle {
-            border-radius: 10px; background: #26344a;
-            VerticalBox {
-                padding: 10px;
-                spacing: 6px;
-                Text { text: root.update-text; color: #eaf2ff; font-size: 12px; }
-                Button { text: "Instalar actualización"; clicked => { root.apply-update(); } }
-            }
-        }
-
-        if root.restart-visible : Rectangle {
-            border-radius: 10px; background: #3a3020;
-            HorizontalBox {
-                padding: 10px;
-                Text { text: "Reinicio pendiente"; color: #f2d39a; vertical-alignment: center; }
-                Rectangle { horizontal-stretch: 1; }
-                Button { text: "Reiniciar"; clicked => { root.restart-agent(); } }
-            }
-        }
-
-        HorizontalBox {
-            spacing: 8px;
-            Button { text: "Abrir Panel"; clicked => { root.open-panel(); } }
-            Button { text: "Configuración"; clicked => { root.settings-visible = !root.settings-visible; } }
-            Button { text: "Logs"; clicked => { root.logs-visible = !root.logs-visible; } }
-        }
-
-        if root.settings-visible : Rectangle {
-            border-radius: 10px; background: #151e2c;
+            border-radius: 12px;
+            background: #152030;
+            border-width: 1px;
+            border-color: #2a4a6a;
             VerticalBox {
                 padding: 12px;
-                spacing: 7px;
-                Text { text: "CONFIGURACIÓN"; color: #8294ad; font-size: 10px; }
-                Text { text: "Carpeta: " + root.config-dir; color: #b8c5d6; font-size: 10px; overflow: elide; }
-                Text { text: "Agent ID: " + root.agent-id; color: #b8c5d6; font-size: 10px; overflow: elide; }
-                HorizontalBox {
-                    Button { text: "Abrir carpeta"; clicked => { root.open-config(); } }
-                    Button { text: "Cambiar servidor"; clicked => { root.serverdir-visible = !root.serverdir-visible; } }
-                    Button { text: "Buscar update"; clicked => { root.check-update(); } }
+                spacing: 8px;
+                Text {
+                    text: root.update-text;
+                    color: #d8e6f5;
+                    font-size: 12px;
                 }
-                Button { text: "Minimizar a bandeja"; clicked => { root.hide-tray(); } }
+                Button {
+                    text: "Instalar actualización";
+                    primary: true;
+                    clicked => { root.apply-update(); }
+                }
             }
         }
 
+        // ── RESTART BANNER ─────────────────────────────
+        if root.restart-visible : Rectangle {
+            border-radius: 12px;
+            background: #2a2218;
+            border-width: 1px;
+            border-color: #5a4a20;
+            HorizontalBox {
+                padding: 12px;
+                spacing: 10px;
+                alignment: center;
+                Text {
+                    text: "Reinicio pendiente";
+                    color: #f2d39a;
+                    font-size: 13px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Button {
+                    text: "Reiniciar";
+                    clicked => { root.restart-agent(); }
+                }
+            }
+        }
+
+        // ── BOTONES PRINCIPALES ────────────────────────
+        HorizontalBox {
+            spacing: 8px;
+            Button {
+                text: "Abrir Panel";
+                primary: true;
+                horizontal-stretch: 1;
+                clicked => { root.open-panel(); }
+            }
+            Button {
+                text: root.settings-visible ? "● Config" : "Configuración";
+                horizontal-stretch: 1;
+                clicked => {
+                    root.logs-visible = false;
+                    root.serverdir-visible = false;
+                    root.settings-visible = !root.settings-visible;
+                }
+            }
+            Button {
+                text: root.logs-visible ? "● Logs" : "Logs";
+                horizontal-stretch: 1;
+                clicked => {
+                    root.settings-visible = false;
+                    root.serverdir-visible = false;
+                    root.logs-visible = !root.logs-visible;
+                }
+            }
+        }
+
+        // ── PANEL CONFIGURACIÓN ────────────────────────
+        if root.settings-visible : Rectangle {
+            border-radius: 14px;
+            background: #111925;
+            border-width: 1px;
+            border-color: #1e3a52;
+            min-height: 160px;
+
+            VerticalBox {
+                padding: 14px;
+                spacing: 10px;
+
+                Text {
+                    text: "CONFIGURACIÓN";
+                    color: #5ed0ff;
+                    font-size: 11px;
+                    letter-spacing: 1.5px;
+                    font-weight: 700;
+                }
+
+                Rectangle {
+                    border-radius: 10px;
+                    background: #0c121c;
+                    border-width: 1px;
+                    border-color: #1c2a3c;
+                    VerticalBox {
+                        padding: 10px;
+                        spacing: 6px;
+                        Text {
+                            text: "Carpeta de config";
+                            color: #6b8299;
+                            font-size: 10px;
+                        }
+                        Text {
+                            text: root.config-dir;
+                            color: #c5d2e0;
+                            font-size: 11px;
+                            overflow: elide;
+                        }
+                    }
+                }
+
+                Rectangle {
+                    border-radius: 10px;
+                    background: #0c121c;
+                    border-width: 1px;
+                    border-color: #1c2a3c;
+                    VerticalBox {
+                        padding: 10px;
+                        spacing: 6px;
+                        Text {
+                            text: "Agent ID";
+                            color: #6b8299;
+                            font-size: 10px;
+                        }
+                        Text {
+                            text: root.agent-id;
+                            color: #c5d2e0;
+                            font-size: 11px;
+                            overflow: elide;
+                        }
+                    }
+                }
+
+                HorizontalBox {
+                    spacing: 8px;
+                    Button {
+                        text: "Abrir carpeta";
+                        horizontal-stretch: 1;
+                        clicked => { root.open-config(); }
+                    }
+                    Button {
+                        text: "Cambiar servidor";
+                        horizontal-stretch: 1;
+                        clicked => { root.serverdir-visible = !root.serverdir-visible; }
+                    }
+                }
+
+                HorizontalBox {
+                    spacing: 8px;
+                    Button {
+                        text: "Buscar update";
+                        horizontal-stretch: 1;
+                        clicked => { root.check-update(); }
+                    }
+                    Button {
+                        text: "Minimizar a bandeja";
+                        horizontal-stretch: 1;
+                        clicked => { root.hide-tray(); }
+                    }
+                }
+            }
+        }
+
+        // ── CAMBIAR CARPETA SERVIDOR ───────────────────
         if root.serverdir-visible : Rectangle {
-            border-radius: 10px; background: #151e2c;
+            border-radius: 14px;
+            background: #111925;
+            border-width: 1px;
+            border-color: #1e3a52;
+
             VerticalBox {
-                padding: 10px;
-                spacing: 6px;
-                Text { text: "Nueva carpeta del servidor"; color: #eaf2ff; }
-                LineEdit { text <=> root.serverdir-input; }
+                padding: 14px;
+                spacing: 10px;
+
+                Text {
+                    text: "Nueva carpeta del servidor";
+                    color: #eaf2ff;
+                    font-size: 13px;
+                    font-weight: 600;
+                }
+                LineEdit {
+                    text <=> root.serverdir-input;
+                    placeholder-text: "Ruta completa de la carpeta...";
+                }
                 HorizontalBox {
-                    Button { text: "Cancelar"; clicked => { root.serverdir-visible = false; } }
-                    Button { text: "Guardar"; clicked => { root.change-server(root.serverdir-input); root.serverdir-visible = false; } }
+                    spacing: 8px;
+                    Button {
+                        text: "Cancelar";
+                        horizontal-stretch: 1;
+                        clicked => { root.serverdir-visible = false; }
+                    }
+                    Button {
+                        text: "Guardar";
+                        primary: true;
+                        horizontal-stretch: 1;
+                        clicked => {
+                            root.change-server(root.serverdir-input);
+                            root.serverdir-visible = false;
+                        }
+                    }
                 }
             }
         }
 
+        // ── PANEL LOGS ─────────────────────────────────
         if root.logs-visible : Rectangle {
-            border-radius: 10px; background: #111925; vertical-stretch: 1;
+            border-radius: 14px;
+            background: #0d131c;
+            border-width: 1px;
+            border-color: #1e3a52;
+            vertical-stretch: 1;
+            min-height: 220px;
+
             VerticalBox {
-                padding: 10px;
-                spacing: 6px;
+                padding: 12px;
+                spacing: 8px;
+
                 HorizontalBox {
-                    Text { text: "REGISTRO"; color: #8294ad; font-size: 10px; }
+                    spacing: 8px;
+                    alignment: center;
+                    Text {
+                        text: "REGISTRO";
+                        color: #5ed0ff;
+                        font-size: 11px;
+                        letter-spacing: 1.5px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
                     Rectangle { horizontal-stretch: 1; }
-                    Button { text: "Limpiar"; clicked => { root.clear-logs(); } }
-                    Button { text: "Guardar"; clicked => { root.save-logs(); } }
+                    Button {
+                        text: "Limpiar";
+                        clicked => { root.clear-logs(); }
+                    }
+                    Button {
+                        text: "Guardar";
+                        clicked => { root.save-logs(); }
+                    }
                 }
-                ScrollView {
+
+                Rectangle {
+                    border-radius: 10px;
+                    background: #080c12;
+                    border-width: 1px;
+                    border-color: #1a2535;
                     vertical-stretch: 1;
-                    Text { text: root.logs-text; color: #b9c7d9; font-size: 10px; wrap: word-wrap; }
+                    min-height: 160px;
+
+                    ScrollView {
+                        width: 100%;
+                        height: 100%;
+                        VerticalBox {
+                            padding: 10px;
+                            Text {
+                                text: root.logs-text == "" ? "Sin registros todavía.\nLos eventos del agent aparecerán aquí." : root.logs-text;
+                                color: root.logs-text == "" ? #53647c : #b0c0d0;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
                 }
             }
         }
-        Rectangle { vertical-stretch: 1; }
-        Text { text: "MoonWolf Agent · Windows"; color: #53647c; font-size: 9px; horizontal-alignment: center; }
+
+        // Espaciador solo cuando no hay logs abiertos
+        if !root.logs-visible : Rectangle {
+            vertical-stretch: 1;
+            min-height: 8px;
+        }
+
+        Text {
+            text: "MoonWolf Agent · Windows";
+            color: #3d4f63;
+            font-size: 10px;
+            horizontal-alignment: center;
+        }
     }
 }

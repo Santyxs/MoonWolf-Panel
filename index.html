@@ -10,8 +10,8 @@
 <link rel="preconnect" href="https://cdnjs.cloudflare.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Share+Tech+Mono&display=swap">
 
-  <link rel="stylesheet" href="styles.css?v=20261017-backup-progress">
-  <script src="dashboard.js?v=20261011-direct-2" defer></script>
+  <link rel="stylesheet" href="styles.css?v=20261110-ui-fix">
+  <script src="dashboard.js?v=20261110-ui-fix" defer></script>
 </head>
 
 <body>
@@ -20,7 +20,19 @@
     <!-- 1. SIDEBAR -->
     <nav class="sidebar" aria-label="Navegación principal">
       <div class="sb-logo">
-        <div class="sb-logo-icon" aria-hidden="true">🌙</div>
+        <div class="sb-logo-icon" aria-hidden="true">
+          <svg class="sb-logo-svg" viewBox="0 0 48 48" width="28" height="28" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="24" cy="24" r="18" fill="url(#mwMoonGrad)"/>
+            <circle cx="30" cy="20" r="14" fill="#0b1016"/>
+            <circle cx="18" cy="18" r="2.2" fill="#a8ecff" opacity="0.9"/>
+            <defs>
+              <linearGradient id="mwMoonGrad" x1="8" y1="8" x2="40" y2="40">
+                <stop stop-color="#5ed0ff"/>
+                <stop offset="1" stop-color="#0077aa"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
         <div>
           <h1>MOONWOLF</h1>
           <small>PANEL v2.0</small>

@@ -292,11 +292,24 @@ function ensureLoginGate() {
       text-align:center
     }
 
+    .mw-cloud-logo{
+      width:56px;
+      height:56px;
+      margin:0 auto 14px;
+      border-radius:16px;
+      background:linear-gradient(145deg,#121c2a,#0e1824);
+      border:1px solid #1e3a52;
+      display:grid;
+      place-items:center;
+      box-shadow:0 0 24px rgba(0,200,255,.18)
+    }
+    .mw-cloud-logo svg{display:block}
     .mw-cloud-card h1{
       font-size:18px;
       color:#eee;
       margin:0 0 6px;
-      letter-spacing:.05em
+      letter-spacing:.08em;
+      font-family:Orbitron,sans-serif
     }
 
     .mw-cloud-card p{
@@ -362,7 +375,20 @@ function ensureLoginGate() {
 
   gate.innerHTML = `
     <div class="mw-cloud-card">
-      <h1>🌙 MOONWOLF CLOUD</h1>
+      <div class="mw-cloud-logo" aria-hidden="true">
+        <svg viewBox="0 0 48 48" width="32" height="32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="24" cy="24" r="18" fill="url(#mwLoginMoon)"/>
+          <circle cx="30" cy="20" r="14" fill="#171a21"/>
+          <circle cx="18" cy="18" r="2.2" fill="#a8ecff" opacity="0.9"/>
+          <defs>
+            <linearGradient id="mwLoginMoon" x1="8" y1="8" x2="40" y2="40">
+              <stop stop-color="#5ed0ff"/>
+              <stop offset="1" stop-color="#0077aa"/>
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+      <h1>MOONWOLF CLOUD</h1>
 
       <p>
         Introduce el código de emparejamiento que muestra MoonWolf Agent
