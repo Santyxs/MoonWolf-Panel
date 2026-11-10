@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
-slint = { version = "1.13", default-features = false, features = ["std", "backend-winit", "renderer-software"], optional = true }
+slint = { version = "1.18", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-18"], optional = true }
 tray-icon = { version = "0.26", optional = true }
 muda = { version = "0.21", optional = true }
 image = { version = "0.25", default-features = false, features = ["ico", "png"], optional = true }
@@ -42,7 +42,7 @@ anyhow = "1"
 
 [build-dependencies]
 winres = "0.1"
-slint-build = "1.13"
+slint-build = "1.18"
 
 [profile.release]
 opt-level = 3
