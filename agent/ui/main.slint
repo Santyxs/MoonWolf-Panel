@@ -6,7 +6,7 @@ export component MainWindow inherits Window {
     preferred-width: 440px;
     min-height: 640px;
     preferred-height: 720px;
-    background: #0a0e16;
+    background: #060b12;
 
     callback open-panel();
     callback open-config();
@@ -41,49 +41,55 @@ export component MainWindow inherits Window {
     in-out property <string> serverdir-input: "";
 
     Rectangle {
-        width: 100%; height: 100%;
-        background: #0a0e16;
+        width: 100%;
+        height: 100%;
+        background: #060b12;
     }
 
     VerticalBox {
-        padding: 20px;
+        padding: 18px;
         spacing: 12px;
 
-        // ── HEADER / LOGO ──────────────────────────────
+        // Header
         HorizontalBox {
             alignment: center;
             spacing: 14px;
 
-            // Logo: media luna dibujada con rectángulos
             Rectangle {
-                width: 52px; height: 52px;
+                width: 54px;
+                height: 54px;
                 border-radius: 16px;
-                background: #121c2a;
+                background: linear-gradient(135deg, #111d2d, #0c1724);
                 border-width: 1px;
-                border-color: #1e3a52;
+                border-color: #214867;
 
                 Rectangle {
-                    x: 2px; y: 2px; width: 48px; height: 48px;
+                    x: 2px; y: 2px;
+                    width: 50px; height: 50px;
                     border-radius: 14px;
-                    background: #0e1824;
+                    background: #09141d;
                 }
-                // Disco de luna
+
                 Rectangle {
-                    x: 10px; y: 10px; width: 28px; height: 28px;
+                    x: 10px; y: 10px;
+                    width: 28px; height: 28px;
                     border-radius: 14px;
-                    background: #3ec8ff;
+                    background: #3ed2ff;
+                    box-shadow: 0 0 18px rgba(62, 210, 255, 0.8);
                 }
-                // Sombra → media luna
+
                 Rectangle {
-                    x: 18px; y: 8px; width: 24px; height: 24px;
+                    x: 18px; y: 8px;
+                    width: 24px; height: 24px;
                     border-radius: 12px;
-                    background: #0e1824;
+                    background: #09141d;
                 }
-                // Brillo
+
                 Rectangle {
-                    x: 14px; y: 14px; width: 5px; height: 5px;
+                    x: 15px; y: 14px;
+                    width: 5px; height: 5px;
                     border-radius: 3px;
-                    background: #a8ecff;
+                    background: #dff9ff;
                 }
             }
 
@@ -92,48 +98,49 @@ export component MainWindow inherits Window {
                 spacing: 2px;
                 Text {
                     text: "MoonWolf";
-                    color: #f0f4fa;
-                    font-size: 22px;
+                    color: #eef7ff;
+                    font-size: 23px;
                     font-weight: 700;
                 }
                 Text {
                     text: "AGENT";
-                    color: #5a9fc4;
+                    color: #66c7ff;
                     font-size: 11px;
                     letter-spacing: 3px;
-                    font-weight: 600;
+                    font-weight: 700;
                 }
             }
 
             Rectangle { horizontal-stretch: 1; }
 
             Rectangle {
-                border-radius: 8px;
-                background: #121c2a;
+                border-radius: 10px;
+                background: #101d2d;
                 border-width: 1px;
-                border-color: #1e3a52;
+                border-color: #223c52;
                 HorizontalBox {
-                    padding-left: 10px;
-                    padding-right: 10px;
-                    padding-top: 6px;
-                    padding-bottom: 6px;
+                    padding-left: 9px;
+                    padding-right: 9px;
+                    padding-top: 5px;
+                    padding-bottom: 5px;
                     Text {
                         text: "v" + root.version;
-                        color: #7a90a8;
+                        color: #89a5bb;
                         font-size: 11px;
-                        vertical-alignment: center;
+                        font-weight: 600;
                     }
                 }
             }
         }
 
-        // ── ESTADO CLOUD ───────────────────────────────
+        // Estado cloud
         Rectangle {
-            height: 70px;
-            border-radius: 14px;
-            background: #111925;
+            height: 82px;
+            border-radius: 16px;
+            background: #0e1722;
             border-width: 1px;
-            border-color: root.cloud-connected ? #1a6b5c : #2a3a4e;
+            border-color: root.cloud-connected ? #1d7d67 : #2d3f54;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
 
             HorizontalBox {
                 padding: 14px;
@@ -143,34 +150,35 @@ export component MainWindow inherits Window {
                 Rectangle {
                     width: 12px; height: 12px;
                     border-radius: 6px;
-                    background: root.cloud-connected ? #3dd6a5 : #e4ae55;
+                    background: root.cloud-connected ? #38d7a8 : #f6c76b;
+                    box-shadow: root.cloud-connected ? 0 0 12px rgba(56, 215, 168, 0.8) : 0 0 12px rgba(246, 199, 107, 0.6);
                 }
 
                 VerticalBox {
                     alignment: center;
-                    spacing: 3px;
+                    spacing: 4px;
                     Text {
                         text: root.status-title;
-                        color: #f0f4fa;
+                        color: #f3f8ff;
                         font-size: 15px;
                         font-weight: 700;
                     }
                     Text {
                         text: root.status-description;
-                        color: #8fa0b5;
+                        color: #8ea7ba;
                         font-size: 11px;
                     }
                 }
+
                 Rectangle { horizontal-stretch: 1; }
             }
         }
 
-        // ── EMPAREJAMIENTO + SERVIDOR ──────────────────
         Rectangle {
-            border-radius: 14px;
-            background: #111925;
+            border-radius: 16px;
+            background: #0e1722;
             border-width: 1px;
-            border-color: #1c2a3c;
+            border-color: #223548;
 
             VerticalBox {
                 padding: 16px;
@@ -178,10 +186,10 @@ export component MainWindow inherits Window {
 
                 Text {
                     text: "EMPAREJAMIENTO";
-                    color: #6b8299;
+                    color: #6a8299;
                     font-size: 10px;
                     letter-spacing: 1.2px;
-                    font-weight: 600;
+                    font-weight: 700;
                 }
 
                 HorizontalBox {
@@ -189,9 +197,9 @@ export component MainWindow inherits Window {
                     alignment: center;
                     Text {
                         text: root.pairing-code;
-                        color: #5ed0ff;
-                        font-size: 22px;
-                        font-weight: 700;
+                        color: #69d5ff;
+                        font-size: 23px;
+                        font-weight: 800;
                         vertical-alignment: center;
                     }
                     Rectangle { horizontal-stretch: 1; }
@@ -202,14 +210,14 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                Rectangle { height: 1px; background: #1c2a3c; }
+                Rectangle { height: 1px; background: #1f2d3b; }
 
                 Text {
                     text: "CARPETA DEL SERVIDOR";
-                    color: #6b8299;
+                    color: #6a8299;
                     font-size: 10px;
                     letter-spacing: 1.2px;
-                    font-weight: 600;
+                    font-weight: 700;
                 }
 
                 HorizontalBox {
@@ -217,7 +225,7 @@ export component MainWindow inherits Window {
                     alignment: center;
                     Text {
                         text: root.server-dir;
-                        color: #d0dbe8;
+                        color: #d9e9f7;
                         font-size: 12px;
                         overflow: elide;
                         horizontal-stretch: 1;
@@ -242,9 +250,9 @@ export component MainWindow inherits Window {
                     Rectangle { horizontal-stretch: 1; }
                     Rectangle {
                         border-radius: 8px;
-                        background: root.local-ready ? #0d2a22 : #2a2418;
+                        background: root.local-ready ? #0d2b29 : #2d2b18;
                         border-width: 1px;
-                        border-color: root.local-ready ? #1a6b5c : #5a4a20;
+                        border-color: root.local-ready ? #1d7d67 : #705a22;
                         HorizontalBox {
                             padding-left: 10px;
                             padding-right: 10px;
@@ -252,9 +260,9 @@ export component MainWindow inherits Window {
                             padding-bottom: 4px;
                             Text {
                                 text: root.local-ready ? "● Listo" : "● Iniciando";
-                                color: root.local-ready ? #3dd6a5 : #e4ae55;
+                                color: root.local-ready ? #56e1b5 : #f6c76b;
                                 font-size: 11px;
-                                font-weight: 600;
+                                font-weight: 700;
                                 vertical-alignment: center;
                             }
                         }
@@ -263,18 +271,18 @@ export component MainWindow inherits Window {
             }
         }
 
-        // ── UPDATE BANNER ──────────────────────────────
+        // Avisos
         if root.update-visible : Rectangle {
-            border-radius: 12px;
-            background: #152030;
+            border-radius: 14px;
+            background: #132235;
             border-width: 1px;
-            border-color: #2a4a6a;
+            border-color: #2d5676;
             VerticalBox {
                 padding: 12px;
                 spacing: 8px;
                 Text {
                     text: root.update-text;
-                    color: #d8e6f5;
+                    color: #dfeefc;
                     font-size: 12px;
                 }
                 Button {
@@ -285,21 +293,20 @@ export component MainWindow inherits Window {
             }
         }
 
-        // ── RESTART BANNER ─────────────────────────────
         if root.restart-visible : Rectangle {
-            border-radius: 12px;
-            background: #2a2218;
+            border-radius: 14px;
+            background: #2b2216;
             border-width: 1px;
-            border-color: #5a4a20;
+            border-color: #6a4d1a;
             HorizontalBox {
                 padding: 12px;
                 spacing: 10px;
                 alignment: center;
                 Text {
                     text: "Reinicio pendiente";
-                    color: #f2d39a;
+                    color: #f4d79b;
                     font-size: 13px;
-                    font-weight: 600;
+                    font-weight: 700;
                     vertical-alignment: center;
                 }
                 Rectangle { horizontal-stretch: 1; }
@@ -310,15 +317,16 @@ export component MainWindow inherits Window {
             }
         }
 
-        // ── BOTONES PRINCIPALES ────────────────────────
         HorizontalBox {
             spacing: 8px;
+
             Button {
                 text: "Abrir Panel";
                 primary: true;
                 horizontal-stretch: 1;
                 clicked => { root.open-panel(); }
             }
+
             Button {
                 text: root.settings-visible ? "● Config" : "Configuración";
                 horizontal-stretch: 1;
@@ -328,6 +336,7 @@ export component MainWindow inherits Window {
                     root.settings-visible = !root.settings-visible;
                 }
             }
+
             Button {
                 text: root.logs-visible ? "● Logs" : "Logs";
                 horizontal-stretch: 1;
@@ -339,13 +348,13 @@ export component MainWindow inherits Window {
             }
         }
 
-        // ── PANEL CONFIGURACIÓN ────────────────────────
+        // Panel config
         if root.settings-visible : Rectangle {
-            border-radius: 14px;
-            background: #111925;
+            border-radius: 16px;
+            background: #0d1722;
             border-width: 1px;
-            border-color: #1e3a52;
-            min-height: 160px;
+            border-color: #254968;
+            min-height: 170px;
 
             VerticalBox {
                 padding: 14px;
@@ -353,28 +362,28 @@ export component MainWindow inherits Window {
 
                 Text {
                     text: "CONFIGURACIÓN";
-                    color: #5ed0ff;
+                    color: #68d4ff;
                     font-size: 11px;
                     letter-spacing: 1.5px;
-                    font-weight: 700;
+                    font-weight: 800;
                 }
 
                 Rectangle {
-                    border-radius: 10px;
-                    background: #0c121c;
+                    border-radius: 12px;
+                    background: #0a1118;
                     border-width: 1px;
-                    border-color: #1c2a3c;
+                    border-color: #1c2f40;
                     VerticalBox {
                         padding: 10px;
                         spacing: 6px;
                         Text {
                             text: "Carpeta de config";
-                            color: #6b8299;
+                            color: #6c8297;
                             font-size: 10px;
                         }
                         Text {
                             text: root.config-dir;
-                            color: #c5d2e0;
+                            color: #d4e3f5;
                             font-size: 11px;
                             overflow: elide;
                         }
@@ -382,21 +391,21 @@ export component MainWindow inherits Window {
                 }
 
                 Rectangle {
-                    border-radius: 10px;
-                    background: #0c121c;
+                    border-radius: 12px;
+                    background: #0a1118;
                     border-width: 1px;
-                    border-color: #1c2a3c;
+                    border-color: #1c2f40;
                     VerticalBox {
                         padding: 10px;
                         spacing: 6px;
                         Text {
                             text: "Agent ID";
-                            color: #6b8299;
+                            color: #6c8297;
                             font-size: 10px;
                         }
                         Text {
                             text: root.agent-id;
-                            color: #c5d2e0;
+                            color: #d4e3f5;
                             font-size: 11px;
                             overflow: elide;
                         }
@@ -405,11 +414,13 @@ export component MainWindow inherits Window {
 
                 HorizontalBox {
                     spacing: 8px;
+
                     Button {
                         text: "Abrir carpeta";
                         horizontal-stretch: 1;
                         clicked => { root.open-config(); }
                     }
+
                     Button {
                         text: "Cambiar servidor";
                         horizontal-stretch: 1;
@@ -419,11 +430,13 @@ export component MainWindow inherits Window {
 
                 HorizontalBox {
                     spacing: 8px;
+
                     Button {
                         text: "Buscar update";
                         horizontal-stretch: 1;
                         clicked => { root.check-update(); }
                     }
+
                     Button {
                         text: "Minimizar a bandeja";
                         horizontal-stretch: 1;
@@ -433,12 +446,12 @@ export component MainWindow inherits Window {
             }
         }
 
-        // ── CAMBIAR CARPETA SERVIDOR ───────────────────
+        // Cambiar carpeta del servidor
         if root.serverdir-visible : Rectangle {
-            border-radius: 14px;
-            background: #111925;
+            border-radius: 16px;
+            background: #0d1722;
             border-width: 1px;
-            border-color: #1e3a52;
+            border-color: #2a4c66;
 
             VerticalBox {
                 padding: 14px;
@@ -446,21 +459,25 @@ export component MainWindow inherits Window {
 
                 Text {
                     text: "Nueva carpeta del servidor";
-                    color: #eaf2ff;
+                    color: #edf6ff;
                     font-size: 13px;
-                    font-weight: 600;
+                    font-weight: 700;
                 }
+
                 LineEdit {
                     text <=> root.serverdir-input;
                     placeholder-text: "Ruta completa de la carpeta...";
                 }
+
                 HorizontalBox {
                     spacing: 8px;
+
                     Button {
                         text: "Cancelar";
                         horizontal-stretch: 1;
                         clicked => { root.serverdir-visible = false; }
                     }
+
                     Button {
                         text: "Guardar";
                         primary: true;
@@ -474,12 +491,12 @@ export component MainWindow inherits Window {
             }
         }
 
-        // ── PANEL LOGS ─────────────────────────────────
+        // Logs
         if root.logs-visible : Rectangle {
-            border-radius: 14px;
-            background: #0d131c;
+            border-radius: 16px;
+            background: #0b1219;
             border-width: 1px;
-            border-color: #1e3a52;
+            border-color: #224d67;
             vertical-stretch: 1;
             min-height: 220px;
 
@@ -490,19 +507,23 @@ export component MainWindow inherits Window {
                 HorizontalBox {
                     spacing: 8px;
                     alignment: center;
+
                     Text {
                         text: "REGISTRO";
-                        color: #5ed0ff;
+                        color: #68d4ff;
                         font-size: 11px;
                         letter-spacing: 1.5px;
-                        font-weight: 700;
+                        font-weight: 800;
                         vertical-alignment: center;
                     }
+
                     Rectangle { horizontal-stretch: 1; }
+
                     Button {
                         text: "Limpiar";
                         clicked => { root.clear-logs(); }
                     }
+
                     Button {
                         text: "Guardar";
                         clicked => { root.save-logs(); }
@@ -510,10 +531,10 @@ export component MainWindow inherits Window {
                 }
 
                 Rectangle {
-                    border-radius: 10px;
-                    background: #080c12;
+                    border-radius: 12px;
+                    background: #060b10;
                     border-width: 1px;
-                    border-color: #1a2535;
+                    border-color: #1c2f40;
                     vertical-stretch: 1;
                     min-height: 160px;
 
@@ -524,7 +545,7 @@ export component MainWindow inherits Window {
                             padding: 10px;
                             Text {
                                 text: root.logs-text == "" ? "Sin registros todavía.\nLos eventos del agent aparecerán aquí." : root.logs-text;
-                                color: root.logs-text == "" ? #53647c : #b0c0d0;
+                                color: root.logs-text == "" ? #53687a : #c0d7ea;
                                 font-size: 11px;
                                 wrap: word-wrap;
                             }
@@ -534,7 +555,6 @@ export component MainWindow inherits Window {
             }
         }
 
-        // Espaciador solo cuando no hay logs abiertos
         if !root.logs-visible : Rectangle {
             vertical-stretch: 1;
             min-height: 8px;
@@ -542,7 +562,7 @@ export component MainWindow inherits Window {
 
         Text {
             text: "MoonWolf Agent · Windows";
-            color: #3d4f63;
+            color: #3f526d;
             font-size: 10px;
             horizontal-alignment: center;
         }
