@@ -3794,7 +3794,7 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
         "CREATE DATABASE `{}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
         name.replace('`', "``")
     );
-    if let Err(e) = sqlx::query(&create_db).execute(pool).await {
+    if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(create_db)).execute(pool).await {
         return json_fail(&format!("No se pudo crear: {e}"));
     }
 
@@ -3809,21 +3809,21 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
             username.replace('\'', "''"),
             password.replace('\'', "''")
         );
-        let _ = sqlx::query(&q_user).execute(pool).await;
+        let _ = sqlx::query(sqlx::AssertSqlSafe(q_user)).execute(pool).await;
 
         let q_alter = format!(
             "ALTER USER '{}'@'%' IDENTIFIED BY '{}'",
             username.replace('\'', "''"),
             password.replace('\'', "''")
         );
-        let _ = sqlx::query(&q_alter).execute(pool).await;
+        let _ = sqlx::query(sqlx::AssertSqlSafe(q_alter)).execute(pool).await;
 
         let q_grant = format!(
             "GRANT ALL PRIVILEGES ON `{}`.* TO '{}'@'%'",
             name.replace('`', "``"),
             username.replace('\'', "''")
         );
-        let _ = sqlx::query(&q_grant).execute(pool).await;
+        let _ = sqlx::query(sqlx::AssertSqlSafe(q_grant)).execute(pool).await;
 
         let host =
             std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
@@ -3869,7 +3869,7 @@ async fn db_reset(AxumPath(name): AxumPath<String>) -> Response {
         username.replace('\'', "''"),
         password.replace('\'', "''")
     );
-    let _ = sqlx::query(&q_alter).execute(pool).await;
+    let _ = sqlx::query(sqlx::AssertSqlSafe(q_alter)).execute(pool).await;
 
     let host = std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
     let port = std::env::var("MOONWOLF_MYSQL_PORT").unwrap_or_else(|_| "3306".into());
@@ -3896,7 +3896,7 @@ async fn db_delete(AxumPath(name): AxumPath<String>) -> Response {
     };
 
     let q_drop = format!("DROP DATABASE `{}`", name.replace('`', "``"));
-    if let Err(e) = sqlx::query(&q_drop).execute(pool).await {
+    if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(q_drop)).execute(pool).await {
         return json_fail(&format!("No se pudo eliminar: {e}"));
     }
 
@@ -3905,7 +3905,7 @@ async fn db_delete(AxumPath(name): AxumPath<String>) -> Response {
         "DROP USER IF EXISTS '{}'@'%'",
         username.replace('\'', "''")
     );
-    let _ = sqlx::query(&q_drop_user).execute(pool).await;
+    let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop_user)).execute(pool).await;
 
     json_ok(json!({}))
 }
