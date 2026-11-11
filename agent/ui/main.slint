@@ -736,23 +736,25 @@ export component MainWindow inherits Window {
                 }
                 Rectangle {
                     vertical-stretch: 1;
+                    min-height: 180px;
                     border-radius: 12px;
                     background: #0a0c18;
                     border-width: 1px;
                     border-color: #252a42;
-                    ScrollView {
-                        height: 100%;
-                        VerticalBox {
-                            padding: 12px;
-                            alignment: start;
-                            Text {
-                                text: root.logs-text == "" ? "Todavía no hay registros.\nLos eventos del Agent aparecerán aquí." : root.logs-text;
-                                color: root.logs-text == "" ? #5a5f7a : #c8cce0;
-                                font-size: 11px;
-                                wrap: word-wrap;
-                                horizontal-alignment: left;
-                            }
-                        }
+                    clip: true;
+
+                    Text {
+                        x: 12px;
+                        y: 12px;
+                        width: root.width - 68px;
+                        height: parent.height - 24px;
+                        text: root.logs-text == "" ? "Todavía no hay registros.\nLos eventos del Agent aparecerán aquí." : root.logs-text;
+                        color: root.logs-text == "" ? #5a5f7a : #c8cce0;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                        overflow: elide;
+                        horizontal-alignment: left;
+                        vertical-alignment: top;
                     }
                 }
             }
