@@ -78,8 +78,9 @@ component FieldRow inherits Rectangle {
         VerticalBox {
             spacing: 3px;
             horizontal-stretch: 1;
-            alignment: start;
+            alignment: stretch;
             Text {
+                horizontal-stretch: 1;
                 text: root.caption;
                 color: #7d84a8;
                 font-size: 8px;
@@ -88,6 +89,7 @@ component FieldRow inherits Rectangle {
                 horizontal-alignment: left;
             }
             Text {
+                horizontal-stretch: 1;
                 text: root.value;
                 color: #f0effa;
                 font-size: 12px;
@@ -409,7 +411,7 @@ export component MainWindow inherits Window {
                         Text {
                             text: "⚙";
                             color: #ffffff;
-                            font-size: 16px;
+                            font-size: 13px;
                             font-weight: 700;
                             vertical-alignment: center;
                         }
