@@ -219,7 +219,11 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
 
     let weak_for_hide = ui.as_weak();
     ui.on_hide_tray(move || {
-        if let Some(ui) = weak_for_hide.upgrade() { let _ = ui.window().hide(); }
+        if let Some(ui) = weak_for_hide.upgrade() {
+            let window = ui.window();
+            // Minimizar a la barra de tareas (segundo plano), sin cerrar el Agent
+            window.set_minimized(true);
+        }
     });
 
     let app_for_quit = Arc::clone(&app);
