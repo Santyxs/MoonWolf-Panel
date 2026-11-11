@@ -365,7 +365,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
 3. ESTADO
 ══════════════════════════════════════════════ */
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogEntry {
     /// Epoch millis UTC
@@ -376,7 +376,7 @@ pub struct LogEntry {
     pub seq: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateInfo {
     pub version: String,
@@ -384,7 +384,7 @@ pub struct UpdateInfo {
     pub size: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiSnapshot {
     pub version: String,

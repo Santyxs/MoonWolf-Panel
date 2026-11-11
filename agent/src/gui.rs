@@ -1,6 +1,11 @@
 //! Interfaz nativa de MoonWolf Agent implementada con Slint (Windows).
 
-use std::{path::PathBuf, process::Command, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    process::Command,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use slint::{ComponentHandle, Timer, TimerMode};
 use tokio::sync::RwLock;
@@ -243,11 +248,28 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     let timer = Timer::default();
     let weak_for_timer = weak.clone();
     let app_for_timer = Arc::clone(&app);
+    let last_snapshot = Arc::new(Mutex::new(None));
     timer.start(TimerMode::Repeated, Duration::from_millis(450), move || {
         let weak = weak_for_timer.clone();
         let app = Arc::clone(&app_for_timer);
+        let last_snapshot = Arc::clone(&last_snapshot);
         spawn_async(app, move |app| async move {
             let snapshot = app.read().await.snapshot();
+            let changed = match last_snapshot.lock() {
+                Ok(mut last) => {
+                    if last.as_ref() == Some(&snapshot) {
+                        false
+                    } else {
+                        *last = Some(snapshot.clone());
+                        true
+                    }
+                }
+                // Si el mutex se envenena, no bloqueamos las actualizaciones de la UI.
+                Err(_) => true,
+            };
+            if !changed {
+                return;
+            }
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = weak.upgrade() {
                     ui.set_status_title(if snapshot.cloud_connected { "Conectado".into() } else { "Desconectado".into() });
