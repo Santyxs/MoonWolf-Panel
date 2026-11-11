@@ -469,9 +469,9 @@ export component MainWindow inherits Window {
 
         if root.settings-visible : Rectangle {
             x: 14px;
-            y: (root.height - 248px) / 2;
+            y: (root.height - (root.update-visible ? 320px : 248px)) / 2;
             width: root.width - 28px;
-            height: 248px;
+            height: root.update-visible ? 320px : 248px;
             border-radius: 16px;
             background: #14172c;
             border-width: 1px;
@@ -537,6 +537,38 @@ export component MainWindow inherits Window {
                     label: "Buscar actualizaciones";
                     clicked => { root.check-update(); }
                 }
+
+                if root.update-visible : Rectangle {
+                    height: 56px;
+                    border-radius: 12px;
+                    background: #1c1838;
+                    border-width: 1px;
+                    border-color: #4a3f8a;
+                    HorizontalBox {
+                        padding-left: 12px;
+                        padding-right: 10px;
+                        spacing: 8px;
+                        alignment: center;
+                        Text {
+                            text: root.update-text;
+                            color: #e4e0ff;
+                            font-size: 11px;
+                            font-weight: 600;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                            horizontal-alignment: left;
+                            overflow: elide;
+                        }
+                        ActionButton {
+                            width: 76px;
+                            height: 32px;
+                            label: "Instalar";
+                            primary: true;
+                            clicked => { root.apply-update(); }
+                        }
+                    }
+                }
+
                 ActionButton {
                     height: 36px;
                     label: "Minimizar";
