@@ -3,11 +3,10 @@
 use std::{
     path::PathBuf,
     process::Command,
-    sync::{Arc, Mutex},
-    time::Duration,
+    sync::Arc,
 };
 
-use slint::{ComponentHandle, Timer, TimerMode};
+use slint::ComponentHandle;
 use tokio::sync::RwLock;
 use tracing::info;
 
@@ -245,56 +244,50 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         let _ = slint::quit_event_loop();
     });
 
-    let timer = Timer::default();
-    let weak_for_timer = weak.clone();
-    let app_for_timer = Arc::clone(&app);
-    let last_snapshot = Arc::new(Mutex::new(None));
-    timer.start(TimerMode::Repeated, Duration::from_millis(450), move || {
-        let weak = weak_for_timer.clone();
-        let app = Arc::clone(&app_for_timer);
-        let last_snapshot = Arc::clone(&last_snapshot);
-        spawn_async(app, move |app| async move {
-            let snapshot = app.read().await.snapshot();
-            let changed = match last_snapshot.lock() {
-                Ok(mut last) => {
-                    if last.as_ref() == Some(&snapshot) {
-                        false
-                    } else {
-                        *last = Some(snapshot.clone());
-                        true
+    let refresh_task = tokio::spawn({
+        let app = Arc::clone(&app);
+        let weak = weak.clone();
+        async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_millis(450));
+            let mut last_revision = None;
+            loop {
+                ticker.tick().await;
+                let (revision, snapshot) = {
+                    let state = app.read().await;
+                    if last_revision == Some(state.gui_revision) {
+                        continue;
                     }
-                }
-                // Si el mutex se envenena, no bloqueamos las actualizaciones de la UI.
-                Err(_) => true,
-            };
-            if !changed {
-                return;
+                    (state.gui_revision, state.snapshot())
+                };
+                last_revision = Some(revision);
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_status_title(if snapshot.cloud_connected { "Conectado".into() } else { "Desconectado".into() });
+                        ui.set_status_description(if snapshot.cloud_connected { "Conexión con MoonWolf Cloud activa".into() } else { "Esperando conexión con MoonWolf Cloud".into() });
+                        ui.set_cloud_connected(snapshot.cloud_connected);
+                        ui.set_local_ready(snapshot.local_server_ready);
+                        ui.set_pairing_code(if snapshot.pairing_code.is_empty() { "—".into() } else { snapshot.pairing_code.into() });
+                        ui.set_server_dir(snapshot.server_dir.into());
+                        ui.set_version(snapshot.version.into());
+                        ui.set_agent_id(snapshot.agent_id.into());
+                        ui.set_config_dir(snapshot.config_path.into());
+                        ui.set_restart_visible(snapshot.restart_required);
+                        ui.set_update_visible(snapshot.update_available.is_some());
+                        let update = snapshot.update_available.map(|u| format!("Actualización disponible: v{}", u.version)).unwrap_or_else(|| snapshot.update_error.unwrap_or_default());
+                        ui.set_update_text(update.into());
+                        let logs = snapshot.logs.iter().map(|l| format!("[{}] {}", l.level.to_uppercase(), l.message)).collect::<Vec<_>>().join("\n");
+                        ui.set_logs_text(logs.into());
+                    }
+                });
             }
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = weak.upgrade() {
-                    ui.set_status_title(if snapshot.cloud_connected { "Conectado".into() } else { "Desconectado".into() });
-                    ui.set_status_description(if snapshot.cloud_connected { "Conexión con MoonWolf Cloud activa".into() } else { "Esperando conexión con MoonWolf Cloud".into() });
-                    ui.set_cloud_connected(snapshot.cloud_connected);
-                    ui.set_local_ready(snapshot.local_server_ready);
-                    ui.set_pairing_code(if snapshot.pairing_code.is_empty() { "—".into() } else { snapshot.pairing_code.into() });
-                    ui.set_server_dir(snapshot.server_dir.into());
-                    ui.set_version(snapshot.version.into());
-                    ui.set_agent_id(snapshot.agent_id.into());
-                    ui.set_config_dir(snapshot.config_path.into());
-                    ui.set_restart_visible(snapshot.restart_required);
-                    ui.set_update_visible(snapshot.update_available.is_some());
-                    let update = snapshot.update_available.map(|u| format!("Actualización disponible: v{}", u.version)).unwrap_or_else(|| snapshot.update_error.unwrap_or_default());
-                    ui.set_update_text(update.into());
-                    let logs = snapshot.logs.iter().map(|l| format!("[{}] {}", l.level.to_uppercase(), l.message)).collect::<Vec<_>>().join("\n");
-                    ui.set_logs_text(logs.into());
-                }
-            });
-        });
+        }
     });
 
     info!("Iniciando interfaz nativa Slint");
-    ui.run()?;
-    timer.stop();
+    let ui_result = ui.run();
+    refresh_task.abort();
+    let _ = refresh_task.await;
+    ui_result?;
     {
         let mut state = app.write().await;
         state.shutting_down = true;

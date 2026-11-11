@@ -365,7 +365,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
 3. ESTADO
 ══════════════════════════════════════════════ */
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogEntry {
     /// Epoch millis UTC
@@ -376,7 +376,7 @@ pub struct LogEntry {
     pub seq: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateInfo {
     pub version: String,
@@ -384,7 +384,7 @@ pub struct UpdateInfo {
     pub size: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiSnapshot {
     pub version: String,
@@ -414,6 +414,7 @@ pub struct AppState {
     pub log_seq: u64,
     pub console_logs: VecDeque<LogEntry>,
     pub console_seq: u64,
+    pub gui_revision: u64,
     pub mc_running: bool,
     pub update_available: Option<UpdateInfo>,
     pub update_status: String,
@@ -436,6 +437,7 @@ impl AppState {
             log_seq: 0,
             console_logs: VecDeque::with_capacity(MAX_LOGS),
             console_seq: 0,
+            gui_revision: 0,
             mc_running: false,
             update_available: None,
             update_status: "idle".into(),
@@ -448,6 +450,7 @@ impl AppState {
     }
 
     pub fn add_log(&mut self, level: &str, message: impl Into<String>) {
+        self.gui_revision = self.gui_revision.wrapping_add(1);
         self.log_seq = self.log_seq.saturating_add(1);
         let entry = LogEntry {
             time: now_ms(),
