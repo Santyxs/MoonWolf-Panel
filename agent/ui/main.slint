@@ -80,6 +80,7 @@ component FieldRow inherits Rectangle {
                 font-size: 8px;
                 font-weight: 800;
                 letter-spacing: 1.0px;
+                horizontal-alignment: left;
             }
             Text {
                 text: root.value;
@@ -87,6 +88,7 @@ component FieldRow inherits Rectangle {
                 font-size: 12px;
                 font-weight: 600;
                 overflow: elide;
+                horizontal-alignment: left;
             }
         }
         if root.action-label != "" : ActionButton {
@@ -237,18 +239,20 @@ export component MainWindow inherits Window {
                     VerticalBox {
                         spacing: 3px;
                         horizontal-stretch: 1;
-                        alignment: center;
+                        alignment: start;
                         Text {
                             text: root.cloud-connected ? "Conectado" : root.status-title;
                             color: #fbfaff;
                             font-size: 13px;
                             font-weight: 800;
+                            horizontal-alignment: left;
                         }
                         Text {
                             text: root.cloud-connected ? "Conexión activa con MoonWolf Cloud" : root.status-description;
                             color: #9a9db8;
                             font-size: 10px;
                             overflow: elide;
+                            horizontal-alignment: left;
                         }
                     }
                 }
@@ -260,6 +264,7 @@ export component MainWindow inherits Window {
                 font-size: 9px;
                 font-weight: 800;
                 letter-spacing: 1.6px;
+                horizontal-alignment: left;
             }
 
             Rectangle {
@@ -310,18 +315,21 @@ export component MainWindow inherits Window {
                             VerticalBox {
                                 spacing: 3px;
                                 horizontal-stretch: 1;
+                                alignment: start;
                                 Text {
                                     text: "VERSIÓN";
                                     color: #7d84a8;
                                     font-size: 8px;
                                     font-weight: 800;
                                     letter-spacing: 1.0px;
+                                    horizontal-alignment: left;
                                 }
                                 Text {
                                     text: "v" + root.version;
                                     color: #f0effa;
                                     font-size: 12px;
                                     font-weight: 600;
+                                    horizontal-alignment: left;
                                 }
                             }
                             Rectangle { width: 1px; height: 28px; background: #2a2f4a; }
@@ -337,13 +345,20 @@ export component MainWindow inherits Window {
                             }
                             VerticalBox {
                                 spacing: 2px;
-                                alignment: center;
-                                Text { text: "SERVIDOR LOCAL"; color: #9a9db8; font-size: 8px; font-weight: 600; }
+                                alignment: start;
+                                Text {
+                                    text: "SERVIDOR LOCAL";
+                                    color: #9a9db8;
+                                    font-size: 8px;
+                                    font-weight: 600;
+                                    horizontal-alignment: left;
+                                }
                                 Text {
                                     text: root.local-ready ? "En funcionamiento" : "Iniciando...";
                                     color: root.local-ready ? #5eebc4 : #f0c878;
                                     font-size: 10px;
                                     font-weight: 700;
+                                    horizontal-alignment: left;
                                 }
                             }
                         }
@@ -397,6 +412,7 @@ export component MainWindow inherits Window {
                         font-weight: 600;
                         horizontal-stretch: 1;
                         vertical-alignment: center;
+                        horizontal-alignment: left;
                     }
                     ActionButton {
                         width: 80px;
@@ -424,6 +440,7 @@ export component MainWindow inherits Window {
                         font-weight: 600;
                         horizontal-stretch: 1;
                         vertical-alignment: center;
+                        horizontal-alignment: left;
                     }
                     ActionButton {
                         width: 96px;
@@ -469,26 +486,30 @@ export component MainWindow inherits Window {
 
                 HorizontalBox {
                     spacing: 8px;
-                    alignment: center;
+                    alignment: start;
                     Text {
                         text: "Configuración";
                         color: #faf8ff;
-                        font-size: 18px;
+                        font-size: 17px;
                         font-weight: 800;
                         horizontal-stretch: 1;
+                        vertical-alignment: center;
                     }
                     Rectangle {
-                        width: 32px;
-                        height: 32px;
-                        border-radius: 10px;
+                        y: 0px;
+                        width: 28px;
+                        height: 28px;
+                        border-radius: 8px;
                         background: #1c2036;
                         border-width: 1px;
                         border-color: #343a58;
                         Text {
+                            width: 100%;
+                            height: 100%;
                             text: "×";
                             color: #c0c4d8;
-                            font-size: 16px;
-                            font-weight: 700;
+                            font-size: 18px;
+                            font-weight: 600;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -502,6 +523,7 @@ export component MainWindow inherits Window {
                     text: "Gestiona las opciones de MoonWolf Agent.";
                     color: #9a9db8;
                     font-size: 11px;
+                    horizontal-alignment: left;
                 }
                 Rectangle { height: 1px; background: #2a2f4a; }
 
@@ -541,26 +563,30 @@ export component MainWindow inherits Window {
 
                 HorizontalBox {
                     spacing: 8px;
-                    alignment: center;
+                    alignment: start;
                     Text {
                         text: "Registros del Agent";
                         color: #faf8ff;
-                        font-size: 17px;
+                        font-size: 16px;
                         font-weight: 800;
                         horizontal-stretch: 1;
+                        vertical-alignment: center;
                     }
                     Rectangle {
-                        width: 32px;
-                        height: 32px;
-                        border-radius: 10px;
+                        y: 0px;
+                        width: 28px;
+                        height: 28px;
+                        border-radius: 8px;
                         background: #1c2036;
                         border-width: 1px;
                         border-color: #343a58;
                         Text {
+                            width: 100%;
+                            height: 100%;
                             text: "×";
                             color: #c0c4d8;
-                            font-size: 16px;
-                            font-weight: 700;
+                            font-size: 18px;
+                            font-weight: 600;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -601,6 +627,7 @@ export component MainWindow inherits Window {
                                 color: root.logs-text == "" ? #5a5f7a : #c8cce0;
                                 font-size: 11px;
                                 wrap: word-wrap;
+                                horizontal-alignment: left;
                             }
                         }
                     }
@@ -626,13 +653,15 @@ export component MainWindow inherits Window {
                 Text {
                     text: "Carpeta del servidor";
                     color: #faf8ff;
-                    font-size: 18px;
+                    font-size: 17px;
                     font-weight: 800;
+                    horizontal-alignment: left;
                 }
                 Text {
                     text: "Indica la ruta de la carpeta local del servidor.";
                     color: #9a9db8;
                     font-size: 11px;
+                    horizontal-alignment: left;
                 }
                 LineEdit {
                     text <=> root.serverdir-input;
