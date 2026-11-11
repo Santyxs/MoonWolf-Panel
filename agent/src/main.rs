@@ -722,36 +722,43 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
 
     let pid = std::process::id();
     let exe_str = current_exe.to_string_lossy().replace('"', "");
+    let old_str = old.to_string_lossy().replace('"', "");
 
     let dir = AgentConfig::config_dir().join("updates");
     tokio::fs::create_dir_all(&dir).await?;
     let bat_path = dir.join("restart-after-update.bat");
+    // Sin espacios al inicio de cada línea: si no, `goto` no encuentra la etiqueta
+    // y aparece "No se ha encontrado el archivo por lotes".
     let bat = format!(
-        "@echo off\r\n\
-         setlocal\r\n\
-         set PID={pid}\r\n\
-         set EXE={exe}\r\n\
-         :wait\r\n\
-         tasklist /FI \"PID eq %PID%\" 2>NUL | findstr /I \"%PID%\" >NUL\r\n\
-         if not errorlevel 1 (\r\n\
-           timeout /t 1 /nobreak >NUL\r\n\
-           goto wait\r\n\
-         )\r\n\
-         timeout /t 1 /nobreak >NUL\r\n\
-         start \"\" \"%EXE%\"\r\n\
-         if exist \"%EXE%.old\" del /f /q \"%EXE%.old\" >NUL 2>&1\r\n\
-         del \"%~f0\" >NUL 2>&1\r\n\
-         endlocal\r\n",
+        "@echo off
+setlocal EnableExtensions
+set "PID={pid}"
+set "EXE={exe}"
+set "OLD={old}"
+:wait
+tasklist /FI "PID eq %PID%" 2>NUL | findstr /I /C:"%PID%" >NUL
+if not errorlevel 1 (
+  ping -n 2 127.0.0.1 >NUL
+  goto wait
+)
+ping -n 2 127.0.0.1 >NUL
+if exist "%EXE%" start "" "%EXE%"
+if exist "%OLD%" del /f /q "%OLD%" >NUL 2>&1
+del "%~f0" >NUL 2>&1
+endlocal
+",
         pid = pid,
         exe = exe_str,
+        old = old_str,
     );
     tokio::fs::write(&bat_path, bat).await?;
 
-    // Lanzar el .bat desacoplado del proceso padre
+    // Un solo argumento tras /C evita que `start` confunda el path del .bat
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     let bat_str = bat_path.to_string_lossy().replace('"', "");
+    let cmdline = format!("start "" /MIN "{bat}"", bat = bat_str);
     let status = std::process::Command::new("cmd.exe")
-        .args(["/C", "start", "", "/MIN", &bat_str])
+        .args(["/C", &cmdline])
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
 
