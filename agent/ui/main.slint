@@ -1,25 +1,58 @@
 import { LineEdit, VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
 
+// ─── Palette ────────────────────────────────────────────────────────────────
+// Deep space background with refined purple accents matching MoonWolf brand
+
 component ActionButton inherits Rectangle {
     in property <string> label;
     in property <bool> primary: false;
+    in property <bool> danger: false;
     callback clicked();
 
-    height: 40px;
-    border-radius: 10px;
-    background: root.primary ? #7563e8 : #20243a;
+    height: 42px;
+    border-radius: 12px;
+    background: root.primary ? #7c6cff
+             : root.danger  ? #3a2528
+             : #1c2036;
     border-width: 1px;
-    border-color: root.primary ? #9588ff : #363b58;
+    border-color: root.primary ? #a99bff
+                 : root.danger  ? #7a3a42
+                 : #343a58;
+
+    animate background { duration: 120ms; easing: ease-out; }
+    animate border-color { duration: 120ms; easing: ease-out; }
 
     Text {
         text: root.label;
         color: #ffffff;
-        font-size: 11px;
+        font-size: 12px;
         font-weight: 700;
         horizontal-alignment: center;
         vertical-alignment: center;
     }
-    TouchArea { clicked => { root.clicked(); } }
+
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+        mouse-cursor: pointer;
+    }
+
+    states [
+        hover when ta.has-hover && !root.primary && !root.danger: {
+            background: #262b45;
+            border-color: #4a5178;
+        }
+        hover-primary when ta.has-hover && root.primary: {
+            background: #8f80ff;
+            border-color: #b8aeff;
+        }
+        hover-danger when ta.has-hover && root.danger: {
+            background: #4a2e32;
+            border-color: #9a4a55;
+        }
+        pressed when ta.pressed: {
+            background: root.primary ? #6a5ad8 : #161a2c;
+        }
+    ]
 }
 
 component FieldRow inherits Rectangle {
@@ -28,35 +61,35 @@ component FieldRow inherits Rectangle {
     in property <string> action-label;
     callback action-clicked();
 
-    height: 64px;
-    background: #14172a;
+    height: 68px;
+    background: transparent;
 
     HorizontalBox {
-        padding-left: 15px;
-        padding-right: 12px;
-        spacing: 10px;
+        padding-left: 16px;
+        padding-right: 14px;
+        spacing: 12px;
         alignment: center;
 
         VerticalBox {
-            spacing: 5px;
+            spacing: 6px;
             horizontal-stretch: 1;
             Text {
                 text: root.caption;
-                color: #858ba7;
+                color: #7d84a8;
                 font-size: 9px;
                 font-weight: 800;
-                letter-spacing: 1.1px;
+                letter-spacing: 1.2px;
             }
             Text {
                 text: root.value;
-                color: #f2f1fb;
-                font-size: 12px;
+                color: #f0effa;
+                font-size: 13px;
                 font-weight: 600;
                 overflow: elide;
             }
         }
         if root.action-label != "" : ActionButton {
-            width: 76px;
+            width: 78px;
             height: 32px;
             label: root.action-label;
             clicked => { root.action-clicked(); }
@@ -66,13 +99,13 @@ component FieldRow inherits Rectangle {
 
 export component MainWindow inherits Window {
     title: "MoonWolf Agent";
-    min-width: 410px;
+    min-width: 420px;
     preferred-width: 480px;
-    max-width: 540px;
-    min-height: 620px;
-    preferred-height: 700px;
-    max-height: 800px;
-    background: #0b0d18;
+    max-width: 560px;
+    min-height: 640px;
+    preferred-height: 720px;
+    max-height: 860px;
+    background: #080a14;
 
     callback open-panel();
     callback open-config();
@@ -109,92 +142,121 @@ export component MainWindow inherits Window {
     Rectangle {
         width: 100%;
         height: 100%;
-        background: #0b0d18;
+        background: #080a14;
+
+        // Subtle top glow
+        Rectangle {
+            width: 100%;
+            height: 180px;
+            background: @linear-gradient(180deg, #12152a 0%, #080a14 100%);
+        }
 
         VerticalBox {
-            padding-left: 30px;
-            padding-right: 30px;
-            padding-top: 22px;
-            padding-bottom: 14px;
-            spacing: 13px;
+            padding-left: 28px;
+            padding-right: 28px;
+            padding-top: 24px;
+            padding-bottom: 16px;
+            spacing: 14px;
 
+            // ── Header ──────────────────────────────────────────────────────
             HorizontalBox {
-                height: 76px;
-                spacing: 15px;
+                height: 72px;
+                spacing: 14px;
                 alignment: center;
 
+                // Logo – refined crescent
                 Rectangle {
-                    width: 60px;
-                    height: 60px;
-                    border-radius: 17px;
+                    width: 56px;
+                    height: 56px;
+                    border-radius: 16px;
                     background: #6d5be5;
-                    border-width: 1px;
-                    border-color: #9587ff;
+                    border-width: 1.5px;
+                    border-color: #9b8dff;
 
+                    // Outer white disc
                     Rectangle {
-                        x: 15px; y: 15px;
+                        x: 12px; y: 12px;
                         width: 32px; height: 32px;
                         border-radius: 16px;
                         background: #ffffff;
                     }
+                    // Overlapping purple disc (creates crescent)
                     Rectangle {
-                        x: 26px; y: 9px;
-                        width: 32px; height: 32px;
-                        border-radius: 16px;
+                        x: 22px; y: 8px;
+                        width: 30px; height: 30px;
+                        border-radius: 15px;
                         background: #6d5be5;
                     }
+                    // Small star accent
                     Rectangle {
-                        x: 13px; y: 12px;
-                        width: 5px; height: 5px;
-                        border-radius: 3px;
-                        background: #dcd6ff;
+                        x: 14px; y: 14px;
+                        width: 4px; height: 4px;
+                        border-radius: 2px;
+                        background: #e8e2ff;
                     }
                 }
 
                 VerticalBox {
-                    spacing: 2px;
+                    spacing: 3px;
                     alignment: center;
                     Text {
                         text: "MoonWolf";
                         color: #fbfaff;
-                        font-size: 25px;
+                        font-size: 24px;
                         font-weight: 800;
                     }
                     Text {
                         text: "AGENT  /  WINDOWS";
-                        color: #9691b9;
+                        color: #8a85b0;
                         font-size: 9px;
                         font-weight: 700;
-                        letter-spacing: 2px;
+                        letter-spacing: 2.2px;
                     }
                 }
                 Rectangle { horizontal-stretch: 1; }
-                Text {
-                    text: "v" + root.version;
-                    color: #777b99;
-                    font-size: 10px;
-                    vertical-alignment: center;
+                Rectangle {
+                    height: 26px;
+                    border-radius: 8px;
+                    background: #14172a;
+                    border-width: 1px;
+                    border-color: #2a2f4a;
+                    HorizontalBox {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        alignment: center;
+                        Text {
+                            text: "v" + root.version;
+                            color: #7a7f9e;
+                            font-size: 11px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
                 }
             }
 
+            // ── Status card ─────────────────────────────────────────────────
             Rectangle {
-                height: 82px;
-                border-radius: 16px;
-                background: #15182b;
+                height: 86px;
+                border-radius: 18px;
+                background: #12152a;
                 border-width: 1px;
-                border-color: #2b3050;
+                border-color: root.cloud-connected ? #2a4a45 : #2a2f4a;
 
                 HorizontalBox {
-                    padding-left: 18px;
+                    padding-left: 20px;
                     padding-right: 18px;
-                    spacing: 13px;
+                    spacing: 14px;
                     alignment: center;
 
+                    // Status dot with soft glow
                     Rectangle {
-                        width: 12px;
-                        height: 12px;
-                        border-radius: 6px;
-                        background: root.cloud-connected ? #53e6b5 : #f0bd65;
+                        width: 14px;
+                        height: 14px;
+                        border-radius: 7px;
+                        background: root.cloud-connected ? #3dd9a8 : #e8b84a;
+                        border-width: 3px;
+                        border-color: root.cloud-connected ? #1a3d35 : #3d3220;
                     }
                     VerticalBox {
                         spacing: 5px;
@@ -202,26 +264,27 @@ export component MainWindow inherits Window {
                         Text {
                             text: root.cloud-connected ? "Conectado" : root.status-title;
                             color: #fbfaff;
-                            font-size: 16px;
+                            font-size: 17px;
                             font-weight: 800;
                         }
                         Text {
                             text: root.cloud-connected ? "Conexión activa con MoonWolf Cloud" : root.status-description;
-                            color: #a4a7c0;
-                            font-size: 10px;
+                            color: #9a9db8;
+                            font-size: 11px;
                             overflow: elide;
                         }
                     }
                     Rectangle {
-                        width: 66px;
-                        height: 25px;
-                        border-radius: 8px;
-                        background: root.cloud-connected ? #173d38 : #40351f;
+                        width: 72px;
+                        height: 28px;
+                        border-radius: 9px;
+                        background: root.cloud-connected ? #153d36 : #3a301c;
                         Text {
                             text: root.cloud-connected ? "ONLINE" : "WAITING";
-                            color: root.cloud-connected ? #69e8c0 : #f1ca7c;
-                            font-size: 8px;
+                            color: root.cloud-connected ? #5eebc4 : #f0c878;
+                            font-size: 9px;
                             font-weight: 800;
+                            letter-spacing: 0.5px;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -229,22 +292,24 @@ export component MainWindow inherits Window {
                 }
             }
 
+            // ── Section label ───────────────────────────────────────────────
             Text {
                 text: "INFORMACIÓN DEL AGENT";
-                color: #858ba7;
+                color: #6e7598;
                 font-size: 9px;
                 font-weight: 800;
-                letter-spacing: 1.5px;
+                letter-spacing: 1.6px;
             }
 
+            // ── Info card ───────────────────────────────────────────────────
             Rectangle {
-                border-radius: 15px;
-                background: #14172a;
+                border-radius: 16px;
+                background: #10131f;
                 border-width: 1px;
-                border-color: #292e4a;
+                border-color: #252a42;
 
                 VerticalBox {
-                    padding: 5px;
+                    padding: 4px;
                     spacing: 0px;
                     FieldRow {
                         caption: "CÓDIGO DE EMPAREJAMIENTO";
@@ -252,7 +317,7 @@ export component MainWindow inherits Window {
                         action-label: "Copiar";
                         action-clicked => { root.copy-pairing(); }
                     }
-                    Rectangle { height: 1px; background: #292e46; }
+                    Rectangle { height: 1px; background: #1e2238; margin-left: 16px; margin-right: 16px; }
                     FieldRow {
                         caption: "CARPETA DEL SERVIDOR";
                         value: root.server-dir;
@@ -263,46 +328,46 @@ export component MainWindow inherits Window {
                             root.serverdir-visible = !root.serverdir-visible;
                         }
                     }
-                    Rectangle { height: 1px; background: #292e46; }
+                    Rectangle { height: 1px; background: #1e2238; margin-left: 16px; margin-right: 16px; }
                     Rectangle {
-                        height: 64px;
-                        background: #14172a;
+                        height: 68px;
+                        background: transparent;
                         HorizontalBox {
-                            padding-left: 15px;
-                            padding-right: 15px;
-                            spacing: 8px;
+                            padding-left: 16px;
+                            padding-right: 16px;
+                            spacing: 10px;
                             alignment: center;
                             VerticalBox {
                                 spacing: 5px;
                                 horizontal-stretch: 1;
                                 Text {
                                     text: "VERSIÓN INSTALADA";
-                                    color: #858ba7;
+                                    color: #7d84a8;
                                     font-size: 9px;
                                     font-weight: 800;
-                                    letter-spacing: 1px;
+                                    letter-spacing: 1.1px;
                                 }
                                 Text {
                                     text: "v" + root.version;
-                                    color: #f2f1fb;
-                                    font-size: 12px;
+                                    color: #f0effa;
+                                    font-size: 13px;
                                     font-weight: 600;
                                 }
                             }
-                            Rectangle { width: 1px; height: 32px; background: #303550; }
+                            Rectangle { width: 1px; height: 34px; background: #2a2f4a; }
                             Rectangle {
-                                width: 9px;
-                                height: 9px;
+                                width: 10px;
+                                height: 10px;
                                 border-radius: 5px;
-                                background: root.local-ready ? #53e6b5 : #f0bd65;
+                                background: root.local-ready ? #3dd9a8 : #e8b84a;
                             }
                             VerticalBox {
                                 spacing: 3px;
-                                Text { text: "SERVIDOR LOCAL"; color: #a4a7c0; font-size: 9px; }
+                                Text { text: "SERVIDOR LOCAL"; color: #9a9db8; font-size: 9px; font-weight: 600; }
                                 Text {
                                     text: root.local-ready ? "En funcionamiento" : "Iniciando...";
-                                    color: root.local-ready ? #69e8c0 : #f1ca7c;
-                                    font-size: 10px;
+                                    color: root.local-ready ? #5eebc4 : #f0c878;
+                                    font-size: 11px;
                                     font-weight: 700;
                                 }
                             }
@@ -311,15 +376,17 @@ export component MainWindow inherits Window {
                 }
             }
 
+            // ── Primary CTA ─────────────────────────────────────────────────
             ActionButton {
-                height: 48px;
+                height: 50px;
                 label: "Abrir MoonWolf Panel  →";
                 primary: true;
                 clicked => { root.open-panel(); }
             }
 
+            // ── Secondary actions ───────────────────────────────────────────
             HorizontalBox {
-                height: 42px;
+                height: 44px;
                 spacing: 10px;
                 ActionButton {
                     horizontal-stretch: 1;
@@ -341,24 +408,27 @@ export component MainWindow inherits Window {
                 }
             }
 
+            // ── Update banner ───────────────────────────────────────────────
             if root.update-visible : Rectangle {
-                height: 54px;
-                border-radius: 12px;
-                background: #242044;
+                height: 56px;
+                border-radius: 14px;
+                background: #1c1838;
                 border-width: 1px;
-                border-color: #554b91;
+                border-color: #4a3f8a;
                 HorizontalBox {
-                    padding: 10px;
-                    spacing: 8px;
+                    padding: 12px;
+                    spacing: 10px;
                     Text {
                         text: root.update-text;
-                        color: #e8e4ff;
-                        font-size: 10px;
+                        color: #e4e0ff;
+                        font-size: 11px;
+                        font-weight: 600;
                         horizontal-stretch: 1;
                         vertical-alignment: center;
                     }
                     ActionButton {
-                        width: 76px;
+                        width: 80px;
+                        height: 34px;
                         label: "Instalar";
                         primary: true;
                         clicked => { root.apply-update(); }
@@ -366,24 +436,27 @@ export component MainWindow inherits Window {
                 }
             }
 
+            // ── Restart banner ──────────────────────────────────────────────
             if root.restart-visible : Rectangle {
-                height: 50px;
-                border-radius: 12px;
-                background: #332b27;
+                height: 52px;
+                border-radius: 14px;
+                background: #2a2218;
                 border-width: 1px;
-                border-color: #74532b;
+                border-color: #6a4a28;
                 HorizontalBox {
-                    padding: 10px;
-                    spacing: 8px;
+                    padding: 12px;
+                    spacing: 10px;
                     Text {
                         text: "Hay un reinicio pendiente";
-                        color: #f4d79b;
-                        font-size: 10px;
+                        color: #f0d49a;
+                        font-size: 11px;
+                        font-weight: 600;
                         horizontal-stretch: 1;
                         vertical-alignment: center;
                     }
                     ActionButton {
-                        width: 90px;
+                        width: 96px;
+                        height: 34px;
                         label: "Reiniciar";
                         clicked => { root.restart-agent(); }
                     }
@@ -391,67 +464,110 @@ export component MainWindow inherits Window {
             }
 
             Rectangle { vertical-stretch: 1; }
+
             Text {
                 text: "MOONWOLF AGENT   •   WINDOWS";
-                color: #555a77;
+                color: #4a4f6a;
                 font-size: 8px;
                 font-weight: 700;
-                letter-spacing: 1.3px;
+                letter-spacing: 1.4px;
                 horizontal-alignment: center;
             }
         }
 
+        // ── Backdrop when modal open ────────────────────────────────────────
+        if root.settings-visible || root.logs-visible || root.serverdir-visible : Rectangle {
+            width: 100%;
+            height: 100%;
+            background: #00000088;
+            TouchArea {
+                clicked => {
+                    root.settings-visible = false;
+                    root.logs-visible = false;
+                    root.serverdir-visible = false;
+                }
+            }
+        }
+
+        // ── Settings modal ──────────────────────────────────────────────────
         if root.settings-visible : Rectangle {
-            x: 24px;
-            y: (root.height - 250px) / 2;
-            width: root.width - 48px;
-            height: 250px;
-            border-radius: 16px;
-            background: #191c32;
+            x: 22px;
+            y: (root.height - 280px) / 2;
+            width: root.width - 44px;
+            height: 280px;
+            border-radius: 18px;
+            background: #14172c;
             border-width: 1px;
-            border-color: #6256b4;
-            drop-shadow-blur: 24px;
-            drop-shadow-color: #05050ddd;
+            border-color: #6a5ad8;
+            drop-shadow-blur: 32px;
+            drop-shadow-color: #000000cc;
 
             VerticalBox {
-                padding: 17px;
+                padding: 20px;
                 spacing: 12px;
+
                 HorizontalBox {
                     spacing: 8px;
+                    alignment: center;
                     Text {
                         text: "Configuración";
                         color: #faf8ff;
-                        font-size: 17px;
+                        font-size: 18px;
                         font-weight: 800;
                         horizontal-stretch: 1;
                     }
-                    ActionButton {
-                        width: 34px;
-                        label: "×";
-                        clicked => { root.settings-visible = false; }
+                    Rectangle {
+                        width: 32px;
+                        height: 32px;
+                        border-radius: 10px;
+                        background: #1c2036;
+                        border-width: 1px;
+                        border-color: #343a58;
+                        Text {
+                            text: "×";
+                            color: #c0c4d8;
+                            font-size: 16px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.settings-visible = false; }
+                        }
                     }
                 }
-                Text { text: "Gestiona las opciones de MoonWolf Agent."; color: #a4a7c0; font-size: 10px; }
-                Rectangle { height: 1px; background: #343957; }
+                Text {
+                    text: "Gestiona las opciones de MoonWolf Agent.";
+                    color: #9a9db8;
+                    font-size: 11px;
+                }
+                Rectangle { height: 1px; background: #2a2f4a; }
+
                 ActionButton {
-                    height: 38px;
+                    height: 40px;
                     label: "Abrir carpeta de configuración";
                     clicked => { root.open-config(); }
                 }
                 ActionButton {
-                    height: 38px;
+                    height: 40px;
                     label: "Buscar actualizaciones";
                     clicked => { root.check-update(); }
                 }
                 HorizontalBox {
-                    spacing: 8px;
+                    spacing: 10px;
                     ActionButton {
                         horizontal-stretch: 1;
+                        height: 40px;
                         label: "Cambiar servidor";
-                        clicked => { root.serverdir-visible = true; }
+                        clicked => {
+                            root.settings-visible = false;
+                            root.serverdir-visible = true;
+                        }
                     }
                     ActionButton {
                         horizontal-stretch: 1;
+                        height: 40px;
                         label: "Minimizar";
                         clicked => { root.hide-tray(); }
                     }
@@ -459,64 +575,84 @@ export component MainWindow inherits Window {
             }
         }
 
+        // ── Logs modal ──────────────────────────────────────────────────────
         if root.logs-visible : Rectangle {
-            x: 24px;
-            y: (root.height - 390px) / 2;
-            width: root.width - 48px;
-            height: 390px;
-            border-radius: 16px;
-            background: #191c32;
+            x: 22px;
+            y: (root.height - 420px) / 2;
+            width: root.width - 44px;
+            height: 420px;
+            border-radius: 18px;
+            background: #14172c;
             border-width: 1px;
-            border-color: #6256b4;
-            drop-shadow-blur: 24px;
-            drop-shadow-color: #05050ddd;
+            border-color: #6a5ad8;
+            drop-shadow-blur: 32px;
+            drop-shadow-color: #000000cc;
 
             VerticalBox {
-                padding: 16px;
-                spacing: 10px;
+                padding: 18px;
+                spacing: 12px;
+
                 HorizontalBox {
                     spacing: 8px;
+                    alignment: center;
                     Text {
                         text: "Registros del Agent";
                         color: #faf8ff;
-                        font-size: 16px;
+                        font-size: 17px;
                         font-weight: 800;
                         horizontal-stretch: 1;
                     }
-                    ActionButton {
-                        width: 34px;
-                        label: "×";
-                        clicked => { root.logs-visible = false; }
+                    Rectangle {
+                        width: 32px;
+                        height: 32px;
+                        border-radius: 10px;
+                        background: #1c2036;
+                        border-width: 1px;
+                        border-color: #343a58;
+                        Text {
+                            text: "×";
+                            color: #c0c4d8;
+                            font-size: 16px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.logs-visible = false; }
+                        }
                     }
                 }
                 HorizontalBox {
-                    spacing: 8px;
+                    spacing: 10px;
                     ActionButton {
                         horizontal-stretch: 1;
+                        height: 36px;
                         label: "Limpiar";
                         clicked => { root.clear-logs(); }
                     }
                     ActionButton {
                         horizontal-stretch: 1;
+                        height: 36px;
                         label: "Guardar archivo";
                         clicked => { root.save-logs(); }
                     }
                 }
                 Rectangle {
                     vertical-stretch: 1;
-                    border-radius: 10px;
-                    background: #0d1020;
+                    border-radius: 12px;
+                    background: #0a0c18;
                     border-width: 1px;
-                    border-color: #303550;
+                    border-color: #252a42;
                     ScrollView {
                         width: 100%;
                         height: 100%;
                         VerticalBox {
-                            padding: 10px;
+                            padding: 12px;
                             Text {
                                 text: root.logs-text == "" ? "Todavía no hay registros.\nLos eventos del Agent aparecerán aquí." : root.logs-text;
-                                color: root.logs-text == "" ? #777c98 : #d2d5e8;
-                                font-size: 10px;
+                                color: root.logs-text == "" ? #5a5f7a : #c8cce0;
+                                font-size: 11px;
                                 wrap: word-wrap;
                             }
                         }
@@ -525,37 +661,50 @@ export component MainWindow inherits Window {
             }
         }
 
+        // ── Server dir modal ────────────────────────────────────────────────
         if root.serverdir-visible : Rectangle {
-            x: (root.width - 390px) / 2;
-            y: (root.height - 230px) / 2;
-            width: 390px;
-            height: 230px;
-            border-radius: 16px;
-            background: #191c32;
+            x: (root.width - 400px) / 2;
+            y: (root.height - 240px) / 2;
+            width: 400px;
+            height: 240px;
+            border-radius: 18px;
+            background: #14172c;
             border-width: 1px;
-            border-color: #6256b4;
-            drop-shadow-blur: 24px;
-            drop-shadow-color: #05050ddd;
+            border-color: #6a5ad8;
+            drop-shadow-blur: 32px;
+            drop-shadow-color: #000000cc;
 
             VerticalBox {
-                padding: 17px;
-                spacing: 12px;
-                Text { text: "Carpeta del servidor"; color: #faf8ff; font-size: 17px; font-weight: 800; }
-                Text { text: "Indica la ruta de la carpeta local."; color: #a4a7c0; font-size: 10px; }
+                padding: 20px;
+                spacing: 14px;
+                Text {
+                    text: "Carpeta del servidor";
+                    color: #faf8ff;
+                    font-size: 18px;
+                    font-weight: 800;
+                }
+                Text {
+                    text: "Indica la ruta de la carpeta local del servidor.";
+                    color: #9a9db8;
+                    font-size: 11px;
+                }
                 LineEdit {
                     text <=> root.serverdir-input;
                     placeholder-text: "Ruta completa de la carpeta...";
+                    height: 42px;
                 }
                 Rectangle { vertical-stretch: 1; }
                 HorizontalBox {
-                    spacing: 8px;
+                    spacing: 10px;
                     ActionButton {
                         horizontal-stretch: 1;
+                        height: 42px;
                         label: "Cancelar";
                         clicked => { root.serverdir-visible = false; }
                     }
                     ActionButton {
                         horizontal-stretch: 1;
+                        height: 42px;
                         label: "Guardar";
                         primary: true;
                         clicked => {
