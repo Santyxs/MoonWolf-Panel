@@ -192,7 +192,7 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
                     });
                     // Forzar salida si tareas en segundo plano mantienen el proceso vivo
                     std::thread::spawn(|| {
-                        std::thread::sleep(std::time::Duration::from_millis(800));
+                        std::thread::sleep(std::time::Duration::from_millis(1500));
                         std::process::exit(0);
                     });
                 }
