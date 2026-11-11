@@ -61,7 +61,7 @@ component FieldRow inherits Rectangle {
     in property <string> action-label;
     callback action-clicked();
 
-    height: 68px;
+    height: 58px;
     background: transparent;
 
     HorizontalBox {
@@ -99,12 +99,12 @@ component FieldRow inherits Rectangle {
 
 export component MainWindow inherits Window {
     title: "MoonWolf Agent";
-    min-width: 360px;
-    preferred-width: 380px;
-    max-width: 420px;
-    min-height: 520px;
-    preferred-height: 560px;
-    max-height: 640px;
+    min-width: 320px;
+    preferred-width: 340px;
+    max-width: 380px;
+    min-height: 460px;
+    preferred-height: 500px;
+    max-height: 560px;
     background: #0c0e1a;
 
     callback open-panel();
@@ -152,44 +152,44 @@ export component MainWindow inherits Window {
         }
 
         VerticalBox {
-            padding-left: 20px;
-            padding-right: 20px;
-            padding-top: 18px;
-            padding-bottom: 14px;
-            spacing: 12px;
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 14px;
+            padding-bottom: 12px;
+            spacing: 10px;
 
             // ── Header ──────────────────────────────────────────────────────
             HorizontalBox {
-                height: 56px;
-                spacing: 12px;
+                height: 48px;
+                spacing: 10px;
                 alignment: center;
 
                 // Logo – refined crescent
                 Rectangle {
-                    width: 44px;
-                    height: 44px;
-                    border-radius: 13px;
+                    width: 40px;
+                    height: 40px;
+                    border-radius: 12px;
                     background: #6d5be5;
                     border-width: 1.5px;
                     border-color: #9b8dff;
 
                     // Outer white disc
                     Rectangle {
-                        x: 9px; y: 9px;
-                        width: 26px; height: 26px;
-                        border-radius: 13px;
+                        x: 8px; y: 8px;
+                        width: 24px; height: 24px;
+                        border-radius: 12px;
                         background: #ffffff;
                     }
                     // Overlapping purple disc (creates crescent)
                     Rectangle {
-                        x: 17px; y: 6px;
-                        width: 24px; height: 24px;
-                        border-radius: 12px;
+                        x: 15px; y: 5px;
+                        width: 22px; height: 22px;
+                        border-radius: 11px;
                         background: #6d5be5;
                     }
                     // Small star accent
                     Rectangle {
-                        x: 11px; y: 11px;
+                        x: 10px; y: 10px;
                         width: 3px; height: 3px;
                         border-radius: 2px;
                         background: #e8e2ff;
@@ -202,13 +202,13 @@ export component MainWindow inherits Window {
                     Text {
                         text: "MoonWolf";
                         color: #fbfaff;
-                        font-size: 20px;
+                        font-size: 18px;
                         font-weight: 800;
                     }
                     Text {
                         text: "AGENT";
                         color: #8a85b0;
-                        font-size: 9px;
+                        font-size: 8px;
                         font-weight: 700;
                         letter-spacing: 2.2px;
                     }
@@ -218,8 +218,8 @@ export component MainWindow inherits Window {
 
             // ── Status card ─────────────────────────────────────────────────
             Rectangle {
-                height: 72px;
-                border-radius: 14px;
+                height: 64px;
+                border-radius: 12px;
                 background: #12152a;
                 border-width: 1px;
                 border-color: root.cloud-connected ? #2a4a45 : #2a2f4a;
@@ -245,13 +245,13 @@ export component MainWindow inherits Window {
                         Text {
                             text: root.cloud-connected ? "Conectado" : root.status-title;
                             color: #fbfaff;
-                            font-size: 15px;
+                            font-size: 14px;
                             font-weight: 800;
                         }
                         Text {
                             text: root.cloud-connected ? "Conexión activa con MoonWolf Cloud" : root.status-description;
                             color: #9a9db8;
-                            font-size: 11px;
+                            font-size: 10px;
                             overflow: elide;
                         }
                     }
@@ -304,7 +304,7 @@ export component MainWindow inherits Window {
                         Rectangle { height: 1px; background: #1e2238; horizontal-stretch: 1; }
                     }
                     Rectangle {
-                        height: 68px;
+                        height: 58px;
                         background: transparent;
                         HorizontalBox {
                             padding-left: 16px;
@@ -315,7 +315,7 @@ export component MainWindow inherits Window {
                                 spacing: 5px;
                                 horizontal-stretch: 1;
                                 Text {
-                                    text: "VERSIÓN INSTALADA";
+                                    text: "VERSIÓN";
                                     color: #7d84a8;
                                     font-size: 9px;
                                     font-weight: 800;
@@ -352,7 +352,7 @@ export component MainWindow inherits Window {
 
             // ── Primary CTA ─────────────────────────────────────────────────
             ActionButton {
-                height: 50px;
+                height: 44px;
                 label: "Abrir MoonWolf Panel  →";
                 primary: true;
                 clicked => { root.open-panel(); }
@@ -360,8 +360,8 @@ export component MainWindow inherits Window {
 
             // ── Secondary actions ───────────────────────────────────────────
             HorizontalBox {
-                height: 44px;
-                spacing: 10px;
+                height: 40px;
+                spacing: 8px;
                 ActionButton {
                     horizontal-stretch: 1;
                     label: "⚙   Configuración";
@@ -373,7 +373,7 @@ export component MainWindow inherits Window {
                 }
                 ActionButton {
                     horizontal-stretch: 1;
-                    label: "▤   Logs";
+                    label: "☰   Logs";
                     clicked => {
                         root.settings-visible = false;
                         root.serverdir-visible = false;
@@ -456,10 +456,10 @@ export component MainWindow inherits Window {
 
         // ── Settings modal ──────────────────────────────────────────────────
         if root.settings-visible : Rectangle {
-            x: 16px;
-            y: (root.height - 260px) / 2;
-            width: root.width - 32px;
-            height: 260px;
+            x: 14px;
+            y: (root.height - 230px) / 2;
+            width: root.width - 28px;
+            height: 230px;
             border-radius: 18px;
             background: #14172c;
             border-width: 1px;
@@ -519,33 +519,20 @@ export component MainWindow inherits Window {
                     label: "Buscar actualizaciones";
                     clicked => { root.check-update(); }
                 }
-                HorizontalBox {
-                    spacing: 10px;
-                    ActionButton {
-                        horizontal-stretch: 1;
-                        height: 40px;
-                        label: "Cambiar servidor";
-                        clicked => {
-                            root.settings-visible = false;
-                            root.serverdir-visible = true;
-                        }
-                    }
-                    ActionButton {
-                        horizontal-stretch: 1;
-                        height: 40px;
-                        label: "Minimizar";
-                        clicked => { root.hide-tray(); }
-                    }
+                ActionButton {
+                    height: 40px;
+                    label: "Minimizar";
+                    clicked => { root.hide-tray(); }
                 }
             }
         }
 
         // ── Logs modal ──────────────────────────────────────────────────────
         if root.logs-visible : Rectangle {
-            x: 16px;
-            y: (root.height - 380px) / 2;
-            width: root.width - 32px;
-            height: 380px;
+            x: 14px;
+            y: (root.height - 340px) / 2;
+            width: root.width - 28px;
+            height: 340px;
             border-radius: 18px;
             background: #14172c;
             border-width: 1px;
@@ -628,10 +615,10 @@ export component MainWindow inherits Window {
 
         // ── Server dir modal ────────────────────────────────────────────────
         if root.serverdir-visible : Rectangle {
-            x: 16px;
-            y: (root.height - 220px) / 2;
-            width: root.width - 32px;
-            height: 220px;
+            x: 14px;
+            y: (root.height - 200px) / 2;
+            width: root.width - 28px;
+            height: 200px;
             border-radius: 18px;
             background: #14172c;
             border-width: 1px;
