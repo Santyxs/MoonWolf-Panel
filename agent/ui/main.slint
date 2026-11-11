@@ -1,1 +1,665 @@
-PLACEHOLDER
+import { LineEdit, VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
+
+// ─── Palette ────────────────────────────────────────────────────────────────
+// Deep space background with refined purple accents matching MoonWolf brand
+
+component ActionButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    in property <bool> danger: false;
+    callback clicked();
+
+    height: 38px;
+    border-radius: 10px;
+    background: root.primary ? #7c6cff
+             : root.danger  ? #3a2528
+             : #1c2036;
+    border-width: 1px;
+    border-color: root.primary ? #a99bff
+                 : root.danger  ? #7a3a42
+                 : #343a58;
+
+    animate background { duration: 120ms; easing: ease-out; }
+    animate border-color { duration: 120ms; easing: ease-out; }
+
+    Text {
+        text: root.label;
+        color: #ffffff;
+        font-size: 12px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+        mouse-cursor: pointer;
+    }
+
+    states [
+        hover when ta.has-hover && !root.primary && !root.danger: {
+            background: #262b45;
+            border-color: #4a5178;
+        }
+        hover-primary when ta.has-hover && root.primary: {
+            background: #8f80ff;
+            border-color: #b8aeff;
+        }
+        hover-danger when ta.has-hover && root.danger: {
+            background: #4a2e32;
+            border-color: #9a4a55;
+        }
+        pressed when ta.pressed: {
+            background: root.primary ? #6a5ad8 : #161a2c;
+        }
+    ]
+}
+
+component FieldRow inherits Rectangle {
+    in property <string> caption;
+    in property <string> value;
+    in property <string> action-label;
+    callback action-clicked();
+
+    height: 54px;
+    background: transparent;
+    clip: true;
+
+    HorizontalBox {
+        padding-left: 12px;
+        padding-right: 10px;
+        spacing: 8px;
+        alignment: center;
+
+        VerticalBox {
+            spacing: 4px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.caption;
+                color: #7d84a8;
+                font-size: 8px;
+                font-weight: 800;
+                letter-spacing: 1.0px;
+            }
+            Text {
+                text: root.value;
+                color: #f0effa;
+                font-size: 12px;
+                font-weight: 600;
+                overflow: elide;
+            }
+        }
+        if root.action-label != "" : ActionButton {
+            width: 64px;
+            height: 28px;
+            label: root.action-label;
+            clicked => { root.action-clicked(); }
+        }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "MoonWolf Agent";
+    min-width: 320px;
+    preferred-width: 340px;
+    max-width: 380px;
+    min-height: 460px;
+    preferred-height: 500px;
+    max-height: 560px;
+    background: #0c0e1a;
+
+    callback open-panel();
+    callback open-config();
+    callback open-server();
+    callback change-server(string);
+    callback copy-pairing();
+    callback clear-logs();
+    callback save-logs();
+    callback check-update();
+    callback apply-update();
+    callback restart-agent();
+    callback hide-tray();
+    callback quit-agent();
+
+    in-out property <string> status-title: "Conectando...";
+    in-out property <string> status-description: "Conectando con MoonWolf Cloud";
+    in-out property <string> pairing-code: "—";
+    in-out property <string> server-dir: "—";
+    in-out property <string> version: "—";
+    in-out property <string> local-status: "Servidor local";
+    in-out property <string> agent-id: "—";
+    in-out property <string> config-dir: "—";
+    in-out property <string> update-text: "";
+    in-out property <string> logs-text: "";
+    in-out property <bool> cloud-connected: false;
+    in-out property <bool> local-ready: false;
+    in-out property <bool> update-visible: false;
+    in-out property <bool> restart-visible: false;
+    in-out property <bool> logs-visible: false;
+    in-out property <bool> settings-visible: false;
+    in-out property <bool> serverdir-visible: false;
+    in-out property <string> serverdir-input: "";
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #0c0e1a;
+
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: @linear-gradient(160deg, #151830 0%, #0c0e1a 45%, #0a0c16 100%);
+        }
+
+        VerticalBox {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 14px;
+            padding-bottom: 12px;
+            spacing: 10px;
+
+            HorizontalBox {
+                height: 48px;
+                spacing: 10px;
+                alignment: center;
+
+                Rectangle {
+                    width: 40px;
+                    height: 40px;
+                    border-radius: 12px;
+                    background: #6d5be5;
+                    border-width: 1.5px;
+                    border-color: #9b8dff;
+
+                    Rectangle {
+                        x: 8px; y: 8px;
+                        width: 24px; height: 24px;
+                        border-radius: 12px;
+                        background: #ffffff;
+                    }
+                    Rectangle {
+                        x: 15px; y: 5px;
+                        width: 22px; height: 22px;
+                        border-radius: 11px;
+                        background: #6d5be5;
+                    }
+                    Rectangle {
+                        x: 10px; y: 10px;
+                        width: 3px; height: 3px;
+                        border-radius: 2px;
+                        background: #e8e2ff;
+                    }
+                }
+
+                VerticalBox {
+                    spacing: 3px;
+                    alignment: center;
+                    Text {
+                        text: "MoonWolf";
+                        color: #fbfaff;
+                        font-size: 18px;
+                        font-weight: 800;
+                    }
+                    Text {
+                        text: "AGENT";
+                        color: #8a85b0;
+                        font-size: 8px;
+                        font-weight: 700;
+                        letter-spacing: 2.2px;
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+
+            Rectangle {
+                height: 58px;
+                border-radius: 12px;
+                background: #12152a;
+                border-width: 1px;
+                border-color: root.cloud-connected ? #2a4a45 : #2a2f4a;
+
+                HorizontalBox {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    spacing: 10px;
+                    alignment: center;
+
+                    VerticalBox {
+                        width: 12px;
+                        alignment: center;
+                        Rectangle {
+                            width: 10px;
+                            height: 10px;
+                            border-radius: 5px;
+                            background: root.cloud-connected ? #3dd9a8 : #e8b84a;
+                        }
+                    }
+                    VerticalBox {
+                        spacing: 3px;
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        Text {
+                            text: root.cloud-connected ? "Conectado" : root.status-title;
+                            color: #fbfaff;
+                            font-size: 13px;
+                            font-weight: 800;
+                        }
+                        Text {
+                            text: root.cloud-connected ? "Conexión activa con MoonWolf Cloud" : root.status-description;
+                            color: #9a9db8;
+                            font-size: 10px;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+
+            Text {
+                text: "INFORMACIÓN DEL AGENT";
+                color: #6e7598;
+                font-size: 9px;
+                font-weight: 800;
+                letter-spacing: 1.6px;
+            }
+
+            Rectangle {
+                border-radius: 14px;
+                background: #10131f;
+                border-width: 1px;
+                border-color: #252a42;
+                clip: true;
+
+                VerticalBox {
+                    padding: 2px;
+                    spacing: 0px;
+                    FieldRow {
+                        caption: "CÓDIGO DE EMPAREJAMIENTO";
+                        value: root.pairing-code;
+                        action-label: "Copiar";
+                        action-clicked => { root.copy-pairing(); }
+                    }
+                    HorizontalBox {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        Rectangle { height: 1px; background: #1e2238; horizontal-stretch: 1; }
+                    }
+                    FieldRow {
+                        caption: "CARPETA DEL SERVIDOR";
+                        value: root.server-dir;
+                        action-label: "Cambiar";
+                        action-clicked => {
+                            root.settings-visible = false;
+                            root.logs-visible = false;
+                            root.serverdir-visible = !root.serverdir-visible;
+                        }
+                    }
+                    HorizontalBox {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        Rectangle { height: 1px; background: #1e2238; horizontal-stretch: 1; }
+                    }
+                    Rectangle {
+                        height: 54px;
+                        background: transparent;
+                        clip: true;
+                        HorizontalBox {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            spacing: 8px;
+                            alignment: center;
+                            VerticalBox {
+                                spacing: 3px;
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: "VERSIÓN";
+                                    color: #7d84a8;
+                                    font-size: 8px;
+                                    font-weight: 800;
+                                    letter-spacing: 1.0px;
+                                }
+                                Text {
+                                    text: "v" + root.version;
+                                    color: #f0effa;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                }
+                            }
+                            Rectangle { width: 1px; height: 28px; background: #2a2f4a; }
+                            VerticalBox {
+                                width: 12px;
+                                alignment: center;
+                                Rectangle {
+                                    width: 8px;
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: root.local-ready ? #3dd9a8 : #e8b84a;
+                                }
+                            }
+                            VerticalBox {
+                                spacing: 2px;
+                                alignment: center;
+                                Text { text: "SERVIDOR LOCAL"; color: #9a9db8; font-size: 8px; font-weight: 600; }
+                                Text {
+                                    text: root.local-ready ? "En funcionamiento" : "Iniciando...";
+                                    color: root.local-ready ? #5eebc4 : #f0c878;
+                                    font-size: 10px;
+                                    font-weight: 700;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            ActionButton {
+                height: 44px;
+                label: "Abrir MoonWolf Panel  →";
+                primary: true;
+                clicked => { root.open-panel(); }
+            }
+
+            HorizontalBox {
+                height: 40px;
+                spacing: 8px;
+                ActionButton {
+                    horizontal-stretch: 1;
+                    label: "⚙   Configuración";
+                    clicked => {
+                        root.logs-visible = false;
+                        root.serverdir-visible = false;
+                        root.settings-visible = !root.settings-visible;
+                    }
+                }
+                ActionButton {
+                    horizontal-stretch: 1;
+                    label: "≡   Logs";
+                    clicked => {
+                        root.settings-visible = false;
+                        root.serverdir-visible = false;
+                        root.logs-visible = !root.logs-visible;
+                    }
+                }
+            }
+
+            if root.update-visible : Rectangle {
+                height: 56px;
+                border-radius: 14px;
+                background: #1c1838;
+                border-width: 1px;
+                border-color: #4a3f8a;
+                HorizontalBox {
+                    padding: 12px;
+                    spacing: 10px;
+                    Text {
+                        text: root.update-text;
+                        color: #e4e0ff;
+                        font-size: 11px;
+                        font-weight: 600;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                    ActionButton {
+                        width: 80px;
+                        height: 34px;
+                        label: "Instalar";
+                        primary: true;
+                        clicked => { root.apply-update(); }
+                    }
+                }
+            }
+
+            if root.restart-visible : Rectangle {
+                height: 52px;
+                border-radius: 14px;
+                background: #2a2218;
+                border-width: 1px;
+                border-color: #6a4a28;
+                HorizontalBox {
+                    padding: 12px;
+                    spacing: 10px;
+                    Text {
+                        text: "Hay un reinicio pendiente";
+                        color: #f0d49a;
+                        font-size: 11px;
+                        font-weight: 600;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                    ActionButton {
+                        width: 96px;
+                        height: 34px;
+                        label: "Reiniciar";
+                        clicked => { root.restart-agent(); }
+                    }
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+        }
+
+        if root.settings-visible || root.logs-visible || root.serverdir-visible : Rectangle {
+            width: 100%;
+            height: 100%;
+            background: #00000088;
+            TouchArea {
+                clicked => {
+                    root.settings-visible = false;
+                    root.logs-visible = false;
+                    root.serverdir-visible = false;
+                }
+            }
+        }
+
+        if root.settings-visible : Rectangle {
+            x: 14px;
+            y: (root.height - 248px) / 2;
+            width: root.width - 28px;
+            height: 248px;
+            border-radius: 16px;
+            background: #14172c;
+            border-width: 1px;
+            border-color: #6a5ad8;
+            drop-shadow-blur: 32px;
+            drop-shadow-color: #000000cc;
+            clip: true;
+
+            VerticalBox {
+                padding: 16px;
+                spacing: 10px;
+
+                HorizontalBox {
+                    spacing: 8px;
+                    alignment: center;
+                    Text {
+                        text: "Configuración";
+                        color: #faf8ff;
+                        font-size: 18px;
+                        font-weight: 800;
+                        horizontal-stretch: 1;
+                    }
+                    Rectangle {
+                        width: 32px;
+                        height: 32px;
+                        border-radius: 10px;
+                        background: #1c2036;
+                        border-width: 1px;
+                        border-color: #343a58;
+                        Text {
+                            text: "×";
+                            color: #c0c4d8;
+                            font-size: 16px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.settings-visible = false; }
+                        }
+                    }
+                }
+                Text {
+                    text: "Gestiona las opciones de MoonWolf Agent.";
+                    color: #9a9db8;
+                    font-size: 11px;
+                }
+                Rectangle { height: 1px; background: #2a2f4a; }
+
+                ActionButton {
+                    height: 36px;
+                    label: "Abrir carpeta de configuración";
+                    clicked => { root.open-config(); }
+                }
+                ActionButton {
+                    height: 36px;
+                    label: "Buscar actualizaciones";
+                    clicked => { root.check-update(); }
+                }
+                ActionButton {
+                    height: 36px;
+                    label: "Minimizar";
+                    clicked => { root.hide-tray(); }
+                }
+            }
+        }
+
+        if root.logs-visible : Rectangle {
+            x: 14px;
+            y: (root.height - 340px) / 2;
+            width: root.width - 28px;
+            height: 340px;
+            border-radius: 18px;
+            background: #14172c;
+            border-width: 1px;
+            border-color: #6a5ad8;
+            drop-shadow-blur: 32px;
+            drop-shadow-color: #000000cc;
+
+            VerticalBox {
+                padding: 18px;
+                spacing: 12px;
+
+                HorizontalBox {
+                    spacing: 8px;
+                    alignment: center;
+                    Text {
+                        text: "Registros del Agent";
+                        color: #faf8ff;
+                        font-size: 17px;
+                        font-weight: 800;
+                        horizontal-stretch: 1;
+                    }
+                    Rectangle {
+                        width: 32px;
+                        height: 32px;
+                        border-radius: 10px;
+                        background: #1c2036;
+                        border-width: 1px;
+                        border-color: #343a58;
+                        Text {
+                            text: "×";
+                            color: #c0c4d8;
+                            font-size: 16px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.logs-visible = false; }
+                        }
+                    }
+                }
+                HorizontalBox {
+                    spacing: 10px;
+                    ActionButton {
+                        horizontal-stretch: 1;
+                        height: 36px;
+                        label: "Limpiar";
+                        clicked => { root.clear-logs(); }
+                    }
+                    ActionButton {
+                        horizontal-stretch: 1;
+                        height: 36px;
+                        label: "Guardar archivo";
+                        clicked => { root.save-logs(); }
+                    }
+                }
+                Rectangle {
+                    vertical-stretch: 1;
+                    border-radius: 12px;
+                    background: #0a0c18;
+                    border-width: 1px;
+                    border-color: #252a42;
+                    ScrollView {
+                        width: 100%;
+                        height: 100%;
+                        VerticalBox {
+                            padding: 12px;
+                            Text {
+                                text: root.logs-text == "" ? "Todavía no hay registros.\nLos eventos del Agent aparecerán aquí." : root.logs-text;
+                                color: root.logs-text == "" ? #5a5f7a : #c8cce0;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.serverdir-visible : Rectangle {
+            x: 14px;
+            y: (root.height - 200px) / 2;
+            width: root.width - 28px;
+            height: 200px;
+            border-radius: 18px;
+            background: #14172c;
+            border-width: 1px;
+            border-color: #6a5ad8;
+            drop-shadow-blur: 32px;
+            drop-shadow-color: #000000cc;
+
+            VerticalBox {
+                padding: 20px;
+                spacing: 14px;
+                Text {
+                    text: "Carpeta del servidor";
+                    color: #faf8ff;
+                    font-size: 18px;
+                    font-weight: 800;
+                }
+                Text {
+                    text: "Indica la ruta de la carpeta local del servidor.";
+                    color: #9a9db8;
+                    font-size: 11px;
+                }
+                LineEdit {
+                    text <=> root.serverdir-input;
+                    placeholder-text: "Ruta completa de la carpeta...";
+                    height: 42px;
+                }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalBox {
+                    spacing: 10px;
+                    ActionButton {
+                        horizontal-stretch: 1;
+                        height: 42px;
+                        label: "Cancelar";
+                        clicked => { root.serverdir-visible = false; }
+                    }
+                    ActionButton {
+                        horizontal-stretch: 1;
+                        height: 42px;
+                        label: "Guardar";
+                        primary: true;
+                        clicked => {
+                            root.change-server(root.serverdir-input);
+                            root.serverdir-visible = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
