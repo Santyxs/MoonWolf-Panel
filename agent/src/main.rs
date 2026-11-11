@@ -721,42 +721,36 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
     let _ = clean_updates_dir(None).await;
 
     let pid = std::process::id();
-    let exe_str = current_exe.to_string_lossy().replace('"', "");
-    let old_str = old.to_string_lossy().replace('"', "");
+    // Escapar comillas simples para PowerShell (rutas con ' son raras)
+    let exe_ps = current_exe.to_string_lossy().replace('\'', "''");
+    let old_ps = old.to_string_lossy().replace('\'', "''");
 
-    let dir = AgentConfig::config_dir().join("updates");
-    tokio::fs::create_dir_all(&dir).await?;
-    let bat_path = dir.join("restart-after-update.bat");
+    // Reinicio 100% silencioso: PowerShell oculto, sin cmd/findstr/tasklist visibles
+    let ps = format!(
+        "while (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 400 }}; \
+         Start-Sleep -Milliseconds 800; \
+         if (Test-Path -LiteralPath '{exe}') {{ Start-Process -FilePath '{exe}' }}; \
+         if (Test-Path -LiteralPath '{old}') {{ Remove-Item -LiteralPath '{old}' -Force -ErrorAction SilentlyContinue }}",
+        pid = pid,
+        exe = exe_ps,
+        old = old_ps,
+    );
 
-    let mut bat = String::new();
-    bat.push_str("@echo off\r\n");
-    bat.push_str("setlocal EnableExtensions\r\n");
-    bat.push_str(&format!("set \"PID={}\"\r\n", pid));
-    bat.push_str(&format!("set \"EXE={}\"\r\n", exe_str));
-    bat.push_str(&format!("set \"OLD={}\"\r\n", old_str));
-    bat.push_str(":wait\r\n");
-    bat.push_str("tasklist /FI \"PID eq %PID%\" 2>NUL | findstr /I /C:\"%PID%\" >NUL\r\n");
-    bat.push_str("if not errorlevel 1 (\r\n");
-    bat.push_str("  ping -n 2 127.0.0.1 >NUL\r\n");
-    bat.push_str("  goto wait\r\n");
-    bat.push_str(")\r\n");
-    bat.push_str("ping -n 2 127.0.0.1 >NUL\r\n");
-    bat.push_str("if exist \"%EXE%\" (\r\n");
-    bat.push_str("  start \"\" \"%EXE%\"\r\n");
-    bat.push_str(")\r\n");
-    bat.push_str("if exist \"%OLD%\" del /f /q \"%OLD%\" >NUL 2>&1\r\n");
-    bat.push_str("del \"%~");
-    bat.push_str("f0\" >NUL 2>&1\r\n");
-    bat.push_str("endlocal\r\n");
-    tokio::fs::write(&bat_path, bat).await?;
-
-    // Sin `start`: evita ventana de consola. DETACHED_PROCESS sobrevive al cierre del Agent.
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     const DETACHED_PROCESS: u32 = 0x00000008;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-    let bat_str = bat_path.to_string_lossy().replace('"', "");
-    let status = std::process::Command::new("cmd.exe")
-        .args(["/C", &bat_str])
+
+    let status = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            &ps,
+        ])
         .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
