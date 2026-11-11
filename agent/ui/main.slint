@@ -69,15 +69,18 @@ component FieldRow inherits Rectangle {
     HorizontalBox {
         padding-left: 12px;
         padding-right: 10px;
+        padding-top: 8px;
+        padding-bottom: 8px;
         spacing: 8px;
-        alignment: center;
+        // end = botones a la altura del valor (más abajo)
+        alignment: end;
 
         VerticalBox {
             spacing: 3px;
             horizontal-stretch: 1;
             alignment: start;
             Text {
-                width: 100%;
+                width: parent.width;
                 text: root.caption;
                 color: #7d84a8;
                 font-size: 8px;
@@ -86,7 +89,7 @@ component FieldRow inherits Rectangle {
                 horizontal-alignment: left;
             }
             Text {
-                width: 100%;
+                width: parent.width;
                 text: root.value;
                 color: #f0effa;
                 font-size: 12px;
@@ -149,12 +152,12 @@ export component MainWindow inherits Window {
     in-out property <string> copy-label: "Copiar";
 
     Rectangle {
-        width: 100%;
+        width: parent.width;
         height: 100%;
         background: #0c0e1a;
 
         Rectangle {
-            width: 100%;
+            width: parent.width;
             height: 100%;
             background: @linear-gradient(160deg, #151830 0%, #0c0e1a 45%, #0a0c16 100%);
         }
@@ -248,7 +251,7 @@ export component MainWindow inherits Window {
                         horizontal-stretch: 1;
                         alignment: start;
                         Text {
-                            width: 100%;
+                            width: parent.width;
                             text: root.cloud-connected ? "Conectado" : root.status-title;
                             color: #fbfaff;
                             font-size: 13px;
@@ -256,7 +259,7 @@ export component MainWindow inherits Window {
                             horizontal-alignment: left;
                         }
                         Text {
-                            width: 100%;
+                            width: parent.width;
                             text: root.cloud-connected ? "Conexión activa con MoonWolf Cloud" : root.status-description;
                             color: #9a9db8;
                             font-size: 10px;
@@ -268,7 +271,7 @@ export component MainWindow inherits Window {
             }
 
             Text {
-                width: 100%;
+                width: parent.width;
                 text: "INFORMACIÓN DEL AGENT";
                 color: #6e7598;
                 font-size: 9px;
@@ -328,7 +331,7 @@ export component MainWindow inherits Window {
                                 horizontal-stretch: 1;
                                 alignment: start;
                                 Text {
-                                    width: 100%;
+                                    width: parent.width;
                                     text: "VERSIÓN";
                                     color: #7d84a8;
                                     font-size: 8px;
@@ -337,7 +340,7 @@ export component MainWindow inherits Window {
                                     horizontal-alignment: left;
                                 }
                                 Text {
-                                    width: 100%;
+                                    width: parent.width;
                                     text: "v" + root.version;
                                     color: #f0effa;
                                     font-size: 12px;
@@ -360,7 +363,7 @@ export component MainWindow inherits Window {
                                 spacing: 2px;
                                 alignment: start;
                                 Text {
-                                    width: 100%;
+                                    width: parent.width;
                                     text: "SERVIDOR LOCAL";
                                     color: #9a9db8;
                                     font-size: 8px;
@@ -368,7 +371,7 @@ export component MainWindow inherits Window {
                                     horizontal-alignment: left;
                                 }
                                 Text {
-                                    width: 100%;
+                                    width: parent.width;
                                     text: root.local-ready ? "En funcionamiento" : "Iniciando...";
                                     color: root.local-ready ? #5eebc4 : #f0c878;
                                     font-size: 10px;
@@ -391,25 +394,103 @@ export component MainWindow inherits Window {
             HorizontalBox {
                 height: 40px;
                 spacing: 8px;
-                ActionButton {
+                Rectangle {
                     horizontal-stretch: 1;
-                    label: "⚙  Configuración";
-                    label-font-size: 12px;
-                    clicked => {
-                        root.logs-visible = false;
-                        root.serverdir-visible = false;
-                        root.settings-visible = !root.settings-visible;
+                    height: 38px;
+                    border-radius: 10px;
+                    background: #1c2036;
+                    border-width: 1px;
+                    border-color: #343a58;
+
+                    ta-cfg := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.logs-visible = false;
+                            root.serverdir-visible = false;
+                            root.settings-visible = !root.settings-visible;
+                        }
                     }
+
+                    HorizontalBox {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 8px;
+                        alignment: center;
+
+                        Text {
+                            text: "⚙";
+                            color: #ffffff;
+                            font-size: 16px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "Configuración";
+                            color: #ffffff;
+                            font-size: 12px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    states [
+                        hover when ta-cfg.has-hover: {
+                            background: #262b45;
+                            border-color: #4a5178;
+                        }
+                        pressed when ta-cfg.pressed: {
+                            background: #161a2c;
+                        }
+                    ]
                 }
-                ActionButton {
+                Rectangle {
                     horizontal-stretch: 1;
-                    label: "☰  Logs";
-                    label-font-size: 13px;
-                    clicked => {
-                        root.settings-visible = false;
-                        root.serverdir-visible = false;
-                        root.logs-visible = !root.logs-visible;
+                    height: 38px;
+                    border-radius: 10px;
+                    background: #1c2036;
+                    border-width: 1px;
+                    border-color: #343a58;
+
+                    ta-logs := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.settings-visible = false;
+                            root.serverdir-visible = false;
+                            root.logs-visible = !root.logs-visible;
+                        }
                     }
+
+                    HorizontalBox {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 8px;
+                        alignment: center;
+
+                        Text {
+                            text: "≡";
+                            color: #ffffff;
+                            font-size: 18px;
+                            font-weight: 800;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "Logs";
+                            color: #ffffff;
+                            font-size: 12px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    states [
+                        hover when ta-logs.has-hover: {
+                            background: #262b45;
+                            border-color: #4a5178;
+                        }
+                        pressed when ta-logs.pressed: {
+                            background: #161a2c;
+                        }
+                    ]
                 }
             }
 
@@ -472,7 +553,7 @@ export component MainWindow inherits Window {
         }
 
         if root.settings-visible || root.logs-visible || root.serverdir-visible : Rectangle {
-            width: 100%;
+            width: parent.width;
             height: 100%;
             background: #00000088;
             TouchArea {
@@ -508,7 +589,7 @@ export component MainWindow inherits Window {
                 border-width: 1px;
                 border-color: #343a58;
                 Text {
-                    width: 100%;
+                    width: parent.width;
                     height: 100%;
                     text: "×";
                     color: #c0c4d8;
@@ -620,7 +701,7 @@ export component MainWindow inherits Window {
                 border-width: 1px;
                 border-color: #343a58;
                 Text {
-                    width: 100%;
+                    width: parent.width;
                     height: 100%;
                     text: "×";
                     color: #c0c4d8;
@@ -672,7 +753,7 @@ export component MainWindow inherits Window {
                     border-width: 1px;
                     border-color: #252a42;
                     ScrollView {
-                        width: 100%;
+                        width: parent.width;
                         height: 100%;
                         VerticalBox {
                             padding: 12px;
