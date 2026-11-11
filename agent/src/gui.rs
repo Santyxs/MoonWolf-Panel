@@ -160,9 +160,13 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
                         state.shutting_down = true;
                         state.add_log("info", "Actualización aplicada. Reiniciando Agent...");
                     }
-                    // Cerrar el proceso para que el script .bat pueda arrancar el nuevo ejecutable
                     let _ = slint::invoke_from_event_loop(|| {
                         let _ = slint::quit_event_loop();
+                    });
+                    // Forzar salida si tareas en segundo plano mantienen el proceso vivo
+                    std::thread::spawn(|| {
+                        std::thread::sleep(std::time::Duration::from_millis(800));
+                        std::process::exit(0);
                     });
                 }
                 Err(e) => {
