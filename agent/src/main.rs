@@ -597,6 +597,50 @@ pub async fn check_update_once(app: Arc<RwLock<AppState>>) -> anyhow::Result<()>
     Ok(())
 }
 
+
+/// Borra archivos residuales de actualizaciones anteriores en la carpeta updates.
+async fn clean_updates_dir(keep: Option<&Path>) -> anyhow::Result<()> {
+    let dir = AgentConfig::config_dir().join("updates");
+    if !dir.exists() {
+        return Ok(());
+    }
+    let mut entries = match tokio::fs::read_dir(&dir).await {
+        Ok(e) => e,
+        Err(_) => return Ok(()),
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if let Some(keep) = keep {
+            if paths_equal(&path, keep) {
+                continue;
+            }
+        }
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if name == "restart-after-update.bat" {
+            continue;
+        }
+        if name.ends_with(".exe")
+            || name.ends_with(".zip")
+            || name.ends_with(".tmp")
+            || name.ends_with(".old")
+            || name.ends_with(".exe.old")
+        {
+            let _ = tokio::fs::remove_file(&path).await;
+        }
+    }
+    Ok(())
+}
+
+fn paths_equal(a: &Path, b: &Path) -> bool {
+    let ca = a.canonicalize().unwrap_or_else(|_| a.to_path_buf());
+    let cb = b.canonicalize().unwrap_or_else(|_| b.to_path_buf());
+    ca == cb
+}
+
 async fn download_and_stage(
     app: Arc<RwLock<AppState>>,
     info_update: &UpdateInfo,
@@ -609,6 +653,8 @@ async fn download_and_stage(
 
     let dir = AgentConfig::config_dir().join("updates");
     tokio::fs::create_dir_all(&dir).await?;
+    // Eliminar actualizaciones descargadas anteriores para no acumular .exe
+    let _ = clean_updates_dir(None).await;
     let dest = dir.join(format!("MoonWolf-Agent-v{}.exe", info_update.version));
 
     let client = UPDATE_HTTP_CLIENT.get_or_init(|| {
@@ -670,6 +716,10 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
         anyhow::anyhow!("No se pudo copiar el nuevo ejecutable: {e}")
     })?;
 
+    // Borrar el .exe descargado y residuales en la carpeta updates
+    let _ = tokio::fs::remove_file(&new_exe).await;
+    let _ = clean_updates_dir(None).await;
+
     let pid = std::process::id();
     let exe_str = current_exe.to_string_lossy().replace('"', "");
 
@@ -689,6 +739,7 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
          )\r\n\
          timeout /t 1 /nobreak >NUL\r\n\
          start \"\" \"%EXE%\"\r\n\
+         if exist \"%EXE%.old\" del /f /q \"%EXE%.old\" >NUL 2>&1\r\n\
          del \"%~f0\" >NUL 2>&1\r\n\
          endlocal\r\n",
         pid = pid,
