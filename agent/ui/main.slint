@@ -10,6 +10,7 @@ component ActionButton inherits Rectangle {
     in property <length> label-font-size: 12px;
     callback clicked();
 
+    min-height: 36px;
     height: 38px;
     border-radius: 10px;
     background: root.primary ? #7c6cff
@@ -24,6 +25,8 @@ component ActionButton inherits Rectangle {
     animate border-color { duration: 120ms; easing: ease-out; }
 
     Text {
+        width: 100%;
+        height: 100%;
         text: root.label;
         color: #ffffff;
         font-size: root.label-font-size;
@@ -33,6 +36,8 @@ component ActionButton inherits Rectangle {
     }
 
     ta := TouchArea {
+        width: 100%;
+        height: 100%;
         clicked => { root.clicked(); }
         mouse-cursor: pointer;
     }
@@ -762,24 +767,29 @@ export component MainWindow inherits Window {
 
         if root.serverdir-visible : Rectangle {
             x: 14px;
-            y: (root.height - 200px) / 2;
+            y: (root.height - 260px) / 2;
             width: root.width - 28px;
-            height: 200px;
+            height: 260px;
             border-radius: 18px;
             background: #14172c;
             border-width: 1px;
             border-color: #6a5ad8;
             drop-shadow-blur: 32px;
             drop-shadow-color: #000000cc;
+            clip: true;
 
             VerticalBox {
-                padding: 20px;
-                spacing: 14px;
-                alignment: start;
+                padding-left: 18px;
+                padding-right: 18px;
+                padding-top: 18px;
+                padding-bottom: 16px;
+                spacing: 12px;
+                alignment: stretch;
+
                 Text {
                     text: "Carpeta del servidor";
                     color: #faf8ff;
-                    font-size: 17px;
+                    font-size: 16px;
                     font-weight: 800;
                     horizontal-alignment: left;
                 }
@@ -792,21 +802,28 @@ export component MainWindow inherits Window {
                 LineEdit {
                     text <=> root.serverdir-input;
                     placeholder-text: "Ruta completa de la carpeta...";
-                    height: 42px;
+                    height: 40px;
+                    horizontal-stretch: 1;
                 }
-                Rectangle { vertical-stretch: 1; }
+                Rectangle { vertical-stretch: 1; background: transparent; }
+
                 HorizontalBox {
                     spacing: 10px;
+                    height: 40px;
+                    alignment: center;
+
                     ActionButton {
                         horizontal-stretch: 1;
-                        height: 42px;
+                        height: 40px;
                         label: "Cancelar";
+                        label-font-size: 12px;
                         clicked => { root.serverdir-visible = false; }
                     }
                     ActionButton {
                         horizontal-stretch: 1;
-                        height: 42px;
+                        height: 40px;
                         label: "Guardar";
+                        label-font-size: 12px;
                         primary: true;
                         clicked => {
                             root.change-server(root.serverdir-input);
