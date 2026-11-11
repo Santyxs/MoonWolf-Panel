@@ -221,8 +221,12 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     ui.on_hide_tray(move || {
         if let Some(ui) = weak_for_hide.upgrade() {
             let window = ui.window();
-            // Minimizar a la barra de tareas (segundo plano), sin cerrar el Agent
-            window.set_minimized(true);
+            // Ocultar a la bandeja: sin ventana y sin icono en la barra de tareas.
+            // Se restaura con el icono de la system tray.
+            if window.is_minimized() {
+                window.set_minimized(false);
+            }
+            let _ = window.hide();
         }
     });
 
