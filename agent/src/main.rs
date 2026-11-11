@@ -716,7 +716,6 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
         anyhow::anyhow!("No se pudo copiar el nuevo ejecutable: {e}")
     })?;
 
-    // Borrar el .exe descargado y residuales en la carpeta updates
     let _ = tokio::fs::remove_file(&new_exe).await;
     let _ = clean_updates_dir(None).await;
 
@@ -727,36 +726,30 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
     let dir = AgentConfig::config_dir().join("updates");
     tokio::fs::create_dir_all(&dir).await?;
     let bat_path = dir.join("restart-after-update.bat");
-    // Sin espacios al inicio de cada línea: si no, `goto` no encuentra la etiqueta
-    // y aparece "No se ha encontrado el archivo por lotes".
-    let bat = format!(
-        "@echo off
-setlocal EnableExtensions
-set "PID={pid}"
-set "EXE={exe}"
-set "OLD={old}"
-:wait
-tasklist /FI "PID eq %PID%" 2>NUL | findstr /I /C:"%PID%" >NUL
-if not errorlevel 1 (
-  ping -n 2 127.0.0.1 >NUL
-  goto wait
-)
-ping -n 2 127.0.0.1 >NUL
-if exist "%EXE%" start "" "%EXE%"
-if exist "%OLD%" del /f /q "%OLD%" >NUL 2>&1
-del "%~f0" >NUL 2>&1
-endlocal
-",
-        pid = pid,
-        exe = exe_str,
-        old = old_str,
-    );
+
+    let mut bat = String::new();
+    bat.push_str("@echo off\r\n");
+    bat.push_str("setlocal EnableExtensions\r\n");
+    bat.push_str(&format!("set \"PID={}\"\r\n", pid));
+    bat.push_str(&format!("set \"EXE={}\"\r\n", exe_str));
+    bat.push_str(&format!("set \"OLD={}\"\r\n", old_str));
+    bat.push_str(":wait\r\n");
+    bat.push_str("tasklist /FI \"PID eq %PID%\" 2>NUL | findstr /I /C:\"%PID%\" >NUL\r\n");
+    bat.push_str("if not errorlevel 1 (\r\n");
+    bat.push_str("  ping -n 2 127.0.0.1 >NUL\r\n");
+    bat.push_str("  goto wait\r\n");
+    bat.push_str(")\r\n");
+    bat.push_str("ping -n 2 127.0.0.1 >NUL\r\n");
+    bat.push_str("if exist \"%EXE%\" start \"\" \"%EXE%\"\r\n");
+    bat.push_str("if exist \"%OLD%\" del /f /q \"%OLD%\" >NUL 2>&1\r\n");
+    bat.push_str("del \"%~");
+    bat.push_str("f0\" >NUL 2>&1\r\n");
+    bat.push_str("endlocal\r\n");
     tokio::fs::write(&bat_path, bat).await?;
 
-    // Un solo argumento tras /C evita que `start` confunda el path del .bat
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     let bat_str = bat_path.to_string_lossy().replace('"', "");
-    let cmdline = format!("start "" /MIN "{bat}"", bat = bat_str);
+    let cmdline = format!("start \"\" /MIN \"{}\"", bat_str);
     let status = std::process::Command::new("cmd.exe")
         .args(["/C", &cmdline])
         .creation_flags(CREATE_NO_WINDOW)
@@ -769,6 +762,7 @@ endlocal
     info!("Actualización lista; reinicio programado tras cerrar PID {pid}");
     Ok(())
 }
+
 
 fn maybe_wait_for_previous_instance() {
     let mut args = std::env::args().skip(1);
