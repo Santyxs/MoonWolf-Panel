@@ -98,20 +98,47 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
 
     {
         let app = Arc::clone(&app);
+        let weak_copy = weak.clone();
         ui.on_copy_pairing(move || {
             let app = Arc::clone(&app);
-            spawn_async(app, |app| async move {
+            let weak = weak_copy.clone();
+            spawn_async(app, move |app| async move {
                 let code = app.read().await.pairing_code.clone().unwrap_or_default();
-                if !code.is_empty() {
-                    #[cfg(windows)] {
-                        use std::os::windows::process::CommandExt;
-                        const CREATE_NO_WINDOW: u32 = 0x08000000;
-                        if let Ok(mut child) = Command::new("clip").creation_flags(CREATE_NO_WINDOW).stdin(std::process::Stdio::piped()).spawn() {
-                            use std::io::Write;
-                            if let Some(mut stdin) = child.stdin.take() { let _ = stdin.write_all(code.as_bytes()); }
+                if code.is_empty() {
+                    return;
+                }
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt;
+                    const CREATE_NO_WINDOW: u32 = 0x08000000;
+                    if let Ok(mut child) = Command::new("clip")
+                        .creation_flags(CREATE_NO_WINDOW)
+                        .stdin(std::process::Stdio::piped())
+                        .spawn()
+                    {
+                        use std::io::Write;
+                        if let Some(mut stdin) = child.stdin.take() {
+                            let _ = stdin.write_all(code.as_bytes());
                         }
                     }
                 }
+                let _ = slint::invoke_from_event_loop({
+                    let weak = weak.clone();
+                    move || {
+                        if let Some(ui) = weak.upgrade() {
+                            ui.set_copy_label("Copiado".into());
+                        }
+                    }
+                });
+                tokio::time::sleep(std::time::Duration::from_millis(1600)).await;
+                let _ = slint::invoke_from_event_loop({
+                    let weak = weak.clone();
+                    move || {
+                        if let Some(ui) = weak.upgrade() {
+                            ui.set_copy_label("Copiar".into());
+                        }
+                    }
+                });
             });
         });
     }
