@@ -705,7 +705,6 @@ fn win_path_str(p: &Path) -> String {
 }
 
 pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::Result<()> {
-    use std::os::windows::process::CommandExt;
     use std::process::Stdio;
 
     let current_exe = current_exe
@@ -716,6 +715,7 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
     let old = current_exe.with_extension("exe.old");
     let _ = tokio::fs::remove_file(&old).await;
 
+    // En Windows se puede renombrar el .exe en ejecución; el proceso sigue en el .old
     tokio::fs::rename(&current_exe, &old).await.map_err(|e| {
         anyhow::anyhow!("No se pudo renombrar el ejecutable actual (¿en uso?): {e}")
     })?;
@@ -728,68 +728,52 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
     let _ = clean_updates_dir(None).await;
 
     let pid = std::process::id();
-    let exe_path = win_path_str(&current_exe);
-    let old_path = win_path_str(&old);
+    let exe_path = PathBuf::from(win_path_str(&current_exe));
+    let old_path = PathBuf::from(win_path_str(&old));
 
-    let dir = AgentConfig::config_dir().join("updates");
-    tokio::fs::create_dir_all(&dir).await?;
-    let ps1_path = dir.join("restart-after-update.ps1");
-    let ps1_path_str = win_path_str(&ps1_path);
-
-    // Comillas simples duplicadas solo dentro del script PowerShell
-    let exe_ps = exe_path.replace('\'', "''");
-    let old_ps = old_path.replace('\'', "''");
-
-    let ps1 = format!(
-        "$ErrorActionPreference = 'SilentlyContinue'\r\n\
-$pidWait = {pid}\r\n\
-$exe = '{exe}'\r\n\
-$old = '{old}'\r\n\
-while (Get-Process -Id $pidWait -ErrorAction SilentlyContinue) {{\r\n\
-  Start-Sleep -Milliseconds 500\r\n\
-}}\r\n\
-Start-Sleep -Milliseconds 1000\r\n\
-if (Test-Path -LiteralPath $exe) {{\r\n\
-  Start-Process -FilePath $exe\r\n\
-}}\r\n\
-if (Test-Path -LiteralPath $old) {{\r\n\
-  Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue\r\n\
-}}\r\n\
-Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue\r\n\
-",
-        pid = pid,
-        exe = exe_ps,
-        old = old_ps,
-    );
-    tokio::fs::write(&ps1_path, ps1).await?;
-
-    // Proceso hijo independiente y sin ventana
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    const DETACHED_PROCESS: u32 = 0x00000008;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-
-    let status = std::process::Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-WindowStyle",
-            "Hidden",
-            "-File",
-            &ps1_path_str,
-        ])
-        .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+    // Arrancar YA el nuevo Agent con --wait-pid: espera a que este proceso muera y sigue.
+    // Es el mecanismo más fiable (sin PowerShell ni .bat).
+    let mut child = std::process::Command::new(&exe_path)
+        .args(["--wait-pid", &pid.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn();
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("No se pudo iniciar el Agent actualizado: {e}"))?;
 
-    if let Err(e) = status {
-        anyhow::bail!("No se pudo lanzar el reinicio post-update: {e}");
+    // No esperamos al hijo; solo comprobamos que sigue vivo un instante
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    match child.try_wait() {
+        Ok(Some(status)) => {
+            anyhow::bail!(
+                "El Agent actualizado salió de inmediato (código {:?}). Ruta: {}",
+                status.code(),
+                exe_path.display()
+            );
+        }
+        Ok(None) => {
+            info!(
+                "Nuevo Agent lanzado (PID hijo OK) esperando cierre de PID {pid} -> {}",
+                exe_path.display()
+            );
+        }
+        Err(e) => {
+            warn!("No se pudo comprobar el proceso hijo: {e}");
+        }
     }
 
-    info!("Actualización lista; reinicio programado tras cerrar PID {pid} -> {exe_path}");
+    // Limpieza del .old en segundo plano cuando el PID actual ya no exista (mejor esfuerzo)
+    let old_cleanup = old_path.clone();
+    let pid_cleanup = pid;
+    std::thread::spawn(move || {
+        for _ in 0..60 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            // cuando este hilo muere con el proceso, no importa; el nuevo Agent puede limpiar
+            let _ = pid_cleanup;
+        }
+        let _ = std::fs::remove_file(&old_cleanup);
+    });
+
     Ok(())
 }
 
@@ -827,7 +811,12 @@ fn wait_for_pid(pid: u32) {
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    std::thread::sleep(std::time::Duration::from_millis(400));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Borrar backup .exe.old si existe junto a este ejecutable
+    if let Ok(exe) = std::env::current_exe() {
+        let old = exe.with_extension("exe.old");
+        let _ = std::fs::remove_file(old);
+    }
 }
 
 #[cfg(not(windows))]
