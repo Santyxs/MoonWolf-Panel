@@ -317,7 +317,11 @@ export component MainWindow inherits Window {
                         action-label: "Copiar";
                         action-clicked => { root.copy-pairing(); }
                     }
-                    Rectangle { height: 1px; background: #1e2238; margin-left: 16px; margin-right: 16px; }
+                    HorizontalBox {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        Rectangle { height: 1px; background: #1e2238; horizontal-stretch: 1; }
+                    }
                     FieldRow {
                         caption: "CARPETA DEL SERVIDOR";
                         value: root.server-dir;
@@ -328,7 +332,11 @@ export component MainWindow inherits Window {
                             root.serverdir-visible = !root.serverdir-visible;
                         }
                     }
-                    Rectangle { height: 1px; background: #1e2238; margin-left: 16px; margin-right: 16px; }
+                    HorizontalBox {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        Rectangle { height: 1px; background: #1e2238; horizontal-stretch: 1; }
+                    }
                     Rectangle {
                         height: 68px;
                         background: transparent;
