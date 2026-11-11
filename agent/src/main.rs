@@ -699,6 +699,7 @@ async fn download_and_stage(
 #[cfg(windows)]
 pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::Result<()> {
     use std::os::windows::process::CommandExt;
+    use std::process::Stdio;
 
     let current_exe = current_exe
         .canonicalize()
@@ -740,19 +741,26 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
     bat.push_str("  goto wait\r\n");
     bat.push_str(")\r\n");
     bat.push_str("ping -n 2 127.0.0.1 >NUL\r\n");
-    bat.push_str("if exist \"%EXE%\" start \"\" \"%EXE%\"\r\n");
+    bat.push_str("if exist \"%EXE%\" (\r\n");
+    bat.push_str("  start \"\" \"%EXE%\"\r\n");
+    bat.push_str(")\r\n");
     bat.push_str("if exist \"%OLD%\" del /f /q \"%OLD%\" >NUL 2>&1\r\n");
     bat.push_str("del \"%~");
     bat.push_str("f0\" >NUL 2>&1\r\n");
     bat.push_str("endlocal\r\n");
     tokio::fs::write(&bat_path, bat).await?;
 
+    // Sin `start`: evita ventana de consola. DETACHED_PROCESS sobrevive al cierre del Agent.
     const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const DETACHED_PROCESS: u32 = 0x00000008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
     let bat_str = bat_path.to_string_lossy().replace('"', "");
-    let cmdline = format!("start \"\" /MIN \"{}\"", bat_str);
     let status = std::process::Command::new("cmd.exe")
-        .args(["/C", &cmdline])
-        .creation_flags(CREATE_NO_WINDOW)
+        .args(["/C", &bat_str])
+        .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn();
 
     if let Err(e) = status {
