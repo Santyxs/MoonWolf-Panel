@@ -152,12 +152,28 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
             (std::env::current_exe().ok(), state.update_file.clone())
         };
         if let (Some(current), Some(new_exe)) = (current, new_exe) {
-            if let Err(e) = crate::apply_update(&current, &new_exe).await {
-                let mut state = app.write().await;
-                state.add_log("error", format!("No se pudo aplicar update: {e}"));
-                state.update_status = "error".into();
-                state.update_error = Some(e.to_string());
+            match crate::apply_update(&current, &new_exe).await {
+                Ok(()) => {
+                    {
+                        let mut state = app.write().await;
+                        state.update_status = "applied".into();
+                        state.shutting_down = true;
+                        state.add_log("info", "Actualización aplicada. Reiniciando Agent...");
+                    }
+                    // Cerrar el proceso para que el script .bat pueda arrancar el nuevo ejecutable
+                    let _ = slint::invoke_from_event_loop(|| {
+                        let _ = slint::quit_event_loop();
+                    });
+                }
+                Err(e) => {
+                    let mut state = app.write().await;
+                    state.add_log("error", format!("No se pudo aplicar update: {e}"));
+                    state.update_status = "error".into();
+                    state.update_error = Some(e.to_string());
+                }
             }
+        } else {
+            app.write().await.add_log("error", "No hay archivo de actualización listo para instalar");
         }
     }));
 
