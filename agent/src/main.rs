@@ -697,6 +697,13 @@ async fn download_and_stage(
 }
 
 #[cfg(windows)]
+
+/// Ruta Windows usable (sin prefijo \\?\).
+fn win_path_str(p: &Path) -> String {
+    let s = p.to_string_lossy();
+    s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
+}
+
 pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::Result<()> {
     use std::os::windows::process::CommandExt;
     use std::process::Stdio;
@@ -721,21 +728,42 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
     let _ = clean_updates_dir(None).await;
 
     let pid = std::process::id();
-    // Escapar comillas simples para PowerShell (rutas con ' son raras)
-    let exe_ps = current_exe.to_string_lossy().replace('\'', "''");
-    let old_ps = old.to_string_lossy().replace('\'', "''");
+    let exe_path = win_path_str(&current_exe);
+    let old_path = win_path_str(&old);
 
-    // Reinicio 100% silencioso: PowerShell oculto, sin cmd/findstr/tasklist visibles
-    let ps = format!(
-        "while (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 400 }}; \
-         Start-Sleep -Milliseconds 800; \
-         if (Test-Path -LiteralPath '{exe}') {{ Start-Process -FilePath '{exe}' }}; \
-         if (Test-Path -LiteralPath '{old}') {{ Remove-Item -LiteralPath '{old}' -Force -ErrorAction SilentlyContinue }}",
+    let dir = AgentConfig::config_dir().join("updates");
+    tokio::fs::create_dir_all(&dir).await?;
+    let ps1_path = dir.join("restart-after-update.ps1");
+    let ps1_path_str = win_path_str(&ps1_path);
+
+    // Comillas simples duplicadas solo dentro del script PowerShell
+    let exe_ps = exe_path.replace('\'', "''");
+    let old_ps = old_path.replace('\'', "''");
+
+    let ps1 = format!(
+        "$ErrorActionPreference = 'SilentlyContinue'\r\n\
+$pidWait = {pid}\r\n\
+$exe = '{exe}'\r\n\
+$old = '{old}'\r\n\
+while (Get-Process -Id $pidWait -ErrorAction SilentlyContinue) {{\r\n\
+  Start-Sleep -Milliseconds 500\r\n\
+}}\r\n\
+Start-Sleep -Milliseconds 1000\r\n\
+if (Test-Path -LiteralPath $exe) {{\r\n\
+  Start-Process -FilePath $exe\r\n\
+}}\r\n\
+if (Test-Path -LiteralPath $old) {{\r\n\
+  Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue\r\n\
+}}\r\n\
+Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue\r\n\
+",
         pid = pid,
         exe = exe_ps,
         old = old_ps,
     );
+    tokio::fs::write(&ps1_path, ps1).await?;
 
+    // Proceso hijo independiente y sin ventana
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     const DETACHED_PROCESS: u32 = 0x00000008;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
@@ -748,8 +776,8 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
             "Bypass",
             "-WindowStyle",
             "Hidden",
-            "-Command",
-            &ps,
+            "-File",
+            &ps1_path_str,
         ])
         .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
         .stdin(Stdio::null())
@@ -761,7 +789,7 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
         anyhow::bail!("No se pudo lanzar el reinicio post-update: {e}");
     }
 
-    info!("Actualización lista; reinicio programado tras cerrar PID {pid}");
+    info!("Actualización lista; reinicio programado tras cerrar PID {pid} -> {exe_path}");
     Ok(())
 }
 
