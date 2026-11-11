@@ -159,6 +159,7 @@ export component MainWindow inherits Window {
             padding-top: 14px;
             padding-bottom: 12px;
             spacing: 10px;
+            alignment: start;
 
             HorizontalBox {
                 height: 48px;
@@ -277,6 +278,7 @@ export component MainWindow inherits Window {
                 VerticalBox {
                     padding: 2px;
                     spacing: 0px;
+                    alignment: start;
                     FieldRow {
                         caption: "CÓDIGO DE EMPAREJAMIENTO";
                         value: root.pairing-code;
@@ -467,6 +469,7 @@ export component MainWindow inherits Window {
             }
         }
 
+        // ── Settings modal ──────────────────────────────────────────────────
         if root.settings-visible : Rectangle {
             x: 14px;
             y: (root.height - (root.update-visible ? 320px : 248px)) / 2;
@@ -480,44 +483,45 @@ export component MainWindow inherits Window {
             drop-shadow-color: #000000cc;
             clip: true;
 
-            VerticalBox {
-                padding: 16px;
-                spacing: 10px;
+            Rectangle {
+                x: parent.width - 40px;
+                y: 12px;
+                width: 28px;
+                height: 28px;
+                border-radius: 8px;
+                background: #1c2036;
+                border-width: 1px;
+                border-color: #343a58;
+                Text {
+                    width: 100%;
+                    height: 100%;
+                    text: "×";
+                    color: #c0c4d8;
+                    font-size: 18px;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.settings-visible = false; }
+                }
+            }
 
-                HorizontalBox {
-                    spacing: 8px;
-                    alignment: start;
-                    Text {
-                        text: "Configuración";
-                        color: #faf8ff;
-                        font-size: 17px;
-                        font-weight: 800;
-                        horizontal-stretch: 1;
-                        vertical-alignment: center;
-                    }
-                    Rectangle {
-                        y: 0px;
-                        width: 28px;
-                        height: 28px;
-                        border-radius: 8px;
-                        background: #1c2036;
-                        border-width: 1px;
-                        border-color: #343a58;
-                        Text {
-                            width: 100%;
-                            height: 100%;
-                            text: "×";
-                            color: #c0c4d8;
-                            font-size: 18px;
-                            font-weight: 600;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.settings-visible = false; }
-                        }
-                    }
+            VerticalBox {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 14px;
+                padding-bottom: 14px;
+                spacing: 10px;
+                alignment: start;
+
+                Text {
+                    text: "Configuración";
+                    color: #faf8ff;
+                    font-size: 17px;
+                    font-weight: 800;
+                    horizontal-alignment: left;
                 }
                 Text {
                     text: "Gestiona las opciones de MoonWolf Agent.";
@@ -577,6 +581,7 @@ export component MainWindow inherits Window {
             }
         }
 
+        // ── Logs modal ──────────────────────────────────────────────────────
         if root.logs-visible : Rectangle {
             x: 14px;
             y: (root.height - 340px) / 2;
@@ -588,45 +593,47 @@ export component MainWindow inherits Window {
             border-color: #6a5ad8;
             drop-shadow-blur: 32px;
             drop-shadow-color: #000000cc;
+            clip: true;
+
+            Rectangle {
+                x: parent.width - 40px;
+                y: 12px;
+                width: 28px;
+                height: 28px;
+                border-radius: 8px;
+                background: #1c2036;
+                border-width: 1px;
+                border-color: #343a58;
+                Text {
+                    width: 100%;
+                    height: 100%;
+                    text: "×";
+                    color: #c0c4d8;
+                    font-size: 18px;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.logs-visible = false; }
+                }
+            }
 
             VerticalBox {
-                padding: 18px;
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 14px;
+                padding-bottom: 14px;
                 spacing: 12px;
+                alignment: start;
 
-                HorizontalBox {
-                    spacing: 8px;
-                    alignment: start;
-                    Text {
-                        text: "Registros del Agent";
-                        color: #faf8ff;
-                        font-size: 16px;
-                        font-weight: 800;
-                        horizontal-stretch: 1;
-                        vertical-alignment: center;
-                    }
-                    Rectangle {
-                        y: 0px;
-                        width: 28px;
-                        height: 28px;
-                        border-radius: 8px;
-                        background: #1c2036;
-                        border-width: 1px;
-                        border-color: #343a58;
-                        Text {
-                            width: 100%;
-                            height: 100%;
-                            text: "×";
-                            color: #c0c4d8;
-                            font-size: 18px;
-                            font-weight: 600;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.logs-visible = false; }
-                        }
-                    }
+                Text {
+                    text: "Registros del Agent";
+                    color: #faf8ff;
+                    font-size: 16px;
+                    font-weight: 800;
+                    horizontal-alignment: left;
                 }
                 HorizontalBox {
                     spacing: 10px;
@@ -654,6 +661,7 @@ export component MainWindow inherits Window {
                         height: 100%;
                         VerticalBox {
                             padding: 12px;
+                            alignment: start;
                             Text {
                                 text: root.logs-text == "" ? "Todavía no hay registros.\nLos eventos del Agent aparecerán aquí." : root.logs-text;
                                 color: root.logs-text == "" ? #5a5f7a : #c8cce0;
@@ -682,6 +690,7 @@ export component MainWindow inherits Window {
             VerticalBox {
                 padding: 20px;
                 spacing: 14px;
+                alignment: start;
                 Text {
                     text: "Carpeta del servidor";
                     color: #faf8ff;
