@@ -206,7 +206,7 @@ export component MainWindow inherits Window {
                         font-weight: 800;
                     }
                     Text {
-                        text: "AGENT  /  WINDOWS";
+                        text: "AGENT";
                         color: #8a85b0;
                         font-size: 9px;
                         font-weight: 700;
@@ -214,25 +214,6 @@ export component MainWindow inherits Window {
                     }
                 }
                 Rectangle { horizontal-stretch: 1; }
-                Rectangle {
-                    height: 26px;
-                    border-radius: 8px;
-                    background: #14172a;
-                    border-width: 1px;
-                    border-color: #2a2f4a;
-                    HorizontalBox {
-                        padding-left: 10px;
-                        padding-right: 10px;
-                        alignment: center;
-                        Text {
-                            text: "v" + root.version;
-                            color: #7a7f9e;
-                            font-size: 11px;
-                            font-weight: 600;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
             }
 
             // ── Status card ─────────────────────────────────────────────────
@@ -472,15 +453,6 @@ export component MainWindow inherits Window {
             }
 
             Rectangle { vertical-stretch: 1; }
-
-            Text {
-                text: "MOONWOLF AGENT   •   WINDOWS";
-                color: #4a4f6a;
-                font-size: 8px;
-                font-weight: 700;
-                letter-spacing: 1.4px;
-                horizontal-alignment: center;
-            }
         }
 
         // ── Backdrop when modal open ────────────────────────────────────────
