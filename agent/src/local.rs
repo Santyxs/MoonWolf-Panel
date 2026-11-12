@@ -585,7 +585,7 @@ async fn stream_file_response(
         |(mut file, mut buffer)| async move {
             let read = file.read(&mut buffer).await?;
             if read == 0 {
-                return Ok(None);
+                return Ok::<_, std::io::Error>(None);
             }
 
             let chunk = Bytes::copy_from_slice(&buffer[..read]);
