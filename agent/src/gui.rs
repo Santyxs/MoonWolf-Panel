@@ -260,6 +260,9 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
                     (state.gui_revision, state.snapshot())
                 };
                 last_revision = Some(revision);
+
+                // Cada actualización recibe su propia copia del handle débil.
+                let weak = weak.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = weak.upgrade() {
                         ui.set_status_title(if snapshot.cloud_connected { "Conectado".into() } else { "Desconectado".into() });
