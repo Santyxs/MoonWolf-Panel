@@ -145,6 +145,8 @@ export component MainWindow inherits Window {
     in-out property <bool> cloud-connected: false;
     in-out property <bool> local-ready: false;
     in-out property <bool> update-visible: false;
+    in-out property <bool> update-installable: false;
+    in-out property <bool> update-failed: false;
     in-out property <bool> restart-visible: false;
     in-out property <bool> logs-visible: false;
     in-out property <bool> settings-visible: false;
@@ -508,12 +510,25 @@ export component MainWindow inherits Window {
                         vertical-alignment: center;
                         horizontal-alignment: left;
                     }
-                    ActionButton {
+                    if root.update-installable : ActionButton {
                         width: 80px;
                         height: 34px;
                         label: "Instalar";
                         primary: true;
                         clicked => { root.apply-update(); }
+                    }
+                    if root.update-failed : ActionButton {
+                        width: 80px;
+                        height: 34px;
+                        label: "Reintentar";
+                        clicked => { root.check-update(); }
+                    }
+                    if !root.update-installable && !root.update-failed : Text {
+                        text: "Descargando";
+                        color: #b6aaff;
+                        font-size: 10px;
+                        font-weight: 700;
+                        vertical-alignment: center;
                     }
                 }
             }
@@ -653,12 +668,25 @@ export component MainWindow inherits Window {
                             horizontal-alignment: left;
                             overflow: elide;
                         }
-                        ActionButton {
+                        if root.update-installable : ActionButton {
                             width: 76px;
                             height: 32px;
                             label: "Instalar";
                             primary: true;
                             clicked => { root.apply-update(); }
+                        }
+                        if root.update-failed : ActionButton {
+                            width: 76px;
+                            height: 32px;
+                            label: "Reintentar";
+                            clicked => { root.check-update(); }
+                        }
+                        if !root.update-installable && !root.update-failed : Text {
+                            text: "Descargando";
+                            color: #b6aaff;
+                            font-size: 10px;
+                            font-weight: 700;
+                            vertical-alignment: center;
                         }
                     }
                 }
