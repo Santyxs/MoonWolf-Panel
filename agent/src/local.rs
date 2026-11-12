@@ -29,6 +29,7 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 const UPLOAD_DIR_NAME: &str = ".moonwolf-uploads";
 const UPLOAD_MAX_CHUNK: usize = 17 * 1024 * 1024;
 const UPLOAD_BODY_LIMIT: usize = 20 * 1024 * 1024;
+const DOWNLOAD_CHUNK_SIZE: usize = 64 * 1024;
 
 const BACKUPS_REL_DIR: &str = ".moonwolf/backups";
 const BACKUP_EXCLUDES: &[&str] = &[".moonwolf", ".moonwolf-uploads"];
@@ -556,21 +557,51 @@ async fn download_file(
     if !path.is_file() {
         return Err(StatusCode::NOT_FOUND);
     }
-    let data = tokio::fs::read(&path)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file.bin".into());
+    stream_file_response(&path, &name, "application/octet-stream").await
+}
+
+async fn stream_file_response(
+    path: &Path,
+    name: &str,
+    content_type: &'static str,
+) -> Result<Response, StatusCode> {
+    use tokio::io::AsyncReadExt;
+
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let content_length = file
+        .metadata()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .len();
+
+    let stream = futures::stream::try_unfold(
+        (file, vec![0_u8; DOWNLOAD_CHUNK_SIZE]),
+        |(mut file, mut buffer)| async move {
+            let read = file.read(&mut buffer).await?;
+            if read == 0 {
+                return Ok(None);
+            }
+
+            let chunk = Bytes::copy_from_slice(&buffer[..read]);
+            Ok(Some((chunk, (file, buffer))))
+        },
+    );
+
     Response::builder()
         .status(StatusCode::OK)
-        .header("content-type", "application/octet-stream")
+        .header("content-type", content_type)
+        .header("content-length", content_length.to_string())
         .header(
             "content-disposition",
             format!("attachment; filename=\"{name}\""),
         )
-        .body(axum::body::Body::from(data))
+        .body(axum::body::Body::from_stream(stream))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
@@ -1552,19 +1583,7 @@ async fn download_backup(
         return Err(StatusCode::NOT_FOUND);
     }
 
-    let data = tokio::fs::read(&path)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/zip")
-        .header(
-            "content-disposition",
-            format!("attachment; filename=\"{name}\""),
-        )
-        .body(axum::body::Body::from(data))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    stream_file_response(&path, &name, "application/zip").await
 }
 
 async fn delete_backup(
