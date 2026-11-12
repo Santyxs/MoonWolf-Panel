@@ -553,10 +553,30 @@ pub async fn run_periodic_update(app: Arc<RwLock<AppState>>) {
 
 pub async fn check_update_once(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     let current = {
-        let s = app.read().await;
+        let mut s = app.write().await;
+        // Evitar comprobaciones simultáneas y no volver a descargar una versión
+        // que ya está preparada para instalar.
+        if matches!(s.update_status.as_str(), "checking" | "downloading" | "ready") {
+            return Ok(());
+        }
+        s.update_status = "checking".into();
+        s.update_progress = 0.0;
+        s.update_error = None;
+        s.gui_revision = s.gui_revision.wrapping_add(1);
         s.version.clone()
     };
 
+    let result = check_update_inner(Arc::clone(&app), &current).await;
+    if let Err(error) = &result {
+        let mut s = app.write().await;
+        s.update_status = "error".into();
+        s.update_error = Some(error.to_string());
+        s.add_log("error", format!("Error buscando actualización: {error}"));
+    }
+    result
+}
+
+async fn check_update_inner(app: Arc<RwLock<AppState>>, current: &str) -> anyhow::Result<()> {
     let url = format!("https://api.github.com/repos/{UPDATE_REPO}/releases/latest");
     let client = UPDATE_HTTP_CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -575,19 +595,27 @@ pub async fn check_update_once(app: Arc<RwLock<AppState>>) -> anyhow::Result<()>
         .await?;
 
     let tag = release.tag_name.trim_start_matches("agent-v").to_string();
-    if compare_versions(&tag, &current) != Ordering::Greater {
+    if compare_versions(&tag, current) != Ordering::Greater {
         info!("Sin actualizaciones (actual v{current}, latest v{tag})");
+        let mut s = app.write().await;
+        s.update_available = None;
+        s.update_file = None;
+        s.update_status = "idle".into();
+        s.update_progress = 0.0;
+        s.update_error = None;
+        s.gui_revision = s.gui_revision.wrapping_add(1);
         return Ok(());
     }
 
+    // El instalador espera un ejecutable PE, no un ZIP.
     let asset = release
         .assets
         .iter()
         .find(|a| {
             let n = a.name.to_lowercase();
-            n.contains("moonwolf-agent") && (n.ends_with(".exe") || n.ends_with(".zip"))
+            n.contains("moonwolf-agent") && n.ends_with(".exe")
         })
-        .ok_or_else(|| anyhow::anyhow!("No hay asset de Agent en el release"))?;
+        .ok_or_else(|| anyhow::anyhow!("No hay un ejecutable MoonWolf-Agent.exe en el release"))?;
 
     let info_update = UpdateInfo {
         version: tag.clone(),
@@ -598,13 +626,14 @@ pub async fn check_update_once(app: Arc<RwLock<AppState>>) -> anyhow::Result<()>
     {
         let mut s = app.write().await;
         s.update_available = Some(info_update.clone());
-        s.update_status = "idle".into();
+        s.update_status = "downloading".into();
         s.update_progress = 0.0;
         s.update_error = None;
+        s.update_file = None;
         s.add_log(
             "info",
             format!(
-                "Actualización disponible: v{} (actual: v{current})",
+                "Actualización disponible: v{} (actual: v{current}). Descargando...",
                 info_update.version
             ),
         );
@@ -665,6 +694,8 @@ async fn download_and_stage(
         let mut s = app.write().await;
         s.update_status = "downloading".into();
         s.update_progress = 0.0;
+        s.update_error = None;
+        s.gui_revision = s.gui_revision.wrapping_add(1);
     }
 
     let dir = AgentConfig::config_dir().join("updates");
@@ -696,8 +727,23 @@ async fn download_and_stage(
         downloaded += chunk.len() as u64;
         let mut s = app.write().await;
         s.update_progress = (downloaded as f32 / total as f32).min(1.0);
+        // El refresco periódico de la GUI depende de gui_revision.
+        s.gui_revision = s.gui_revision.wrapping_add(1);
     }
-    file.sync_all().await.ok();
+    file.sync_all().await?;
+
+    if downloaded < 2 {
+        let _ = tokio::fs::remove_file(&dest).await;
+        anyhow::bail!("El ejecutable descargado está vacío o incompleto");
+    }
+    let mut downloaded_file = tokio::fs::File::open(&dest).await?;
+    let mut signature = [0u8; 2];
+    use tokio::io::AsyncReadExt;
+    downloaded_file.read_exact(&mut signature).await?;
+    if &signature != b"MZ" {
+        let _ = tokio::fs::remove_file(&dest).await;
+        anyhow::bail!("El archivo descargado no es un ejecutable de Windows válido");
+    }
 
     {
         let mut s = app.write().await;

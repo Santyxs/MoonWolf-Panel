@@ -210,21 +210,28 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     let app_for_update = Arc::clone(&app);
     ui.on_check_update(move || {
         spawn_async(Arc::clone(&app_for_update), |app| async move {
-            if let Err(e) = crate::check_update_once(Arc::clone(&app)).await {
-                app.write()
-                    .await
-                    .add_log("error", format!("Error buscando actualización: {e}"));
-            }
+            // check_update_once registra el error y actualiza el estado visible.
+            let _ = crate::check_update_once(app).await;
         })
     });
 
     let app_for_apply = Arc::clone(&app);
     ui.on_apply_update(move || {
         spawn_async(Arc::clone(&app_for_apply), |app| async move {
-            let (current, new_exe) = {
+            let (current, new_exe, ready) = {
                 let state = app.read().await;
-                (std::env::current_exe().ok(), state.update_file.clone())
+                (
+                    std::env::current_exe().ok(),
+                    state.update_file.clone(),
+                    state.update_status == "ready",
+                )
             };
+            if !ready {
+                app.write()
+                    .await
+                    .add_log("warn", "La actualización todavía no está lista para instalar");
+                return;
+            }
             if let (Some(current), Some(new_exe)) = (current, new_exe) {
                 match crate::apply_update(&current, &new_exe).await {
                     Ok(()) => {
@@ -336,11 +343,33 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
                         ui.set_agent_id(snapshot.agent_id.into());
                         ui.set_config_dir(snapshot.config_path.into());
                         ui.set_restart_visible(snapshot.restart_required);
-                        ui.set_update_visible(snapshot.update_available.is_some());
-                        let update = snapshot
+                        let has_update = snapshot.update_available.is_some();
+                        let update_version = snapshot
                             .update_available
-                            .map(|u| format!("Actualización disponible: v{}", u.version))
-                            .unwrap_or_else(|| snapshot.update_error.unwrap_or_default());
+                            .as_ref()
+                            .map(|u| u.version.as_str())
+                            .unwrap_or("");
+                        let update_ready = has_update && snapshot.update_status == "ready";
+                        let update_failed = has_update && snapshot.update_status == "error";
+                        ui.set_update_visible(has_update);
+                        ui.set_update_installable(update_ready);
+                        ui.set_update_failed(update_failed);
+                        let update = if has_update {
+                            match snapshot.update_status.as_str() {
+                                "downloading" | "checking" => format!(
+                                    "Descargando v{update_version}: {:.0}%",
+                                    snapshot.update_progress * 100.0
+                                ),
+                                "ready" => format!("Actualización lista: v{update_version}"),
+                                "error" => snapshot
+                                    .update_error
+                                    .clone()
+                                    .unwrap_or_else(|| "Error preparando la actualización".into()),
+                                _ => format!("Actualización disponible: v{update_version}"),
+                            }
+                        } else {
+                            snapshot.update_error.clone().unwrap_or_default()
+                        };
                         ui.set_update_text(update.into());
                         let logs = snapshot
                             .logs
