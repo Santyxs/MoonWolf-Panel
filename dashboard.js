@@ -1327,7 +1327,7 @@ function updateStatusUi(status) {
 
   if (statusText) {
     statusText.textContent =
-      STATUS[status] || String(status).toUpperCase();
+      STATUS[status]?.label || String(status).toUpperCase();
   }
 
   const startButton = $('btnStart');
