@@ -1,3 +1,4 @@
+
 name: "MoonWolf Agent"
 
 on:
@@ -42,6 +43,10 @@ jobs:
     name: "Build Windows"
     runs-on: windows-latest
     timeout-minutes: 25
+
+    env:
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
 
     permissions:
       contents: read
@@ -227,11 +232,6 @@ jobs:
         shell: pwsh
         env:
           MOONWOLF_AGENT_VERSION: ${{ steps.version.outputs.version }}
-          # El enlace ThinLTO domina el tiempo del runner de Windows. Esta
-          # sobreescritura solo afecta al CI; el perfil release del proyecto
-          # conserva su optimización para builds locales/producción.
-          CARGO_PROFILE_RELEASE_LTO: "false"
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
         run: |
           cargo build `
             --release `
