@@ -732,7 +732,6 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
 
     let pid = std::process::id();
     let exe_path = PathBuf::from(win_path_str(&current_exe));
-    let old_path = PathBuf::from(win_path_str(&old));
 
     // Arrancar YA el nuevo Agent con --wait-pid: espera a que este proceso muera y sigue.
     // Es el mecanismo más fiable (sin PowerShell ni .bat).
@@ -764,18 +763,6 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
             warn!("No se pudo comprobar el proceso hijo: {e}");
         }
     }
-
-    // Limpieza del .old en segundo plano cuando el PID actual ya no exista (mejor esfuerzo)
-    let old_cleanup = old_path.clone();
-    let pid_cleanup = pid;
-    std::thread::spawn(move || {
-        for _ in 0..60 {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            // cuando este hilo muere con el proceso, no importa; el nuevo Agent puede limpiar
-            let _ = pid_cleanup;
-        }
-        let _ = std::fs::remove_file(&old_cleanup);
-    });
 
     Ok(())
 }
