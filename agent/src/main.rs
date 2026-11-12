@@ -720,6 +720,7 @@ fn win_path_str(p: &Path) -> String {
     s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
 }
 
+#[cfg(windows)]
 pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::Result<()> {
     use std::process::Stdio;
 
