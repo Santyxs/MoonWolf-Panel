@@ -103,12 +103,6 @@ jobs:
         working-directory: agent
         shell: pwsh
         run: |
-          cargo fmt --all
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Rust formatting failed."
-          }
-
           cargo fmt --all -- --check
 
           if ($LASTEXITCODE -ne 0) {
