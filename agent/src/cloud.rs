@@ -7,7 +7,7 @@ use std::{
 };
 
 use bytes::BytesMut;
-use futures::{future::FutureExt, StreamExt};
+use futures::{StreamExt, future::FutureExt};
 use rust_socketio::asynchronous::{Client, ClientBuilder};
 use rust_socketio::{Event, Payload, TransportType};
 use serde_json::json;
@@ -16,9 +16,8 @@ use tracing::{debug, error, info, warn};
 use webrtc::{
     data_channel::{DataChannel, DataChannelEvent},
     peer_connection::{
-        PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
-        RTCConfigurationBuilder, RTCIceCandidateInit, RTCIceServer,
-        RTCPeerConnectionIceEvent, RTCSessionDescription,
+        PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder,
+        RTCIceCandidateInit, RTCIceServer, RTCPeerConnectionIceEvent, RTCSessionDescription,
     },
 };
 
@@ -187,13 +186,8 @@ async fn handle_direct_data_channel(channel: Arc<dyn DataChannel>, app: Arc<RwLo
             DIRECT_REQ_HEAD => {
                 let parsed = serde_json::from_slice::<serde_json::Value>(payload);
                 let Ok(head) = parsed else {
-                    send_direct_error(
-                        &channel,
-                        &send_lock,
-                        id,
-                        "Cabecera de solicitud no válida",
-                    )
-                    .await;
+                    send_direct_error(&channel, &send_lock, id, "Cabecera de solicitud no válida")
+                        .await;
                     continue;
                 };
                 let method = head
@@ -265,14 +259,8 @@ async fn handle_direct_data_channel(channel: Arc<dyn DataChannel>, app: Arc<RwLo
                 let app = Arc::clone(&app);
                 let send_lock = Arc::clone(&send_lock);
                 tokio::spawn(async move {
-                    if let Err(error) = process_direct_http_request(
-                        &channel,
-                        &send_lock,
-                        &app,
-                        id,
-                        request,
-                    )
-                    .await
+                    if let Err(error) =
+                        process_direct_http_request(&channel, &send_lock, &app, id, request).await
                     {
                         debug!("WebRTC solicitud {id}: {error:#}");
                         send_direct_error(&channel, &send_lock, id, &error.to_string()).await;
@@ -510,8 +498,15 @@ async fn handle_direct_signal(
                 return;
             }
 
-            peers.lock().await.insert(peer_id.clone(), Arc::clone(&peer));
-            let queued = pending_ice.lock().await.remove(&peer_id).unwrap_or_default();
+            peers
+                .lock()
+                .await
+                .insert(peer_id.clone(), Arc::clone(&peer));
+            let queued = pending_ice
+                .lock()
+                .await
+                .remove(&peer_id)
+                .unwrap_or_default();
             for candidate in queued {
                 if let Err(error) = peer.add_ice_candidate(candidate).await {
                     debug!("WebRTC candidato ICE pendiente {peer_id}: {error}");
@@ -835,9 +830,7 @@ async fn connect_once(
                 let pending_ice = Arc::clone(&pending_ice);
                 async move {
                     let message = payload_json(&payload);
-                    if let Some(peer_id) = message
-                        .get("peerId")
-                        .and_then(serde_json::Value::as_str)
+                    if let Some(peer_id) = message.get("peerId").and_then(serde_json::Value::as_str)
                     {
                         close_direct_peer(&peers, peer_id).await;
                         pending_ice.lock().await.remove(peer_id);
@@ -854,9 +847,7 @@ async fn connect_once(
                 let pending_ice = Arc::clone(&pending_ice);
                 async move {
                     let message = payload_json(&payload);
-                    if let Some(peer_id) = message
-                        .get("peerId")
-                        .and_then(serde_json::Value::as_str)
+                    if let Some(peer_id) = message.get("peerId").and_then(serde_json::Value::as_str)
                     {
                         let permission = message
                             .get("permission")
