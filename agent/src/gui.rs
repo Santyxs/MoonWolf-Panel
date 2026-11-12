@@ -227,9 +227,10 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
                 )
             };
             if !ready {
-                app.write()
-                    .await
-                    .add_log("warn", "La actualización todavía no está lista para instalar");
+                app.write().await.add_log(
+                    "warn",
+                    "La actualización todavía no está lista para instalar",
+                );
                 return;
             }
             if let (Some(current), Some(new_exe)) = (current, new_exe) {

@@ -556,7 +556,10 @@ pub async fn check_update_once(app: Arc<RwLock<AppState>>) -> anyhow::Result<()>
         let mut s = app.write().await;
         // Evitar comprobaciones simultáneas y no volver a descargar una versión
         // que ya está preparada para instalar.
-        if matches!(s.update_status.as_str(), "checking" | "downloading" | "ready") {
+        if matches!(
+            s.update_status.as_str(),
+            "checking" | "downloading" | "ready"
+        ) {
             return Ok(());
         }
         s.update_status = "checking".into();
