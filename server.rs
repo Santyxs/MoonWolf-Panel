@@ -252,6 +252,31 @@ struct AgentCache {
     logs: Vec<Value>,
 }
 
+fn update_server_status_from_log(entry: &mut AgentCache, log: &Value) -> Option<Value> {
+    let message = log.get("message").and_then(Value::as_str)?;
+    let message = message.to_ascii_lowercase();
+
+    let status = if message.contains("servidor minecraft arrancado") {
+        "starting"
+    } else if (message.contains("done (") && message.contains("for help, type"))
+        || message.contains("listening on /")
+        || message.contains("listening on 0.0.0.0")
+        || message.contains("listening on [::]")
+    {
+        "online"
+    } else if message.contains("servidor minecraft terminó")
+        || message.trim() == "servidor detenido"
+    {
+        "offline"
+    } else {
+        return None;
+    };
+
+    let status = json!(status);
+    entry.status = Some(status.clone());
+    Some(status)
+}
+
 #[derive(Clone)]
 struct PairingCode {
     agent_id: String,
@@ -625,15 +650,33 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
                     let Some(name) = event.get("name").and_then(Value::as_str) else { return; };
                     if !["status", "log", "log_batch", "stats"].contains(&name) { return; }
                     let payload = event.get("payload").cloned().unwrap_or(Value::Null);
+                    let mut status_update = None;
                     {
                         let mut cache = state.cache.lock().await;
                         let entry = cache.entry(agent_id.clone()).or_default();
                         match name {
-                            "status" => entry.status = Some(payload.clone()),
+                            "status" => {
+                                let online_during_startup = payload.as_str() == Some("online")
+                                    && entry.status.as_ref().and_then(Value::as_str) == Some("starting");
+                                if !online_during_startup {
+                                    entry.status = Some(payload.clone());
+                                    status_update = Some(payload.clone());
+                                }
+                            }
                             "stats" => entry.stats = Some(payload.clone()),
-                            "log" => entry.logs.push(payload.clone()),
+                            "log" => {
+                                entry.logs.push(payload.clone());
+                                status_update = update_server_status_from_log(entry, &payload);
+                            }
                             "log_batch" => {
-                                if let Some(items) = payload.as_array() { entry.logs.extend(items.iter().cloned()); }
+                                if let Some(items) = payload.as_array() {
+                                    for item in items {
+                                        entry.logs.push(item.clone());
+                                        if let Some(update) = update_server_status_from_log(entry, item) {
+                                            status_update = Some(update);
+                                        }
+                                    }
+                                }
                             }
                             _ => {}
                         }
@@ -642,11 +685,16 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
                             entry.logs.drain(0..remove);
                         }
                     }
-                    if name == "status" {
-                        *state.last_status.lock().await = payload.clone();
-                        let _ = io.to("local-agent").emit("status", &payload).await;
+
+                    if let Some(status) = status_update {
+                        *state.last_status.lock().await = status.clone();
+                        let _ = io.to("local-agent").emit("status", &status).await;
+                        let _ = io.to(format!("panels:{agent_id}")).emit("status", &status).await;
                     }
-                    let _ = io.to(format!("panels:{agent_id}")).emit(name, &payload).await;
+
+                    if name != "status" {
+                        let _ = io.to(format!("panels:{agent_id}")).emit(name, &payload).await;
+                    }
                 }
             });
 
@@ -686,47 +734,18 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
                 let state = state_signal.clone();
                 let agent_id = agent_id_signal.clone();
                 async move {
-                    if state
-                        .rate_limited(format!("agent-direct-signal:{agent_id}"), 240, 60_000)
-                        .await
-                    {
-                        return;
-                    }
-                    let Some(peer_id) = msg.get("peerId").and_then(Value::as_str) else {
-                        return;
-                    };
+                    if state.rate_limited(format!("agent-direct-signal:{agent_id}"), 240, 60_000).await { return; }
+                    let Some(peer_id) = msg.get("peerId").and_then(Value::as_str) else { return; };
                     let panel = state.panels.lock().await.get(peer_id).cloned();
-                    let Some(panel) = panel.filter(|p| p.agent_id == agent_id) else {
-                        return;
-                    };
+                    let Some(panel) = panel.filter(|p| p.agent_id == agent_id) else { return; };
                     let kind = msg.get("type").and_then(Value::as_str).unwrap_or("");
-                    if !["answer", "candidate", "unavailable"].contains(&kind) {
-                        return;
-                    }
+                    if !["answer", "candidate"].contains(&kind) { return; }
                     let mut forwarded = json!({"type":kind});
                     if kind == "answer" {
-                        forwarded["sdp"] = Value::String(
-                            msg.get("sdp")
-                                .and_then(Value::as_str)
-                                .unwrap_or("")
-                                .chars()
-                                .take(32_768)
-                                .collect(),
-                        );
-                    } else if kind == "candidate" {
-                        forwarded["candidate"] = Value::String(
-                            msg.get("candidate")
-                                .and_then(Value::as_str)
-                                .unwrap_or("")
-                                .chars()
-                                .take(2_048)
-                                .collect(),
-                        );
-                        if let Some(mid) = msg.get("sdpMid") {
-                            forwarded["sdpMid"] = Value::String(
-                                mid.as_str().unwrap_or("").chars().take(64).collect(),
-                            );
-                        }
+                        forwarded["sdp"] = Value::String(msg.get("sdp").and_then(Value::as_str).unwrap_or("").chars().take(32_768).collect());
+                    } else {
+                        forwarded["candidate"] = Value::String(msg.get("candidate").and_then(Value::as_str).unwrap_or("").chars().take(2_048).collect());
+                        if let Some(mid) = msg.get("sdpMid") { forwarded["sdpMid"] = Value::String(mid.as_str().unwrap_or("").chars().take(64).collect()); }
                     }
                     let _ = panel.socket.emit("direct_signal", &forwarded);
                 }
@@ -808,27 +827,6 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
                 let agent_id = signal_agent_id.clone();
                 let session = signal_session.clone();
                 async move { handle_panel_signal(state, socket, panel_id, agent_id, session, msg).await; }
-            });
-
-            // Cierra también el peer remoto cuando el navegador descarta WebRTC.
-            let state_direct_close = state.clone();
-            let close_panel_id = panel_id.clone();
-            let close_agent_id = agent_id.clone();
-            socket.on("direct_close", move |_socket: SocketRef, Data(_): Data<Value>| {
-                let state = state_direct_close.clone();
-                let panel_id = close_panel_id.clone();
-                let agent_id = close_agent_id.clone();
-                async move {
-                    if state
-                        .rate_limited(format!("{panel_id}:direct-close"), 60, 60_000)
-                        .await
-                    {
-                        return;
-                    }
-                    if let Some(agent) = state.agents.lock().await.get(&agent_id).cloned() {
-                        let _ = agent.emit("direct_close", &json!({"peerId":panel_id}));
-                    }
-                }
             });
 
             let state_disconnect = state.clone();
