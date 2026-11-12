@@ -646,36 +646,18 @@ async function connectCloud(manual = false) {
 
     cloudSocket.on('direct_signal', async msg => {
       const pc = direct.pc;
+
       if (!pc) return;
 
       try {
         if (msg?.type === 'answer') {
           await pc.setRemoteDescription({ type: 'answer', sdp: String(msg.sdp || '') });
-          if (direct.pc !== pc) return;
-          direct.remoteDescriptionSet = true;
-
-          const pendingCandidates = direct.pendingIce.splice(0);
-          for (const candidate of pendingCandidates) {
-            try { await pc.addIceCandidate(candidate); } catch {}
-          }
         } else if (msg?.type === 'candidate' && msg.candidate) {
-          const candidate = {
-            candidate: String(msg.candidate),
-            sdpMid: msg.sdpMid || '0',
-          };
-          if (!direct.remoteDescriptionSet) {
-            if (direct.pendingIce.length < DIRECT_MAX_PENDING_ICE) {
-              direct.pendingIce.push(candidate);
-            }
-          } else {
-            await pc.addIceCandidate(candidate);
-          }
+          await pc.addIceCandidate({ candidate: msg.candidate, sdpMid: msg.sdpMid });
         } else if (msg?.type === 'unavailable') {
           closeDirectLink(true);
         }
-      } catch (error) {
-        console.debug('[moonwolf] Señalización WebRTC:', error?.message || error);
-      }
+      } catch {}
     });
 
     cloudSocket.on('cloud_ready', data => {
@@ -688,8 +670,6 @@ async function connectCloud(manual = false) {
 
     cloudSocket.on('session_info', data => {
       updateSessionMetadata(data?.permission, data?.kind);
-      if (agentOnline && panelPermission === 'admin') startDirectLink();
-      else if (panelPermission !== 'admin') closeDirectLink(false);
       renderSettings();
       renderUsers();
     });
@@ -794,18 +774,31 @@ function rpcCloud(pathname, init = {}) {
     body: init.body ?? undefined,
   };
 
-  return new Promise(resolve => {
-    pending.set(id, resolve);
-    cloudSocket.emit('rpc', request);
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error('MoonWolf Agent no respondió a la solicitud. Comprueba la conexión e inténtalo de nuevo.'));
+    }, 125_000);
+
+    pending.set(id, result => {
+      clearTimeout(timeout);
+      resolve(result);
+    });
+
+    try {
+      cloudSocket.emit('rpc', request);
+    } catch (error) {
+      clearTimeout(timeout);
+      pending.delete(id);
+      reject(error);
+    }
   });
 }
 
-const DF = { REQ_HEAD: 1, REQ_BODY: 2, REQ_END: 3, REQ_CANCEL: 4, RES_HEAD: 17, RES_BODY: 18, RES_END: 19, RES_ERR: 20 };
-const DIRECT_FRAME_BYTES = 16_000;
+const DF = { REQ_HEAD: 1, REQ_BODY: 2, REQ_END: 3, RES_HEAD: 17, RES_BODY: 18, RES_END: 19, RES_ERR: 20 };
+const DIRECT_FRAME_BYTES = 16 * 1024;
 const DIRECT_HIGH_WATER = 4 * 1024 * 1024;
-const DIRECT_OPEN_TIMEOUT_MS = 12_000;
-const DIRECT_FALLBACK_WAIT_MS = 2_000;
-const DIRECT_MAX_PENDING_ICE = 64;
+const DIRECT_OPEN_TIMEOUT_MS = 15_000;
 
 const DIRECT_ROUTES = [
   ['GET', '/api/files'],
@@ -823,8 +816,6 @@ const direct = {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
   nextId: 1,
   reqs: new Map(),
-  pendingIce: [],
-  remoteDescriptionSet: false,
   waiters: [],
   retryTimer: null,
   openTimer: null,
@@ -874,10 +865,7 @@ function scheduleDirectRetry() {
 
   const delay = Math.min(15_000 * 2 ** Math.min(direct.failures - 1, 5), 5 * 60_000);
 
-  direct.retryTimer = setTimeout(() => {
-    direct.retryTimer = null;
-    startDirectLink();
-  }, delay);
+  direct.retryTimer = setTimeout(startDirectLink, delay);
 }
 
 function closeDirectLink(retry = false) {
@@ -889,12 +877,6 @@ function closeDirectLink(retry = false) {
   direct.pc = null;
   direct.dc = null;
   direct.ready = false;
-  direct.remoteDescriptionSet = false;
-  direct.pendingIce.length = 0;
-
-  if (pc && cloudSocket?.connected) {
-    cloudSocket.emit('direct_close', {});
-  }
 
   if (pc) pc.onconnectionstatechange = null;
   if (dc) dc.onclose = null;
@@ -905,7 +887,7 @@ function closeDirectLink(retry = false) {
   wakeDirect();
 
   if (wasReady) {
-    addActivity('Canal directo cerrado; las transferencias continúan por Cloud hasta que se reconecte', 'warn', '⚡');
+    addActivity('Canal directo cerrado; las operaciones de archivos esperan a que se reconecte', 'warn', '⚡');
     updateAgentStatusBadges();
   }
 
@@ -914,8 +896,10 @@ function closeDirectLink(retry = false) {
 }
 
 async function startDirectLink() {
-  if (direct.pc || directReady() || direct.retryTimer) return;
-  if (!cloudSocket?.connected || !agentOnline || panelPermission !== 'admin' || typeof RTCPeerConnection === 'undefined') return;
+  if (direct.pc || directReady()) return;
+  if (!cloudSocket?.connected || !agentOnline || typeof RTCPeerConnection === 'undefined') return;
+
+  clearTimeout(direct.retryTimer);
 
   const pc = new RTCPeerConnection({ iceServers: direct.iceServers });
   const dc = pc.createDataChannel('moonwolf', { ordered: true });
@@ -925,11 +909,9 @@ async function startDirectLink() {
 
   direct.pc = pc;
   direct.dc = dc;
-  direct.remoteDescriptionSet = false;
-  direct.pendingIce.length = 0;
 
   pc.onicecandidate = event => {
-    if (direct.pc !== pc || !event.candidate) return;
+    if (!event.candidate) return;
 
     cloudSocket?.emit('direct_signal', {
       type: 'candidate',
@@ -939,9 +921,7 @@ async function startDirectLink() {
   };
 
   pc.onconnectionstatechange = () => {
-    if (direct.pc === pc && ['failed', 'closed'].includes(pc.connectionState)) {
-      closeDirectLink(true);
-    }
+    if (['failed', 'closed'].includes(pc.connectionState)) closeDirectLink(true);
   };
 
   dc.onopen = () => {
@@ -953,16 +933,14 @@ async function startDirectLink() {
     updateAgentStatusBadges();
   };
 
-  dc.onclose = () => {
-    if (direct.dc === dc) closeDirectLink(true);
-  };
+  dc.onclose = () => closeDirectLink(true);
   dc.onbufferedamountlow = wakeDirect;
   dc.onmessage = event => { void onDirectMessage(event.data); };
 
   direct.openTimer = setTimeout(() => {
     if (directReady()) return;
 
-    addActivity('No se pudo establecer el canal directo; las transferencias usarán Cloud mientras se reconecta', 'warn', '⚡');
+    addActivity('No se pudo establecer el canal directo; las operaciones de archivos quedan bloqueadas hasta reconectar', 'warn', '⚡');
     closeDirectLink(true);
   }, DIRECT_OPEN_TIMEOUT_MS);
 
@@ -977,18 +955,8 @@ async function startDirectLink() {
 async function sendDirect(type, id, payload = new Uint8Array(0)) {
   while (directReady() && direct.dc.bufferedAmount > DIRECT_HIGH_WATER) {
     await new Promise(resolve => {
-      let settled = false;
-      let timer;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        const index = direct.waiters.indexOf(finish);
-        if (index !== -1) direct.waiters.splice(index, 1);
-        resolve();
-      };
-      timer = setTimeout(finish, 2000);
-      direct.waiters.push(finish);
+      direct.waiters.push(resolve);
+      setTimeout(resolve, 2000);
     });
   }
 
@@ -1086,7 +1054,7 @@ async function directRequest(method, pathname, body, { onProgress, onHeaders, on
   if (signal) {
     signal.addEventListener('abort', () => {
       direct.reqs.delete(id);
-      void sendDirect(DF.REQ_CANCEL, id).catch(() => {});
+      try { sendDirect(DF.REQ_END, id); } catch {}
     }, { once: true });
   }
 
@@ -1115,7 +1083,7 @@ async function directRequest(method, pathname, body, { onProgress, onHeaders, on
   return done;
 }
 
-async function waitForDirectReady(timeoutMs = DIRECT_FALLBACK_WAIT_MS) {
+async function waitForDirectReady(timeoutMs = DIRECT_OPEN_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
 
   while (!directReady()) {
@@ -1126,12 +1094,12 @@ async function waitForDirectReady(timeoutMs = DIRECT_FALLBACK_WAIT_MS) {
       throw new Error('MoonWolf Agent está desconectado. No se ha transferido ningún dato de archivo.');
     }
     if (typeof RTCPeerConnection === 'undefined') {
-      throw new Error('Este navegador no admite WebRTC; se usará MoonWolf Cloud.');
+      throw new Error('Este navegador no admite WebRTC. La transferencia por Cloud está desactivada para evitar consumir tráfico.');
     }
 
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      throw new Error('WebRTC no ha conectado a tiempo; se usará MoonWolf Cloud.');
+      throw new Error('Conexión directa no disponible. No se ha transferido ningún dato por MoonWolf Cloud. Espera a que WebRTC se conecte e inténtalo de nuevo.');
     }
 
     startDirectLink();
@@ -1155,26 +1123,29 @@ async function waitForDirectReady(timeoutMs = DIRECT_FALLBACK_WAIT_MS) {
 }
 
 /**
- * WebRTC es la vía preferida para transferencias de archivos.
- * Si no está disponible en un margen corto, la operación continúa por Cloud.
+ * Enruta una petición HTTP.
+ *
+ * WebRTC no está implementado en el agente Rust, así que cualquier fallo del
+ * canal directo cae a `rpcCloud`. Eso garantiza que las rutas de archivos
+ * (`/api/files`, `/api/files/download`, `/api/files/upload-chunk`, etc.)
+ * llegan siempre al backend, aunque tarden un poco más por ir vía Cloud.
  */
 function rpcHttp(pathname, init = {}) {
   const method = String(init.method || 'GET').toUpperCase();
 
-  if (panelPermission === 'admin' && isDirectRoute(method, pathname)) {
+  if (isDirectRoute(method, pathname)) {
     return waitForDirectReady().then(() =>
       directRequest(method, pathname, init.body, {
         onProgress: init.onProgress,
         onHeaders: init.onHeaders,
         onChunk: init.onChunk,
         signal: init.signal,
-      }),
-      error => {
-        if (init.signal?.aborted || error?.name === 'AbortError') throw error;
-        console.warn('[moonwolf] WebRTC no disponible, usando Cloud:', error.message);
-        return rpcCloud(pathname, init);
-      }
-    );
+      })
+    ).catch(error => {
+      if (init.signal?.aborted || error?.name === 'AbortError') throw error;
+      console.warn('[moonwolf] WebRTC no disponible, usando Cloud:', error.message);
+      return rpcCloud(pathname, init);
+    });
   }
 
   return rpcCloud(pathname, init);
@@ -1240,19 +1211,18 @@ function postJSON(pathname, body) {
 
 function setAgentOnline(online) {
   const nextState = Boolean(online);
-  const changed = agentOnline !== nextState;
-  agentOnline = nextState;
 
-  if (nextState && panelPermission === 'admin') startDirectLink();
+  if (nextState) startDirectLink();
   else closeDirectLink(false);
 
-  if (!changed) {
+  if (agentOnline === nextState) {
     updateAgentUi();
     updateStatusUi(currentStatus);
     updateAgentStatusBadges();
     return;
   }
 
+  agentOnline = nextState;
   updateAgentUi();
   updateStatusUi(currentStatus);
   updateAgentStatusBadges();
@@ -1583,23 +1553,48 @@ async function restartServer() {
   }
 }
 
+let sendingConsoleCommand = false;
+
 async function sendCmd() {
   const input = $('cmdInput');
-  const cmd = input?.value.trim();
+  const button = $('btnSendCmd');
+  if (!input || sendingConsoleCommand) return;
 
+  // El prefijo "/" ya aparece en la interfaz; también aceptamos que el
+  // usuario lo escriba manualmente y evitamos enviarlo duplicado al servidor.
+  const rawCmd = input.value;
+  const cmd = rawCmd.trim().replace(/^\/+/, '').trim();
   if (!cmd) return;
 
-  if (!agentOnline) {
-    toast('MoonWolf Agent no está conectado.', 'err');
+  if (!agentOnline || !cloudSocket?.connected) {
+    toast('MoonWolf Cloud o MoonWolf Agent no están conectados.', 'err');
     return;
   }
 
-  input.value = '';
+  if (!hasPermission('control')) {
+    toast('Este acceso no tiene permiso para enviar comandos.', 'err');
+    return;
+  }
 
-  const data = await postJSON('/api/command', { cmd });
+  sendingConsoleCommand = true;
+  input.disabled = true;
+  if (button) button.disabled = true;
 
-  if (!data.ok) {
-    toast(data.error || 'Error al enviar comando', 'err');
+  try {
+    const data = await postJSON('/api/command', { cmd });
+    if (!data?.ok) {
+      throw new Error(data?.error || 'El Agent rechazó el comando.');
+    }
+
+    input.value = '';
+  } catch (error) {
+    console.warn('[moonwolf] No se pudo enviar el comando:', error);
+    toast(`No se pudo enviar el comando: ${error?.message || 'Error de conexión.'}`, 'err');
+  } finally {
+    sendingConsoleCommand = false;
+    input.disabled = false;
+    if (button) button.disabled = false;
+    input.focus();
   }
 }
 
@@ -4781,9 +4776,6 @@ function renderSettings() {
   if (!element) return;
 
   const cloudConnected = Boolean(cloudSocket?.connected);
-  const directMode = directReady()
-    ? 'direct'
-    : (cloudConnected && agentOnline ? 'cloud' : 'waiting');
 
   let cloudCls, cloudText;
   if (cloudConnecting) {
@@ -4837,9 +4829,9 @@ function renderSettings() {
         <div class="settings-group-icon">⚡</div>
         <div class="settings-group-info">
           <div class="settings-group-title">Canal directo</div>
-          <div class="settings-group-sub">WebRTC directo para archivos, con respaldo automático por Cloud</div>
+          <div class="settings-group-sub">Transferencias de archivos por WebRTC; sin fallback de archivos por Cloud</div>
         </div>
-        <span class="settings-status ${directMode === 'direct' ? 'online' : 'connecting'}">${directMode === 'direct' ? '● DIRECTO' : directMode === 'cloud' ? '● CLOUD (RESPALDO)' : '● ESPERANDO'}</span>
+        <span class="settings-status ${directReady() ? 'online' : 'connecting'}">${directReady() ? '● DIRECTO' : '● ESPERANDO'}</span>
       </div>
     </div>
 
@@ -5066,7 +5058,8 @@ function bindEvents() {
 
   $('cmdInput')?.addEventListener('keydown', event => {
     if (event.key === 'Enter') {
-      sendCmd();
+      event.preventDefault();
+      void sendCmd();
     }
   });
 
@@ -5077,7 +5070,7 @@ function bindEvents() {
       if (!input) return;
 
       input.value = button.dataset.cmd || '';
-      sendCmd();
+      void sendCmd();
     });
   });
 
