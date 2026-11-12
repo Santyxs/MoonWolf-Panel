@@ -24,28 +24,13 @@ const escHtml = value => String(value ?? '')
 
 const AIKAR_FLAGS = '-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch -XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 -XX:G1HeapRegionSize=8M -XX:G1ReservePercent=20 -XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1RSetUpdatingPauseTimePercent=5 -XX:SurvivorRatio=32 -XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1';
 
-const STATUS_LABELS = {
-  online: 'ONLINE',
-  offline: 'OFFLINE',
-  starting: 'STARTING...',
-  restarting: 'RESTARTING...',
-  stopping: 'STOPPING...',
-};
-
-const STATUS_ICONS = {
-  online: '🟢',
-  offline: '🔴',
-  starting: '🟡',
-  restarting: '🟡',
-  stopping: '🟠',
-};
-
-const STATUS_LEVELS = {
-  online: 'ok',
-  offline: 'info',
-  starting: 'info',
-  restarting: 'warn',
-  stopping: 'warn',
+/** @type {Record<string, { label: string, icon: string, level: string }>} */
+const STATUS = {
+  online:     { label: 'ONLINE',       icon: '🟢', level: 'ok' },
+  offline:    { label: 'OFFLINE',      icon: '🔴', level: 'info' },
+  starting:   { label: 'STARTING...',  icon: '🟡', level: 'info' },
+  restarting: { label: 'RESTARTING...', icon: '🟡', level: 'warn' },
+  stopping:   { label: 'STOPPING...',  icon: '🟠', level: 'warn' },
 };
 
 const DANGEROUS_UPLOAD_EXTENSIONS = new Set([
@@ -480,6 +465,13 @@ function clearSession() {
   pairingCode = '';
 }
 
+function updateSessionMetadata(permission, kind) {
+  panelPermission = String(permission || panelPermission || 'admin');
+  panelKind = String(kind || panelKind || 'owner');
+  sessionStorage.setItem(PERMISSION_KEY, panelPermission);
+  sessionStorage.setItem(SESSION_KIND_KEY, panelKind);
+}
+
 async function attemptLogin() {
   const input = $('loginPassword');
   const button = $('btnLogin');
@@ -677,10 +669,7 @@ async function connectCloud(manual = false) {
     });
 
     cloudSocket.on('session_info', data => {
-      panelPermission = String(data?.permission || panelPermission || 'admin');
-      panelKind = String(data?.kind || panelKind || 'owner');
-      sessionStorage.setItem(PERMISSION_KEY, panelPermission);
-      sessionStorage.setItem(SESSION_KIND_KEY, panelKind);
+      updateSessionMetadata(data?.permission, data?.kind);
       renderSettings();
       renderUsers();
     });
@@ -1279,7 +1268,7 @@ function updateAgentStatusBadges() {
 }
 
 function updateStatusUi(status) {
-  status = STATUS_LABELS[status] ? status : 'offline';
+  status = STATUS[status] ? status : 'offline';
 
   currentStatus = status;
 
@@ -1293,7 +1282,7 @@ function updateStatusUi(status) {
 
   if (statusText) {
     statusText.textContent =
-      STATUS_LABELS[status] || String(status).toUpperCase();
+      STATUS[status] || String(status).toUpperCase();
   }
 
   const startButton = $('btnStart');
@@ -1325,7 +1314,7 @@ function updateStatusUi(status) {
 function setStatus(status) {
   updateStatusUi(status);
 
-  const normalized = STATUS_LABELS[status] ? status : 'offline';
+  const normalized = STATUS[status] ? status : 'offline';
 
   if (lastStatusActivity === normalized) {
     return;
@@ -1334,9 +1323,9 @@ function setStatus(status) {
   lastStatusActivity = normalized;
 
   addActivity(
-    STATUS_LABELS[normalized] || normalized,
-    STATUS_LEVELS[normalized] || 'info',
-    STATUS_ICONS[normalized] || '📌'
+    STATUS[normalized]?.label || normalized,
+    STATUS[normalized]?.level || 'info',
+    STATUS[normalized]?.icon || '📌'
   );
 }
 
