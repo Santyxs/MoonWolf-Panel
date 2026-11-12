@@ -29,7 +29,6 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 const UPLOAD_DIR_NAME: &str = ".moonwolf-uploads";
 const UPLOAD_MAX_CHUNK: usize = 17 * 1024 * 1024;
 const UPLOAD_BODY_LIMIT: usize = 20 * 1024 * 1024;
-const DOWNLOAD_CHUNK_SIZE: usize = 64 * 1024;
 
 const BACKUPS_REL_DIR: &str = ".moonwolf/backups";
 const BACKUP_EXCLUDES: &[&str] = &[".moonwolf", ".moonwolf-uploads"];
@@ -557,51 +556,21 @@ async fn download_file(
     if !path.is_file() {
         return Err(StatusCode::NOT_FOUND);
     }
+    let data = tokio::fs::read(&path)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file.bin".into());
-    stream_file_response(&path, &name, "application/octet-stream").await
-}
-
-async fn stream_file_response(
-    path: &Path,
-    name: &str,
-    content_type: &'static str,
-) -> Result<Response, StatusCode> {
-    use tokio::io::AsyncReadExt;
-
-    let file = tokio::fs::File::open(path)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let content_length = file
-        .metadata()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .len();
-
-    let stream = futures::stream::try_unfold(
-        (file, vec![0_u8; DOWNLOAD_CHUNK_SIZE]),
-        |(mut file, mut buffer)| async move {
-            let read = file.read(&mut buffer).await?;
-            if read == 0 {
-                return Ok::<_, std::io::Error>(None);
-            }
-
-            let chunk = Bytes::copy_from_slice(&buffer[..read]);
-            Ok(Some((chunk, (file, buffer))))
-        },
-    );
-
     Response::builder()
         .status(StatusCode::OK)
-        .header("content-type", content_type)
-        .header("content-length", content_length.to_string())
+        .header("content-type", "application/octet-stream")
         .header(
             "content-disposition",
             format!("attachment; filename=\"{name}\""),
         )
-        .body(axum::body::Body::from_stream(stream))
+        .body(axum::body::Body::from(data))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
@@ -1583,7 +1552,19 @@ async fn download_backup(
         return Err(StatusCode::NOT_FOUND);
     }
 
-    stream_file_response(&path, &name, "application/zip").await
+    let data = tokio::fs::read(&path)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/zip")
+        .header(
+            "content-disposition",
+            format!("attachment; filename=\"{name}\""),
+        )
+        .body(axum::body::Body::from(data))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 async fn delete_backup(
@@ -2635,16 +2616,33 @@ async fn send_command(
     if cmd.is_empty() {
         return Ok(json_fail("Comando vacío"));
     }
-    if let Some(stdin) = child.stdin.as_mut() {
-        use tokio::io::AsyncWriteExt;
-        if stdin
-            .write_all(format!("{cmd}\n").as_bytes())
-            .await
-            .is_err()
-        {
-            return Ok(json_fail("No se pudo enviar el comando"));
-        }
+    if cmd.len() > 4096 {
+        return Ok(json_fail("El comando supera el límite de 4096 bytes"));
     }
+
+    use tokio::io::AsyncWriteExt;
+    let Some(stdin) = child.stdin.as_mut() else {
+        return Ok(json_fail(
+            "La consola del proceso Java no está disponible (entrada estándar cerrada)",
+        ));
+    };
+
+    if let Err(error) = stdin.write_all(cmd.as_bytes()).await {
+        return Ok(json_fail(&format!(
+            "No se pudo escribir en la consola del servidor: {error}"
+        )));
+    }
+    if let Err(error) = stdin.write_all(b"\n").await {
+        return Ok(json_fail(&format!(
+            "No se pudo finalizar el comando en la consola: {error}"
+        )));
+    }
+    if let Err(error) = stdin.flush().await {
+        return Ok(json_fail(&format!(
+            "No se pudo confirmar el envío del comando: {error}"
+        )));
+    }
+
     Ok(json_ok(json!({})))
 }
 
