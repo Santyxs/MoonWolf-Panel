@@ -9,10 +9,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use sqlx::Row;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sqlx::Row;
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock};
 use tower_http::cors::{Any, CorsLayer};
@@ -3630,8 +3630,7 @@ static MYSQL_POOL: tokio::sync::OnceCell<sqlx::MySqlPool> = tokio::sync::OnceCel
 async fn mysql_pool() -> Result<&'static sqlx::MySqlPool, sqlx::Error> {
     MYSQL_POOL
         .get_or_try_init(|| async {
-            let host =
-                std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
+            let host = std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
             let port = std::env::var("MOONWOLF_MYSQL_PORT").unwrap_or_else(|_| "3306".into());
             let user = std::env::var("MOONWOLF_MYSQL_USER").unwrap_or_else(|_| "root".into());
             let password = std::env::var("MOONWOLF_MYSQL_PASSWORD").unwrap_or_default();
@@ -3724,17 +3723,19 @@ async fn db_list() -> Response {
         Err(e) => return json_fail(&format!("MySQL: {e}")),
     };
 
-    let users: HashMap<String, String> =
-        match sqlx::query("SELECT user FROM mysql.user").fetch_all(pool).await {
-            Ok(user_rows) => user_rows
-                .into_iter()
-                .filter_map(|row| {
-                    let user: String = row.try_get("user").ok()?;
-                    Some((user.clone(), user))
-                })
-                .collect(),
-            Err(_) => HashMap::new(),
-        };
+    let users: HashMap<String, String> = match sqlx::query("SELECT user FROM mysql.user")
+        .fetch_all(pool)
+        .await
+    {
+        Ok(user_rows) => user_rows
+            .into_iter()
+            .filter_map(|row| {
+                let user: String = row.try_get("user").ok()?;
+                Some((user.clone(), user))
+            })
+            .collect(),
+        Err(_) => HashMap::new(),
+    };
 
     let mut databases = Vec::new();
     for row in rows {
@@ -3794,7 +3795,10 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
         "CREATE DATABASE `{}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
         name.replace('`', "``")
     );
-    if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(create_db)).execute(pool).await {
+    if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(create_db))
+        .execute(pool)
+        .await
+    {
         return json_fail(&format!("No se pudo crear: {e}"));
     }
 
@@ -3816,17 +3820,20 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
             username.replace('\'', "''"),
             password.replace('\'', "''")
         );
-        let _ = sqlx::query(sqlx::AssertSqlSafe(q_alter)).execute(pool).await;
+        let _ = sqlx::query(sqlx::AssertSqlSafe(q_alter))
+            .execute(pool)
+            .await;
 
         let q_grant = format!(
             "GRANT ALL PRIVILEGES ON `{}`.* TO '{}'@'%'",
             name.replace('`', "``"),
             username.replace('\'', "''")
         );
-        let _ = sqlx::query(sqlx::AssertSqlSafe(q_grant)).execute(pool).await;
+        let _ = sqlx::query(sqlx::AssertSqlSafe(q_grant))
+            .execute(pool)
+            .await;
 
-        let host =
-            std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
+        let host = std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
         let port = std::env::var("MOONWOLF_MYSQL_PORT").unwrap_or_else(|_| "3306".into());
 
         credentials = Some(json!({
@@ -3852,13 +3859,12 @@ async fn db_reset(AxumPath(name): AxumPath<String>) -> Response {
     };
 
     let username: String = name.chars().take(32).collect();
-    let exists: Option<String> =
-        sqlx::query_scalar("SELECT user FROM mysql.user WHERE user = ?")
-            .bind(&username)
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten();
+    let exists: Option<String> = sqlx::query_scalar("SELECT user FROM mysql.user WHERE user = ?")
+        .bind(&username)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
     if exists.is_none() {
         return json_fail("Esta base de datos no tiene un usuario asociado.");
     }
@@ -3869,7 +3875,9 @@ async fn db_reset(AxumPath(name): AxumPath<String>) -> Response {
         username.replace('\'', "''"),
         password.replace('\'', "''")
     );
-    let _ = sqlx::query(sqlx::AssertSqlSafe(q_alter)).execute(pool).await;
+    let _ = sqlx::query(sqlx::AssertSqlSafe(q_alter))
+        .execute(pool)
+        .await;
 
     let host = std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
     let port = std::env::var("MOONWOLF_MYSQL_PORT").unwrap_or_else(|_| "3306".into());
@@ -3901,12 +3909,10 @@ async fn db_delete(AxumPath(name): AxumPath<String>) -> Response {
     }
 
     let username: String = name.chars().take(32).collect();
-    let q_drop_user = format!(
-        "DROP USER IF EXISTS '{}'@'%'",
-        username.replace('\'', "''")
-    );
-    let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop_user)).execute(pool).await;
+    let q_drop_user = format!("DROP USER IF EXISTS '{}'@'%'", username.replace('\'', "''"));
+    let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop_user))
+        .execute(pool)
+        .await;
 
     json_ok(json!({}))
 }
-

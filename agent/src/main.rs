@@ -123,8 +123,22 @@ fn new_uuid_v4() -> String {
     b[8] = (b[8] & 0x3f) | 0x80;
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-        b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+        b[0],
+        b[1],
+        b[2],
+        b[3],
+        b[4],
+        b[5],
+        b[6],
+        b[7],
+        b[8],
+        b[9],
+        b[10],
+        b[11],
+        b[12],
+        b[13],
+        b[14],
+        b[15]
     )
 }
 
@@ -600,7 +614,6 @@ pub async fn check_update_once(app: Arc<RwLock<AppState>>) -> anyhow::Result<()>
     Ok(())
 }
 
-
 /// Borra archivos residuales de actualizaciones anteriores en la carpeta updates.
 async fn clean_updates_dir(keep: Option<&Path>) -> anyhow::Result<()> {
     let dir = AgentConfig::config_dir().join("updates");
@@ -767,7 +780,6 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
     Ok(())
 }
 
-
 fn maybe_wait_for_previous_instance() {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -929,7 +941,9 @@ async fn run() -> anyhow::Result<()> {
 
     #[cfg(any(not(feature = "gui"), not(windows)))]
     {
-        info!("Modo headless (la interfaz Slint solo está disponible en Windows). Ctrl+C para salir.");
+        info!(
+            "Modo headless (la interfaz Slint solo está disponible en Windows). Ctrl+C para salir."
+        );
         tokio::signal::ctrl_c().await?;
         tracing::warn!("Señal de salida recibida");
     }
