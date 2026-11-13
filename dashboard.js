@@ -71,13 +71,6 @@ let currentPlugin = null;
 let pluginSource = 'all';
 let priceFilter = 'all';
 
-let versionState = {
-  software: null,
-  softwareLabel: null,
-  version: null,
-  builds: [],
-};
-
 const pending = new Map();
 const activities = [];
 
@@ -3546,20 +3539,6 @@ async function loadVersionState() {
     versionCatalog = [];
     renderVersionSoftware();
     toast(`❌ ${error.message}`, 'err');
-  }
-}
-
-function renderBuildsSelect() {}
-async function changeSoftwareOrVersion() {}
-async function installSelectedVersion() {
-  if (versionCurrent.software && versionCurrent.version) {
-    await selectVersionBuilds(
-      versionCurrent.software,
-      versionCurrent.version,
-      versionFindSoftware(versionCurrent.software)
-    );
-  } else {
-    toast('Selecciona un servidor y una versión primero.', 'warn');
   }
 }
 
