@@ -1047,8 +1047,6 @@ a.btn-primary { text-decoration: none; }
   .file-ctx-menu { min-width: 180px; }
   .files-bulkbar { align-items: flex-start; flex-direction: column; }
   .upload-progress-meta { display: grid; grid-template-columns: 1fr 1fr; }
-  
-  
 }
 
 /* ══════════════════════════════════════════════
@@ -1509,7 +1507,6 @@ a.btn-primary { text-decoration: none; }
 /* ══════════════════════════════════════════════
    16. VERSIONES — SERVIDORES POR CATEGORÍA
    ══════════════════════════════════════════════ */
-
 
 #versionList {
   display: flex;

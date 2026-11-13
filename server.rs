@@ -121,7 +121,6 @@ fn b64_url_decode(input: &str) -> Option<Vec<u8>> {
     b64_decode(input)
 }
 
-
 fn hex_encode(data: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(data.len() * 2);
