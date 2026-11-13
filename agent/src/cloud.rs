@@ -556,107 +556,244 @@ async fn handle_direct_signal(
                 .await
             {
                 warn!("WebRTC no pudo enviar la respuesta {peer_id}: {error}");
+                close_direct_peer(&peers, &peer_id).await;
             }
         }
         "candidate" => {
-            let candidate = message
+            let candidate_text = message
                 .get("candidate")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("");
-            if candidate.is_empty() {
+            if candidate_text.is_empty() || candidate_text.len() > 2_048 {
                 return;
             }
-            let sdp_mid = message
-                .get("sdpMid")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("0")
-                .to_owned();
-            let ice = RTCIceCandidateInit {
-                candidate: candidate.to_owned(),
-                sdp_mid: Some(sdp_mid),
-                ..Default::default()
+            let candidate: RTCIceCandidateInit = match serde_json::from_value(json!({
+                "candidate": candidate_text,
+                "sdpMid": message
+                    .get("sdpMid")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("0"),
+            })) {
+                Ok(candidate) => candidate,
+                Err(error) => {
+                    debug!("WebRTC candidato ICE no válido {peer_id}: {error}");
+                    return;
+                }
             };
-            if let Some(peer) = peers.lock().await.get(&peer_id).cloned() {
-                if let Err(error) = peer.add_ice_candidate(ice).await {
-                    debug!("WebRTC candidato ICE {peer_id}: {error}");
+            let peer = peers.lock().await.get(&peer_id).cloned();
+            if let Some(peer) = peer {
+                if let Err(error) = peer.add_ice_candidate(candidate).await {
+                    debug!("WebRTC no pudo añadir candidato ICE {peer_id}: {error}");
                 }
             } else {
-                pending_ice.lock().await.entry(peer_id).or_default().push(ice);
+                let mut pending = pending_ice.lock().await;
+                let queue = pending.entry(peer_id).or_default();
+                if queue.len() < 64 {
+                    queue.push(candidate);
+                }
             }
         }
         _ => {}
     }
 }
 
-fn log_to_panel(entry: &LogEntry) -> serde_json::Value {
-    let time = crate::format_hms_ms(entry.time);
-    let type_str = match entry.level.as_str() {
-        "error" => "error",
-        "warn" => "warn",
-        _ => "info",
-    };
-    json!({
-        "line": entry.message,
-        "time": time,
-        "type": type_str,
-    })
-}
+pub async fn run(app: Arc<RwLock<AppState>>, panel_url: &str) {
+    let mut backoff = RECONNECT_BASE_MS;
+    let mut attempt: u32 = 0;
 
-fn payload_json(payload: &Payload) -> serde_json::Value {
-    match payload {
-        Payload::String(s) => serde_json::from_str(s).unwrap_or(json!({})),
-        Payload::Binary(b) => serde_json::from_slice(b).unwrap_or(json!({})),
-        _ => json!({}),
-    }
-}
-
-pub async fn run(app: Arc<RwLock<AppState>>) {
-    let mut delay = RECONNECT_BASE_MS;
     loop {
-        {
-            let s = app.read().await;
-            if s.shutting_down {
-                break;
-            }
+        if app.read().await.shutting_down {
+            break;
         }
-        match connect_once(Arc::clone(&app)).await {
+
+        attempt += 1;
+        let started = Instant::now();
+        let result = connect_once(Arc::clone(&app), panel_url, attempt).await;
+        let duration = started.elapsed();
+
+        if app.read().await.shutting_down {
+            break;
+        }
+
+        match &result {
             Ok(()) => {
-                delay = RECONNECT_BASE_MS;
+                info!("Cloud: conexión cerrada tras {:?}", duration);
             }
             Err(e) => {
-                warn!("Cloud reconnect: {e:#}");
-                {
-                    let mut s = app.write().await;
-                    s.cloud_connected = false;
-                    s.add_log("warn", format!("Cloud desconectado: {e}"));
-                }
+                error!("Cloud: {e:#}");
+                let mut s = app.write().await;
+                s.cloud_connected = false;
+                s.pairing_code = None;
+                s.add_log("error", humanize_cloud_error(&format!("{e}")));
             }
         }
-        sleep_ms(delay).await;
-        delay = (delay * 2).min(RECONNECT_MAX_MS);
+
+        if duration >= HEALTHY_CONNECTION {
+            backoff = RECONNECT_BASE_MS;
+        } else {
+            backoff = (backoff * 2).min(RECONNECT_MAX_MS);
+        }
+
+        info!("Reintento de Cloud en {backoff} ms…");
+        {
+            let mut s = app.write().await;
+            s.add_log("warn", format!("Reconexión programada en {backoff} ms"));
+        }
+        sleep_ms(backoff).await;
     }
 }
 
-async fn connect_once(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
-    let (url, agent_id, token) = {
+async fn connect_once(
+    app: Arc<RwLock<AppState>>,
+    panel_url: &str,
+    attempt: u32,
+) -> anyhow::Result<()> {
+    let (agent_id, agent_token) = {
         let s = app.read().await;
-        (
-            crate::PANEL_URL.to_owned(),
-            s.config.agent_id.clone(),
-            s.config.agent_token.clone(),
-        )
+        (s.config.agent_id.clone(), s.config.agent_token.clone())
     };
+
+    if agent_id.len() < 16 || agent_token.len() < 32 {
+        anyhow::bail!(
+            "credenciales inválidas (agentId len={}, token len={})",
+            agent_id.len(),
+            agent_token.len()
+        );
+    }
+
+    info!("Conectando a Cloud (intento #{attempt}): {panel_url} agentId={agent_id}");
+    {
+        let mut s = app.write().await;
+        s.add_log(
+            "info",
+            format!("Conectando con MoonWolf Cloud (intento #{attempt})…"),
+        );
+    }
+
+    let auth = json!({
+        "role": "agent",
+        "agentId": agent_id,
+        "token": agent_token,
+    });
 
     let direct_peers: DirectPeerMap = Arc::new(Mutex::new(HashMap::new()));
     let pending_ice: PendingIceMap = Arc::new(Mutex::new(HashMap::new()));
 
-    let client = ClientBuilder::new(url)
+    let app_on_connect = Arc::clone(&app);
+    let app_on_close = Arc::clone(&app);
+    let app_on_error = Arc::clone(&app);
+
+    let client = ClientBuilder::new(panel_url)
+        .namespace("/")
+        // El endpoint de Render/Cloudflare mantiene WebSocket extremo a extremo;
+        // usarlo directamente evita que rust_engineio intente parsear chunks
+        // HTTP fragmentados del polling como si fueran paquetes completos.
         .transport_type(TransportType::Websocket)
-        .auth(json!({
-            "role": "agent",
-            "agentId": agent_id,
-            "token": token,
-        }))
+        .auth(auth)
+        .on(Event::Connect, move |_, socket: Client| {
+            let app = Arc::clone(&app_on_connect);
+            async move {
+                info!("Socket Cloud conectado");
+                {
+                    let mut s = app.write().await;
+                    s.cloud_connected = true;
+                    s.add_log("info", "Conectado a MoonWolf Cloud.");
+                }
+                if let Err(e) = socket.emit("pairing_create", json!({})).await {
+                    error!("pairing_create: {e}");
+                    let mut s = app.write().await;
+                    s.add_log("error", format!("No se pudo pedir pairing: {e}"));
+                } else {
+                    let mut s = app.write().await;
+                    s.add_log("info", "Solicitando código de emparejamiento…");
+                }
+            }
+            .boxed()
+        })
+        .on(Event::Close, move |_, _| {
+            let app = Arc::clone(&app_on_close);
+            async move {
+                let mut s = app.write().await;
+                s.cloud_connected = false;
+                s.pairing_code = None;
+                s.add_log("warn", "Desconectado de MoonWolf Cloud");
+            }
+            .boxed()
+        })
+        .on("error", move |payload: Payload, _| {
+            let app = Arc::clone(&app_on_error);
+            async move {
+                let msg = payload_debug(&payload);
+                warn!("Cloud error event: {msg}");
+                let mut s = app.write().await;
+                s.cloud_connected = false;
+                s.pairing_code = None;
+                s.add_log("error", humanize_cloud_error(&msg));
+            }
+            .boxed()
+        })
+        .on("connect_error", {
+            let app = Arc::clone(&app);
+            move |payload: Payload, _| {
+                let app = Arc::clone(&app);
+                async move {
+                    let msg = payload_debug(&payload);
+                    error!("connect_error: {msg}");
+                    let mut s = app.write().await;
+                    s.cloud_connected = false;
+                    s.pairing_code = None;
+                    s.add_log(
+                        "error",
+                        humanize_cloud_error(&format!("connect_error: {msg}")),
+                    );
+                }
+                .boxed()
+            }
+        })
+        .on("pairing_ready", {
+            let app = Arc::clone(&app);
+            move |payload: Payload, _| {
+                let app = Arc::clone(&app);
+                async move {
+                    let data = payload_json(&payload);
+                    let code = data
+                        .get("code")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if code.is_empty() || !code.starts_with("MW-P") {
+                        let mut s = app.write().await;
+                        s.add_log("error", format!("pairing_ready inválido: {data}"));
+                        return;
+                    }
+                    let mut s = app.write().await;
+                    s.pairing_code = Some(code.clone());
+                    s.add_log(
+                        "info",
+                        format!("Código de emparejamiento disponible: {code}"),
+                    );
+                }
+                .boxed()
+            }
+        })
+        .on("pairing_consumed", {
+            let app = Arc::clone(&app);
+            move |_, socket: Client| {
+                let app = Arc::clone(&app);
+                async move {
+                    {
+                        let mut s = app.write().await;
+                        s.pairing_code = None;
+                        s.add_log(
+                            "info",
+                            "Código de emparejamiento utilizado. Generando uno nuevo.",
+                        );
+                    }
+                    let _ = socket.emit("pairing_create", json!({})).await;
+                }
+                .boxed()
+            }
+        })
         .on("rpc", {
             let app = Arc::clone(&app);
             move |payload: Payload, socket: Client| {
@@ -712,26 +849,44 @@ async fn connect_once(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
                     let message = payload_json(&payload);
                     if let Some(peer_id) = message.get("peerId").and_then(serde_json::Value::as_str)
                     {
-                        close_direct_peer(&peers, peer_id).await;
-                        pending_ice.lock().await.remove(peer_id);
+                        let permission = message
+                            .get("permission")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("read");
+                        if permission != "admin" {
+                            close_direct_peer(&peers, peer_id).await;
+                            pending_ice.lock().await.remove(peer_id);
+                        }
                     }
+                }
+                .boxed()
+            }
+        })
+        .on_any({
+            move |event, payload, _| {
+                async move {
+                    debug!(?event, "evento cloud: {}", payload_debug(&payload));
                 }
                 .boxed()
             }
         })
         .connect()
         .await
-        .map_err(|e| anyhow::anyhow!("connect: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("connect falló: {e:?}"))?;
 
-    {
-        let mut s = app.write().await;
-        s.cloud_connected = true;
-        s.add_log("info", "Conectado a MoonWolf Cloud");
+    let wait_start = Instant::now();
+    while !app.read().await.cloud_connected {
+        if wait_start.elapsed() > Duration::from_millis(CONNECT_WAIT_MS) {
+            let _ = client.disconnect().await;
+            anyhow::bail!("timeout esperando handshake de Socket.IO");
+        }
+        sleep_ms(100).await;
     }
 
-    let initial_logs: Vec<_> = {
+    let (initial_logs, mut last_console_seq) = {
         let s = app.read().await;
-        s.console_logs.iter().map(log_to_panel).collect()
+        let logs: Vec<_> = s.console_logs.iter().map(log_to_panel).collect();
+        (logs, s.console_seq)
     };
     if !initial_logs.is_empty() {
         let _ = client
@@ -745,10 +900,6 @@ async fn connect_once(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
             .await;
     }
 
-    let mut last_console_seq = {
-        let s = app.read().await;
-        s.console_seq
-    };
     let mut last_mc_running = app.read().await.mc_running;
     let mut last_heartbeat = Instant::now();
     let mut last_activity = Instant::now();
@@ -850,17 +1001,72 @@ async fn connect_once(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         }
 
         if last_activity.elapsed() >= IDLE_TIMEOUT {
-            warn!("Cloud idle timeout");
+            warn!("Sin actividad en 60 s; cerrando socket para reconectar");
             break;
         }
     }
 
-    {
-        let mut s = app.write().await;
-        s.cloud_connected = false;
-    }
     let _ = client.disconnect().await;
+    let remaining: Vec<Arc<dyn PeerConnection>> = {
+        let mut peers = direct_peers.lock().await;
+        peers.drain().map(|(_, peer)| peer).collect()
+    };
+    for peer in remaining {
+        let _ = peer.close().await;
+    }
+    pending_ice.lock().await.clear();
     Ok(())
+}
+
+fn log_to_panel(entry: &LogEntry) -> serde_json::Value {
+    let time = crate::format_hms_ms(entry.time);
+    let type_str = match entry.level.as_str() {
+        "error" => "error",
+        "warn" => "warn",
+        _ => "info",
+    };
+    json!({
+        "line": entry.message,
+        "time": time,
+        "type": type_str,
+    })
+}
+
+fn payload_json(payload: &Payload) -> serde_json::Value {
+    match payload {
+        Payload::Text(values) => values.first().cloned().unwrap_or(json!({})),
+        Payload::Binary(_) => json!({}),
+        _ => json!({}),
+    }
+}
+
+fn payload_debug(payload: &Payload) -> String {
+    match payload {
+        Payload::Text(values) => values
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        Payload::Binary(b) => format!("<binary {} bytes>", b.len()),
+        _ => format!("{payload:?}"),
+    }
+}
+
+fn humanize_cloud_error(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    if lower.contains("engineio")
+        || lower.contains("engine.io")
+        || lower.contains("incomplete response")
+    {
+        return "No se pudo establecer la conexión con Cloud (Engine.IO). El panel puede estar reiniciando o la red bloquea WebSocket; reintentando…".into();
+    }
+    if lower.contains("timeout") {
+        return "Tiempo de espera agotado al conectar con Cloud. Reintentando…".into();
+    }
+    if lower.contains("connect_error") || lower.contains("unauthorized") || lower.contains("auth") {
+        return format!("Cloud rechazó la conexión: {raw}");
+    }
+    raw.to_string()
 }
 
 async fn handle_rpc(app: &Arc<RwLock<AppState>>, payload: &Payload) -> serde_json::Value {
@@ -927,16 +1133,15 @@ async fn handle_rpc(app: &Arc<RwLock<AppState>>, payload: &Payload) -> serde_jso
             })
         }
         Err(e) => {
+            let msg = e.to_string();
+            let err_body = json!({ "ok": false, "error": msg });
+            let bytes = serde_json::to_vec(&err_body).unwrap_or_default();
             json!({
                 "id": id,
                 "ok": false,
                 "status": 502,
                 "contentType": "application/json",
-                "bodyBase64": crate::b64_std_encode(
-                    serde_json::to_vec(&json!({"ok":false,"error":format!("Agent local: {e}")})
-                        .unwrap_or_default()
-                        .as_slice()
-                ),
+                "bodyBase64": crate::b64_std_encode(&bytes),
             })
         }
     }
