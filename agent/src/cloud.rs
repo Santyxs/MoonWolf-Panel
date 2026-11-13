@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures::{StreamExt, future::FutureExt};
 use rust_socketio::asynchronous::{Client, ClientBuilder};
 use rust_socketio::{Event, Payload, TransportType};
@@ -694,6 +694,9 @@ async fn connect_once(
             let app = Arc::clone(&app_on_connect);
             async move {
                 info!("Socket Cloud conectado");
+                if let Err(e) = socket.emit("agent_capabilities", json!({"rpcBinary": true})).await {
+                    warn!("No se pudo anunciar RPC binario: {e}");
+                }
                 {
                     let mut s = app.write().await;
                     s.cloud_connected = true;
@@ -802,6 +805,26 @@ async fn connect_once(
                     let result = handle_rpc(&app, &payload).await;
                     if let Err(e) = socket.emit("rpc_result", result).await {
                         warn!("rpc_result emit: {e}");
+                    }
+                }
+                .boxed()
+            }
+        })
+        .on("rpc_binary", {
+            let app = Arc::clone(&app);
+            move |payload: Payload, socket: Client| {
+                let app = Arc::clone(&app);
+                async move {
+                    match handle_rpc_binary(&app, &payload).await {
+                        Ok(packet) => {
+                            if let Err(error) = socket
+                                .emit("rpc_result_binary", Payload::Binary(Bytes::from(packet)))
+                                .await
+                            {
+                                warn!("rpc_result_binary emit: {error}");
+                            }
+                        }
+                        Err(error) => warn!("RPC binario no válido: {error:#}"),
                     }
                 }
                 .boxed()
@@ -1087,24 +1110,58 @@ fn humanize_cloud_error(raw: &str) -> String {
     raw.to_string()
 }
 
-async fn handle_rpc(app: &Arc<RwLock<AppState>>, payload: &Payload) -> serde_json::Value {
-    let req = payload_json(payload);
-    let method = req
-        .get("method")
-        .and_then(|m| m.as_str())
-        .unwrap_or("GET")
-        .to_uppercase();
-    let path = req
-        .get("path")
-        .and_then(|p| p.as_str())
-        .unwrap_or("/api/health");
-    let id = req.get("id").cloned().unwrap_or(json!(null));
+const RPC_BINARY_MAGIC: &[u8; 4] = b"MWR1";
+const RPC_BINARY_MAX_HEADER: usize = 64 * 1024;
 
-    let token = {
-        let s = app.read().await;
-        s.config.local_token.clone()
-    };
+fn decode_rpc_binary_packet(packet: &[u8]) -> anyhow::Result<(serde_json::Value, &[u8])> {
+    if packet.len() < 8 || &packet[..4] != RPC_BINARY_MAGIC {
+        anyhow::bail!("Cabecera de RPC binario no válida");
+    }
+    let header_len = u32::from_be_bytes(
+        packet[4..8]
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Longitud de cabecera no válida"))?,
+    ) as usize;
+    if header_len == 0 || header_len > RPC_BINARY_MAX_HEADER {
+        anyhow::bail!("Longitud de cabecera RPC fuera de rango");
+    }
+    let body_start = 8usize
+        .checked_add(header_len)
+        .ok_or_else(|| anyhow::anyhow!("Desbordamiento de cabecera RPC"))?;
+    if body_start > packet.len() {
+        anyhow::bail!("Paquete RPC incompleto");
+    }
+    let header: serde_json::Value = serde_json::from_slice(&packet[8..body_start])?;
+    if !header.is_object() {
+        anyhow::bail!("Metadatos RPC no válidos");
+    }
+    Ok((header, &packet[body_start..]))
+}
 
+fn encode_rpc_binary_packet(
+    header: &serde_json::Value,
+    body: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    let header = serde_json::to_vec(header)?;
+    if header.is_empty() || header.len() > RPC_BINARY_MAX_HEADER {
+        anyhow::bail!("Metadatos RPC demasiado grandes");
+    }
+    let header_len = u32::try_from(header.len())?;
+    let mut packet = BytesMut::with_capacity(8 + header.len() + body.len());
+    packet.extend_from_slice(RPC_BINARY_MAGIC);
+    packet.extend_from_slice(&header_len.to_be_bytes());
+    packet.extend_from_slice(&header);
+    packet.extend_from_slice(body);
+    Ok(packet.to_vec())
+}
+
+async fn execute_rpc_request(
+    app: &Arc<RwLock<AppState>>,
+    method: &str,
+    path: &str,
+    body: Option<(Vec<u8>, String)>,
+) -> (u16, bool, String, Vec<u8>) {
+    let token = app.read().await.config.local_token.clone();
     let url = format!("http://127.0.0.1:{}{}", LOCAL_PORT, path);
     let client = HTTP_CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -1113,54 +1170,115 @@ async fn handle_rpc(app: &Arc<RwLock<AppState>>, payload: &Payload) -> serde_jso
             .build()
             .expect("reqwest client")
     });
-    let mut builder = match method.as_str() {
+
+    let mut builder = match method {
         "POST" => client.post(&url),
         "PUT" => client.put(&url),
         "DELETE" => client.delete(&url),
         "PATCH" => client.patch(&url),
         _ => client.get(&url),
-    };
-    builder = builder
-        .header("Authorization", format!("Bearer {token}"))
-        .header("X-MoonWolf-Token", &token)
-        .timeout(Duration::from_secs(120));
+    }
+    .header("Authorization", format!("Bearer {token}"))
+    .header("X-MoonWolf-Token", &token)
+    .timeout(Duration::from_secs(120));
 
-    if let Some(body) = req.get("body") {
-        if !body.is_null() {
-            builder = builder.json(body);
-        }
+    if let Some((body, content_type)) = body {
+        builder = builder
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body);
     }
 
     match builder.send().await {
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            let ok = resp.status().is_success();
-            let content_type = resp
+        Ok(response) => {
+            let status = response.status().as_u16();
+            let ok = response.status().is_success();
+            let content_type = response
                 .headers()
-                .get("content-type")
-                .and_then(|v| v.to_str().ok())
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
                 .unwrap_or("application/json")
-                .to_string();
-            let bytes = resp.bytes().await.unwrap_or_default();
-            json!({
-                "id": id,
-                "ok": ok,
-                "status": status,
-                "contentType": content_type,
-                "bodyBase64": crate::b64_std_encode(&bytes),
-            })
+                .to_owned();
+            let body = response.bytes().await.unwrap_or_default().to_vec();
+            (status, ok, content_type, body)
         }
-        Err(e) => {
-            let msg = e.to_string();
-            let err_body = json!({ "ok": false, "error": msg });
-            let bytes = serde_json::to_vec(&err_body).unwrap_or_default();
-            json!({
-                "id": id,
-                "ok": false,
-                "status": 502,
-                "contentType": "application/json",
-                "bodyBase64": crate::b64_std_encode(&bytes),
-            })
+        Err(error) => {
+            let body = serde_json::to_vec(&json!({"ok": false, "error": error.to_string()}))
+                .unwrap_or_default();
+            (502, false, "application/json".to_owned(), body)
         }
     }
+}
+
+async fn handle_rpc(app: &Arc<RwLock<AppState>>, payload: &Payload) -> serde_json::Value {
+    let request = payload_json(payload);
+    let method = request
+        .get("method")
+        .and_then(|value| value.as_str())
+        .unwrap_or("GET")
+        .to_ascii_uppercase();
+    let path = request
+        .get("path")
+        .and_then(|value| value.as_str())
+        .unwrap_or("/api/health");
+    let id = request.get("id").cloned().unwrap_or(json!(null));
+    let body = request
+        .get("body")
+        .filter(|value| !value.is_null())
+        .and_then(|value| serde_json::to_vec(value).ok())
+        .map(|bytes| (bytes, "application/json".to_owned()));
+
+    let (status, ok, content_type, body) =
+        execute_rpc_request(app, &method, path, body).await;
+
+    json!({
+        "id": id,
+        "ok": ok,
+        "status": status,
+        "contentType": content_type,
+        "bodyBase64": crate::b64_std_encode(&body),
+    })
+}
+
+async fn handle_rpc_binary(
+    app: &Arc<RwLock<AppState>>,
+    payload: &Payload,
+) -> anyhow::Result<Vec<u8>> {
+    let Payload::Binary(packet) = payload else {
+        anyhow::bail!("Se esperaba un paquete Socket.IO binario");
+    };
+    let (request, body_bytes) = decode_rpc_binary_packet(packet.as_ref())?;
+    let method = request
+        .get("method")
+        .and_then(|value| value.as_str())
+        .unwrap_or("GET")
+        .to_ascii_uppercase();
+    let path = request
+        .get("path")
+        .and_then(|value| value.as_str())
+        .unwrap_or("/api/health");
+    let id = request.get("id").cloned().unwrap_or(serde_json::Value::Null);
+    let has_body = request
+        .get("hasBody")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(!body_bytes.is_empty());
+    let body = if has_body {
+        let content_type = request
+            .get("contentType")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("application/octet-stream")
+            .to_owned();
+        Some((body_bytes.to_vec(), content_type))
+    } else {
+        None
+    };
+
+    let (status, ok, content_type, response_body) =
+        execute_rpc_request(app, &method, path, body).await;
+    let response_header = json!({
+        "id": id,
+        "ok": ok,
+        "status": status,
+        "contentType": content_type,
+    });
+    encode_rpc_binary_packet(&response_header, &response_body)
 }
