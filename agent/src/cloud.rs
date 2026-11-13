@@ -694,7 +694,10 @@ async fn connect_once(
             let app = Arc::clone(&app_on_connect);
             async move {
                 info!("Socket Cloud conectado");
-                if let Err(e) = socket.emit("agent_capabilities", json!({"rpcBinary": true})).await {
+                if let Err(e) = socket
+                    .emit("agent_capabilities", json!({"rpcBinary": true}))
+                    .await
+                {
                     warn!("No se pudo anunciar RPC binario: {e}");
                 }
                 {
@@ -1138,10 +1141,7 @@ fn decode_rpc_binary_packet(packet: &[u8]) -> anyhow::Result<(serde_json::Value,
     Ok((header, &packet[body_start..]))
 }
 
-fn encode_rpc_binary_packet(
-    header: &serde_json::Value,
-    body: &[u8],
-) -> anyhow::Result<Vec<u8>> {
+fn encode_rpc_binary_packet(header: &serde_json::Value, body: &[u8]) -> anyhow::Result<Vec<u8>> {
     let header = serde_json::to_vec(header)?;
     if header.is_empty() || header.len() > RPC_BINARY_MAX_HEADER {
         anyhow::bail!("Metadatos RPC demasiado grandes");
@@ -1227,8 +1227,7 @@ async fn handle_rpc(app: &Arc<RwLock<AppState>>, payload: &Payload) -> serde_jso
         .and_then(|value| serde_json::to_vec(value).ok())
         .map(|bytes| (bytes, "application/json".to_owned()));
 
-    let (status, ok, content_type, body) =
-        execute_rpc_request(app, &method, path, body).await;
+    let (status, ok, content_type, body) = execute_rpc_request(app, &method, path, body).await;
 
     json!({
         "id": id,
@@ -1256,7 +1255,10 @@ async fn handle_rpc_binary(
         .get("path")
         .and_then(|value| value.as_str())
         .unwrap_or("/api/health");
-    let id = request.get("id").cloned().unwrap_or(serde_json::Value::Null);
+    let id = request
+        .get("id")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     let has_body = request
         .get("hasBody")
         .and_then(serde_json::Value::as_bool)
