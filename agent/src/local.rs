@@ -2563,7 +2563,9 @@ async fn stop_server(
 
     if let Some(stdin) = child.stdin.as_mut() {
         use tokio::io::AsyncWriteExt;
-        let _ = stdin.write_all(format!("{}\r\n", stop_cmd).as_bytes()).await;
+        let _ = stdin
+            .write_all(format!("{}\r\n", stop_cmd).as_bytes())
+            .await;
     }
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
