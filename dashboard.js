@@ -1228,6 +1228,7 @@ function setAgentOnline(online) {
   updateAgentStatusBadges();
 
   if (nextState) {
+    void refreshServerStatus();
     if (lastAgentActivityState !== true) {
       addActivity('MoonWolf Agent conectado', 'ok', '🟢');
     }
@@ -1326,6 +1327,16 @@ function updateStatusUi(status) {
   if (stats) {
     stats.classList.toggle('hidden', status === 'offline');
     stats.classList.toggle('visible', status !== 'offline');
+  }
+}
+
+async function refreshServerStatus() {
+  if (!agentOnline || !cloudSocket?.connected) return;
+  try {
+    const data = await api('/api/status');
+    if (STATUS[data?.status]) setStatus(data.status);
+  } catch (error) {
+    console.warn('[moonwolf] No se pudo sincronizar el estado del servidor:', error);
   }
 }
 
@@ -1521,11 +1532,13 @@ async function startServer() {
 
   setStatus('starting');
 
-  const data = await api('/api/start', { method: 'POST' });
-
-  if (!data.ok) {
-    toast(data.error || 'Error al arrancar', 'err');
-    setStatus('offline');
+  try {
+    const data = await api('/api/start', { method: 'POST' });
+    if (!data?.ok) throw new Error(data?.error || 'Error al arrancar');
+    await refreshServerStatus();
+  } catch (error) {
+    toast(`No se pudo arrancar: ${error?.message || 'Error de conexión.'}`, 'err');
+    await refreshServerStatus();
   }
 }
 
@@ -1537,10 +1550,13 @@ async function stopServer() {
 
   setStatus('stopping');
 
-  const data = await api('/api/stop', { method: 'POST' });
-
-  if (!data.ok) {
-    toast(data.error || 'Error al detener', 'err');
+  try {
+    const data = await api('/api/stop', { method: 'POST' });
+    if (!data?.ok) throw new Error(data?.error || 'Error al detener');
+    await refreshServerStatus();
+  } catch (error) {
+    toast(`No se pudo detener: ${error?.message || 'Error de conexión.'}`, 'err');
+    await refreshServerStatus();
   }
 }
 
@@ -1556,10 +1572,13 @@ async function restartServer() {
 
   setStatus('restarting');
 
-  const data = await api('/api/restart', { method: 'POST' });
-
-  if (!data.ok) {
-    toast(data.error || 'Error al reiniciar', 'err');
+  try {
+    const data = await api('/api/restart', { method: 'POST' });
+    if (!data?.ok) throw new Error(data?.error || 'Error al reiniciar');
+    await refreshServerStatus();
+  } catch (error) {
+    toast(`No se pudo reiniciar: ${error?.message || 'Error de conexión.'}`, 'err');
+    await refreshServerStatus();
   }
 }
 
