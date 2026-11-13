@@ -949,7 +949,7 @@ async function startDirectLink() {
   direct.openTimer = setTimeout(() => {
     if (directReady()) return;
 
-    addActivity('No se pudo establecer el canal directo; las operaciones de archivos quedan bloqueadas hasta reconectar', 'warn', '⚡');
+    addActivity('No se pudo establecer el canal directo; las transferencias usarán Cloud (más lento)', 'warn', '⚡');
     closeDirectLink(true);
   }, DIRECT_OPEN_TIMEOUT_MS);
 
@@ -1134,10 +1134,8 @@ async function waitForDirectReady(timeoutMs = DIRECT_OPEN_TIMEOUT_MS) {
 /**
  * Enruta una petición HTTP.
  *
- * WebRTC no está implementado en el agente Rust, así que cualquier fallo del
- * canal directo cae a `rpcCloud`. Eso garantiza que las rutas de archivos
- * (`/api/files`, `/api/files/download`, `/api/files/upload-chunk`, etc.)
- * llegan siempre al backend, aunque tarden un poco más por ir vía Cloud.
+ * Las rutas de archivos intentan el canal directo (WebRTC). Si no está listo
+ * o falla, caen a `rpcCloud` para no bloquear transferencias.
  */
 function rpcHttp(pathname, init = {}) {
   const method = String(init.method || 'GET').toUpperCase();
@@ -1318,13 +1316,16 @@ function updateStatusUi(status) {
   const stopButton = $('btnStop');
 
   if (stopButton) {
-    stopButton.disabled = status !== 'online' || !agentOnline;
+    // Permitir parar también mientras arranca o reinicia (evitar quedarse colgado en STARTING).
+    const canStop = ['online', 'starting', 'restarting', 'stopping'].includes(status);
+    stopButton.disabled = !canStop || !agentOnline;
   }
 
   const restartButton = $('btnRestart');
 
   if (restartButton) {
-    restartButton.disabled = status !== 'online' || !agentOnline;
+    const canRestart = status === 'online';
+    restartButton.disabled = !canRestart || !agentOnline;
   }
 
   const stats = $('statsGrid');
@@ -1541,6 +1542,8 @@ async function stopServer() {
     return;
   }
 
+  setStatus('stopping');
+
   const data = await api('/api/stop', { method: 'POST' });
 
   if (!data.ok) {
@@ -1557,6 +1560,8 @@ async function restartServer() {
     toast('MoonWolf Agent no está conectado.', 'err');
     return;
   }
+
+  setStatus('restarting');
 
   const data = await api('/api/restart', { method: 'POST' });
 
@@ -4841,7 +4846,7 @@ function renderSettings() {
         <div class="settings-group-icon">⚡</div>
         <div class="settings-group-info">
           <div class="settings-group-title">Canal directo</div>
-          <div class="settings-group-sub">Transferencias de archivos por WebRTC; sin fallback de archivos por Cloud</div>
+          <div class="settings-group-sub">Transferencias de archivos por WebRTC (si falla, se usa Cloud)</div>
         </div>
         <span class="settings-status ${directReady() ? 'online' : 'connecting'}">${directReady() ? '● DIRECTO' : '● ESPERANDO'}</span>
       </div>
