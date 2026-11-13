@@ -829,7 +829,6 @@ fn wait_for_pid(_pid: u32) {}
 pub async fn apply_update(_current_exe: &PathBuf, _new_exe: &PathBuf) -> anyhow::Result<()> {
     anyhow::bail!("apply_update solo implementado en Windows por ahora");
 }
-
 #[cfg(windows)]
 fn show_windows_error_dialog(msg: &str) {
     let title: Vec<u16> = "MoonWolf Agent"
