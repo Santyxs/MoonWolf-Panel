@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+use bytes::{Bytes, BytesMut};
 use axum::{
     body::Body,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
@@ -142,6 +143,42 @@ fn new_uuid_v4() -> String {
     )
 }
 
+const RPC_BINARY_MAGIC: &[u8; 4] = b"MWR1";
+const RPC_BINARY_MAX_HEADER: usize = 64 * 1024;
+
+fn decode_rpc_binary_packet(packet: &[u8]) -> Option<(Value, &[u8])> {
+    if packet.len() < 8 || &packet[..4] != RPC_BINARY_MAGIC {
+        return None;
+    }
+    let header_len = u32::from_be_bytes(packet[4..8].try_into().ok()?) as usize;
+    if header_len == 0 || header_len > RPC_BINARY_MAX_HEADER {
+        return None;
+    }
+    let body_start = 8usize.checked_add(header_len)?;
+    if body_start > packet.len() {
+        return None;
+    }
+    let header: Value = serde_json::from_slice(&packet[8..body_start]).ok()?;
+    if !header.is_object() {
+        return None;
+    }
+    Some((header, &packet[body_start..]))
+}
+
+fn encode_rpc_binary_packet(header: &Value, body: &[u8]) -> Option<Bytes> {
+    let header = serde_json::to_vec(header).ok()?;
+    if header.is_empty() || header.len() > RPC_BINARY_MAX_HEADER {
+        return None;
+    }
+    let header_len = u32::try_from(header.len()).ok()?;
+    let mut packet = BytesMut::with_capacity(8 + header.len() + body.len());
+    packet.extend_from_slice(RPC_BINARY_MAGIC);
+    packet.extend_from_slice(&header_len.to_be_bytes());
+    packet.extend_from_slice(&header);
+    packet.extend_from_slice(body);
+    Some(packet.freeze())
+}
+
 fn normalize_rpc_path(path_raw: &str) -> Option<String> {
     if path_raw.contains("://") || path_raw.starts_with("//") {
         return None;
@@ -250,6 +287,7 @@ struct AgentCache {
     status: Option<Value>,
     stats: Option<Value>,
     logs: Vec<Value>,
+    rpc_binary: bool,
 }
 
 fn update_server_status_from_log(entry: &mut AgentCache, log: &Value) -> Option<Value> {
@@ -629,10 +667,46 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
                 if previous.id.to_string() != socket.id.to_string() { let _ = previous.disconnect(); }
             }
             socket.join(format!("agent:{agent_id}"));
+            state.cache.lock().await.entry(agent_id.clone()).or_default().rpc_binary = false;
+            let _ = io
+                .to(format!("panels:{agent_id}"))
+                .emit("agent_capabilities", &json!({"rpcBinary": false}))
+                .await;
             notify_agent_state(&io, &agent_id_for_connect, true).await;
 
             let state_pair = state.clone();
             let agent_id_pair = agent_id.clone();
+            let state_capabilities = state.clone();
+            let io_capabilities = io.clone();
+            let agent_id_capabilities = agent_id.clone();
+            let agent_socket_id = socket.id.to_string();
+            socket.on("agent_capabilities", move |_socket: SocketRef, Data(capabilities): Data<Value>| {
+                let state = state_capabilities.clone();
+                let io = io_capabilities.clone();
+                let agent_id = agent_id_capabilities.clone();
+                let socket_id = agent_socket_id.clone();
+                async move {
+                    if state.rate_limited(format!("agent-capabilities:{agent_id}"), 20, 60_000).await { return; }
+                    let is_current = state.agents.lock().await
+                        .get(&agent_id)
+                        .map(|current| current.id.to_string() == socket_id)
+                        .unwrap_or(false);
+                    if !is_current { return; }
+
+                    let rpc_binary = capabilities.get("rpcBinary")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    state.cache.lock().await
+                        .entry(agent_id.clone())
+                        .or_default()
+                        .rpc_binary = rpc_binary;
+                    let _ = io
+                        .to(format!("panels:{agent_id}"))
+                        .emit("agent_capabilities", &json!({"rpcBinary": rpc_binary}))
+                        .await;
+                }
+            });
+
             socket.on("pairing_create", move |socket: SocketRef| {
                 let state = state_pair.clone();
                 let agent_id = agent_id_pair.clone();
@@ -740,6 +814,35 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
                 }
             });
 
+            // Respuestas binarias: inspecciona únicamente los metadatos para localizar
+            // el panel y reenvía el paquete de bytes sin convertirlo a Base64.
+            let state_rpc_binary_result = state.clone();
+            let agent_id_rpc_binary_result = agent_id.clone();
+            socket.on("rpc_result_binary", move |_socket: SocketRef, Data(packet): Data<Bytes>| {
+                let state = state_rpc_binary_result.clone();
+                let agent_id = agent_id_rpc_binary_result.clone();
+                async move {
+                    if state.rate_limited(format!("agent-rpc-result:{agent_id}"), 240, 60_000).await { return; }
+                    let Some((result, _)) = decode_rpc_binary_packet(packet.as_ref()) else { return; };
+                    let Some(id) = result.get("id") else { return; };
+                    let id_key = id.to_string();
+                    let target_socket = {
+                        let mut panels = state.panels.lock().await;
+                        let mut target_socket = None;
+                        for panel in panels.values_mut() {
+                            if panel.agent_id == agent_id && panel.pending_rpc.remove(&id_key) {
+                                target_socket = Some(panel.socket.clone());
+                                break;
+                            }
+                        }
+                        target_socket
+                    };
+                    if let Some(socket) = target_socket {
+                        let _ = socket.emit("rpc_result_binary", &packet);
+                    }
+                }
+            });
+
             // ICE/WebRTC: señalización Agent -> navegador.
             let state_signal = state.clone();
             let agent_id_signal = agent_id.clone();
@@ -776,6 +879,13 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
                     if agents.get(&agent_id).map(|s| s.id.to_string() == socket.id.to_string()).unwrap_or(false) {
                         agents.remove(&agent_id);
                         drop(agents);
+                        if let Some(cache) = state.cache.lock().await.get_mut(&agent_id) {
+                            cache.rpc_binary = false;
+                        }
+                        let _ = io
+                            .to(format!("panels:{agent_id}"))
+                            .emit("agent_capabilities", &json!({"rpcBinary": false}))
+                            .await;
                         notify_agent_state(&io, &agent_id, false).await;
                     }
                 }
@@ -796,6 +906,11 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
             });
 
             let online = state.agents.lock().await.get(&agent_id).map(|s| s.connected()).unwrap_or(false);
+            let rpc_binary = state.cache.lock().await
+                .get(&agent_id)
+                .map(|cache| cache.rpc_binary)
+                .unwrap_or(false);
+            let _ = socket.emit("agent_capabilities", &json!({"rpcBinary": rpc_binary}));
             let _ = socket.emit("direct_config", &json!({"iceServers":ICE_SERVERS}));
             let _ = socket.emit("cloud_ready", &json!({"agentOnline":online}));
             let _ = socket.emit("agent_status", &json!({"online":online}));
@@ -827,7 +942,33 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
                 let panel_id = rpc_panel_id.clone();
                 let agent_id = rpc_agent_id.clone();
                 let session = rpc_session.clone();
-                async move { handle_panel_rpc(state, socket, panel_id, agent_id, session, request).await; }
+                async move { handle_panel_rpc(state, socket, panel_id, agent_id, session, request, None).await; }
+            });
+
+            let state_rpc_binary = state.clone();
+            let rpc_binary_panel_id = panel_id.clone();
+            let rpc_binary_agent_id = agent_id.clone();
+            let rpc_binary_session = session.clone();
+            socket.on("rpc_binary", move |socket: SocketRef, Data(packet): Data<Bytes>| {
+                let state = state_rpc_binary.clone();
+                let panel_id = rpc_binary_panel_id.clone();
+                let agent_id = rpc_binary_agent_id.clone();
+                let session = rpc_binary_session.clone();
+                async move {
+                    let Some((request, body)) = decode_rpc_binary_packet(packet.as_ref()) else {
+                        emit_rpc_error(&socket, None, 400, "Paquete RPC binario no válido.");
+                        return;
+                    };
+                    handle_panel_rpc(
+                        state,
+                        socket,
+                        panel_id,
+                        agent_id,
+                        session,
+                        request,
+                        Some(Bytes::copy_from_slice(body)),
+                    ).await;
+                }
             });
 
             let state_signal = state.clone();
@@ -868,7 +1009,15 @@ async fn notify_agent_state(io: &SocketIo, agent_id: &str, online: bool) {
     let _ = io.to(format!("panels:{agent_id}")).emit("agent_status", &status).await;
 }
 
-async fn handle_panel_rpc(state: Arc<AppState>, socket: SocketRef, panel_id: String, agent_id: String, initial_session: PanelSession, request: Value) {
+async fn handle_panel_rpc(
+    state: Arc<AppState>,
+    socket: SocketRef,
+    panel_id: String,
+    agent_id: String,
+    initial_session: PanelSession,
+    request: Value,
+    binary_body: Option<Bytes>,
+) {
     let path_raw = request.get("path").and_then(Value::as_str).unwrap_or("");
     let upload = path_raw.starts_with("/api/files/upload-chunk");
     if state.rate_limited(format!("{}:rpc", panel_id), if upload { 2_000 } else { 120 }, 60_000).await {
@@ -922,8 +1071,31 @@ async fn handle_panel_rpc(state: Arc<AppState>, socket: SocketRef, panel_id: Str
             "path":path.clone(),
             "ctx":{"kind":panel.kind.clone(),"permission":permission.clone()}
         });
-        if let Some(body) = request.get("body") { sanitized["body"] = body.clone(); }
-        if let Err(e) = agent.emit("rpc", &sanitized) {
+        let send_result = if let Some(body) = binary_body {
+            sanitized["contentType"] = Value::String(
+                request.get("contentType")
+                    .and_then(Value::as_str)
+                    .unwrap_or("application/octet-stream")
+                    .to_owned(),
+            );
+            sanitized["hasBody"] = Value::Bool(
+                request.get("hasBody")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(!body.is_empty()),
+            );
+            match encode_rpc_binary_packet(&sanitized, body.as_ref()) {
+                Some(packet) => agent.emit("rpc_binary", &packet),
+                None => {
+                    panel.pending_rpc.remove(&id.to_string());
+                    emit_rpc_error(&socket, Some(id), 400, "No se pudo preparar la solicitud binaria.");
+                    return;
+                }
+            }
+        } else {
+            if let Some(body) = request.get("body") { sanitized["body"] = body.clone(); }
+            agent.emit("rpc", &sanitized)
+        };
+        if let Err(e) = send_result {
             panel.pending_rpc.remove(&id.to_string());
             warn!("No se pudo enviar RPC al Agent: {e}");
             emit_rpc_error(&socket, Some(id), 503, "No se pudo enviar la operación al MoonWolf Agent.");

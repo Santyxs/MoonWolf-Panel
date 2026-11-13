@@ -45,6 +45,7 @@ const DANGEROUS_UPLOAD_EXTENSIONS = new Set([
    ══════════════════════════════════════════════ */
 
 let cloudSocket = null;
+let rpcBinarySupported = false;
 let panelSession = sessionStorage.getItem(SESSION_KEY) || '';
 let agentId = sessionStorage.getItem(AGENT_KEY) || '';
 let panelPermission = sessionStorage.getItem(PERMISSION_KEY) || 'admin';
@@ -563,6 +564,7 @@ async function connectCloud(manual = false) {
     return;
   }
 
+  rpcBinarySupported = false;
   await ensureSocketIo();
 
   if (cloudSocket) {
@@ -706,7 +708,33 @@ async function connectCloud(manual = false) {
       resolveRequest(result);
     });
 
+    cloudSocket.on('agent_capabilities', data => {
+      rpcBinarySupported = Boolean(data?.rpcBinary);
+    });
+
+    cloudSocket.on('rpc_result_binary', async packet => {
+      if (typeof Blob !== 'undefined' && packet instanceof Blob) {
+        packet = await packet.arrayBuffer();
+      }
+      const decoded = decodeRpcBinaryPacket(packet);
+      if (!decoded) return;
+
+      const id = String(decoded.header?.id ?? '');
+      const resolveRequest = pending.get(id);
+      if (!resolveRequest) return;
+
+      pending.delete(id);
+      resolveRequest({
+        id,
+        ok: Boolean(decoded.header?.ok),
+        status: Number(decoded.header?.status) || 500,
+        contentType: decoded.header?.contentType || 'application/octet-stream',
+        bodyBytes: decoded.body,
+      });
+    });
+
     cloudSocket.on('disconnect', reason => {
+      rpcBinarySupported = false;
       cloudConnecting = false;
       setAgentOnline(false);
 
@@ -759,13 +787,12 @@ async function cloudApi(pathname, init = {}) {
   return data;
 }
 
-function rpcCloud(pathname, init = {}) {
+function rpcCloudLegacy(pathname, init = {}) {
   if (!cloudSocket?.connected) {
     return Promise.reject(new Error('MoonWolf Cloud no está conectado.'));
   }
 
   const id = `${Date.now()}-${++requestSequence}`;
-
   const request = {
     id,
     method: String(init.method || 'GET').toUpperCase(),
@@ -792,6 +819,121 @@ function rpcCloud(pathname, init = {}) {
       reject(error);
     }
   });
+}
+
+const RPC_BINARY_MAGIC = new Uint8Array([0x4d, 0x57, 0x52, 0x31]);
+const RPC_BINARY_MAX_HEADER = 64 * 1024;
+
+function encodeRpcBinaryPacket(header, body) {
+  const headerBytes = new TextEncoder().encode(JSON.stringify(header));
+  if (!headerBytes.length || headerBytes.length > RPC_BINARY_MAX_HEADER) {
+    throw new Error('Cabecera RPC demasiado grande.');
+  }
+
+  const packet = new Uint8Array(8 + headerBytes.length + body.length);
+  packet.set(RPC_BINARY_MAGIC, 0);
+  new DataView(packet.buffer).setUint32(4, headerBytes.length);
+  packet.set(headerBytes, 8);
+  packet.set(body, 8 + headerBytes.length);
+  return packet;
+}
+
+function decodeRpcBinaryPacket(data) {
+  let bytes;
+  if (data instanceof ArrayBuffer) {
+    bytes = new Uint8Array(data);
+  } else if (ArrayBuffer.isView(data)) {
+    bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  } else {
+    return null;
+  }
+
+  if (bytes.length < 8 ||
+      bytes[0] !== RPC_BINARY_MAGIC[0] ||
+      bytes[1] !== RPC_BINARY_MAGIC[1] ||
+      bytes[2] !== RPC_BINARY_MAGIC[2] ||
+      bytes[3] !== RPC_BINARY_MAGIC[3]) return null;
+
+  const headerLength = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(4);
+  if (!headerLength || headerLength > RPC_BINARY_MAX_HEADER || 8 + headerLength > bytes.length) return null;
+
+  try {
+    const header = JSON.parse(new TextDecoder().decode(bytes.subarray(8, 8 + headerLength)));
+    if (!header || typeof header !== 'object' || Array.isArray(header)) return null;
+    return { header, body: bytes.slice(8 + headerLength) };
+  } catch {
+    return null;
+  }
+}
+
+function rpcCloudBinary(pathname, init = {}) {
+  if (!cloudSocket?.connected) {
+    return Promise.reject(new Error('MoonWolf Cloud no está conectado.'));
+  }
+
+  const id = `${Date.now()}-${++requestSequence}`;
+  const rawBody = init.body;
+  const hasBody = rawBody !== undefined && rawBody !== null;
+  let body = new Uint8Array(0);
+  const headers = new Headers(init.headers || {});
+  let contentType = headers.get('Content-Type') || 'application/json';
+
+  if (hasBody) {
+    if (rawBody instanceof Uint8Array) {
+      body = rawBody;
+      contentType = headers.get('Content-Type') || 'application/octet-stream';
+    } else if (rawBody instanceof ArrayBuffer) {
+      body = new Uint8Array(rawBody);
+      contentType = headers.get('Content-Type') || 'application/octet-stream';
+    } else if (ArrayBuffer.isView(rawBody)) {
+      body = new Uint8Array(rawBody.buffer, rawBody.byteOffset, rawBody.byteLength);
+      contentType = headers.get('Content-Type') || 'application/octet-stream';
+    } else {
+      // Conserva el comportamiento anterior de reqwest::RequestBuilder::json,
+      // incluidos los cuerpos de tipo string (se serializan como JSON string).
+      body = new TextEncoder().encode(JSON.stringify(rawBody));
+      contentType = 'application/json';
+    }
+  }
+
+  let packet;
+  try {
+    packet = encodeRpcBinaryPacket({
+      id,
+      method: String(init.method || 'GET').toUpperCase(),
+      path: pathname,
+      contentType,
+      hasBody,
+    }, body);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error('MoonWolf Agent no respondió a la solicitud. Comprueba la conexión e inténtalo de nuevo.'));
+    }, 125_000);
+
+    pending.set(id, result => {
+      clearTimeout(timeout);
+      resolve(result);
+    });
+
+    try {
+      cloudSocket.emit('rpc_binary', packet);
+    } catch (error) {
+      clearTimeout(timeout);
+      pending.delete(id);
+      reject(error);
+    }
+  });
+}
+
+function rpcCloud(pathname, init = {}) {
+  return rpcBinarySupported
+    ? rpcCloudBinary(pathname, init)
+    : rpcCloudLegacy(pathname, init);
 }
 
 const DF = { REQ_HEAD: 1, REQ_BODY: 2, REQ_END: 3, RES_HEAD: 17, RES_BODY: 18, RES_END: 19, RES_ERR: 20 };

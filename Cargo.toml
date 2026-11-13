@@ -12,6 +12,7 @@ path = "server.rs"
 
 [dependencies]
 anyhow = "1.0.104"
+bytes = { version = "1", features = ["serde"] }
 axum = "0.8.9"
 getrandom = "0.4"
 hmac = "0.13.0"
