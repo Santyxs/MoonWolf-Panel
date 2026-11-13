@@ -276,6 +276,12 @@ fn update_server_status_from_log(entry: &mut AgentCache, log: &Value) -> Option<
         return None;
     };
 
+    // No degradar online → starting si llega un log tardío de arranque.
+    if status == "starting" {
+        if entry.status.as_ref().and_then(Value::as_str) == Some("online") {
+            return None;
+        }
+    }
     let status = json!(status);
     entry.status = Some(status.clone());
     Some(status)
