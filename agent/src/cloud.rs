@@ -904,7 +904,11 @@ async fn connect_once(
     // Al (re)conectar, sincronizar el estado del proceso Java con el backend.
     // Si no, el panel puede quedarse en offline aunque el servidor ya esté arriba.
     {
-        let status = if last_mc_running { "starting" } else { "offline" };
+        let status = if last_mc_running {
+            "starting"
+        } else {
+            "offline"
+        };
         let _ = client
             .emit(
                 "event",
