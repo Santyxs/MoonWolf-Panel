@@ -901,6 +901,20 @@ async fn connect_once(
     }
 
     let mut last_mc_running = app.read().await.mc_running;
+    // Al (re)conectar, sincronizar el estado del proceso Java con el backend.
+    // Si no, el panel puede quedarse en offline aunque el servidor ya esté arriba.
+    {
+        let status = if last_mc_running { "starting" } else { "offline" };
+        let _ = client
+            .emit(
+                "event",
+                json!({
+                    "name": "status",
+                    "payload": status,
+                }),
+            )
+            .await;
+    }
     let mut last_heartbeat = Instant::now();
     let mut last_activity = Instant::now();
 
