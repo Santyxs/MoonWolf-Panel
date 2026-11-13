@@ -1,7 +1,6 @@
 import { LineEdit, VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
 
 // ─── Palette ────────────────────────────────────────────────────────────────
-// Deep space background with refined purple accents matching MoonWolf brand
 
 component ActionButton inherits Rectangle {
     in property <string> label;
@@ -71,7 +70,6 @@ component FieldRow inherits Rectangle {
     background: transparent;
     clip: true;
 
-    // Texto siempre a la izquierda, con ancho fijo hasta el botón
     VerticalBox {
         x: 12px;
         y: 8px;
@@ -97,7 +95,6 @@ component FieldRow inherits Rectangle {
         }
     }
 
-    // Botón abajo a la derecha (alineado con la línea del valor)
     if root.action-label != "" : ActionButton {
         x: parent.width - 82px;
         y: 18px;
