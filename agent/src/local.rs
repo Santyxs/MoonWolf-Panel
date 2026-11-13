@@ -1377,8 +1377,8 @@ async fn create_backup(
             if let Some(child) = mc.as_mut() {
                 if let Some(stdin) = child.stdin.as_mut() {
                     use tokio::io::AsyncWriteExt;
-                    let _ = stdin.write_all(b"save-off\n").await;
-                    let _ = stdin.write_all(b"save-all flush\n").await;
+                    let _ = stdin.write_all(b"save-off\r\n").await;
+                    let _ = stdin.write_all(b"save-all flush\r\n").await;
                 }
             }
         }
@@ -1467,7 +1467,7 @@ async fn create_backup(
             if let Some(child) = mc.as_mut() {
                 if let Some(stdin) = child.stdin.as_mut() {
                     use tokio::io::AsyncWriteExt;
-                    let _ = stdin.write_all(b"save-on\n").await;
+                    let _ = stdin.write_all(b"save-on\r\n").await;
                 }
             }
         }
@@ -1645,7 +1645,7 @@ async fn restore_backup(
         if let Some(child) = mc.as_mut() {
             if let Some(stdin) = child.stdin.as_mut() {
                 use tokio::io::AsyncWriteExt;
-                let _ = stdin.write_all(b"stop\n").await;
+                let _ = stdin.write_all(b"stop\r\n").await;
             }
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             if child.try_wait().ok().flatten().is_none() {
@@ -2563,7 +2563,7 @@ async fn stop_server(
 
     if let Some(stdin) = child.stdin.as_mut() {
         use tokio::io::AsyncWriteExt;
-        let _ = stdin.write_all(format!("{}\n", stop_cmd).as_bytes()).await;
+        let _ = stdin.write_all(format!("{}\r\n", stop_cmd).as_bytes()).await;
     }
 
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
