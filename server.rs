@@ -932,7 +932,7 @@ async fn handle_panel_rpc(state: Arc<AppState>, socket: SocketRef, panel_id: Str
 }
 
 async fn handle_panel_signal(state: Arc<AppState>, socket: SocketRef, panel_id: String, agent_id: String, session: PanelSession, msg: Value) {
-    if state.rate_limited(format!("{}:direct-signal", panel_id), 60, 60_000).await { return; }
+    if state.rate_limited(format!("{}:direct-signal", panel_id), 300, 60_000).await { return; }
     let kind = msg.get("type").and_then(Value::as_str).unwrap_or("");
     if !["offer", "candidate"].contains(&kind) { return; }
     let agent = state.agents.lock().await.get(&agent_id).cloned();
