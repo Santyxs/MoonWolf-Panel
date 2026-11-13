@@ -911,7 +911,11 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
                 .map(|cache| cache.rpc_binary)
                 .unwrap_or(false);
             let _ = socket.emit("agent_capabilities", &json!({"rpcBinary": rpc_binary}));
-            let _ = socket.emit("direct_config", &json!({"iceServers":ICE_SERVERS}));
+            let _ = socket
+                .emit(
+                    "direct_config",
+                    &json!({"iceServers":[{"urls":ICE_SERVERS[0]},{"urls":ICE_SERVERS[1]}]}),
+                );
             let _ = socket.emit("cloud_ready", &json!({"agentOnline":online}));
             let _ = socket.emit("agent_status", &json!({"online":online}));
             let cached = state.cache.lock().await.get(&agent_id).cloned();

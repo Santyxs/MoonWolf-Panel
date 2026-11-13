@@ -635,8 +635,14 @@ async function connectCloud(manual = false) {
 
     cloudSocket.on('direct_config', data => {
       if (Array.isArray(data?.iceServers) && data.iceServers.length) {
-        const changed = JSON.stringify(direct.iceServers) !== JSON.stringify(data.iceServers);
-        direct.iceServers = data.iceServers;
+        // Compatibilidad con servidores antiguos que enviaban URLs como cadenas.
+        const iceServers = data.iceServers
+          .map(server => typeof server === 'string' ? { urls: server } : server)
+          .filter(server => server && (typeof server.urls === 'string' || Array.isArray(server.urls)));
+        if (!iceServers.length) return;
+
+        const changed = JSON.stringify(direct.iceServers) !== JSON.stringify(iceServers);
+        direct.iceServers = iceServers;
         // Si aún no hay canal y nos llegaron servidores ICE, reintentar con ellos.
         if (changed && !directReady() && agentOnline) {
           closeDirectLink(false);
@@ -1353,18 +1359,20 @@ function postJSON(pathname, body) {
 
 function setAgentOnline(online) {
   const nextState = Boolean(online);
+  const previousState = agentOnline;
 
+  // startDirectLink() comprueba agentOnline: actualizarlo antes de invocarlo.
+  agentOnline = nextState;
   if (nextState) startDirectLink();
   else closeDirectLink(false);
 
-  if (agentOnline === nextState) {
+  if (previousState === nextState) {
     updateAgentUi();
     updateStatusUi(currentStatus);
     updateAgentStatusBadges();
     return;
   }
 
-  agentOnline = nextState;
   updateAgentUi();
   updateStatusUi(currentStatus);
   updateAgentStatusBadges();
