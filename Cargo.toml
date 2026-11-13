@@ -2,7 +2,7 @@
 name = "moonwolf-panel"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.100"
 description = "MoonWolf Panel cloud backend"
 license = "MIT"
 
