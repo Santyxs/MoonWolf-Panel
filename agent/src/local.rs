@@ -2363,11 +2363,8 @@ fn resolve_java_binary(config_java_path: &str) -> (PathBuf, String) {
     (PathBuf::from("java"), "PATH del sistema".to_string())
 }
 
-async fn read_console_stream<R>(
-    stream: R,
-    app: Arc<RwLock<AppState>>,
-    level: &'static str,
-) where
+async fn read_console_stream<R>(stream: R, app: Arc<RwLock<AppState>>, level: &'static str)
+where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     use tokio::io::{AsyncBufReadExt, BufReader};
