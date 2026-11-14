@@ -1656,6 +1656,8 @@ async fn restore_backup(
         {
             let mut s = st.app.write().await;
             s.mc_running = false;
+            s.mc_pid = None;
+            s.mc_started_at_ms = None;
         }
     }
 
@@ -2284,6 +2286,10 @@ async fn server_status(State(st): State<LocalState>) -> Response {
     {
         let mut s = st.app.write().await;
         s.mc_running = running;
+        if !running {
+            s.mc_pid = None;
+            s.mc_started_at_ms = None;
+        }
     }
     json_ok(json!({
         "status": if running { "online" } else { "offline" },
@@ -2508,6 +2514,7 @@ async fn start_server(
         }
     };
 
+    let pid = child.id();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
@@ -2515,6 +2522,8 @@ async fn start_server(
     {
         let mut s = st.app.write().await;
         s.mc_running = true;
+        s.mc_pid = pid;
+        s.mc_started_at_ms = Some(crate::now_ms());
         s.add_console_log(
             "info",
             format!("Servidor Minecraft arrancado ({})", jar.display()),
@@ -2549,6 +2558,8 @@ async fn start_server(
                         drop(lock);
                         let mut s = app.write().await;
                         s.mc_running = false;
+                        s.mc_pid = None;
+                        s.mc_started_at_ms = None;
                         s.add_console_log(
                             "warn",
                             format!("Servidor Minecraft terminó (código {:?})", status.code()),
@@ -2561,6 +2572,8 @@ async fn start_server(
                         drop(lock);
                         let mut s = app.write().await;
                         s.mc_running = false;
+                        s.mc_pid = None;
+                        s.mc_started_at_ms = None;
                         s.add_console_log("warn", "No se pudo comprobar el estado del servidor");
                         break;
                     }
@@ -2609,6 +2622,8 @@ async fn stop_server(
     {
         let mut s = st.app.write().await;
         s.mc_running = false;
+        s.mc_pid = None;
+        s.mc_started_at_ms = None;
         s.add_console_log("info", "Servidor detenido");
     }
     Ok(json_ok(json!({})))

@@ -947,6 +947,9 @@ async fn connect_once(
     }
     let mut last_heartbeat = Instant::now();
     let mut last_activity = Instant::now();
+    let mut last_stats = Instant::now() - Duration::from_secs(10);
+    let mut last_cpu: Option<(u64, u64)> = None; // (proc_time_units, wall_ms)
+    const STATS_INTERVAL: Duration = Duration::from_secs(5);
 
     loop {
         sleep_ms(500).await;
@@ -1042,6 +1045,34 @@ async fn connect_once(
                 last_heartbeat = Instant::now();
                 last_activity = Instant::now();
             }
+        }
+
+        // Métricas: RCON (jugadores) + SO (RAM/CPU) + uptime del proceso Java.
+        if mc_running && last_stats.elapsed() >= STATS_INTERVAL {
+            let (server_dir, pid, started) = {
+                let s = app.read().await;
+                (
+                    s.config.server_dir.clone(),
+                    s.mc_pid,
+                    s.mc_started_at_ms,
+                )
+            };
+            let stats = collect_server_stats(&server_dir, pid, started, &mut last_cpu).await;
+            if let Err(e) = client
+                .emit(
+                    "event",
+                    json!({
+                        "name": "stats",
+                        "payload": stats,
+                    }),
+                )
+                .await
+            {
+                warn!("emit stats falló: {e}");
+                break;
+            }
+            last_stats = Instant::now();
+            last_activity = Instant::now();
         }
 
         if last_activity.elapsed() >= IDLE_TIMEOUT {
@@ -1283,4 +1314,428 @@ async fn handle_rpc_binary(
         "contentType": content_type,
     });
     encode_rpc_binary_packet(&response_header, &response_body)
+}
+
+/* ══════════════════════════════════════════════
+   MÉTRICAS (RCON + proceso/sistema)
+   ══════════════════════════════════════════════ */
+
+async fn collect_server_stats(
+    server_dir: &std::path::Path,
+    java_pid: Option<u32>,
+    started_at_ms: Option<i64>,
+    last_cpu: &mut Option<(u64, u64)>,
+) -> serde_json::Value {
+    let mut players = 0u32;
+    let mut max_players = 0u32;
+    let mut process_memory = 0u64;
+    let mut cpu_usage = 0.0f64;
+
+    if let Some(pid) = java_pid {
+        if let Some(mb) = process_memory_mb(pid) {
+            process_memory = mb;
+        }
+        if let Some(cpu) = sample_process_cpu(pid, last_cpu) {
+            cpu_usage = cpu;
+        }
+    }
+
+    match rcon_list_players(server_dir).await {
+        Ok((online, max)) => {
+            players = online;
+            max_players = max;
+        }
+        Err(e) => {
+            debug!("RCON list: {e}");
+        }
+    }
+
+    if max_players == 0 {
+        if let Some(max) = read_max_players_prop(server_dir).await {
+            max_players = max;
+        }
+    }
+
+    let sys = system_memory().unwrap_or((0.0, 0.0));
+
+    json!({
+        "players": players,
+        "maxPlayers": max_players,
+        "tps": 20.0,
+        "processMemory": process_memory,
+        "cpuUsage": cpu_usage,
+        "uptime": format_uptime(started_at_ms),
+        "sysMemory": {
+            "used": sys.0,
+            "total": sys.1,
+        },
+    })
+}
+
+fn format_uptime(started_at_ms: Option<i64>) -> String {
+    let Some(start) = started_at_ms else {
+        return "0h 0m".into();
+    };
+    let now = crate::now_ms();
+    if now <= start {
+        return "0h 0m".into();
+    }
+    let total_secs = ((now - start) / 1000) as u64;
+    let hours = total_secs / 3600;
+    let mins = (total_secs % 3600) / 60;
+    if hours >= 24 {
+        let days = hours / 24;
+        let h = hours % 24;
+        format!("{days}d {h}h {mins}m")
+    } else {
+        format!("{hours}h {mins}m")
+    }
+}
+
+async fn read_max_players_prop(server_dir: &std::path::Path) -> Option<u32> {
+    let text = tokio::fs::read_to_string(server_dir.join("server.properties"))
+        .await
+        .ok()?;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("max-players=") {
+            return rest.trim().parse().ok();
+        }
+    }
+    None
+}
+
+async fn read_rcon_config(server_dir: &std::path::Path) -> Option<(u16, String)> {
+    let text = tokio::fs::read_to_string(server_dir.join("server.properties"))
+        .await
+        .ok()?;
+    let mut enabled = false;
+    let mut port = 25575u16;
+    let mut password = String::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            match k.trim() {
+                "enable-rcon" => enabled = v.trim().eq_ignore_ascii_case("true"),
+                "rcon.port" => {
+                    if let Ok(p) = v.trim().parse() {
+                        port = p;
+                    }
+                }
+                "rcon.password" => password = v.trim().to_string(),
+                _ => {}
+            }
+        }
+    }
+    if enabled && !password.is_empty() {
+        Some((port, password))
+    } else {
+        None
+    }
+}
+
+async fn rcon_list_players(server_dir: &std::path::Path) -> anyhow::Result<(u32, u32)> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+    use tokio::time::timeout;
+
+    const RCON_TIMEOUT: Duration = Duration::from_secs(3);
+    const RCON_AUTH: i32 = 3;
+    const RCON_EXEC: i32 = 2;
+    const RCON_RESPONSE: i32 = 0;
+
+    let (port, password) = read_rcon_config(server_dir)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("RCON no configurado"))?;
+
+    let mut stream = timeout(RCON_TIMEOUT, TcpStream::connect(format!("127.0.0.1:{port}"))).await??;
+    let _ = stream.set_nodelay(true);
+
+    rcon_write_packet(&mut stream, 1, RCON_AUTH, &password).await?;
+    let (id, typ, _) = rcon_read_packet(&mut stream).await?;
+    if typ == RCON_RESPONSE {
+        let (id2, _typ2, _) = rcon_read_packet(&mut stream).await?;
+        if id2 == -1 {
+            anyhow::bail!("RCON auth rechazada");
+        }
+    } else if id == -1 {
+        anyhow::bail!("RCON auth rechazada");
+    }
+
+    rcon_write_packet(&mut stream, 2, RCON_EXEC, "list").await?;
+    let mut body = String::new();
+    loop {
+        match timeout(Duration::from_millis(800), rcon_read_packet(&mut stream)).await {
+            Ok(Ok((_id, typ, payload))) => {
+                if typ == RCON_RESPONSE || typ == RCON_EXEC {
+                    body.push_str(&payload);
+                    if payload.is_empty() {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+
+    parse_list_response(&body).ok_or_else(|| anyhow::anyhow!("No se pudo parsear list: {body}"))
+}
+
+async fn rcon_write_packet(
+    stream: &mut tokio::net::TcpStream,
+    id: i32,
+    typ: i32,
+    body: &str,
+) -> anyhow::Result<()> {
+    use tokio::io::AsyncWriteExt;
+    use tokio::time::timeout;
+    const RCON_TIMEOUT: Duration = Duration::from_secs(3);
+    let body_bytes = body.as_bytes();
+    let len = (4 + 4 + body_bytes.len() + 2) as i32;
+    let mut buf = Vec::with_capacity(4 + len as usize);
+    buf.extend_from_slice(&len.to_le_bytes());
+    buf.extend_from_slice(&id.to_le_bytes());
+    buf.extend_from_slice(&typ.to_le_bytes());
+    buf.extend_from_slice(body_bytes);
+    buf.push(0);
+    buf.push(0);
+    timeout(RCON_TIMEOUT, stream.write_all(&buf)).await??;
+    Ok(())
+}
+
+async fn rcon_read_packet(stream: &mut tokio::net::TcpStream) -> anyhow::Result<(i32, i32, String)> {
+    use tokio::io::AsyncReadExt;
+    use tokio::time::timeout;
+    const RCON_TIMEOUT: Duration = Duration::from_secs(3);
+    let mut len_buf = [0u8; 4];
+    timeout(RCON_TIMEOUT, stream.read_exact(&mut len_buf)).await??;
+    let len = i32::from_le_bytes(len_buf);
+    if !(10..=4096).contains(&len) {
+        anyhow::bail!("paquete RCON inválido (len={len})");
+    }
+    let mut data = vec![0u8; len as usize];
+    timeout(RCON_TIMEOUT, stream.read_exact(&mut data)).await??;
+    let id = i32::from_le_bytes(data[0..4].try_into()?);
+    let typ = i32::from_le_bytes(data[4..8].try_into()?);
+    let body_end = data.len().saturating_sub(2);
+    let body = String::from_utf8_lossy(&data[8..body_end]).into_owned();
+    Ok((id, typ, body))
+}
+fn parse_list_response(body: &str) -> Option<(u32, u32)> {
+    let lower = body.to_ascii_lowercase();
+    if let Some(idx) = lower.find("there are ") {
+        let rest = &body[idx + "there are ".len()..];
+        let mut nums = rest
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| s.parse::<u32>().ok());
+        let online = nums.next()?;
+        let max = nums.next().unwrap_or(0);
+        return Some((online, max));
+    }
+    let digits: Vec<u32> = body
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    if digits.len() >= 2 {
+        Some((digits[0], digits[1]))
+    } else if digits.len() == 1 {
+        Some((digits[0], 0))
+    } else {
+        None
+    }
+}
+
+fn sample_process_cpu(pid: u32, last: &mut Option<(u64, u64)>) -> Option<f64> {
+    let now_ms = crate::now_ms() as u64;
+    let proc_time = process_cpu_time(pid)?;
+    let sample = (proc_time, now_ms);
+    let pct = if let Some((prev_proc, prev_wall)) = *last {
+        let d_proc = sample.0.saturating_sub(prev_proc);
+        let d_wall = sample.1.saturating_sub(prev_wall);
+        if d_wall == 0 {
+            0.0
+        } else {
+            #[cfg(windows)]
+            let d_proc_ms = d_proc / 10_000;
+            #[cfg(not(windows))]
+            let d_proc_ms = d_proc;
+            let cores = std::thread::available_parallelism()
+                .map(|n| n.get() as f64)
+                .unwrap_or(1.0)
+                .max(1.0);
+            let raw = (d_proc_ms as f64) / (d_wall as f64) * 100.0;
+            (raw / cores).clamp(0.0, 100.0)
+        }
+    } else {
+        0.0
+    };
+    *last = Some(sample);
+    Some((pct * 10.0).round() / 10.0)
+}
+
+#[cfg(windows)]
+fn system_memory() -> Option<(f64, f64)> {
+    use std::mem::MaybeUninit;
+    #[repr(C)]
+    struct MemoryStatusEx {
+        length: u32,
+        memory_load: u32,
+        total_phys: u64,
+        avail_phys: u64,
+        total_page_file: u64,
+        avail_page_file: u64,
+        total_virtual: u64,
+        avail_virtual: u64,
+        avail_extended_virtual: u64,
+    }
+    extern "system" {
+        fn GlobalMemoryStatusEx(lp_buffer: *mut MemoryStatusEx) -> i32;
+    }
+    unsafe {
+        let mut st = MaybeUninit::<MemoryStatusEx>::zeroed();
+        (*st.as_mut_ptr()).length = std::mem::size_of::<MemoryStatusEx>() as u32;
+        if GlobalMemoryStatusEx(st.as_mut_ptr()) == 0 {
+            return None;
+        }
+        let st = st.assume_init();
+        let total = st.total_phys as f64 / (1024.0 * 1024.0 * 1024.0);
+        let avail = st.avail_phys as f64 / (1024.0 * 1024.0 * 1024.0);
+        let used = (total - avail).max(0.0);
+        Some(((used * 10.0).round() / 10.0, (total * 10.0).round() / 10.0))
+    }
+}
+
+#[cfg(windows)]
+fn process_memory_mb(pid: u32) -> Option<u64> {
+    use std::mem::MaybeUninit;
+    #[repr(C)]
+    struct ProcessMemoryCounters {
+        cb: u32,
+        page_fault_count: u32,
+        peak_working_set_size: usize,
+        working_set_size: usize,
+        quota_peak_paged_pool_usage: usize,
+        quota_paged_pool_usage: usize,
+        quota_peak_non_paged_pool_usage: usize,
+        quota_non_paged_pool_usage: usize,
+        pagefile_usage: usize,
+        peak_pagefile_usage: usize,
+    }
+    extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut core::ffi::c_void;
+        fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
+        fn GetProcessMemoryInfo(
+            process: *mut core::ffi::c_void,
+            counters: *mut ProcessMemoryCounters,
+            cb: u32,
+        ) -> i32;
+    }
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const PROCESS_VM_READ: u32 = 0x0010;
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let mut counters = MaybeUninit::<ProcessMemoryCounters>::zeroed();
+        (*counters.as_mut_ptr()).cb = std::mem::size_of::<ProcessMemoryCounters>() as u32;
+        let ok = GetProcessMemoryInfo(
+            handle,
+            counters.as_mut_ptr(),
+            std::mem::size_of::<ProcessMemoryCounters>() as u32,
+        );
+        CloseHandle(handle);
+        if ok == 0 {
+            return None;
+        }
+        Some((counters.assume_init().working_set_size as u64) / (1024 * 1024))
+    }
+}
+
+#[cfg(windows)]
+fn process_cpu_time(pid: u32) -> Option<u64> {
+    #[repr(C)]
+    struct FileTime {
+        lo: u32,
+        hi: u32,
+    }
+    extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut core::ffi::c_void;
+        fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
+        fn GetProcessTimes(
+            process: *mut core::ffi::c_void,
+            creation: *mut FileTime,
+            exit: *mut FileTime,
+            kernel: *mut FileTime,
+            user: *mut FileTime,
+        ) -> i32;
+    }
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let mut creation = FileTime { lo: 0, hi: 0 };
+        let mut exit = FileTime { lo: 0, hi: 0 };
+        let mut kernel = FileTime { lo: 0, hi: 0 };
+        let mut user = FileTime { lo: 0, hi: 0 };
+        let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
+        CloseHandle(handle);
+        if ok == 0 {
+            return None;
+        }
+        let k = ((kernel.hi as u64) << 32) | kernel.lo as u64;
+        let u = ((user.hi as u64) << 32) | user.lo as u64;
+        Some(k + u)
+    }
+}
+
+#[cfg(not(windows))]
+fn system_memory() -> Option<(f64, f64)> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let mut total_kb = 0u64;
+    let mut avail_kb = 0u64;
+    for line in text.lines() {
+        if let Some(v) = line.strip_prefix("MemTotal:") {
+            total_kb = v.trim().trim_end_matches(" kB").trim().parse().unwrap_or(0);
+        } else if let Some(v) = line.strip_prefix("MemAvailable:") {
+            avail_kb = v.trim().trim_end_matches(" kB").trim().parse().unwrap_or(0);
+        }
+    }
+    if total_kb == 0 {
+        return None;
+    }
+    let total = total_kb as f64 / (1024.0 * 1024.0);
+    let used = (total_kb.saturating_sub(avail_kb)) as f64 / (1024.0 * 1024.0);
+    Some(((used * 10.0).round() / 10.0, (total * 10.0).round() / 10.0))
+}
+
+#[cfg(not(windows))]
+fn process_memory_mb(pid: u32) -> Option<u64> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    for line in text.lines() {
+        if let Some(v) = line.strip_prefix("VmRSS:") {
+            let kb: u64 = v.trim().trim_end_matches(" kB").trim().parse().ok()?;
+            return Some(kb / 1024);
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn process_cpu_time(pid: u32) -> Option<u64> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rparen = text.rfind(')')?;
+    let fields: Vec<&str> = text[rparen + 2..].split_whitespace().collect();
+    let utime: u64 = fields.get(11)?.parse().ok()?;
+    let stime: u64 = fields.get(12)?.parse().ok()?;
+    Some((utime + stime) * 10)
 }
