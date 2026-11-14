@@ -1589,82 +1589,16 @@ fn sample_process_cpu(pid: u32, last: &mut Option<(u64, u64)>) -> Option<f64> {
 }
 
 #[cfg(windows)]
-mod win_metrics {
-    use std::mem::MaybeUninit;
-
-    #[repr(C)]
-    pub struct MemoryStatusEx {
-        pub length: u32,
-        pub memory_load: u32,
-        pub total_phys: u64,
-        pub avail_phys: u64,
-        pub total_page_file: u64,
-        pub avail_page_file: u64,
-        pub total_virtual: u64,
-        pub avail_virtual: u64,
-        pub avail_extended_virtual: u64,
-    }
-
-    #[repr(C)]
-    pub struct ProcessMemoryCounters {
-        pub cb: u32,
-        pub page_fault_count: u32,
-        pub peak_working_set_size: usize,
-        pub working_set_size: usize,
-        pub quota_peak_paged_pool_usage: usize,
-        pub quota_paged_pool_usage: usize,
-        pub quota_peak_non_paged_pool_usage: usize,
-        pub quota_non_paged_pool_usage: usize,
-        pub pagefile_usage: usize,
-        pub peak_pagefile_usage: usize,
-    }
-
-    #[repr(C)]
-    pub struct FileTime {
-        pub lo: u32,
-        pub hi: u32,
-    }
-
-    #[link(name = "kernel32")]
-    extern "system" {
-        pub fn GlobalMemoryStatusEx(lp_buffer: *mut MemoryStatusEx) -> i32;
-        pub fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut core::ffi::c_void;
-        pub fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
-        pub fn GetProcessTimes(
-            process: *mut core::ffi::c_void,
-            creation: *mut FileTime,
-            exit: *mut FileTime,
-            kernel: *mut FileTime,
-            user: *mut FileTime,
-        ) -> i32;
-    }
-
-    #[link(name = "psapi")]
-    extern "system" {
-        pub fn GetProcessMemoryInfo(
-            process: *mut core::ffi::c_void,
-            counters: *mut ProcessMemoryCounters,
-            cb: u32,
-        ) -> i32;
-    }
-
-    pub const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-    pub const PROCESS_VM_READ: u32 = 0x0010;
-}
-
-#[cfg(windows)]
 fn system_memory() -> Option<(f64, f64)> {
-    use std::mem::MaybeUninit;
-    use win_metrics::*;
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
     unsafe {
-        let mut st = MaybeUninit::<MemoryStatusEx>::zeroed();
-        (*st.as_mut_ptr()).length = std::mem::size_of::<MemoryStatusEx>() as u32;
-        if GlobalMemoryStatusEx(st.as_mut_ptr()) == 0 {
+        let mut st = std::mem::zeroed::<MEMORYSTATUSEX>();
+        st.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+        if GlobalMemoryStatusEx(&mut st) == 0 {
             return None;
         }
-        let st = st.assume_init();
-        let total = st.total_phys as f64 / (1024.0 * 1024.0 * 1024.0);
-        let avail = st.avail_phys as f64 / (1024.0 * 1024.0 * 1024.0);
+        let total = st.ullTotalPhys as f64 / (1024.0 * 1024.0 * 1024.0);
+        let avail = st.ullAvailPhys as f64 / (1024.0 * 1024.0 * 1024.0);
         let used = (total - avail).max(0.0);
         Some(((used * 10.0).round() / 10.0, (total * 10.0).round() / 10.0))
     }
@@ -1672,47 +1606,61 @@ fn system_memory() -> Option<(f64, f64)> {
 
 #[cfg(windows)]
 fn process_memory_mb(pid: u32) -> Option<u64> {
-    use std::mem::MaybeUninit;
-    use win_metrics::*;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows_sys::Win32::System::Threading::OpenProcess;
+
+    // Avoid depending on optional constant feature flags.
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const PROCESS_QUERY_INFORMATION: u32 = 0x0400;
+    const PROCESS_VM_READ: u32 = 0x0010;
+
     unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid);
+        let mut handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
+        if handle.is_null() {
+            handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        }
         if handle.is_null() {
             return None;
         }
-        let mut counters = MaybeUninit::<ProcessMemoryCounters>::zeroed();
-        (*counters.as_mut_ptr()).cb = std::mem::size_of::<ProcessMemoryCounters>() as u32;
-        let ok = GetProcessMemoryInfo(
-            handle,
-            counters.as_mut_ptr(),
-            std::mem::size_of::<ProcessMemoryCounters>() as u32,
-        );
+        let mut counters = std::mem::zeroed::<PROCESS_MEMORY_COUNTERS>();
+        counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        let ok = GetProcessMemoryInfo(handle, &mut counters, counters.cb);
         CloseHandle(handle);
         if ok == 0 {
             return None;
         }
-        Some((counters.assume_init().working_set_size as u64) / (1024 * 1024))
+        Some((counters.WorkingSetSize as u64) / (1024 * 1024))
     }
 }
 
 #[cfg(windows)]
 fn process_cpu_time(pid: u32) -> Option<u64> {
-    use win_metrics::*;
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess};
+
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const PROCESS_QUERY_INFORMATION: u32 = 0x0400;
+
     unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        let mut handle = OpenProcess(PROCESS_QUERY_INFORMATION, 0, pid);
+        if handle.is_null() {
+            handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        }
         if handle.is_null() {
             return None;
         }
-        let mut creation = FileTime { lo: 0, hi: 0 };
-        let mut exit = FileTime { lo: 0, hi: 0 };
-        let mut kernel = FileTime { lo: 0, hi: 0 };
-        let mut user = FileTime { lo: 0, hi: 0 };
+        let mut creation = std::mem::zeroed::<FILETIME>();
+        let mut exit = std::mem::zeroed::<FILETIME>();
+        let mut kernel = std::mem::zeroed::<FILETIME>();
+        let mut user = std::mem::zeroed::<FILETIME>();
         let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
         CloseHandle(handle);
         if ok == 0 {
             return None;
         }
-        let k = ((kernel.hi as u64) << 32) | kernel.lo as u64;
-        let u = ((user.hi as u64) << 32) | user.lo as u64;
+        let k = ((kernel.dwHighDateTime as u64) << 32) | kernel.dwLowDateTime as u64;
+        let u = ((user.dwHighDateTime as u64) << 32) | user.dwLowDateTime as u64;
         Some(k + u)
     }
 }
