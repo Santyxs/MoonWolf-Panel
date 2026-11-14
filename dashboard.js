@@ -1764,6 +1764,54 @@ function getConsoleLogType(entry) {
 const pendingConsoleLogs = [];
 let consoleFlushScheduled = false;
 
+// Bukkit/Paper no siempre conserva los estilos de /plugins al volcar la salida
+// a stdout. Recuperamos el estado conocido a partir de los mensajes de carga.
+const consolePluginStates = new Map();
+let consolePluginListSection = '';
+
+function rememberPluginState(line) {
+  const text = String(line || '');
+  const match = text.match(/\b(Enabling|Enabled|Disabling|Disabled)\s+(.+?)\s+v[^\s]+/i);
+  if (!match) return;
+  const name = match[2].trim();
+  if (!name) return;
+  consolePluginStates.set(name.toLowerCase(), /^(?:Enabling|Enabled)$/i.test(match[1]));
+}
+
+function renderPluginListLine(line) {
+  const text = String(line || '');
+  const marker = text.indexOf('- ');
+  if (marker < 0 || !consolePluginListSection) return renderConsoleText(text);
+
+  const prefix = text.slice(0, marker + 2);
+  const names = text.slice(marker + 2).split(/,\s*/);
+  const renderedNames = names.map(name => {
+    const cleanName = name.trim();
+    if (!cleanName) return '';
+    const enabled = consolePluginStates.get(cleanName.toLowerCase());
+    // Verde por defecto; rojo si los logs registraron que se deshabilitó.
+    const color = enabled === false ? 'mc-red' : 'mc-green';
+    return `<span class="${color}">${escHtml(cleanName)}</span>`;
+  }).join('<span>, </span>');
+  return renderConsoleText(prefix) + renderedNames;
+}
+
+function renderConsoleEntry(line) {
+  rememberPluginState(line);
+  const text = String(line || '');
+  if (/\b(?:Paper|Bukkit) Plugins?\s*\(\d+\)\s*:/i.test(text)) {
+    consolePluginListSection = /Bukkit Plugins/i.test(text) ? 'bukkit' : 'paper';
+    return renderConsoleText(text);
+  }
+  if (consolePluginListSection && /-\s*[^,]+/.test(text)) {
+    return renderPluginListLine(text);
+  }
+  if (consolePluginListSection && !/\b(?:INFO|WARN|ERROR)\b/i.test(text)) {
+    consolePluginListSection = '';
+  }
+  return renderConsoleText(text);
+}
+
 function flushConsoleLogs() {
   consoleFlushScheduled = false;
   const consoleEl = $('console');
@@ -1775,7 +1823,7 @@ function flushConsoleLogs() {
     div.className = `log-line ${getConsoleLogType(entry)}`;
     div.innerHTML =
       `<span class="log-time">${escHtml(entry.time || '--:--:--')}</span>` +
-      `<span class="log-text">${renderConsoleText(entry.line)}</span>`;
+      `<span class="log-text">${renderConsoleEntry(entry.line)}</span>`;
     fragment.appendChild(div);
   }
 
