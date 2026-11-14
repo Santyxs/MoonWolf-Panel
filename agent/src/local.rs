@@ -2703,11 +2703,13 @@ async fn versions_software() -> Response {
             { "id": "paper", "label": "Paper", "category": "plugins", "desc": "Servidor de alto rendimiento compatible con plugins." },
             { "id": "purpur", "label": "Purpur", "category": "plugins", "desc": "Fork de Paper con configuración avanzada." },
             { "id": "folia", "label": "Folia", "category": "plugins", "desc": "Fork de Paper con multithreading regional." },
+            { "id": "leaves", "label": "Leaves", "category": "plugins", "desc": "Fork de Paper orientado a optimización y configuración." },
             { "id": "fabric", "label": "Fabric", "category": "mods", "desc": "Loader ligero para mods." },
-            { "id": "velocity", "label": "Velocity", "category": "proxy", "desc": "Proxy moderno." },
-            { "id": "waterfall", "label": "Waterfall", "category": "proxy", "desc": "Proxy basado en BungeeCord." },
+            { "id": "quilt", "label": "Quilt", "category": "mods", "desc": "Fork de Fabric centrado en la comunidad y mods." },
             { "id": "forge", "label": "Forge", "category": "mods", "desc": "Loader clásico para mods." },
             { "id": "neoforge", "label": "NeoForge", "category": "mods", "desc": "Loader moderno para mods." },
+            { "id": "velocity", "label": "Velocity", "category": "proxy", "desc": "Proxy moderno." },
+            { "id": "waterfall", "label": "Waterfall", "category": "proxy", "desc": "Proxy basado en BungeeCord." },
             { "id": "vanilla", "label": "Vanilla", "category": "vanilla", "desc": "Servidor oficial de Mojang." }
         ]
     }))
@@ -2727,7 +2729,9 @@ async fn versions_list(Query(q): Query<VersionsListQuery>) -> Response {
     let res: Result<Vec<String>, String> = match sw.as_str() {
         "paper" | "folia" | "velocity" | "waterfall" => list_papermc_versions(&sw).await,
         "purpur" => list_purpur_versions().await,
+        "leaves" => list_leaves_versions().await,
         "fabric" => list_fabric_versions().await,
+        "quilt" => list_quilt_versions().await,
         "vanilla" => list_vanilla_versions().await,
         "forge" => list_forge_versions().await,
         "neoforge" => list_neoforge_versions().await,
@@ -2772,6 +2776,40 @@ async fn list_purpur_versions() -> Result<Vec<String>, String> {
         .collect();
     out.reverse();
     Ok(out)
+}
+
+async fn list_leaves_versions() -> Result<Vec<String>, String> {
+    let v = fetch_json("https://api.leavesmc.org/v2/projects/leaves").await?;
+    let arr = v
+        .get("versions")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut out: Vec<String> = arr
+        .into_iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+    out.reverse();
+    Ok(out)
+}
+
+async fn list_quilt_versions() -> Result<Vec<String>, String> {
+    let v = fetch_json("https://meta.quiltmc.org/v3/versions/game").await?;
+    Ok(v.as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|item| {
+            item.get("stable")
+                .and_then(|s| s.as_bool())
+                .unwrap_or(false)
+        })
+        .filter_map(|item| {
+            item.get("version")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string())
+        })
+        .collect())
 }
 
 async fn list_fabric_versions() -> Result<Vec<String>, String> {
@@ -2860,7 +2898,9 @@ async fn versions_builds(Query(q): Query<VersionsBuildsQuery>) -> Response {
     let res: Result<Vec<serde_json::Value>, String> = match sw.as_str() {
         "paper" | "folia" | "velocity" | "waterfall" => builds_papermc(&sw, &version).await,
         "purpur" => builds_purpur(&version).await,
+        "leaves" => builds_leaves(&version).await,
         "fabric" => builds_fabric(&version).await,
+        "quilt" => builds_quilt(&version).await,
         "vanilla" => builds_vanilla(&version).await,
         "forge" => builds_forge(&version).await,
         "neoforge" => builds_neoforge(&version).await,
@@ -3025,6 +3065,61 @@ async fn builds_vanilla(version: &str) -> Result<Vec<serde_json::Value>, String>
     })])
 }
 
+async fn builds_leaves(version: &str) -> Result<Vec<serde_json::Value>, String> {
+    let url = format!("https://api.leavesmc.org/v2/projects/leaves/versions/{version}");
+    let v = fetch_json(&url).await?;
+    let builds = v
+        .get("builds")
+        .and_then(|b| b.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for b in builds.iter().rev().take(25) {
+        let build = b.as_i64().unwrap_or(0);
+        if build <= 0 {
+            continue;
+        }
+        out.push(json!({
+            "build": build,
+            "channel": "RELEASE",
+            "time": null,
+            "url": format!(
+                "https://api.leavesmc.org/v2/projects/leaves/versions/{version}/builds/{build}/downloads/application"
+            ),
+            "sha256": null,
+            "changes": format!("Leaves {version} build {build}"),
+        }));
+    }
+    Ok(out)
+}
+
+async fn builds_quilt(version: &str) -> Result<Vec<serde_json::Value>, String> {
+    let url = format!("https://meta.quiltmc.org/v3/versions/loader/{version}");
+    let v = fetch_json(&url).await?;
+    let arr = v.as_array().cloned().unwrap_or_default();
+    let mut out = Vec::new();
+    for item in arr.iter().take(15) {
+        let loader = item
+            .pointer("/loader/version")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        if loader.is_empty() {
+            continue;
+        }
+        out.push(json!({
+            "build": loader.clone(),
+            "channel": "RELEASE",
+            "time": null,
+            "loaderVersion": loader.clone(),
+            "url": null,
+            "sha256": null,
+            "changes": format!("Quilt Loader {loader} para Minecraft {version}"),
+        }));
+    }
+    Ok(out)
+}
+
 async fn builds_forge(version: &str) -> Result<Vec<serde_json::Value>, String> {
     let v =
         fetch_json("https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json")
@@ -3138,6 +3233,47 @@ async fn versions_install(
             ),
             "jarName": "fabric-server-launch.jar",
             "note": "Fabric preparado. Ejecuta el comando desde la carpeta del servidor para completar la instalación.",
+        }));
+    }
+
+
+    if sw == "quilt" {
+        let loader = body
+            .loader_version
+            .clone()
+            .or_else(|| body.build.clone())
+            .unwrap_or_default();
+        if loader.is_empty() {
+            return json_fail("loaderVersion o build requerido");
+        }
+        let inst_url = match fetch_json("https://meta.quiltmc.org/v3/versions/installer").await {
+            Ok(v) => v
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|item| item.get("url"))
+                .and_then(|u| u.as_str())
+                .unwrap_or("")
+                .to_string(),
+            Err(e) => return json_fail(&format!("No se pudo obtener installer de Quilt: {e}")),
+        };
+        if inst_url.is_empty() {
+            return json_fail("Installer de Quilt no disponible");
+        }
+        let inst_name = "quilt-installer.jar".to_string();
+        let inst_path = server_dir.join(&inst_name);
+        if !inst_path.exists() {
+            if let Err(e) = download_to(&inst_url, &inst_path).await {
+                return json_fail(&format!("Descarga installer falló: {e}"));
+            }
+        }
+        return json_ok(json!({
+            "type": "quilt-installer",
+            "installCmd": format!(
+                "java -jar {} server version {} loader {}",
+                inst_name, version, loader
+            ),
+            "jarName": "quilt-server-launch.jar",
+            "note": "Quilt preparado. Ejecuta el comando desde la carpeta del servidor para completar la instalación.",
         }));
     }
 

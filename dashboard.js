@@ -3616,7 +3616,7 @@ async function selectVersionSoftware(software) {
 
   $('verBack')?.addEventListener('click', renderVersionSoftware);
 
-  if (item.external && !['paper', 'purpur', 'folia', 'fabric', 'vanilla'].includes(software)) {
+  if (item.external && !['paper', 'purpur', 'folia', 'leaves', 'fabric', 'quilt', 'vanilla', 'forge', 'neoforge', 'velocity', 'waterfall'].includes(software)) {
     container.querySelector('.ver-loading').outerHTML = `
       <div class="ver-empty">
         <div class="ver-empty-icon">🌐</div>
@@ -3762,7 +3762,7 @@ async function selectVersionBuilds(software, version, item = versionFindSoftware
               ${b.sha256 ? `<div class="ver-build-sha">SHA-256: ${escHtml(b.sha256)}</div>` : ''}
             </div>
             <button type="button" class="btn ${b.installable === false ? '' : 'btn-primary'} ver-install-btn" data-build-index="${index}" ${b.installable === false ? 'disabled' : ''}>
-              ${b.installable === false ? 'Solo información' : (software === 'fabric' || software === 'neoforge' ? 'Preparar instalación' : 'Instalar')}
+              ${b.installable === false ? 'Solo información' : (software === 'fabric' || software === 'quilt' || software === 'forge' || software === 'neoforge' ? 'Preparar instalación' : 'Instalar')}
             </button>
           </div>
         `).join('')}
@@ -3819,8 +3819,8 @@ async function installVersionSelection(software, version, build) {
       throw new Error(data?.error || 'No se pudo instalar la versión.');
     }
 
-    if (data.type === 'fabric-installer' || data.type === 'forge-installer' || data.type === 'neoforge-installer') {
-      const name = data.type === 'forge-installer' ? 'Forge' : (data.type === 'neoforge-installer' ? 'NeoForge' : 'Fabric');
+    if (data.type === 'fabric-installer' || data.type === 'quilt-installer' || data.type === 'forge-installer' || data.type === 'neoforge-installer') {
+      const name = data.type === 'forge-installer' ? 'Forge' : (data.type === 'neoforge-installer' ? 'NeoForge' : (data.type === 'quilt-installer' ? 'Quilt' : 'Fabric'));
       toast(`⚠️ ${name} preparado. Revisa el comando indicado antes de ejecutarlo.`, 'info');
       alert(
         `${name} ${version} preparado.\n\n` +
