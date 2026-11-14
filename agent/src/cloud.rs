@@ -1520,8 +1520,16 @@ async fn rcon_read_packet(stream: &mut tokio::net::TcpStream) -> anyhow::Result<
     }
     let mut data = vec![0u8; len as usize];
     timeout(RCON_TIMEOUT, stream.read_exact(&mut data)).await??;
-    let id = i32::from_le_bytes(data[0..4].try_into()?);
-    let typ = i32::from_le_bytes(data[4..8].try_into()?);
+    let id = i32::from_le_bytes(
+        data[0..4]
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("paquete RCON truncado (id)"))?,
+    );
+    let typ = i32::from_le_bytes(
+        data[4..8]
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("paquete RCON truncado (type)"))?,
+    );
     let body_end = data.len().saturating_sub(2);
     let body = String::from_utf8_lossy(&data[8..body_end]).into_owned();
     Ok((id, typ, body))
@@ -1581,23 +1589,73 @@ fn sample_process_cpu(pid: u32, last: &mut Option<(u64, u64)>) -> Option<f64> {
 }
 
 #[cfg(windows)]
+mod win_metrics {
+    use std::mem::MaybeUninit;
+
+    #[repr(C)]
+    pub struct MemoryStatusEx {
+        pub length: u32,
+        pub memory_load: u32,
+        pub total_phys: u64,
+        pub avail_phys: u64,
+        pub total_page_file: u64,
+        pub avail_page_file: u64,
+        pub total_virtual: u64,
+        pub avail_virtual: u64,
+        pub avail_extended_virtual: u64,
+    }
+
+    #[repr(C)]
+    pub struct ProcessMemoryCounters {
+        pub cb: u32,
+        pub page_fault_count: u32,
+        pub peak_working_set_size: usize,
+        pub working_set_size: usize,
+        pub quota_peak_paged_pool_usage: usize,
+        pub quota_paged_pool_usage: usize,
+        pub quota_peak_non_paged_pool_usage: usize,
+        pub quota_non_paged_pool_usage: usize,
+        pub pagefile_usage: usize,
+        pub peak_pagefile_usage: usize,
+    }
+
+    #[repr(C)]
+    pub struct FileTime {
+        pub lo: u32,
+        pub hi: u32,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        pub fn GlobalMemoryStatusEx(lp_buffer: *mut MemoryStatusEx) -> i32;
+        pub fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut core::ffi::c_void;
+        pub fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
+        pub fn GetProcessTimes(
+            process: *mut core::ffi::c_void,
+            creation: *mut FileTime,
+            exit: *mut FileTime,
+            kernel: *mut FileTime,
+            user: *mut FileTime,
+        ) -> i32;
+    }
+
+    #[link(name = "psapi")]
+    extern "system" {
+        pub fn GetProcessMemoryInfo(
+            process: *mut core::ffi::c_void,
+            counters: *mut ProcessMemoryCounters,
+            cb: u32,
+        ) -> i32;
+    }
+
+    pub const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    pub const PROCESS_VM_READ: u32 = 0x0010;
+}
+
+#[cfg(windows)]
 fn system_memory() -> Option<(f64, f64)> {
     use std::mem::MaybeUninit;
-    #[repr(C)]
-    struct MemoryStatusEx {
-        length: u32,
-        memory_load: u32,
-        total_phys: u64,
-        avail_phys: u64,
-        total_page_file: u64,
-        avail_page_file: u64,
-        total_virtual: u64,
-        avail_virtual: u64,
-        avail_extended_virtual: u64,
-    }
-    extern "system" {
-        fn GlobalMemoryStatusEx(lp_buffer: *mut MemoryStatusEx) -> i32;
-    }
+    use win_metrics::*;
     unsafe {
         let mut st = MaybeUninit::<MemoryStatusEx>::zeroed();
         (*st.as_mut_ptr()).length = std::mem::size_of::<MemoryStatusEx>() as u32;
@@ -1615,30 +1673,7 @@ fn system_memory() -> Option<(f64, f64)> {
 #[cfg(windows)]
 fn process_memory_mb(pid: u32) -> Option<u64> {
     use std::mem::MaybeUninit;
-    #[repr(C)]
-    struct ProcessMemoryCounters {
-        cb: u32,
-        page_fault_count: u32,
-        peak_working_set_size: usize,
-        working_set_size: usize,
-        quota_peak_paged_pool_usage: usize,
-        quota_paged_pool_usage: usize,
-        quota_peak_non_paged_pool_usage: usize,
-        quota_non_paged_pool_usage: usize,
-        pagefile_usage: usize,
-        peak_pagefile_usage: usize,
-    }
-    extern "system" {
-        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut core::ffi::c_void;
-        fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
-        fn GetProcessMemoryInfo(
-            process: *mut core::ffi::c_void,
-            counters: *mut ProcessMemoryCounters,
-            cb: u32,
-        ) -> i32;
-    }
-    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-    const PROCESS_VM_READ: u32 = 0x0010;
+    use win_metrics::*;
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid);
         if handle.is_null() {
@@ -1661,23 +1696,7 @@ fn process_memory_mb(pid: u32) -> Option<u64> {
 
 #[cfg(windows)]
 fn process_cpu_time(pid: u32) -> Option<u64> {
-    #[repr(C)]
-    struct FileTime {
-        lo: u32,
-        hi: u32,
-    }
-    extern "system" {
-        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut core::ffi::c_void;
-        fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
-        fn GetProcessTimes(
-            process: *mut core::ffi::c_void,
-            creation: *mut FileTime,
-            exit: *mut FileTime,
-            kernel: *mut FileTime,
-            user: *mut FileTime,
-        ) -> i32;
-    }
-    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    use win_metrics::*;
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if handle.is_null() {
