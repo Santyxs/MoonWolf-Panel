@@ -1574,13 +1574,12 @@ function shouldIgnoreLog(line) {
   return LOG_IGNORE_PATTERNS.some(re => re.test(text));
 }
 
-const ANSI_RE = /\x1b\[([0-9;]*)m|\u00a7([0-9a-fk-orx])/gi;
+const CONSOLE_FORMAT_RE = /\x1b\[([0-9;]*)m|\u00a7x(?:\u00a7[0-9a-f]){6}|\u00a7([0-9a-fk-or])/gi;
 const ANSI_COLORS = {
   30: 'black', 31: 'red', 32: 'green', 33: 'yellow',
   34: 'blue', 35: 'magenta', 36: 'cyan', 37: 'white',
-  90: 'bright-black', 91: 'bright-red', 92: 'bright-green',
-  93: 'bright-yellow', 94: 'bright-blue', 95: 'bright-magenta',
-  96: 'bright-cyan', 97: 'bright-white',
+  90: 'bright-black', 91: 'bright-red', 92: 'bright-green', 93: 'bright-yellow',
+  94: 'bright-blue', 95: 'bright-magenta', 96: 'bright-cyan', 97: 'bright-white',
 };
 const MINECRAFT_COLORS = {
   0: 'black', 1: 'dark-blue', 2: 'dark-green', 3: 'dark-aqua',
@@ -1589,44 +1588,177 @@ const MINECRAFT_COLORS = {
   c: 'red', d: 'light-purple', e: 'yellow', f: 'white',
 };
 
+function xtermColor(index) {
+  const n = Math.max(0, Math.min(255, Number(index) || 0));
+  const base = [
+    '#000000', '#800000', '#008000', '#808000', '#000080', '#800080', '#008080', '#c0c0c0',
+    '#808080', '#ff0000', '#00ff00', '#ffff00', '#0000ff', '#ff00ff', '#00ffff', '#ffffff',
+  ];
+  if (n < 16) return base[n];
+  if (n >= 232) {
+    const shade = 8 + (n - 232) * 10;
+    return `#${shade.toString(16).padStart(2, '0').repeat(3)}`;
+  }
+  const value = n - 16;
+  const levels = [0, 95, 135, 175, 215, 255];
+  const r = levels[Math.floor(value / 36)];
+  const g = levels[Math.floor((value % 36) / 6)];
+  const b = levels[value % 6];
+  return `#${[r, g, b].map(part => part.toString(16).padStart(2, '0')).join('')}`;
+}
+
 function renderConsoleText(value) {
   const text = String(value || '');
   let html = '';
   let cursor = 0;
-  let color = '';
+  let colorClass = '';
+  let inlineColor = '';
+  let inlineBackground = '';
   let bold = false;
+  let italic = false;
+  let underline = false;
+  let strike = false;
   let match;
+
+  const resetFormatting = () => {
+    colorClass = '';
+    inlineColor = '';
+    inlineBackground = '';
+    bold = false;
+    italic = false;
+    underline = false;
+    strike = false;
+  };
 
   const append = chunk => {
     if (!chunk) return;
-    const classes = [color && `ansi-${color}`, bold && 'ansi-bold'].filter(Boolean).join(' ');
-    html += classes ? `<span class="${classes}">${escHtml(chunk)}</span>` : escHtml(chunk);
+    const classes = [
+      colorClass,
+      bold && 'ansi-bold',
+      italic && 'ansi-italic',
+      underline && 'ansi-underline',
+      strike && 'ansi-strike',
+    ].filter(Boolean).join(' ');
+    const styles = [];
+    if (inlineColor) styles.push(`color:${inlineColor}`);
+    if (inlineBackground) styles.push(`background-color:${inlineBackground}`);
+    const attributes = `${classes ? ` class="${classes}"` : ''}${styles.length ? ` style="${styles.join(';')}"` : ''}`;
+    html += attributes
+      ? `<span${attributes}>${escHtml(chunk)}</span>`
+      : escHtml(chunk);
   };
 
-  while ((match = ANSI_RE.exec(text))) {
+  while ((match = CONSOLE_FORMAT_RE.exec(text))) {
     append(text.slice(cursor, match.index));
     cursor = match.index + match[0].length;
 
-    if (match[2]) {
-      const code = match[2].toLowerCase();
-      if (MINECRAFT_COLORS[code]) color = MINECRAFT_COLORS[code];
-      else if (code === 'r' || code === 'o') { color = ''; bold = false; }
-      else if (code === 'l') bold = true;
+    // Minecraft 1.16+: §x§R§R§G§G§B§B
+    if (!match[1] && !match[2] && /^\u00a7x/i.test(match[0])) {
+      const hex = match[0].replace(/\u00a7/gi, '').slice(1);
+      if (/^[0-9a-f]{6}$/i.test(hex)) {
+        colorClass = '';
+        inlineColor = `#${hex}`;
+        inlineBackground = '';
+        bold = italic = underline = strike = false;
+      }
       continue;
     }
 
-    const codes = (match[1] || '0').split(';').map(Number);
-    for (const code of codes) {
-      if (code === 0) { color = ''; bold = false; }
-      else if (code === 1) bold = true;
-      else if (ANSI_COLORS[code]) color = ANSI_COLORS[code];
-      else if (code === 39) color = '';
+    // Minecraft legacy formatting codes.
+    if (match[2]) {
+      const code = match[2].toLowerCase();
+      if (Object.prototype.hasOwnProperty.call(MINECRAFT_COLORS, code)) {
+        colorClass = `mc-${MINECRAFT_COLORS[code]}`;
+        inlineColor = '';
+        inlineBackground = '';
+        bold = italic = underline = strike = false;
+      } else if (code === 'r') {
+        resetFormatting();
+      } else if (code === 'l') {
+        bold = true;
+      } else if (code === 'o') {
+        italic = true;
+      } else if (code === 'n') {
+        underline = true;
+      } else if (code === 'm') {
+        strike = true;
+      }
+      // §k (obfuscated) intentionally remains readable rather than scrambling output.
+      continue;
+    }
+
+    // ANSI SGR formatting, including 256-color and true-color foreground/background.
+    const codes = (match[1] || '0').split(';').map(part => part === '' ? 0 : Number(part));
+    for (let i = 0; i < codes.length; i++) {
+      const code = codes[i];
+      if (code === 0) {
+        resetFormatting();
+      } else if (code === 1) {
+        bold = true;
+      } else if (code === 3) {
+        italic = true;
+      } else if (code === 4) {
+        underline = true;
+      } else if (code === 9) {
+        strike = true;
+      } else if (code === 22) {
+        bold = false;
+      } else if (code === 23) {
+        italic = false;
+      } else if (code === 24) {
+        underline = false;
+      } else if (code === 29) {
+        strike = false;
+      } else if (ANSI_COLORS[code]) {
+        colorClass = `ansi-${ANSI_COLORS[code]}`;
+        inlineColor = '';
+      } else if (code === 39) {
+        colorClass = '';
+        inlineColor = '';
+      } else if (code === 49) {
+        inlineBackground = '';
+      } else if ((code === 38 || code === 48) && codes[i + 1] === 5 && Number.isFinite(codes[i + 2])) {
+        const hex = xtermColor(codes[i + 2]);
+        if (code === 38) {
+          colorClass = '';
+          inlineColor = hex;
+        } else {
+          inlineBackground = hex;
+        }
+        i += 2;
+      } else if ((code === 38 || code === 48) && codes[i + 1] === 2
+        && [codes[i + 2], codes[i + 3], codes[i + 4]].every(Number.isFinite)) {
+        const rgb = codes.slice(i + 2, i + 5).map(part => Math.max(0, Math.min(255, part)));
+        const hex = `#${rgb.map(part => part.toString(16).padStart(2, '0')).join('')}`;
+        if (code === 38) {
+          colorClass = '';
+          inlineColor = hex;
+        } else {
+          inlineBackground = hex;
+        }
+        i += 4;
+      }
     }
   }
 
   append(text.slice(cursor));
-  ANSI_RE.lastIndex = 0;
+  CONSOLE_FORMAT_RE.lastIndex = 0;
   return html;
+}
+
+function getConsoleLogType(entry) {
+  const explicitType = String(entry?.type || 'info').toLowerCase();
+  const line = String(entry?.line || '')
+    .replace(/\x1b\[[0-9;]*m/g, '')
+    .replace(/\u00a7(?:x(?:\u00a7[0-9a-f]){6}|[0-9a-fk-or])/gi, '')
+    .slice(0, 220);
+
+  // Java/Minecraft loggers commonly print their level inside brackets, even on stdout.
+  if (/\b(?:ERROR|FATAL|SEVERE)\b(?=[\]/:])/i.test(line)) return 'error';
+  if (/\b(?:WARN|WARNING)\b(?=[\]/:])/i.test(line)) return 'warn';
+  if (/^\s*>/.test(line)) return 'cmd';
+  if (/\b(?:SUCCESS|DONE)\b(?=[\]:.]|\s*\()/i.test(line)) return 'success';
+  return ['error', 'warn', 'success', 'system', 'cmd'].includes(explicitType) ? explicitType : 'info';
 }
 
 const pendingConsoleLogs = [];
@@ -1640,7 +1772,7 @@ function flushConsoleLogs() {
   const fragment = document.createDocumentFragment();
   for (const entry of pendingConsoleLogs.splice(0)) {
     const div = document.createElement('div');
-    div.className = `log-line ${entry.type || 'info'}`;
+    div.className = `log-line ${getConsoleLogType(entry)}`;
     div.innerHTML =
       `<span class="log-time">${escHtml(entry.time || '--:--:--')}</span>` +
       `<span class="log-text">${renderConsoleText(entry.line)}</span>`;
