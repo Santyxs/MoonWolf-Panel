@@ -1051,11 +1051,7 @@ async fn connect_once(
         if mc_running && last_stats.elapsed() >= STATS_INTERVAL {
             let (server_dir, pid, started) = {
                 let s = app.read().await;
-                (
-                    s.config.server_dir.clone(),
-                    s.mc_pid,
-                    s.mc_started_at_ms,
-                )
+                (s.config.server_dir.clone(), s.mc_pid, s.mc_started_at_ms)
             };
             let stats = collect_server_stats(&server_dir, pid, started, &mut last_cpu).await;
             if let Err(e) = client
@@ -1317,8 +1313,8 @@ async fn handle_rpc_binary(
 }
 
 /* ══════════════════════════════════════════════
-   MÉTRICAS (RCON + proceso/sistema)
-   ══════════════════════════════════════════════ */
+MÉTRICAS (RCON + proceso/sistema)
+══════════════════════════════════════════════ */
 
 async fn collect_server_stats(
     server_dir: &std::path::Path,
@@ -1451,7 +1447,11 @@ async fn rcon_list_players(server_dir: &std::path::Path) -> anyhow::Result<(u32,
         .await
         .ok_or_else(|| anyhow::anyhow!("RCON no configurado"))?;
 
-    let mut stream = timeout(RCON_TIMEOUT, TcpStream::connect(format!("127.0.0.1:{port}"))).await??;
+    let mut stream = timeout(
+        RCON_TIMEOUT,
+        TcpStream::connect(format!("127.0.0.1:{port}")),
+    )
+    .await??;
     let _ = stream.set_nodelay(true);
 
     rcon_write_packet(&mut stream, 1, RCON_AUTH, &password).await?;
@@ -1508,7 +1508,9 @@ async fn rcon_write_packet(
     Ok(())
 }
 
-async fn rcon_read_packet(stream: &mut tokio::net::TcpStream) -> anyhow::Result<(i32, i32, String)> {
+async fn rcon_read_packet(
+    stream: &mut tokio::net::TcpStream,
+) -> anyhow::Result<(i32, i32, String)> {
     use tokio::io::AsyncReadExt;
     use tokio::time::timeout;
     const RCON_TIMEOUT: Duration = Duration::from_secs(3);
@@ -1607,7 +1609,9 @@ fn system_memory() -> Option<(f64, f64)> {
 #[cfg(windows)]
 fn process_memory_mb(pid: u32) -> Option<u64> {
     use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
     use windows_sys::Win32::System::Threading::OpenProcess;
 
     // Avoid depending on optional constant feature flags.
