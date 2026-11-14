@@ -2930,7 +2930,7 @@ async fn builds_purpur(version: &str) -> Result<Vec<serde_json::Value>, String> 
         .cloned()
         .unwrap_or_default();
     let mut out = Vec::new();
-    for item in atl.iter().rev() {
+    for item in all.iter().rev() {
         let b = item.as_str().unwrap_or("");
         out.push(json!({
             "build": b, "channel": "STABLE", "time": null,
@@ -3604,7 +3604,7 @@ async fn plugins_installed(State(st): State<LocalState>) -> Response {
 
     let mut plugins = Vec::new();
     while let Ok(Some(ent)) = rd.next_entry().await {
-        let name = ent.filename().to_string_lossy().to_string();
+        let name = ent.file_name().to_string_lossy().to_string();
         if !name.to_lowercase().ends_with(".jar") {
             continue;
         }
