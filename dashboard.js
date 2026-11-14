@@ -1780,11 +1780,15 @@ function rememberPluginState(line) {
 
 function renderPluginListLine(line) {
   const text = String(line || '');
-  const marker = text.indexOf('- ');
-  if (marker < 0 || !consolePluginListSection) return renderConsoleText(text);
+  if (!consolePluginListSection) return renderConsoleText(text);
 
-  const prefix = text.slice(0, marker + 2);
-  const names = text.slice(marker + 2).split(/,\s*/);
+  // Paper/Bukkit divide las listas largas en varias líneas. La primera lleva
+  // "- ", pero las continuaciones no; ambas deben colorearse igual.
+  const loggerMatch = text.match(/^(.*?\]:\s*)(.*)$/);
+  const prefix = loggerMatch ? loggerMatch[1] : '';
+  let namesText = loggerMatch ? loggerMatch[2] : text;
+  if (namesText.startsWith('- ')) namesText = namesText.slice(2);
+  const names = namesText.split(/,\s*/);
   const renderedNames = names.map(name => {
     const cleanName = name.trim();
     if (!cleanName) return '';
@@ -1803,11 +1807,16 @@ function renderConsoleEntry(line) {
     consolePluginListSection = /Bukkit Plugins/i.test(text) ? 'bukkit' : 'paper';
     return renderConsoleText(text);
   }
-  if (consolePluginListSection && /-\s*[^,]+/.test(text)) {
-    return renderPluginListLine(text);
-  }
-  if (consolePluginListSection && !/\b(?:INFO|WARN|ERROR)\b/i.test(text)) {
-    consolePluginListSection = '';
+  if (consolePluginListSection) {
+    // La salida de /plugins usa una línea con guion y después continuaciones
+    // sin guion. Detectamos ambas por el separador de nombres.
+    const loggerMatch = text.match(/^.*?\]:\s*(.*)$/);
+    const content = loggerMatch ? loggerMatch[1] : text;
+    if (/^-\s*[^,]+/.test(content) || /,\s*[^,]+/.test(content)) {
+      return renderPluginListLine(text);
+    }
+    // La siguiente sección del log ya no pertenece a la lista de plugins.
+    if (!/\b(?:INFO|WARN|ERROR)\b/i.test(text)) consolePluginListSection = '';
   }
   return renderConsoleText(text);
 }
