@@ -2829,9 +2829,15 @@ async fn list_spigot_hub_versions() -> Result<Vec<String>, String> {
     };
     let mut out = Vec::new();
     for part in html.split("href=\"") {
-        let Some(end) = part.find(".json\"") else { continue };
+        let Some(end) = part.find(".json\"") else {
+            continue;
+        };
         let name = &part[..end];
-        if name.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
+        if name
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false)
             && !name.contains("pre")
             && !name.contains("rc")
         {
@@ -3328,10 +3334,8 @@ async fn builds_bungeecord(_version: &str) -> Result<Vec<serde_json::Value>, Str
         "changes": "Último build exitoso de BungeeCord (CI md_5).",
     }));
     // Builds recientes por número (aproximación: leer lastSuccessful buildNumber si es posible)
-    if let Ok(text) = fetch_text(
-        "https://ci.md-5.net/job/BungeeCord/lastSuccessfulBuild/buildNumber",
-    )
-    .await
+    if let Ok(text) =
+        fetch_text("https://ci.md-5.net/job/BungeeCord/lastSuccessfulBuild/buildNumber").await
     {
         if let Ok(n) = text.trim().parse::<i64>() {
             for build in ((n - 14).max(1)..=n).rev() {
@@ -3466,7 +3470,6 @@ async fn versions_install(
             "note": "Fabric preparado. Ejecuta el comando desde la carpeta del servidor para completar la instalación.",
         }));
     }
-
 
     if sw == "quilt" {
         let loader = body
