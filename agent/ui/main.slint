@@ -1,6 +1,23 @@
 import { LineEdit, VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
 
-// ─── Palette ────────────────────────────────────────────────────────────────
+// ─── Tema ───────────────────────────────────────────────────────────────────
+
+global Theme {
+    out property <color> bg: #0b0d19;
+    out property <color> card: #11142a;
+    out property <color> line: #252a46;
+    out property <color> field: #1b1f3a;
+    out property <color> field-border: #343a5c;
+    out property <color> accent: #8b7bff;
+    out property <color> accent-soft: #c3b9ff;
+    out property <color> green: #3dd9a8;
+    out property <color> amber: #f0b84a;
+    out property <color> text: #f4f2ff;
+    out property <color> muted: #8a90b4;
+    out property <color> muted-dim: #6a7094;
+}
+
+// ─── Componentes ────────────────────────────────────────────────────────────
 
 component ActionButton inherits Rectangle {
     in property <string> label;
@@ -9,19 +26,28 @@ component ActionButton inherits Rectangle {
     in property <length> label-font-size: 12px;
     callback clicked();
 
-    min-height: 36px;
     height: 38px;
     border-radius: 10px;
-    background: root.primary ? #7c6cff
+    background: root.primary ? #6d5be5
              : root.danger  ? #3a2528
-             : #1c2036;
+             : Theme.field;
     border-width: 1px;
-    border-color: root.primary ? #a99bff
+    border-color: root.primary ? #b3a8ff
                  : root.danger  ? #7a3a42
-                 : #343a58;
+                 : Theme.field-border;
+    drop-shadow-blur: root.primary ? 18px : 0px;
+    drop-shadow-offset-y: 4px;
+    drop-shadow-color: #6d5be566;
 
-    animate background { duration: 120ms; easing: ease-out; }
-    animate border-color { duration: 120ms; easing: ease-out; }
+    animate background { duration: 140ms; easing: ease-out; }
+    animate border-color { duration: 140ms; easing: ease-out; }
+
+    if root.primary : Rectangle {
+        border-radius: root.border-radius;
+        background: @linear-gradient(180deg, #a899ff 0%, #6d5be5 100%);
+        opacity: ta.pressed ? 0.75 : ta.has-hover ? 1.0 : 0.88;
+        animate opacity { duration: 140ms; easing: ease-out; }
+    }
 
     Text {
         width: 100%;
@@ -37,33 +63,38 @@ component ActionButton inherits Rectangle {
     ta := TouchArea {
         width: 100%;
         height: 100%;
-        clicked => { root.clicked(); }
         mouse-cursor: pointer;
+        clicked => { root.clicked(); }
     }
 
     states [
         hover when ta.has-hover && !root.primary && !root.danger: {
-            background: #262b45;
-            border-color: #4a5178;
-        }
-        hover-primary when ta.has-hover && root.primary: {
-            background: #8f80ff;
-            border-color: #b8aeff;
+            background: #272c4d;
+            border-color: #5a6296;
         }
         hover-danger when ta.has-hover && root.danger: {
-            background: #4a2e32;
-            border-color: #9a4a55;
+            background: #4c2f34;
+            border-color: #a24b57;
         }
-        pressed when ta.pressed: {
-            background: root.primary ? #6a5ad8 : #161a2c;
+        pressed when ta.pressed && !root.primary: {
+            background: #151830;
         }
     ]
+}
+
+component Divider inherits HorizontalBox {
+    padding-left: 16px;
+    padding-right: 16px;
+    padding-top: 0px;
+    padding-bottom: 0px;
+    Rectangle { height: 1px; background: Theme.line; horizontal-stretch: 1; }
 }
 
 component FieldRow inherits Rectangle {
     in property <string> caption;
     in property <string> value;
     in property <string> action-label;
+    in property <bool> code: false;
     callback action-clicked();
 
     height: 54px;
@@ -79,17 +110,19 @@ component FieldRow inherits Rectangle {
 
         Text {
             text: root.caption;
-            color: #7d84a8;
+            color: Theme.muted-dim;
             font-size: 8px;
             font-weight: 800;
-            letter-spacing: 1.0px;
+            letter-spacing: 1.2px;
             horizontal-alignment: left;
         }
         Text {
             text: root.value;
-            color: #f0effa;
-            font-size: 12px;
-            font-weight: 600;
+            color: root.code ? Theme.accent-soft : Theme.text;
+            font-family: root.code ? "Consolas" : "";
+            font-size: root.code ? 15px : 12px;
+            font-weight: root.code ? 700 : 600;
+            letter-spacing: root.code ? 1.6px : 0px;
             overflow: elide;
             horizontal-alignment: left;
         }
@@ -97,7 +130,7 @@ component FieldRow inherits Rectangle {
 
     if root.action-label != "" : ActionButton {
         x: parent.width - 82px;
-        y: 18px;
+        y: 13px;
         width: 70px;
         height: 28px;
         label: root.action-label;
@@ -105,6 +138,115 @@ component FieldRow inherits Rectangle {
         clicked => { root.action-clicked(); }
     }
 }
+
+component StatusDot inherits Rectangle {
+    in property <bool> ok;
+    property <color> tone: root.ok ? Theme.green : Theme.amber;
+    property <float> p: mod(animation-tick() / 2s, 1.0);
+
+    width: 22px;
+    height: 22px;
+
+    Rectangle {
+        width: 10px + 12px * root.p;
+        height: self.width;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: self.width / 2;
+        border-width: 1.5px;
+        border-color: root.tone.with-alpha(1.0 - root.p);
+        background: transparent;
+    }
+    Rectangle {
+        width: 10px;
+        height: 10px;
+        x: 6px;
+        y: 6px;
+        border-radius: 5px;
+        background: root.tone;
+        drop-shadow-blur: 10px;
+        drop-shadow-color: root.tone.with-alpha(0.7);
+    }
+}
+
+component Modal inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <bool> closable: true;
+    callback close();
+    property <bool> ready: false;
+
+    border-radius: 18px;
+    background: #14172e;
+    border-width: 1px;
+    border-color: #6a5ad8;
+    drop-shadow-blur: 40px;
+    drop-shadow-offset-y: 10px;
+    drop-shadow-color: #000000d0;
+    clip: true;
+    opacity: root.ready ? 1.0 : 0.0;
+    animate opacity { duration: 180ms; easing: ease-out; }
+    init => { root.ready = true; }
+
+    Rectangle {
+        height: 70px;
+        y: 0px;
+        background: @linear-gradient(180deg, #8b7bff22 0%, #8b7bff00 100%);
+    }
+
+    VerticalBox {
+        padding-left: 18px;
+        padding-right: 18px;
+        padding-top: 16px;
+        padding-bottom: 16px;
+        spacing: 10px;
+        alignment: start;
+
+        Text {
+            text: root.title;
+            color: Theme.text;
+            font-size: 16px;
+            font-weight: 800;
+            horizontal-alignment: left;
+        }
+        if root.subtitle != "" : Text {
+            text: root.subtitle;
+            color: Theme.muted;
+            font-size: 11px;
+            horizontal-alignment: left;
+        }
+        Rectangle { height: 1px; background: Theme.line; }
+
+        @children
+    }
+
+    if root.closable : Rectangle {
+        x: parent.width - 40px;
+        y: 12px;
+        width: 28px;
+        height: 28px;
+        border-radius: 8px;
+        background: close-ta.has-hover ? #3a2a40 : Theme.field;
+        border-width: 1px;
+        border-color: close-ta.has-hover ? #8a4a62 : Theme.field-border;
+        animate background { duration: 120ms; }
+        Text {
+            height: 100%;
+            text: "×";
+            color: close-ta.has-hover ? #ffb4c4 : #c0c4d8;
+            font-size: 18px;
+            font-weight: 600;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        close-ta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.close(); }
+        }
+    }
+}
+
+// ─── Ventana principal ──────────────────────────────────────────────────────
 
 export component MainWindow inherits Window {
     title: "MoonWolf Agent";
@@ -114,7 +256,7 @@ export component MainWindow inherits Window {
     min-height: 460px;
     preferred-height: 500px;
     max-height: 560px;
-    background: #0c0e1a;
+    background: Theme.bg;
 
     callback open-panel();
     callback open-config();
@@ -153,11 +295,15 @@ export component MainWindow inherits Window {
 
     Rectangle {
         height: 100%;
-        background: #0c0e1a;
+        background: @linear-gradient(170deg, #141731 0%, #0b0d19 45%, #090b15 100%);
 
+        // Resplandor ambiental superior
         Rectangle {
-            height: 100%;
-            background: @linear-gradient(160deg, #151830 0%, #0c0e1a 45%, #0a0c16 100%);
+            x: (parent.width - 380px) / 2;
+            y: -150px;
+            width: 380px;
+            height: 300px;
+            background: @radial-gradient(circle, #7a68f044 0%, #7a68f000 70%);
         }
 
         VerticalBox {
@@ -168,96 +314,94 @@ export component MainWindow inherits Window {
             spacing: 10px;
             alignment: start;
 
+            // ── Cabecera ──
             HorizontalBox {
                 height: 48px;
-                spacing: 10px;
+                spacing: 12px;
                 alignment: center;
 
                 Rectangle {
-                    width: 40px;
-                    height: 40px;
-                    border-radius: 12px;
-                    background: #6d5be5;
+                    width: 42px;
+                    height: 42px;
+                    border-radius: 13px;
+                    background: #1c1846;
                     border-width: 1.5px;
-                    border-color: #9b8dff;
+                    border-color: #8b7bff;
+                    drop-shadow-blur: 16px;
+                    drop-shadow-color: #7a68f088;
 
                     Rectangle {
-                        x: 8px; y: 8px;
+                        x: 9px; y: 9px;
                         width: 24px; height: 24px;
                         border-radius: 12px;
                         background: #ffffff;
                     }
                     Rectangle {
-                        x: 15px; y: 5px;
+                        x: 16px; y: 6px;
                         width: 22px; height: 22px;
                         border-radius: 11px;
-                        background: #6d5be5;
+                        background: #1c1846;
                     }
                     Rectangle {
-                        x: 10px; y: 10px;
+                        x: 27px; y: 27px;
                         width: 3px; height: 3px;
                         border-radius: 2px;
-                        background: #e8e2ff;
+                        background: #c3b9ff;
                     }
                 }
 
                 VerticalBox {
-                    spacing: 3px;
+                    spacing: 2px;
                     alignment: center;
                     Text {
                         text: "MoonWolf";
-                        color: #fbfaff;
-                        font-size: 18px;
+                        color: Theme.text;
+                        font-size: 19px;
                         font-weight: 800;
                     }
                     Text {
                         text: "AGENT";
-                        color: #8a85b0;
+                        color: Theme.accent;
                         font-size: 8px;
-                        font-weight: 700;
-                        letter-spacing: 2.2px;
+                        font-weight: 800;
+                        letter-spacing: 3px;
                     }
                 }
                 Rectangle { horizontal-stretch: 1; }
             }
 
+            // ── Estado ──
             Rectangle {
                 height: 58px;
-                border-radius: 12px;
-                background: #12152a;
+                border-radius: 13px;
+                background: root.cloud-connected
+                    ? @linear-gradient(90deg, #12302c 0%, #11142a 70%)
+                    : @linear-gradient(90deg, #2c2615 0%, #11142a 70%);
                 border-width: 1px;
-                border-color: root.cloud-connected ? #2a4a45 : #2a2f4a;
+                border-color: root.cloud-connected ? #2b5a50 : #4a4326;
+                clip: true;
 
                 HorizontalBox {
-                    padding-left: 14px;
+                    padding-left: 12px;
                     padding-right: 14px;
-                    spacing: 10px;
+                    spacing: 8px;
                     alignment: center;
 
-                    VerticalBox {
-                        width: 12px;
-                        alignment: center;
-                        Rectangle {
-                            width: 10px;
-                            height: 10px;
-                            border-radius: 5px;
-                            background: root.cloud-connected ? #3dd9a8 : #e8b84a;
-                        }
-                    }
+                    StatusDot { ok: root.cloud-connected; }
                     VerticalBox {
                         spacing: 3px;
                         horizontal-stretch: 1;
-                        alignment: start;
+                        alignment: center;
                         Text {
                             text: root.cloud-connected ? "Conectado" : root.status-title;
-                            color: #fbfaff;
+                            color: Theme.text;
                             font-size: 13px;
                             font-weight: 800;
                             horizontal-alignment: left;
                         }
                         Text {
                             text: root.cloud-connected ? "Conexión activa con MoonWolf Cloud" : root.status-description;
-                            color: #9a9db8;
+                            color: root.cloud-connected ? #8fd9c3 : #d6bf84;
                             font-size: 10px;
                             overflow: elide;
                             horizontal-alignment: left;
@@ -268,18 +412,19 @@ export component MainWindow inherits Window {
 
             Text {
                 text: "INFORMACIÓN DEL AGENT";
-                color: #6e7598;
+                color: Theme.muted-dim;
                 font-size: 9px;
                 font-weight: 800;
-                letter-spacing: 1.2px;
+                letter-spacing: 1.5px;
                 horizontal-alignment: left;
             }
 
+            // ── Tarjeta de información ──
             Rectangle {
                 border-radius: 14px;
-                background: #10131f;
+                background: @linear-gradient(180deg, #151933 0%, #0f1226 100%);
                 border-width: 1px;
-                border-color: #252a42;
+                border-color: Theme.line;
                 clip: true;
 
                 VerticalBox {
@@ -289,14 +434,11 @@ export component MainWindow inherits Window {
                     FieldRow {
                         caption: "CÓDIGO DE EMPAREJAMIENTO";
                         value: root.pairing-code;
+                        code: true;
                         action-label: root.copy-label;
                         action-clicked => { root.copy-pairing(); }
                     }
-                    HorizontalBox {
-                        padding-left: 16px;
-                        padding-right: 16px;
-                        Rectangle { height: 1px; background: #1e2238; horizontal-stretch: 1; }
-                    }
+                    Divider { }
                     FieldRow {
                         caption: "CARPETA DEL SERVIDOR";
                         value: root.server-dir;
@@ -307,11 +449,7 @@ export component MainWindow inherits Window {
                             root.serverdir-visible = !root.serverdir-visible;
                         }
                     }
-                    HorizontalBox {
-                        padding-left: 16px;
-                        padding-right: 16px;
-                        Rectangle { height: 1px; background: #1e2238; horizontal-stretch: 1; }
-                    }
+                    Divider { }
                     Rectangle {
                         height: 54px;
                         background: transparent;
@@ -319,29 +457,29 @@ export component MainWindow inherits Window {
                         HorizontalBox {
                             padding-left: 12px;
                             padding-right: 12px;
-                            spacing: 8px;
+                            spacing: 10px;
                             alignment: center;
                             VerticalBox {
                                 spacing: 3px;
                                 horizontal-stretch: 1;
-                                alignment: start;
+                                alignment: center;
                                 Text {
                                     text: "VERSIÓN";
-                                    color: #7d84a8;
+                                    color: Theme.muted-dim;
                                     font-size: 8px;
                                     font-weight: 800;
-                                    letter-spacing: 1.0px;
+                                    letter-spacing: 1.2px;
                                     horizontal-alignment: left;
                                 }
                                 Text {
                                     text: "v" + root.version;
-                                    color: #f0effa;
+                                    color: Theme.text;
                                     font-size: 12px;
                                     font-weight: 600;
                                     horizontal-alignment: left;
                                 }
                             }
-                            Rectangle { width: 1px; height: 28px; background: #2a2f4a; }
+                            Rectangle { width: 1px; height: 28px; background: Theme.line; }
                             VerticalBox {
                                 width: 12px;
                                 alignment: center;
@@ -349,17 +487,20 @@ export component MainWindow inherits Window {
                                     width: 8px;
                                     height: 8px;
                                     border-radius: 4px;
-                                    background: root.local-ready ? #3dd9a8 : #e8b84a;
+                                    background: root.local-ready ? Theme.green : Theme.amber;
+                                    drop-shadow-blur: 8px;
+                                    drop-shadow-color: (root.local-ready ? Theme.green : Theme.amber).with-alpha(0.7);
                                 }
                             }
                             VerticalBox {
                                 spacing: 2px;
-                                alignment: start;
+                                alignment: center;
                                 Text {
                                     text: "SERVIDOR LOCAL";
-                                    color: #9a9db8;
+                                    color: Theme.muted-dim;
                                     font-size: 8px;
-                                    font-weight: 600;
+                                    font-weight: 800;
+                                    letter-spacing: 1.0px;
                                     horizontal-alignment: left;
                                 }
                                 Text {
@@ -375,9 +516,11 @@ export component MainWindow inherits Window {
                 }
             }
 
+            // ── Acciones ──
             ActionButton {
                 height: 44px;
                 label: "Abrir MoonWolf Panel  →";
+                label-font-size: 13px;
                 primary: true;
                 clicked => { root.open-panel(); }
             }
@@ -385,116 +528,33 @@ export component MainWindow inherits Window {
             HorizontalBox {
                 height: 40px;
                 spacing: 8px;
-                Rectangle {
+                padding: 0px;
+                ActionButton {
                     horizontal-stretch: 1;
-                    height: 38px;
-                    border-radius: 10px;
-                    background: #1c2036;
-                    border-width: 1px;
-                    border-color: #343a58;
-
-                    HorizontalBox {
-                        padding-left: 10px;
-                        padding-right: 10px;
-                        spacing: 6px;
-                        alignment: center;
-
-                        Text {
-                            text: "⚙";
-                            color: #ffffff;
-                            font-size: 13px;
-                            font-weight: 700;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: "Configuración";
-                            color: #ffffff;
-                            font-size: 12px;
-                            font-weight: 700;
-                            vertical-alignment: center;
-                        }
+                    label: "⚙  Configuración";
+                    clicked => {
+                        root.logs-visible = false;
+                        root.serverdir-visible = false;
+                        root.settings-visible = !root.settings-visible;
                     }
-
-                    ta-cfg := TouchArea {
-                        width: 100%;
-                        height: 100%;
-                        mouse-cursor: pointer;
-                        clicked => {
-                            root.logs-visible = false;
-                            root.serverdir-visible = false;
-                            root.settings-visible = !root.settings-visible;
-                        }
-                    }
-
-                    states [
-                        hover when ta-cfg.has-hover: {
-                            background: #262b45;
-                            border-color: #4a5178;
-                        }
-                        pressed when ta-cfg.pressed: {
-                            background: #161a2c;
-                        }
-                    ]
                 }
-                Rectangle {
+                ActionButton {
                     horizontal-stretch: 1;
-                    height: 38px;
-                    border-radius: 10px;
-                    background: #1c2036;
-                    border-width: 1px;
-                    border-color: #343a58;
-
-                    HorizontalBox {
-                        padding-left: 10px;
-                        padding-right: 10px;
-                        spacing: 6px;
-                        alignment: center;
-
-                        Text {
-                            text: "≡";
-                            color: #ffffff;
-                            font-size: 24px;
-                            font-weight: 800;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: "Logs";
-                            color: #ffffff;
-                            font-size: 12px;
-                            font-weight: 700;
-                            vertical-alignment: center;
-                        }
+                    label: "≡  Logs";
+                    clicked => {
+                        root.settings-visible = false;
+                        root.serverdir-visible = false;
+                        root.logs-visible = !root.logs-visible;
                     }
-
-                    ta-logs := TouchArea {
-                        width: 100%;
-                        height: 100%;
-                        mouse-cursor: pointer;
-                        clicked => {
-                            root.settings-visible = false;
-                            root.serverdir-visible = false;
-                            root.logs-visible = !root.logs-visible;
-                        }
-                    }
-
-                    states [
-                        hover when ta-logs.has-hover: {
-                            background: #262b45;
-                            border-color: #4a5178;
-                        }
-                        pressed when ta-logs.pressed: {
-                            background: #161a2c;
-                        }
-                    ]
                 }
             }
 
             if root.update-visible : Rectangle {
                 height: 56px;
                 border-radius: 14px;
-                background: #1c1838;
+                background: @linear-gradient(90deg, #272054 0%, #15122e 100%);
                 border-width: 1px;
-                border-color: #4a3f8a;
+                border-color: #5a4ca8;
                 HorizontalBox {
                     padding: 12px;
                     spacing: 10px;
@@ -506,6 +566,7 @@ export component MainWindow inherits Window {
                         horizontal-stretch: 1;
                         vertical-alignment: center;
                         horizontal-alignment: left;
+                        overflow: elide;
                     }
                     if root.update-installable : ActionButton {
                         width: 80px;
@@ -533,9 +594,9 @@ export component MainWindow inherits Window {
             if root.restart-visible : Rectangle {
                 height: 52px;
                 border-radius: 14px;
-                background: #2a2218;
+                background: @linear-gradient(90deg, #35291a 0%, #1d1710 100%);
                 border-width: 1px;
-                border-color: #6a4a28;
+                border-color: #7a5630;
                 HorizontalBox {
                     padding: 12px;
                     spacing: 10px;
@@ -560,9 +621,10 @@ export component MainWindow inherits Window {
             Rectangle { vertical-stretch: 1; }
         }
 
+        // ── Fondo oscuro de los modales ──
         if root.settings-visible || root.logs-visible || root.serverdir-visible : Rectangle {
             height: 100%;
-            background: #00000088;
+            background: #05060ccc;
             TouchArea {
                 clicked => {
                     root.settings-visible = false;
@@ -572,288 +634,157 @@ export component MainWindow inherits Window {
             }
         }
 
-        // ── Settings modal ──────────────────────────────────────────────────
-        if root.settings-visible : Rectangle {
+        // ── Configuración ──
+        if root.settings-visible : Modal {
             x: 14px;
-            y: (root.height - (root.update-visible ? 320px : 248px)) / 2;
+            y: (root.height - self.height) / 2;
             width: root.width - 28px;
-            height: root.update-visible ? 320px : 248px;
-            border-radius: 16px;
-            background: #14172c;
-            border-width: 1px;
-            border-color: #6a5ad8;
-            drop-shadow-blur: 32px;
-            drop-shadow-color: #000000cc;
-            clip: true;
+            height: root.update-visible ? 336px : 262px;
+            title: "Configuración";
+            subtitle: "Gestiona las opciones de MoonWolf Agent.";
+            close => { root.settings-visible = false; }
 
-            Rectangle {
-                x: parent.width - 40px;
-                y: 12px;
-                width: 28px;
-                height: 28px;
-                border-radius: 8px;
-                background: #1c2036;
+            ActionButton {
+                label: "Abrir carpeta de configuración";
+                clicked => { root.open-config(); }
+            }
+            ActionButton {
+                label: "Buscar actualizaciones";
+                clicked => { root.check-update(); }
+            }
+            if root.update-visible : Rectangle {
+                height: 56px;
+                border-radius: 12px;
+                background: @linear-gradient(90deg, #272054 0%, #15122e 100%);
                 border-width: 1px;
-                border-color: #343a58;
-                Text {
-                    height: 100%;
-                    text: "×";
-                    color: #c0c4d8;
-                    font-size: 18px;
-                    font-weight: 600;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-                TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => { root.settings-visible = false; }
-                }
-            }
-
-            VerticalBox {
-                padding-left: 16px;
-                padding-right: 16px;
-                padding-top: 14px;
-                padding-bottom: 14px;
-                spacing: 10px;
-                alignment: start;
-
-                Text {
-                    text: "Configuración";
-                    color: #faf8ff;
-                    font-size: 17px;
-                    font-weight: 800;
-                    horizontal-alignment: left;
-                }
-                Text {
-                    text: "Gestiona las opciones de MoonWolf Agent.";
-                    color: #9a9db8;
-                    font-size: 11px;
-                    horizontal-alignment: left;
-                }
-                Rectangle { height: 1px; background: #2a2f4a; }
-
-                ActionButton {
-                    height: 36px;
-                    label: "Abrir carpeta de configuración";
-                    clicked => { root.open-config(); }
-                }
-                ActionButton {
-                    height: 36px;
-                    label: "Buscar actualizaciones";
-                    clicked => { root.check-update(); }
-                }
-
-                if root.update-visible : Rectangle {
-                    height: 56px;
-                    border-radius: 12px;
-                    background: #1c1838;
-                    border-width: 1px;
-                    border-color: #4a3f8a;
-                    HorizontalBox {
-                        padding-left: 12px;
-                        padding-right: 10px;
-                        spacing: 8px;
-                        alignment: center;
-                        Text {
-                            text: root.update-text;
-                            color: #e4e0ff;
-                            font-size: 11px;
-                            font-weight: 600;
-                            horizontal-stretch: 1;
-                            vertical-alignment: center;
-                            horizontal-alignment: left;
-                            overflow: elide;
-                        }
-                        if root.update-installable : ActionButton {
-                            width: 76px;
-                            height: 32px;
-                            label: "Instalar";
-                            primary: true;
-                            clicked => { root.apply-update(); }
-                        }
-                        if root.update-failed : ActionButton {
-                            width: 76px;
-                            height: 32px;
-                            label: "Reintentar";
-                            clicked => { root.check-update(); }
-                        }
-                        if !root.update-installable && !root.update-failed : Text {
-                            text: "Descargando";
-                            color: #b6aaff;
-                            font-size: 10px;
-                            font-weight: 700;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-
-                ActionButton {
-                    height: 36px;
-                    label: "Ocultar";
-                    clicked => { root.hide-tray(); }
-                }
-            }
-        }
-
-        // ── Logs modal ──────────────────────────────────────────────────────
-        if root.logs-visible : Rectangle {
-            x: 14px;
-            y: (root.height - 340px) / 2;
-            width: root.width - 28px;
-            height: 340px;
-            border-radius: 18px;
-            background: #14172c;
-            border-width: 1px;
-            border-color: #6a5ad8;
-            drop-shadow-blur: 32px;
-            drop-shadow-color: #000000cc;
-            clip: true;
-
-            Rectangle {
-                x: parent.width - 40px;
-                y: 12px;
-                width: 28px;
-                height: 28px;
-                border-radius: 8px;
-                background: #1c2036;
-                border-width: 1px;
-                border-color: #343a58;
-                Text {
-                    height: 100%;
-                    text: "×";
-                    color: #c0c4d8;
-                    font-size: 18px;
-                    font-weight: 600;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-                TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => { root.logs-visible = false; }
-                }
-            }
-
-            VerticalBox {
-                padding-left: 16px;
-                padding-right: 16px;
-                padding-top: 14px;
-                padding-bottom: 14px;
-                spacing: 12px;
-                alignment: start;
-
-                Text {
-                    text: "Registros del Agent";
-                    color: #faf8ff;
-                    font-size: 16px;
-                    font-weight: 800;
-                    horizontal-alignment: left;
-                }
+                border-color: #5a4ca8;
                 HorizontalBox {
-                    spacing: 10px;
-                    ActionButton {
-                        horizontal-stretch: 1;
-                        height: 36px;
-                        label: "Limpiar";
-                        clicked => { root.clear-logs(); }
-                    }
-                    ActionButton {
-                        horizontal-stretch: 1;
-                        height: 36px;
-                        label: "Guardar archivo";
-                        clicked => { root.save-logs(); }
-                    }
-                }
-                Rectangle {
-                    vertical-stretch: 1;
-                    min-height: 180px;
-                    border-radius: 12px;
-                    background: #0a0c18;
-                    border-width: 1px;
-                    border-color: #252a42;
-                    clip: true;
-
-                    Text {
-                        x: 12px;
-                        y: 12px;
-                        width: root.width - 68px;
-                        height: parent.height - 24px;
-                        text: root.logs-text == "" ? "Todavía no hay registros.\nLos eventos del Agent aparecerán aquí." : root.logs-text;
-                        color: root.logs-text == "" ? #5a5f7a : #c8cce0;
-                        font-size: 11px;
-                        wrap: word-wrap;
-                        overflow: elide;
-                        horizontal-alignment: left;
-                        vertical-alignment: top;
-                    }
-                }
-            }
-        }
-
-        if root.serverdir-visible : Rectangle {
-            x: 14px;
-            y: (root.height - 260px) / 2;
-            width: root.width - 28px;
-            height: 260px;
-            border-radius: 18px;
-            background: #14172c;
-            border-width: 1px;
-            border-color: #6a5ad8;
-            drop-shadow-blur: 32px;
-            drop-shadow-color: #000000cc;
-            clip: true;
-
-            VerticalBox {
-                padding-left: 18px;
-                padding-right: 18px;
-                padding-top: 18px;
-                padding-bottom: 16px;
-                spacing: 12px;
-                alignment: stretch;
-
-                Text {
-                    text: "Carpeta del servidor";
-                    color: #faf8ff;
-                    font-size: 16px;
-                    font-weight: 800;
-                    horizontal-alignment: left;
-                }
-                Text {
-                    text: "Indica la ruta de la carpeta local del servidor.";
-                    color: #9a9db8;
-                    font-size: 11px;
-                    horizontal-alignment: left;
-                }
-                LineEdit {
-                    text <=> root.serverdir-input;
-                    placeholder-text: "Ruta completa de la carpeta...";
-                    height: 40px;
-                    horizontal-stretch: 1;
-                }
-                Rectangle { vertical-stretch: 1; background: transparent; }
-
-                HorizontalBox {
-                    spacing: 10px;
-                    height: 40px;
+                    padding-left: 12px;
+                    padding-right: 10px;
+                    spacing: 8px;
                     alignment: center;
-
-                    ActionButton {
+                    Text {
+                        text: root.update-text;
+                        color: #e4e0ff;
+                        font-size: 11px;
+                        font-weight: 600;
                         horizontal-stretch: 1;
-                        height: 40px;
-                        label: "Cancelar";
-                        label-font-size: 12px;
-                        clicked => { root.serverdir-visible = false; }
+                        vertical-alignment: center;
+                        horizontal-alignment: left;
+                        overflow: elide;
                     }
-                    ActionButton {
-                        horizontal-stretch: 1;
-                        height: 40px;
-                        label: "Guardar";
-                        label-font-size: 12px;
+                    if root.update-installable : ActionButton {
+                        width: 76px;
+                        height: 32px;
+                        label: "Instalar";
                         primary: true;
-                        clicked => {
-                            root.change-server(root.serverdir-input);
-                            root.serverdir-visible = false;
-                        }
+                        clicked => { root.apply-update(); }
+                    }
+                    if root.update-failed : ActionButton {
+                        width: 76px;
+                        height: 32px;
+                        label: "Reintentar";
+                        clicked => { root.check-update(); }
+                    }
+                    if !root.update-installable && !root.update-failed : Text {
+                        text: "Descargando";
+                        color: #b6aaff;
+                        font-size: 10px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            ActionButton {
+                label: "Ocultar en segundo plano";
+                clicked => { root.hide-tray(); }
+            }
+        }
+
+        // ── Registros ──
+        if root.logs-visible : Modal {
+            x: 14px;
+            y: (root.height - self.height) / 2;
+            width: root.width - 28px;
+            height: 356px;
+            title: "Registros del Agent";
+            close => { root.logs-visible = false; }
+
+            HorizontalBox {
+                spacing: 10px;
+                padding: 0px;
+                ActionButton {
+                    horizontal-stretch: 1;
+                    label: "Limpiar";
+                    clicked => { root.clear-logs(); }
+                }
+                ActionButton {
+                    horizontal-stretch: 1;
+                    label: "Guardar archivo";
+                    clicked => { root.save-logs(); }
+                }
+            }
+            Rectangle {
+                vertical-stretch: 1;
+                min-height: 180px;
+                border-radius: 12px;
+                background: #080a15;
+                border-width: 1px;
+                border-color: Theme.line;
+                clip: true;
+
+                Text {
+                    x: 12px;
+                    y: 10px;
+                    width: parent.width - 24px;
+                    height: parent.height - 20px;
+                    text: root.logs-text == "" ? "Todavía no hay registros.\nLos eventos del Agent aparecerán aquí." : root.logs-text;
+                    color: root.logs-text == "" ? #5a5f7a : #c8cce0;
+                    font-family: "Consolas";
+                    font-size: 10px;
+                    wrap: word-wrap;
+                    overflow: elide;
+                    horizontal-alignment: left;
+                    vertical-alignment: top;
+                }
+            }
+        }
+
+        // ── Carpeta del servidor ──
+        if root.serverdir-visible : Modal {
+            x: 14px;
+            y: (root.height - self.height) / 2;
+            width: root.width - 28px;
+            height: 270px;
+            title: "Carpeta del servidor";
+            subtitle: "Indica la ruta de la carpeta local del servidor.";
+            close => { root.serverdir-visible = false; }
+
+            LineEdit {
+                text <=> root.serverdir-input;
+                placeholder-text: "Ruta completa de la carpeta...";
+                height: 40px;
+                horizontal-stretch: 1;
+            }
+            Rectangle { vertical-stretch: 1; background: transparent; }
+            HorizontalBox {
+                spacing: 10px;
+                height: 40px;
+                padding: 0px;
+                ActionButton {
+                    horizontal-stretch: 1;
+                    height: 40px;
+                    label: "Cancelar";
+                    clicked => { root.serverdir-visible = false; }
+                }
+                ActionButton {
+                    horizontal-stretch: 1;
+                    height: 40px;
+                    label: "Guardar";
+                    primary: true;
+                    clicked => {
+                        root.change-server(root.serverdir-input);
+                        root.serverdir-visible = false;
                     }
                 }
             }
