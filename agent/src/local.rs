@@ -2704,12 +2704,16 @@ async fn versions_software() -> Response {
             { "id": "purpur", "label": "Purpur", "category": "plugins", "desc": "Fork de Paper con configuración avanzada." },
             { "id": "folia", "label": "Folia", "category": "plugins", "desc": "Fork de Paper con multithreading regional." },
             { "id": "leaves", "label": "Leaves", "category": "plugins", "desc": "Fork de Paper orientado a optimización y configuración." },
+            { "id": "leaf", "label": "Leaf", "category": "plugins", "desc": "Fork de Paper con optimizaciones adicionales (Winds Studio)." },
+            { "id": "spigot", "label": "Spigot", "category": "plugins", "desc": "Servidor clásico compatible con plugins Bukkit." },
+            { "id": "bukkit", "label": "CraftBukkit", "category": "plugins", "desc": "Implementación base de la API Bukkit." },
             { "id": "fabric", "label": "Fabric", "category": "mods", "desc": "Loader ligero para mods." },
             { "id": "quilt", "label": "Quilt", "category": "mods", "desc": "Fork de Fabric centrado en la comunidad y mods." },
             { "id": "forge", "label": "Forge", "category": "mods", "desc": "Loader clásico para mods." },
             { "id": "neoforge", "label": "NeoForge", "category": "mods", "desc": "Loader moderno para mods." },
             { "id": "velocity", "label": "Velocity", "category": "proxy", "desc": "Proxy moderno." },
             { "id": "waterfall", "label": "Waterfall", "category": "proxy", "desc": "Proxy basado en BungeeCord." },
+            { "id": "bungeecord", "label": "BungeeCord", "category": "proxy", "desc": "Proxy clásico de md_5 para redes multi-servidor." },
             { "id": "vanilla", "label": "Vanilla", "category": "vanilla", "desc": "Servidor oficial de Mojang." }
         ]
     }))
@@ -2730,11 +2734,14 @@ async fn versions_list(Query(q): Query<VersionsListQuery>) -> Response {
         "paper" | "folia" | "velocity" | "waterfall" => list_papermc_versions(&sw).await,
         "purpur" => list_purpur_versions().await,
         "leaves" => list_leaves_versions().await,
+        "leaf" => list_leaf_versions().await,
+        "spigot" | "bukkit" => list_spigot_hub_versions().await,
         "fabric" => list_fabric_versions().await,
         "quilt" => list_quilt_versions().await,
         "vanilla" => list_vanilla_versions().await,
         "forge" => list_forge_versions().await,
         "neoforge" => list_neoforge_versions().await,
+        "bungeecord" => list_bungeecord_versions().await,
         _ => Err(format!("Software no soportado: {sw}")),
     };
 
@@ -2791,6 +2798,52 @@ async fn list_leaves_versions() -> Result<Vec<String>, String> {
         .collect();
     out.reverse();
     Ok(out)
+}
+
+async fn list_leaf_versions() -> Result<Vec<String>, String> {
+    let v = fetch_json("https://api.leafmc.one/v2/projects/leaf").await?;
+    let arr = v
+        .get("versions")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut out: Vec<String> = arr
+        .into_iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+    out.reverse();
+    Ok(out)
+}
+
+async fn list_spigot_hub_versions() -> Result<Vec<String>, String> {
+    // Prefer Spigot hub index; fallback to Mojang releases.
+    let html = match fetch_text("https://hub.spigotmc.org/versions/").await {
+        Ok(h) => h,
+        Err(_) => {
+            return list_vanilla_versions().await;
+        }
+    };
+    let mut out = Vec::new();
+    for part in html.split("href=\"") {
+        let Some(end) = part.find(".json\"") else { continue };
+        let name = &part[..end];
+        if name.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
+            && !name.contains("pre")
+            && !name.contains("rc")
+        {
+            out.push(name.to_string());
+        }
+    }
+    if out.is_empty() {
+        return list_vanilla_versions().await;
+    }
+    out.sort_by(|a, b| semver_cmp(b, a));
+    Ok(out)
+}
+
+async fn list_bungeecord_versions() -> Result<Vec<String>, String> {
+    // BungeeCord se versiona por build de Jenkins, no por MC.
+    Ok(vec!["latest".to_string()])
 }
 
 async fn list_quilt_versions() -> Result<Vec<String>, String> {
@@ -2899,11 +2952,15 @@ async fn versions_builds(Query(q): Query<VersionsBuildsQuery>) -> Response {
         "paper" | "folia" | "velocity" | "waterfall" => builds_papermc(&sw, &version).await,
         "purpur" => builds_purpur(&version).await,
         "leaves" => builds_leaves(&version).await,
+        "leaf" => builds_leaf(&version).await,
+        "spigot" => builds_spigot(&version).await,
+        "bukkit" => builds_bukkit(&version).await,
         "fabric" => builds_fabric(&version).await,
         "quilt" => builds_quilt(&version).await,
         "vanilla" => builds_vanilla(&version).await,
         "forge" => builds_forge(&version).await,
         "neoforge" => builds_neoforge(&version).await,
+        "bungeecord" => builds_bungeecord(&version).await,
         _ => Err(format!("Software no soportado: {sw}")),
     };
 
@@ -3116,6 +3173,96 @@ async fn builds_quilt(version: &str) -> Result<Vec<serde_json::Value>, String> {
             "sha256": null,
             "changes": format!("Quilt Loader {loader} para Minecraft {version}"),
         }));
+    }
+    Ok(out)
+}
+
+async fn builds_leaf(version: &str) -> Result<Vec<serde_json::Value>, String> {
+    let url = format!("https://api.leafmc.one/v2/projects/leaf/versions/{version}");
+    let v = fetch_json(&url).await?;
+    let builds = v
+        .get("builds")
+        .and_then(|b| b.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for b in builds.iter().rev().take(25) {
+        let build = b.as_i64().unwrap_or(0);
+        if build <= 0 {
+            continue;
+        }
+        out.push(json!({
+            "build": build,
+            "channel": "RELEASE",
+            "time": null,
+            "url": format!(
+                "https://github.com/Winds-Studio/Leaf/releases/download/ver-{0}/leaf-{0}-{1}.jar",
+                version, build
+            ),
+            "sha256": null,
+            "changes": format!("Leaf {version} build {build}"),
+        }));
+    }
+    Ok(out)
+}
+
+async fn builds_spigot(version: &str) -> Result<Vec<serde_json::Value>, String> {
+    Ok(vec![json!({
+        "build": "getbukkit",
+        "channel": "RELEASE",
+        "time": null,
+        "url": format!("https://download.getbukkit.org/spigot/spigot-{version}.jar"),
+        "sha256": null,
+        "changes": format!(
+            "Spigot {version} vía GetBukkit (mirror no oficial). Para builds oficiales usa BuildTools."
+        ),
+    })])
+}
+
+async fn builds_bukkit(version: &str) -> Result<Vec<serde_json::Value>, String> {
+    Ok(vec![json!({
+        "build": "getbukkit",
+        "channel": "RELEASE",
+        "time": null,
+        "url": format!("https://download.getbukkit.org/craftbukkit/craftbukkit-{version}.jar"),
+        "sha256": null,
+        "changes": format!(
+            "CraftBukkit {version} vía GetBukkit (mirror no oficial)."
+        ),
+    })])
+}
+
+async fn builds_bungeecord(_version: &str) -> Result<Vec<serde_json::Value>, String> {
+    // Último build estable + artefacto directo del CI de md_5.
+    let mut out = Vec::new();
+    out.push(json!({
+        "build": "lastSuccessful",
+        "channel": "RELEASE",
+        "time": null,
+        "url": "https://ci.md-5.net/job/BungeeCord/lastSuccessfulBuild/artifact/bootstrap/target/BungeeCord.jar",
+        "sha256": null,
+        "changes": "Último build exitoso de BungeeCord (CI md_5).",
+    }));
+    // Builds recientes por número (aproximación: leer lastSuccessful buildNumber si es posible)
+    if let Ok(text) = fetch_text(
+        "https://ci.md-5.net/job/BungeeCord/lastSuccessfulBuild/buildNumber",
+    )
+    .await
+    {
+        if let Ok(n) = text.trim().parse::<i64>() {
+            for build in ((n - 14).max(1)..=n).rev() {
+                out.push(json!({
+                    "build": build,
+                    "channel": "RELEASE",
+                    "time": null,
+                    "url": format!(
+                        "https://ci.md-5.net/job/BungeeCord/{build}/artifact/bootstrap/target/BungeeCord.jar"
+                    ),
+                    "sha256": null,
+                    "changes": format!("BungeeCord Jenkins build {build}"),
+                }));
+            }
+        }
     }
     Ok(out)
 }
