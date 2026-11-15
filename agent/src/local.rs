@@ -2138,9 +2138,16 @@ async fn detect_version_from_version_json(root: &Path) -> Option<String> {
             Ok(v) => v,
             Err(_) => continue,
         };
-        for key in ["id", "name", "version", "minecraftVersion", "minecraft_version"] {
+        for key in [
+            "id",
+            "name",
+            "version",
+            "minecraftVersion",
+            "minecraft_version",
+        ] {
             if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
-                if let Some(n) = normalize_mc_version_candidate(s).or_else(|| detect_version_from_name(s))
+                if let Some(n) = normalize_mc_version_candidate(s)
+                            .or_else(|| detect_version_from_name(s))
                 {
                     return Some(n);
                 }
@@ -2173,8 +2180,8 @@ async fn detect_version_from_jar_manifest(root: &Path, jar_name: &str) -> Option
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
                 for key in ["id", "name", "version"] {
                     if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
-                        if let Some(n) =
-                            normalize_mc_version_candidate(s).or_else(|| detect_version_from_name(s))
+                        if let Some(n) = normalize_mc_version_candidate(s)
+                            .or_else(|| detect_version_from_name(s))
                         {
                             return Some(n);
                         }
@@ -2196,8 +2203,8 @@ async fn detect_version_from_jar_manifest(root: &Path, jar_name: &str) -> Option
                         .or_else(|| line.strip_prefix(&prefix.to_ascii_lowercase()))
                     {
                         let rest = rest.trim();
-                        if let Some(n) =
-                            normalize_mc_version_candidate(rest).or_else(|| detect_version_from_name(rest))
+                        if let Some(n) = normalize_mc_version_candidate(rest)
+                            .or_else(|| detect_version_from_name(rest))
                         {
                             return Some(n);
                         }
@@ -2237,8 +2244,8 @@ async fn detect_version_from_logs(root: &Path) -> Option<String> {
                     .split(|c: char| c.is_whitespace() || c == ',' || c == ')')
                     .next()
                     .unwrap_or("");
-                if let Some(n) =
-                    normalize_mc_version_candidate(token).or_else(|| detect_version_from_name(token))
+                if let Some(n) = normalize_mc_version_candidate(token)
+                            .or_else(|| detect_version_from_name(token))
                 {
                     return Some(n);
                 }
@@ -2247,8 +2254,8 @@ async fn detect_version_from_logs(root: &Path) -> Option<String> {
             if let Some(idx) = line.to_lowercase().find("server version ") {
                 let rest = &line[idx + "server version ".len()..];
                 let token = rest.split_whitespace().next().unwrap_or("");
-                if let Some(n) =
-                    normalize_mc_version_candidate(token).or_else(|| detect_version_from_name(token))
+                if let Some(n) = normalize_mc_version_candidate(token)
+                            .or_else(|| detect_version_from_name(token))
                 {
                     return Some(n);
                 }
