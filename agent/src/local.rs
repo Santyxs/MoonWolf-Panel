@@ -2704,11 +2704,12 @@ async fn versions_software() -> Response {
             { "id": "purpur", "label": "Purpur", "category": "plugins", "desc": "Fork de Paper con configuración avanzada." },
             { "id": "folia", "label": "Folia", "category": "plugins", "desc": "Fork de Paper con multithreading regional." },
             { "id": "leaves", "label": "Leaves", "category": "plugins", "desc": "Fork de Paper orientado a optimización y configuración." },
-            { "id": "leaf", "label": "Leaf", "category": "plugins", "desc": "Fork de Paper con optimizaciones adicionales (Winds Studio)." },
+            { "id": "leaf", "label": "Leaf", "category": "plugins", "desc": "Fork de Paper con optimizaciones adicionales." },
             { "id": "spigot", "label": "Spigot", "category": "plugins", "desc": "Servidor clásico compatible con plugins Bukkit." },
             { "id": "bukkit", "label": "CraftBukkit", "category": "plugins", "desc": "Implementación base de la API Bukkit." },
             { "id": "mohist", "label": "Mohist", "category": "hybrid", "desc": "Híbrido Forge + Bukkit para mods y plugins a la vez." },
             { "id": "arclight", "label": "Arclight", "category": "hybrid", "desc": "Híbrido Forge/NeoForge/Fabric + Bukkit." },
+            { "id": "magma", "label": "Magma", "category": "hybrid", "desc": "Híbrido Forge + Bukkit orientado a rendimiento." },
             { "id": "fabric", "label": "Fabric", "category": "mods", "desc": "Loader ligero para mods." },
             { "id": "quilt", "label": "Quilt", "category": "mods", "desc": "Fork de Fabric centrado en la comunidad y mods." },
             { "id": "forge", "label": "Forge", "category": "mods", "desc": "Loader clásico para mods." },
@@ -2736,10 +2737,11 @@ async fn versions_list(Query(q): Query<VersionsListQuery>) -> Response {
         "paper" | "folia" | "velocity" | "waterfall" => list_papermc_versions(&sw).await,
         "purpur" => list_purpur_versions().await,
         "leaves" => list_leaves_versions().await,
-        "leaf" => list_leaf_versions().await,
+        "leaf" => list_mcjars_versions("Leaf").await,
         "spigot" | "bukkit" => list_spigot_hub_versions().await,
         "mohist" => list_mcjars_versions("Mohist").await,
         "arclight" => list_mcjars_versions("Arclight").await,
+        "magma" => list_mcjars_versions("Magma").await,
         "fabric" => list_fabric_versions().await,
         "quilt" => list_quilt_versions().await,
         "vanilla" => list_vanilla_versions().await,
@@ -2804,20 +2806,6 @@ async fn list_leaves_versions() -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-async fn list_leaf_versions() -> Result<Vec<String>, String> {
-    let v = fetch_json("https://api.leafmc.one/v2/projects/leaf").await?;
-    let arr = v
-        .get("versions")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let mut out: Vec<String> = arr
-        .into_iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-        .collect();
-    out.reverse();
-    Ok(out)
-}
 
 async fn list_spigot_hub_versions() -> Result<Vec<String>, String> {
     // Prefer Spigot hub index; fallback to Mojang releases.
@@ -2975,11 +2963,12 @@ async fn versions_builds(Query(q): Query<VersionsBuildsQuery>) -> Response {
         "paper" | "folia" | "velocity" | "waterfall" => builds_papermc(&sw, &version).await,
         "purpur" => builds_purpur(&version).await,
         "leaves" => builds_leaves(&version).await,
-        "leaf" => builds_leaf(&version).await,
+        "leaf" => builds_mcjars("Leaf", &version).await,
         "spigot" => builds_spigot(&version).await,
         "bukkit" => builds_bukkit(&version).await,
         "mohist" => builds_mcjars("Mohist", &version).await,
         "arclight" => builds_mcjars("Arclight", &version).await,
+        "magma" => builds_mcjars("Magma", &version).await,
         "fabric" => builds_fabric(&version).await,
         "quilt" => builds_quilt(&version).await,
         "vanilla" => builds_vanilla(&version).await,
@@ -3202,34 +3191,6 @@ async fn builds_quilt(version: &str) -> Result<Vec<serde_json::Value>, String> {
     Ok(out)
 }
 
-async fn builds_leaf(version: &str) -> Result<Vec<serde_json::Value>, String> {
-    let url = format!("https://api.leafmc.one/v2/projects/leaf/versions/{version}");
-    let v = fetch_json(&url).await?;
-    let builds = v
-        .get("builds")
-        .and_then(|b| b.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let mut out = Vec::new();
-    for b in builds.iter().rev().take(25) {
-        let build = b.as_i64().unwrap_or(0);
-        if build <= 0 {
-            continue;
-        }
-        out.push(json!({
-            "build": build,
-            "channel": "RELEASE",
-            "time": null,
-            "url": format!(
-                "https://github.com/Winds-Studio/Leaf/releases/download/ver-{0}/leaf-{0}-{1}.jar",
-                version, build
-            ),
-            "sha256": null,
-            "changes": format!("Leaf {version} build {build}"),
-        }));
-    }
-    Ok(out)
-}
 
 async fn builds_spigot(version: &str) -> Result<Vec<serde_json::Value>, String> {
     Ok(vec![json!({
@@ -3276,11 +3237,14 @@ async fn builds_mcjars(project: &str, version: &str) -> Result<Vec<serde_json::V
         let jar_url = b
             .get("jarUrl")
             .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| b.get("zipUrl").and_then(|s| s.as_str()).filter(|s| !s.is_empty()))
             .unwrap_or("")
             .to_string();
         if jar_url.is_empty() {
             continue;
         }
+        let is_zip = jar_url.ends_with(".zip");
         let experimental = b
             .get("experimental")
             .and_then(|x| x.as_bool())
@@ -3306,17 +3270,21 @@ async fn builds_mcjars(project: &str, version: &str) -> Result<Vec<serde_json::V
         } else {
             name.clone()
         };
+        let mut notes = if changes.is_empty() {
+            format!("{project} {version} · {label}")
+        } else {
+            changes
+        };
+        if is_zip {
+            notes.push_str(" · descarga ZIP (extraer server.jar si hace falta)");
+        }
         out.push(json!({
             "build": label,
             "channel": if experimental { "PRERELEASE" } else { "RELEASE" },
             "time": time,
             "url": jar_url,
             "sha256": null,
-            "changes": if changes.is_empty() {
-                format!("{project} {version} · {label}")
-            } else {
-                changes
-            },
+            "changes": notes,
         }));
     }
     Ok(out)
