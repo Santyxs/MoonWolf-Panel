@@ -2146,8 +2146,8 @@ async fn detect_version_from_version_json(root: &Path) -> Option<String> {
             "minecraft_version",
         ] {
             if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
-                if let Some(n) = normalize_mc_version_candidate(s)
-                    .or_else(|| detect_version_from_name(s))
+                if let Some(n) =
+                    normalize_mc_version_candidate(s).or_else(|| detect_version_from_name(s))
                 {
                     return Some(n);
                 }
