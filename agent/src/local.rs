@@ -2057,6 +2057,9 @@ async fn detect_minecraft_version(root: &Path, jar_name: &str) -> Option<(String
     if let Some(v) = detect_version_from_jar_manifest(root, jar_name).await {
         return Some((v, "jar-manifest".into()));
     }
+    if let Some(v) = detect_version_from_server_layout(root).await {
+        return Some((v, "server-layout".into()));
+    }
     if let Some(v) = detect_version_from_version_history(root).await {
         return Some((v, "version_history".into()));
     }
@@ -2157,6 +2160,43 @@ async fn detect_version_from_version_json(root: &Path) -> Option<String> {
             }
         }
     }
+    None
+}
+
+async fn detect_version_from_server_layout(root: &Path) -> Option<String> {
+    // Fabric suele usar fabric-server-launch.jar como lanzador y deja el JAR
+    // real en libraries/net/minecraft/server/<versión>/, por lo que el
+    // lanzador no siempre contiene version.json ni la versión en su nombre.
+    for rel in [
+        "fabric-server-launcher.properties",
+        "fabric-server-launcher.properties.txt",
+    ] {
+        if let Ok(text) = tokio::fs::read_to_string(root.join(rel)).await {
+            if let Some(version) = detect_version_from_name(&text) {
+                return Some(version);
+            }
+        }
+    }
+
+    for rel in [
+        "libraries/net/minecraft/server",
+        "libraries/net/minecraft/client",
+    ] {
+        let mut entries = match tokio::fs::read_dir(root.join(rel)).await {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if let Some(version) = normalize_mc_version_candidate(&name) {
+                return Some(version);
+            }
+            if let Some(version) = detect_version_from_name(&name) {
+                return Some(version);
+            }
+        }
+    }
+
     None
 }
 
