@@ -2806,7 +2806,6 @@ async fn list_leaves_versions() -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-
 async fn list_spigot_hub_versions() -> Result<Vec<String>, String> {
     // Prefer Spigot hub index; fallback to Mojang releases.
     let html = match fetch_text("https://hub.spigotmc.org/versions/").await {
@@ -3191,7 +3190,6 @@ async fn builds_quilt(version: &str) -> Result<Vec<serde_json::Value>, String> {
     Ok(out)
 }
 
-
 async fn builds_spigot(version: &str) -> Result<Vec<serde_json::Value>, String> {
     Ok(vec![json!({
         "build": "getbukkit",
@@ -3238,7 +3236,11 @@ async fn builds_mcjars(project: &str, version: &str) -> Result<Vec<serde_json::V
             .get("jarUrl")
             .and_then(|s| s.as_str())
             .filter(|s| !s.is_empty())
-            .or_else(|| b.get("zipUrl").and_then(|s| s.as_str()).filter(|s| !s.is_empty()))
+            .or_else(|| {
+                b.get("zipUrl")
+                    .and_then(|s| s.as_str())
+                    .filter(|s| !s.is_empty())
+            })
             .unwrap_or("")
             .to_string();
         if jar_url.is_empty() {
