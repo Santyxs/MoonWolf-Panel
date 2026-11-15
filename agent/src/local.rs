@@ -2896,7 +2896,10 @@ async fn builds_sponge(sw: &str, version: &str) -> Result<Vec<serde_json::Value>
                 continue;
             }
             if classifier == "universal" {
-                download = a.get("downloadUrl").and_then(|u| u.as_str()).map(|s| s.to_string());
+                download = a
+                    .get("downloadUrl")
+                    .and_then(|u| u.as_str())
+                    .map(|s| s.to_string());
                 break;
             }
         }
@@ -2905,7 +2908,10 @@ async fn builds_sponge(sw: &str, version: &str) -> Result<Vec<serde_json::Value>
                 let classifier = a.get("classifier").and_then(|c| c.as_str());
                 let ext = a.get("extension").and_then(|e| e.as_str()).unwrap_or("");
                 if ext == "jar" && classifier.is_none() {
-                    download = a.get("downloadUrl").and_then(|u| u.as_str()).map(|s| s.to_string());
+                    download = a
+                        .get("downloadUrl")
+                        .and_then(|u| u.as_str())
+                        .map(|s| s.to_string());
                     break;
                 }
             }
