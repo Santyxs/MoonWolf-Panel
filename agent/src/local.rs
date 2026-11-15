@@ -1832,7 +1832,7 @@ async fn save_startup_config(root: &Path, cfg: &StartupConfig) -> std::io::Resul
     let cfg = cfg.clone();
     tokio::task::spawn_blocking(move || save_startup_config_sync(&root, &cfg))
         .await
-        .map_err(|e| std::io::Error::other(format!("tarea de configuración falló: {e}")))?;
+        .map_err(|e| std::io::Error::other(format!("tarea de configuración falló: {e}")))?
 }
 
 async fn list_jars(root: &Path) -> Vec<String> {
