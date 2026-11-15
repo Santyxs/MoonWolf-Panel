@@ -2710,6 +2710,9 @@ async fn versions_software() -> Response {
             { "id": "mohist", "label": "Mohist", "category": "hybrid", "desc": "Híbrido Forge + Bukkit para mods y plugins a la vez." },
             { "id": "arclight", "label": "Arclight", "category": "hybrid", "desc": "Híbrido Forge/NeoForge/Fabric + Bukkit." },
             { "id": "magma", "label": "Magma", "category": "hybrid", "desc": "Híbrido Forge + Bukkit orientado a rendimiento." },
+            { "id": "spongevanilla", "label": "SpongeVanilla", "category": "plugins", "desc": "Servidor Sponge sobre Vanilla (API de plugins Sponge)." },
+            { "id": "spongeforge", "label": "SpongeForge", "category": "hybrid", "desc": "Sponge sobre Forge (mods Forge + plugins Sponge)." },
+            { "id": "spongeneo", "label": "SpongeNeo", "category": "hybrid", "desc": "Sponge sobre NeoForge." },
             { "id": "fabric", "label": "Fabric", "category": "mods", "desc": "Loader ligero para mods." },
             { "id": "quilt", "label": "Quilt", "category": "mods", "desc": "Fork de Fabric centrado en la comunidad y mods." },
             { "id": "forge", "label": "Forge", "category": "mods", "desc": "Loader clásico para mods." },
@@ -2742,6 +2745,7 @@ async fn versions_list(Query(q): Query<VersionsListQuery>) -> Response {
         "mohist" => list_mcjars_versions("Mohist").await,
         "arclight" => list_mcjars_versions("Arclight").await,
         "magma" => list_mcjars_versions("Magma").await,
+        "spongevanilla" | "spongeforge" | "spongeneo" => list_sponge_versions(&sw).await,
         "fabric" => list_fabric_versions().await,
         "quilt" => list_quilt_versions().await,
         "vanilla" => list_vanilla_versions().await,
@@ -2803,6 +2807,125 @@ async fn list_leaves_versions() -> Result<Vec<String>, String> {
         .filter_map(|v| v.as_str().map(|s| s.to_string()))
         .collect();
     out.reverse();
+    Ok(out)
+}
+
+async fn list_sponge_versions(sw: &str) -> Result<Vec<String>, String> {
+    let artifact = match sw {
+        "spongeforge" => "spongeforge",
+        "spongeneo" => "spongeneo",
+        _ => "spongevanilla",
+    };
+    let url = format!(
+        "https://dl-api.spongepowered.org/v2/groups/org.spongepowered/artifacts/{artifact}/versions"
+    );
+    let v = fetch_json(&url).await?;
+    let arts = v
+        .get("artifacts")
+        .and_then(|a| a.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let mut set = std::collections::BTreeSet::new();
+    for meta in arts.values() {
+        if let Some(mc) = meta
+            .pointer("/tagValues/minecraft")
+            .and_then(|s| s.as_str())
+        {
+            set.insert(mc.to_string());
+        }
+    }
+    let mut out: Vec<String> = set.into_iter().collect();
+    out.sort_by(|a, b| semver_cmp(b, a));
+    Ok(out)
+}
+
+async fn builds_sponge(sw: &str, version: &str) -> Result<Vec<serde_json::Value>, String> {
+    let artifact = match sw {
+        "spongeforge" => "spongeforge",
+        "spongeneo" => "spongeneo",
+        _ => "spongevanilla",
+    };
+    let url = format!(
+        "https://dl-api.spongepowered.org/v2/groups/org.spongepowered/artifacts/{artifact}/versions"
+    );
+    let v = fetch_json(&url).await?;
+    let arts = v
+        .get("artifacts")
+        .and_then(|a| a.as_object())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut candidates: Vec<(String, bool)> = Vec::new();
+    for (vid, meta) in &arts {
+        let mc = meta
+            .pointer("/tagValues/minecraft")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        if mc != version {
+            continue;
+        }
+        let recommended = meta
+            .get("recommended")
+            .and_then(|r| r.as_bool())
+            .unwrap_or(false);
+        candidates.push((vid.clone(), recommended));
+    }
+    // Prefer recommended, then newer-looking ids first (API order is usually newest first)
+    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let mut out = Vec::new();
+    for (vid, recommended) in candidates.into_iter().take(20) {
+        let detail_url = format!(
+            "https://dl-api.spongepowered.org/v2/groups/org.spongepowered/artifacts/{artifact}/versions/{vid}"
+        );
+        let detail = match fetch_json(&detail_url).await {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let assets = detail
+            .get("assets")
+            .and_then(|a| a.as_array())
+            .cloned()
+            .unwrap_or_default();
+        // Prefer universal jar, then the unclassified jar.
+        let mut download = None;
+        for a in &assets {
+            let classifier = a.get("classifier").and_then(|c| c.as_str()).unwrap_or("");
+            let ext = a.get("extension").and_then(|e| e.as_str()).unwrap_or("");
+            if ext != "jar" {
+                continue;
+            }
+            if classifier == "universal" {
+                download = a.get("downloadUrl").and_then(|u| u.as_str()).map(|s| s.to_string());
+                break;
+            }
+        }
+        if download.is_none() {
+            for a in &assets {
+                let classifier = a.get("classifier").and_then(|c| c.as_str());
+                let ext = a.get("extension").and_then(|e| e.as_str()).unwrap_or("");
+                if ext == "jar" && classifier.is_none() {
+                    download = a.get("downloadUrl").and_then(|u| u.as_str()).map(|s| s.to_string());
+                    break;
+                }
+            }
+        }
+        let Some(url) = download else {
+            continue;
+        };
+        let api = detail
+            .pointer("/tags/api")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        out.push(json!({
+            "build": vid,
+            "channel": if recommended { "RELEASE" } else { "PRERELEASE" },
+            "time": null,
+            "url": url,
+            "sha256": null,
+            "changes": format!("{artifact} {vid} · Minecraft {version} · API {api}"),
+        }));
+    }
     Ok(out)
 }
 
@@ -2968,6 +3091,7 @@ async fn versions_builds(Query(q): Query<VersionsBuildsQuery>) -> Response {
         "mohist" => builds_mcjars("Mohist", &version).await,
         "arclight" => builds_mcjars("Arclight", &version).await,
         "magma" => builds_mcjars("Magma", &version).await,
+        "spongevanilla" | "spongeforge" | "spongeneo" => builds_sponge(&sw, &version).await,
         "fabric" => builds_fabric(&version).await,
         "quilt" => builds_quilt(&version).await,
         "vanilla" => builds_vanilla(&version).await,

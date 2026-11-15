@@ -3616,7 +3616,7 @@ async function selectVersionSoftware(software) {
 
   $('verBack')?.addEventListener('click', renderVersionSoftware);
 
-  if (item.external && !['paper', 'purpur', 'folia', 'leaves', 'leaf', 'spigot', 'bukkit', 'mohist', 'arclight', 'magma', 'fabric', 'quilt', 'vanilla', 'forge', 'neoforge', 'velocity', 'waterfall', 'bungeecord'].includes(software)) {
+  if (item.external && !['paper', 'purpur', 'folia', 'leaves', 'leaf', 'spigot', 'bukkit', 'mohist', 'arclight', 'magma', 'spongevanilla', 'spongeforge', 'spongeneo', 'fabric', 'quilt', 'vanilla', 'forge', 'neoforge', 'velocity', 'waterfall', 'bungeecord'].includes(software)) {
     container.querySelector('.ver-loading').outerHTML = `
       <div class="ver-empty">
         <div class="ver-empty-icon">🌐</div>
