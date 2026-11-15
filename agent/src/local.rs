@@ -1832,7 +1832,7 @@ async fn save_startup_config(root: &Path, cfg: &StartupConfig) -> std::io::Resul
     let cfg = cfg.clone();
     tokio::task::spawn_blocking(move || save_startup_config_sync(&root, &cfg))
         .await
-        .map_err(|e| std::io::Error::other(format!("tarea de configuración falló: {e}")))?
+        .map_err(|e| std::io::Error::other(format!("tarea de configuración falló: {e}")))?;
 }
 
 async fn list_jars(root: &Path) -> Vec<String> {
@@ -2147,7 +2147,7 @@ async fn detect_version_from_version_json(root: &Path) -> Option<String> {
         ] {
             if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
                 if let Some(n) = normalize_mc_version_candidate(s)
-                            .or_else(|| detect_version_from_name(s))
+                    .or_else(|| detect_version_from_name(s))
                 {
                     return Some(n);
                 }
@@ -2245,7 +2245,7 @@ async fn detect_version_from_logs(root: &Path) -> Option<String> {
                     .next()
                     .unwrap_or("");
                 if let Some(n) = normalize_mc_version_candidate(token)
-                            .or_else(|| detect_version_from_name(token))
+                    .or_else(|| detect_version_from_name(token))
                 {
                     return Some(n);
                 }
@@ -2255,7 +2255,7 @@ async fn detect_version_from_logs(root: &Path) -> Option<String> {
                 let rest = &line[idx + "server version ".len()..];
                 let token = rest.split_whitespace().next().unwrap_or("");
                 if let Some(n) = normalize_mc_version_candidate(token)
-                            .or_else(|| detect_version_from_name(token))
+                    .or_else(|| detect_version_from_name(token))
                 {
                     return Some(n);
                 }
