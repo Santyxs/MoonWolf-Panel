@@ -386,7 +386,13 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     });
 
     info!("Iniciando interfaz nativa Slint");
-    let ui_result = ui.run();
+    // `ui.run()` termina el event loop cuando la última ventana deja de ser
+    // visible. Al ocultar la ventana para dejar el Agent en la bandeja, eso
+    // cerraba el proceso antes de que el icono pudiera volver a mostrarlo.
+    // Este loop solo termina cuando se llama explícitamente a quit_event_loop
+    // desde Salir, Reiniciar o la aplicación de una actualización.
+    ui.show()?;
+    let ui_result = slint::run_event_loop_until_quit();
     refresh_task.abort();
     let _ = refresh_task.await;
     ui_result?;
