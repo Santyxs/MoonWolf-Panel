@@ -1858,16 +1858,37 @@ async fn get_startup(
     let root = s.config.server_dir.clone();
     drop(s);
 
-    let cfg = load_startup_config(&root).await;
+    let mut cfg = load_startup_config(&root).await;
     let jars = list_jars(&root).await;
 
     let props = read_properties(&root.join("server.properties")).await;
     let server_port: Option<u16> = props.get("server-port").and_then(|v| v.parse::<u16>().ok());
 
+    // Si no hay versión guardada, intentar detectar automáticamente.
+    let mut version_detection = json!(null);
+    if cfg.minecraft_version.trim().is_empty() {
+        let jar = if cfg.jar.is_empty() {
+            jars.first().cloned().unwrap_or_default()
+        } else {
+            cfg.jar.clone()
+        };
+        if let Some((ver, source)) = detect_minecraft_version(&root, &jar).await {
+            cfg.minecraft_version = ver.clone();
+            let _ = save_startup_config(&root, &cfg).await;
+            version_detection = json!({
+                "version": ver,
+                "source": source,
+                "persisted": true,
+                "autoDetected": true,
+            });
+        }
+    }
+
     Ok(json_ok(json!({
         "config": cfg,
         "jars": jars,
         "serverPort": server_port,
+        "versionDetection": version_detection,
     })))
 }
 
@@ -2001,13 +2022,10 @@ async fn detect_version(
         return Ok(json_fail("Nombre de .jar no válido"));
     }
 
-    let version = detect_version_from_name(&jar);
-    let source = if version.is_some() {
-        "jar-name"
-    } else {
-        "none"
+    let (version_str, source) = match detect_minecraft_version(&root, &jar).await {
+        Some((v, s)) => (v, s),
+        None => (String::new(), "none".to_string()),
     };
-    let version_str = version.unwrap_or_default();
     let mut persisted = false;
 
     if !version_str.is_empty()
@@ -2028,6 +2046,26 @@ async fn detect_version(
     })))
 }
 
+/// Detecta la versión de Minecraft del servidor por varias fuentes.
+async fn detect_minecraft_version(root: &Path, jar_name: &str) -> Option<(String, String)> {
+    if let Some(v) = detect_version_from_name(jar_name) {
+        return Some((v, "jar-name".into()));
+    }
+    if let Some(v) = detect_version_from_version_history(root).await {
+        return Some((v, "version_history".into()));
+    }
+    if let Some(v) = detect_version_from_version_json(root).await {
+        return Some((v, "version.json".into()));
+    }
+    if let Some(v) = detect_version_from_jar_manifest(root, jar_name).await {
+        return Some((v, "jar-manifest".into()));
+    }
+    if let Some(v) = detect_version_from_logs(root).await {
+        return Some((v, "logs".into()));
+    }
+    None
+}
+
 fn detect_version_from_name(jar_name: &str) -> Option<String> {
     let lower = jar_name.to_lowercase();
     let parts: Vec<&str> = lower
@@ -2036,22 +2074,183 @@ fn detect_version_from_name(jar_name: &str) -> Option<String> {
         .collect();
 
     for part in parts {
-        if part.starts_with("1.") {
-            let segments: Vec<&str> = part.split('.').collect();
-            if segments.len() >= 2 {
-                if let Ok(minor) = segments[1].parse::<u32>() {
-                    if (7..=40).contains(&minor) {
-                        return Some(part.to_string());
-                    }
+        if let Some(v) = normalize_mc_version_candidate(part) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+fn normalize_mc_version_candidate(part: &str) -> Option<String> {
+    let part = part.trim().trim_start_matches('v');
+    if part.is_empty() || !part.contains('.') {
+        return None;
+    }
+    // Classic: 1.7 – 1.21.x
+    if part.starts_with("1.") {
+        let segments: Vec<&str> = part.split('.').collect();
+        if segments.len() >= 2 {
+            if let Ok(minor) = segments[1].parse::<u32>() {
+                if (7..=40).contains(&minor) {
+                    return Some(part.to_string());
                 }
             }
         }
-        if part.len() >= 2 && part.contains('.') {
-            if let Some(first) = part.split('.').next() {
-                if let Ok(major) = first.parse::<u32>() {
-                    if (20..=40).contains(&major) {
-                        return Some(part.to_string());
+    }
+    // Paper/Mojang modern: 26.1, 26.3, etc.
+    if let Some(first) = part.split('.').next() {
+        if let Ok(major) = first.parse::<u32>() {
+            if (20..=40).contains(&major) {
+                // Avoid pure build numbers like "142" by requiring dotted form already.
+                return Some(part.to_string());
+            }
+        }
+    }
+    None
+}
+
+async fn detect_version_from_version_history(root: &Path) -> Option<String> {
+    let path = root.join("version_history.json");
+    let text = tokio::fs::read_to_string(path).await.ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    for key in ["currentVersion", "current_version", "version"] {
+        if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
+            if let Some(n) = normalize_mc_version_candidate(s) {
+                return Some(n);
+            }
+            // Sometimes value is like "git-Paper-1.21.1-..."
+            if let Some(n) = detect_version_from_name(s) {
+                return Some(n);
+            }
+        }
+    }
+    None
+}
+
+async fn detect_version_from_version_json(root: &Path) -> Option<String> {
+    for name in ["version.json", "minecraft_version.json"] {
+        let path = root.join(name);
+        let text = match tokio::fs::read_to_string(&path).await {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let v: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        for key in ["id", "name", "version", "minecraftVersion", "minecraft_version"] {
+            if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
+                if let Some(n) = normalize_mc_version_candidate(s).or_else(|| detect_version_from_name(s))
+                {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    None
+}
+
+async fn detect_version_from_jar_manifest(root: &Path, jar_name: &str) -> Option<String> {
+    if jar_name.is_empty() {
+        return None;
+    }
+    let path = root.join(jar_name);
+    let data = tokio::fs::read(&path).await.ok()?;
+    let cursor = std::io::Cursor::new(data);
+    let mut archive = zip::ZipArchive::new(cursor).ok()?;
+
+    // version.json inside jar (vanilla/paper style)
+    for candidate in ["version.json", "patch.properties", "META-INF/MANIFEST.MF"] {
+        let Ok(mut file) = archive.by_name(candidate) else {
+            continue;
+        };
+        let mut text = String::new();
+        use std::io::Read;
+        if file.read_to_string(&mut text).is_err() {
+            continue;
+        }
+        if candidate.ends_with(".json") {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                for key in ["id", "name", "version"] {
+                    if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
+                        if let Some(n) =
+                            normalize_mc_version_candidate(s).or_else(|| detect_version_from_name(s))
+                        {
+                            return Some(n);
+                        }
                     }
+                }
+            }
+        } else {
+            // Manifest / properties lines
+            for line in text.lines() {
+                let line = line.trim();
+                for prefix in [
+                    "Implementation-Version:",
+                    "Specification-Version:",
+                    "Minecraft-Version:",
+                    "version=",
+                ] {
+                    if let Some(rest) = line
+                        .strip_prefix(prefix)
+                        .or_else(|| line.strip_prefix(&prefix.to_ascii_lowercase()))
+                    {
+                        let rest = rest.trim();
+                        if let Some(n) =
+                            normalize_mc_version_candidate(rest).or_else(|| detect_version_from_name(rest))
+                        {
+                            return Some(n);
+                        }
+                    }
+                }
+                // Paper: "paper 26.3-xxx"
+                if let Some(n) = detect_version_from_name(line) {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    None
+}
+
+async fn detect_version_from_logs(root: &Path) -> Option<String> {
+    for rel in ["logs/latest.log", "logs/latest.log.gz"] {
+        let path = root.join(rel);
+        let text = if rel.ends_with(".gz") {
+            // skip gzip for simplicity
+            continue;
+        } else {
+            match tokio::fs::read_to_string(&path).await {
+                Ok(t) => t,
+                Err(_) => continue,
+            }
+        };
+        // Scan last 200 lines first (more relevant), then full file head
+        let lines: Vec<&str> = text.lines().collect();
+        let tail = lines.iter().rev().take(250);
+        let head = lines.iter().take(80);
+        for line in tail.chain(head) {
+            // "Loading Minecraft 1.21.1" / "for Minecraft 26.3"
+            if let Some(idx) = line.find("Minecraft ") {
+                let rest = &line[idx + "Minecraft ".len()..];
+                let token = rest
+                    .split(|c: char| c.is_whitespace() || c == ',' || c == ')')
+                    .next()
+                    .unwrap_or("");
+                if let Some(n) =
+                    normalize_mc_version_candidate(token).or_else(|| detect_version_from_name(token))
+                {
+                    return Some(n);
+                }
+            }
+            // "Starting minecraft server version 1.20.4"
+            if let Some(idx) = line.to_lowercase().find("server version ") {
+                let rest = &line[idx + "server version ".len()..];
+                let token = rest.split_whitespace().next().unwrap_or("");
+                if let Some(n) =
+                    normalize_mc_version_candidate(token).or_else(|| detect_version_from_name(token))
+                {
+                    return Some(n);
                 }
             }
         }
