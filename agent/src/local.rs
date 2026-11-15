@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
@@ -2051,14 +2052,16 @@ async fn detect_minecraft_version(root: &Path, jar_name: &str) -> Option<(String
     if let Some(v) = detect_version_from_name(jar_name) {
         return Some((v, "jar-name".into()));
     }
+    // El JAR elegido es la fuente más fiable; los archivos del directorio
+    // pueden pertenecer a una instalación anterior o a otro software.
+    if let Some(v) = detect_version_from_jar_manifest(root, jar_name).await {
+        return Some((v, "jar-manifest".into()));
+    }
     if let Some(v) = detect_version_from_version_history(root).await {
         return Some((v, "version_history".into()));
     }
     if let Some(v) = detect_version_from_version_json(root).await {
         return Some((v, "version.json".into()));
-    }
-    if let Some(v) = detect_version_from_jar_manifest(root, jar_name).await {
-        return Some((v, "jar-manifest".into()));
     }
     if let Some(v) = detect_version_from_logs(root).await {
         return Some((v, "logs".into()));
@@ -2163,61 +2166,163 @@ async fn detect_version_from_jar_manifest(root: &Path, jar_name: &str) -> Option
     }
     let path = root.join(jar_name);
     let data = tokio::fs::read(&path).await.ok()?;
+    detect_version_from_jar_bytes(&data)
+}
+
+fn detect_version_from_jar_bytes(data: &[u8]) -> Option<String> {
     let cursor = std::io::Cursor::new(data);
     let mut archive = zip::ZipArchive::new(cursor).ok()?;
 
-    // version.json inside jar (vanilla/paper style)
-    for candidate in ["version.json", "patch.properties", "META-INF/MANIFEST.MF"] {
-        let Ok(mut file) = archive.by_name(candidate) else {
+    // Los JARs modernos de Mojang suelen ser bundles: el servidor real aparece
+    // como META-INF/versions/<versión>/server-<versión>.jar. Aunque no se
+    // encuentre version.json en la raíz, el nombre de esa entrada ya es fiable.
+    for index in 0..archive.len() {
+        let Ok(file) = archive.by_index(index) else {
             continue;
         };
+        let Ok(name) = file.name().map(|name| name.into_owned()) else {
+            continue;
+        };
+        let lower = name.to_ascii_lowercase();
+        if lower.contains("/versions/") && detect_version_from_name(&name).is_some() {
+            return detect_version_from_name(&name);
+        }
+    }
+
+    // Leer metadatos aunque estén en una carpeta, con mayúsculas distintas o
+    // bajo un nombre alternativo usado por loaders/mods.
+    for index in 0..archive.len() {
+        let Ok(mut file) = archive.by_index(index) else {
+            continue;
+        };
+        let Ok(name) = file.name().map(|name| name.into_owned()) else {
+            continue;
+        };
+        if !is_version_metadata_entry(&name) || file.size() > 2 * 1024 * 1024 {
+            continue;
+        }
         let mut text = String::new();
-        use std::io::Read;
         if file.read_to_string(&mut text).is_err() {
             continue;
         }
-        if candidate.ends_with(".json") {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                for key in ["id", "name", "version"] {
-                    if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
-                        if let Some(n) = normalize_mc_version_candidate(s)
-                            .or_else(|| detect_version_from_name(s))
-                        {
-                            return Some(n);
-                        }
-                    }
-                }
-            }
-        } else {
-            // Manifest / properties lines
-            for line in text.lines() {
-                let line = line.trim();
-                for prefix in [
-                    "Implementation-Version:",
-                    "Specification-Version:",
-                    "Minecraft-Version:",
-                    "version=",
-                ] {
-                    if let Some(rest) = line
-                        .strip_prefix(prefix)
-                        .or_else(|| line.strip_prefix(&prefix.to_ascii_lowercase()))
+        if let Some(version) = detect_version_from_metadata_text(&name, &text) {
+            return Some(version);
+        }
+    }
+
+    None
+}
+
+fn is_version_metadata_entry(name: &str) -> bool {
+    let lower = name.replace('\\', "/").to_ascii_lowercase();
+    let file_name = lower.rsplit('/').next().unwrap_or(lower.as_str());
+    matches!(
+        file_name,
+        "version.json"
+            | "minecraft_version.json"
+            | "patch.properties"
+            | "versions.list"
+            | "manifest.mf"
+            | "mods.toml"
+            | "fabric.mod.json"
+            | "quilt.mod.json"
+            | "paper-plugin.yml"
+            | "plugin.yml"
+    ) || file_name.ends_with("version.properties")
+}
+
+fn detect_version_from_metadata_text(name: &str, text: &str) -> Option<String> {
+    if name.to_ascii_lowercase().ends_with(".json") {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+            for key in [
+                "id",
+                "name",
+                "version",
+                "minecraftVersion",
+                "minecraft_version",
+                "mcVersion",
+                "gameVersion",
+            ] {
+                if let Some(candidate) = value.get(key).and_then(|v| v.as_str()) {
+                    if let Some(version) = normalize_mc_version_candidate(candidate)
+                        .or_else(|| detect_version_from_name(candidate))
                     {
-                        let rest = rest.trim();
-                        if let Some(n) = normalize_mc_version_candidate(rest)
-                            .or_else(|| detect_version_from_name(rest))
-                        {
-                            return Some(n);
-                        }
+                        return Some(version);
                     }
-                }
-                // Paper: "paper 26.3-xxx"
-                if let Some(n) = detect_version_from_name(line) {
-                    return Some(n);
                 }
             }
         }
     }
+
+    // Manifest/properties y los rangos de dependencias de los loaders suelen
+    // contener la versión como parte de una línea, por ejemplo:
+    // Minecraft-Version: 1.21.4 o minecraft = ">=1.20.1".
+    for line in text.lines() {
+        let line = line.trim();
+        for prefix in [
+            "Implementation-Version:",
+            "Specification-Version:",
+            "Minecraft-Version:",
+            "Minecraft-Version=",
+            "version=",
+            "version:",
+        ] {
+            if line
+                .get(..prefix.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+            {
+                let rest = line[prefix.len()..].trim();
+                if let Some(version) =
+                    normalize_mc_version_candidate(rest).or_else(|| detect_version_from_name(rest))
+                {
+                    return Some(version);
+                }
+            }
+        }
+        if let Some(version) = detect_version_from_name(line) {
+            return Some(version);
+        }
+    }
+
     None
+}
+
+#[cfg(test)]
+mod version_detection_tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn detects_bundled_server_version_from_entry_name() {
+        let mut data = std::io::Cursor::new(Vec::new());
+        {
+            let mut archive = ZipWriter::new(&mut data);
+            archive
+                .start_file(
+                    "META-INF/versions/1.21.4/server-1.21.4.jar",
+                    SimpleFileOptions::default(),
+                )
+                .unwrap();
+            archive.write_all(b"nested jar").unwrap();
+            archive.finish().unwrap();
+        }
+
+        assert_eq!(
+            detect_version_from_jar_bytes(data.get_ref()),
+            Some("1.21.4".to_string())
+        );
+    }
+
+    #[test]
+    fn detects_version_from_loader_metadata() {
+        assert_eq!(
+            detect_version_from_metadata_text(
+                "META-INF/mods.toml",
+                "version=\"${file.jarVersion}\"\nversionRange=\"[1.20.1,1.21)\""
+            ),
+            Some("1.20.1".to_string())
+        );
+    }
 }
 
 async fn detect_version_from_logs(root: &Path) -> Option<String> {
