@@ -5012,7 +5012,9 @@ async function loadStartup() {
     try {
       const data = await api('/api/startup/detect-version', {
         method: 'POST',
-        body: JSON.stringify({ jar: jar || undefined, force: true, persist: true }),
+        // api()/rpcCloud() serializa los objetos JSON. No serializar aquí
+        // para evitar que el Agent reciba una cadena JSON en vez del objeto.
+        body: { jar: jar || undefined, force: true, persist: true },
       });
       if (!data?.ok && data?.error) throw new Error(data.error);
       const version = data.version || '';
