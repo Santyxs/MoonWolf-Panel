@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
 
@@ -207,32 +207,60 @@ fn json_fail(msg: &str) -> Response {
 }
 
 fn resolve_safe_sync(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    // El explorador recibe rutas relativas a serverDir, aunque algunas
+    // solicitudes incluyan una barra inicial.
     let rel = rel.trim_start_matches(['/', '\\']);
-    let joined = if rel.is_empty() {
-        root.to_path_buf()
-    } else {
-        root.join(rel)
-    };
+    let relative = Path::new(rel);
+
+    // Rechazar el traversal léxico antes de resolver el sistema de archivos.
+    // También bloquea prefijos de unidad y rutas absolutas que queden después
+    // de normalizar la barra inicial.
+    if relative.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err("Ruta no permitida".into());
+    }
+
     let canonical_root = root
         .canonicalize()
         .map_err(|_| "No se puede acceder a serverDir".to_string())?;
-    if joined.exists() {
-        let c = joined
-            .canonicalize()
-            .map_err(|_| "Ruta no permitida".to_string())?;
-        if !c.starts_with(&canonical_root) {
-            return Err("Ruta no permitida".into());
+    let joined = canonical_root.join(relative);
+    let mut existing = joined.clone();
+
+    // Para permitir crear subdirectorios, subimos hasta el ancestro existente
+    // más cercano. Se canonicaliza antes de aceptar para detectar enlaces
+    // simbólicos que salgan de serverDir, incluso si el destino final no existe.
+    loop {
+        match existing.canonicalize() {
+            Ok(canonical_existing) => {
+                if !canonical_existing.starts_with(&canonical_root) {
+                    return Err("Ruta no permitida".into());
+                }
+
+                let remainder = joined
+                    .strip_prefix(&existing)
+                    .map_err(|_| "Ruta no permitida".to_string())?;
+                return Ok(canonical_existing.join(remainder));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // Un enlace simbólico roto también debe rechazarse: de lo
+                // contrario, al crear el destino podría resolver fuera de root.
+                match std::fs::symlink_metadata(&existing) {
+                    Ok(_) => return Err("Ruta no permitida".into()),
+                    Err(metadata_error)
+                        if metadata_error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => return Err("Ruta no permitida".into()),
+                }
+
+                if existing == canonical_root || !existing.pop() {
+                    return Err("No se puede resolver la ruta".into());
+                }
+            }
+            Err(_) => return Err("Ruta no permitida".into()),
         }
-        Ok(c)
-    } else {
-        let parent = joined.parent().unwrap_or(root);
-        let parent_c = parent
-            .canonicalize()
-            .unwrap_or_else(|_| canonical_root.clone());
-        if !parent_c.starts_with(&canonical_root) {
-            return Err("Ruta no permitida".into());
-        }
-        Ok(joined)
     }
 }
 
@@ -243,6 +271,8 @@ async fn resolve_safe(root: &Path, rel: &str) -> Result<PathBuf, String> {
         .await
         .map_err(|e| format!("tarea de ruta falló: {e}"))?
 }
+
+
 
 fn http_client() -> &'static reqwest::Client {
     HTTP_CLIENT.get_or_init(|| {
@@ -478,6 +508,7 @@ async fn list_files(
 struct PathQuery {
     path: Option<String>,
 }
+ 
 
 async fn get_file_content(
     State(st): State<LocalState>,
@@ -1917,7 +1948,6 @@ struct StartupSaveBody {
     #[serde(rename = "serverPort")]
     server_port: Option<u16>,
 }
-
 async fn save_startup(
     State(st): State<LocalState>,
     headers: HeaderMap,
@@ -3576,28 +3606,6 @@ async fn builds_fabric(version: &str) -> Result<Vec<serde_json::Value>, String> 
 async fn builds_vanilla(version: &str) -> Result<Vec<serde_json::Value>, String> {
     let manifest =
         fetch_json("https://launchermeta.mojang.com/mc/game/version_manifest_v2.json").await?;
-    let entry = manifest
-        .get("versions")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| {
-            arr.iter()
-                .find(|item| item.get("id").and_then(|i| i.as_str()) == Some(version))
-        })
-        .cloned()
-        .ok_or_else(|| format!("Versión {} no encontrada", version))?;
-    let version_url = entry
-        .get("url")
-        .and_then(|u| u.as_str())
-        .ok_or_else(|| "URL de versión no disponible".to_string())?;
-    let data = fetch_json(version_url).await?;
-    let server = data
-        .get("downloads")
-        .and_then(|d| d.get("server"))
-        .cloned()
-        .ok_or_else(|| "No hay descarga de servidor".to_string())?;
-    let url = server
-        .get("url")
-        .and_then(|u| u.as_str())
         .unwrap_or("")
         .to_string();
     let sha1 = server
@@ -4077,7 +4085,6 @@ async fn plugins_search(Query(q): Query<PluginsSearchQuery>) -> Response {
 
     json_ok(json!({ "results": results, "errors": errors }))
 }
-
 async fn search_modrinth(q: &str, out: &mut Vec<serde_json::Value>) -> Result<(), String> {
     let url = format!(
         "https://api.modrinth.com/v2/search?query={}&limit=10&facets=[[\"project_type:plugin\"]]",
@@ -4437,7 +4444,6 @@ async fn plugins_installed(State(st): State<LocalState>) -> Response {
         Ok(r) => r,
         Err(_) => return json_ok(json!({ "plugins": [] })),
     };
-
     let mut plugins = Vec::new();
     while let Ok(Some(ent)) = rd.next_entry().await {
         let name = ent.file_name().to_string_lossy().to_string();
