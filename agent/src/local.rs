@@ -3606,6 +3606,28 @@ async fn builds_fabric(version: &str) -> Result<Vec<serde_json::Value>, String> 
 async fn builds_vanilla(version: &str) -> Result<Vec<serde_json::Value>, String> {
     let manifest =
         fetch_json("https://launchermeta.mojang.com/mc/game/version_manifest_v2.json").await?;
+    let entry = manifest
+        .get("versions")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|item| item.get("id").and_then(|i| i.as_str()) == Some(version))
+        })
+        .cloned()
+        .ok_or_else(|| format!("Versión {} no encontrada", version))?;
+    let version_url = entry
+        .get("url")
+        .and_then(|u| u.as_str())
+        .ok_or_else(|| "URL de versión no disponible".to_string())?;
+    let data = fetch_json(version_url).await?;
+    let server = data
+        .get("downloads")
+        .and_then(|d| d.get("server"))
+        .cloned()
+        .ok_or_else(|| "No hay descarga de servidor".to_string())?;
+    let url = server
+        .get("url")
+        .and_then(|u| u.as_str())
         .unwrap_or("")
         .to_string();
     let sha1 = server
