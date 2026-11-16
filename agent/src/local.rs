@@ -272,8 +272,6 @@ async fn resolve_safe(root: &Path, rel: &str) -> Result<PathBuf, String> {
         .map_err(|e| format!("tarea de ruta falló: {e}"))?
 }
 
-
-
 fn http_client() -> &'static reqwest::Client {
     HTTP_CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -508,7 +506,6 @@ async fn list_files(
 struct PathQuery {
     path: Option<String>,
 }
- 
 
 async fn get_file_content(
     State(st): State<LocalState>,
