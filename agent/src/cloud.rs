@@ -1053,7 +1053,7 @@ async fn connect_once(
                 let s = app.read().await;
                 (s.config.server_dir.clone(), s.mc_pid, s.mc_started_at_ms)
             };
-            let stats = collect_server_stats(&server_dir, pid, started, &mut last_cpu).await;
+            let stats = collect_server_stats(&app, &server_dir, pid, started, &mut last_cpu).await;
             if let Err(e) = client
                 .emit(
                     "event",
@@ -1317,6 +1317,7 @@ MÉTRICAS (RCON + proceso/sistema)
 ══════════════════════════════════════════════ */
 
 async fn collect_server_stats(
+    app: &Arc<RwLock<AppState>>,
     server_dir: &std::path::Path,
     java_pid: Option<u32>,
     started_at_ms: Option<i64>,
@@ -1336,14 +1337,31 @@ async fn collect_server_stats(
         }
     }
 
-    match rcon_list_players(server_dir).await {
-        Ok((online, max)) => {
-            players = online;
-            max_players = max;
+    // Si MoonWolf Agent ha iniciado el servidor, podemos consultar su consola
+    // directamente. RCON queda como respaldo para servidores sin consola local.
+    match local_console_command(app, "list").await {
+        Some(output) => {
+            if let Some((online, max)) = parse_list_response(&output) {
+                players = online;
+                max_players = max;
+            } else {
+                debug!("No se pudo interpretar la respuesta local de list: {output}");
+            }
         }
-        Err(e) => {
-            debug!("RCON list: {e}");
-        }
+        None => match rcon_list_players(server_dir).await {
+            Ok((online, max)) => {
+                players = online;
+                max_players = max;
+            }
+            Err(e) => debug!("RCON list: {e}"),
+        },
+    }
+
+    // Paper/Spigot y sus derivados suelen ofrecer /tps. Vanilla incorporó
+    // /tick query en 1.20.3. No se inventa un valor si ningún método responde.
+    let mut tps = query_tps(app, server_dir, "tps").await;
+    if tps.is_none() && server_version_at_least(server_dir, (1, 20, 3)).await {
+        tps = query_tps(app, server_dir, "tick query").await;
     }
 
     if max_players == 0 {
@@ -1357,7 +1375,7 @@ async fn collect_server_stats(
     json!({
         "players": players,
         "maxPlayers": max_players,
-        "tps": 20.0,
+        "tps": tps,
         "processMemory": process_memory,
         "cpuUsage": cpu_usage,
         "uptime": format_uptime(started_at_ms),
@@ -1366,6 +1384,131 @@ async fn collect_server_stats(
             "total": sys.1,
         },
     })
+}
+
+async fn query_tps(
+    app: &Arc<RwLock<AppState>>,
+    server_dir: &std::path::Path,
+    command: &str,
+) -> Option<f64> {
+    if let Some(output) = local_console_command(app, command).await {
+        if let Some(tps) = parse_tps_response(&output) {
+            return Some(tps);
+        }
+    }
+    rcon_command_output(server_dir, command)
+        .await
+        .ok()
+        .and_then(|output| parse_tps_response(&output))
+}
+
+async fn local_console_command(app: &Arc<RwLock<AppState>>, command: &str) -> Option<String> {
+    let (token, before_seq, running) = {
+        let state = app.read().await;
+        (
+            state.config.local_token.clone(),
+            state.console_seq,
+            state.mc_running,
+        )
+    };
+    if !running {
+        return None;
+    }
+
+    let response = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{LOCAL_PORT}/api/command"))
+        .bearer_auth(token)
+        .json(&json!({ "cmd": command }))
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = response.json().await.ok()?;
+    if body.get("ok").and_then(|value| value.as_bool()) != Some(true) {
+        return None;
+    }
+
+    // La API confirma el envío; la respuesta del juego llega de forma asíncrona
+    // por stdout/stderr y se recoge del búfer de consola del propio Agent.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(1100);
+    let mut output = Vec::new();
+    loop {
+        {
+            let state = app.read().await;
+            for entry in state.console_logs.iter().filter(|entry| entry.seq > before_seq) {
+                let line = entry.message.trim();
+                if !line.is_empty() && !line.starts_with('>') {
+                    output.push(line.to_string());
+                }
+            }
+        }
+        let combined = output.join("\n");
+        if command == "list" && parse_list_response(&combined).is_some() {
+            return Some(combined);
+        }
+        if command == "tps" && parse_tps_response(&combined).is_some() {
+            return Some(combined);
+        }
+        if command == "tick query" && parse_tps_response(&combined).is_some() {
+            return Some(combined);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn parse_tps_response(output: &str) -> Option<f64> {
+    let lower = output.to_ascii_lowercase();
+    let tps_pos = lower.rfind("tps")?;
+    let before = &output[..tps_pos];
+    let after = &output[tps_pos + 3..];
+
+    // Paper: "TPS from last 1m, 5m, 15m: 20.0, 20.0, 20.0".
+    // Vanilla: "Average tick time: ... (20.0 TPS)".
+    let candidate = if let Some(colon) = after.find(':') {
+        let values = &after[colon + 1..];
+        values
+            .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .filter(|part| !part.is_empty())
+            .find_map(|part| part.parse::<f64>().ok())
+    } else {
+        before
+            .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .filter(|part| !part.is_empty())
+            .filter_map(|part| part.parse::<f64>().ok())
+            .last()
+    }?;
+
+    if candidate.is_finite() && (0.0..=20.1).contains(&candidate) {
+        Some(candidate.min(20.0))
+    } else {
+        None
+    }
+}
+
+async fn server_version_at_least(server_dir: &std::path::Path, minimum: (u32, u32, u32)) -> bool {
+    let log = match tokio::fs::read_to_string(server_dir.join("logs").join("latest.log")).await {
+        Ok(log) => log,
+        Err(_) => return false,
+    };
+    let lower = log.to_ascii_lowercase();
+    let marker = "starting minecraft server version ";
+    let Some(index) = lower.rfind(marker) else {
+        return false;
+    };
+    let version = log[index + marker.len()..]
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches(|c: char| !c.is_ascii_digit() && c != '.');
+    let mut parts = version.split('.').filter_map(|part| part.parse::<u32>().ok());
+    let found = (parts.next().unwrap_or(0), parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+    found >= minimum
 }
 
 fn format_uptime(started_at_ms: Option<i64>) -> String {
@@ -1434,7 +1577,14 @@ async fn read_rcon_config(server_dir: &std::path::Path) -> Option<(u16, String)>
 }
 
 async fn rcon_list_players(server_dir: &std::path::Path) -> anyhow::Result<(u32, u32)> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let body = rcon_command_output(server_dir, "list").await?;
+    parse_list_response(&body).ok_or_else(|| anyhow::anyhow!("No se pudo parsear list: {body}"))
+}
+
+async fn rcon_command_output(
+    server_dir: &std::path::Path,
+    command: &str,
+) -> anyhow::Result<String> {
     use tokio::net::TcpStream;
     use tokio::time::timeout;
 
@@ -1465,7 +1615,7 @@ async fn rcon_list_players(server_dir: &std::path::Path) -> anyhow::Result<(u32,
         anyhow::bail!("RCON auth rechazada");
     }
 
-    rcon_write_packet(&mut stream, 2, RCON_EXEC, "list").await?;
+    rcon_write_packet(&mut stream, 2, RCON_EXEC, command).await?;
     let mut body = String::new();
     loop {
         match timeout(Duration::from_millis(800), rcon_read_packet(&mut stream)).await {
@@ -1483,7 +1633,10 @@ async fn rcon_list_players(server_dir: &std::path::Path) -> anyhow::Result<(u32,
         }
     }
 
-    parse_list_response(&body).ok_or_else(|| anyhow::anyhow!("No se pudo parsear list: {body}"))
+    if body.is_empty() {
+        anyhow::bail!("RCON no devolvió respuesta para {command}");
+    }
+    Ok(body)
 }
 
 async fn rcon_write_packet(

@@ -1517,7 +1517,8 @@ function updateStats(stats = {}) {
 
   const safePlayers = Number.isFinite(players) ? players : 0;
   const safeMaxPlayers = Number.isFinite(maxPlayers) ? maxPlayers : 0;
-  const safeTps = Number.isFinite(tps) ? tps : 20;
+  const hasTps = stats.tps !== null && stats.tps !== undefined && Number.isFinite(tps);
+  const safeTps = hasTps ? tps : null;
   const safeProcessMemory = Number.isFinite(processMemory) ? processMemory : 0;
   const safeCpu = Number.isFinite(cpuUsage) ? cpuUsage : 0;
 
@@ -1528,11 +1529,12 @@ function updateStats(stats = {}) {
   const tpsEl = $('statTps');
 
   if (tpsEl) {
-    tpsEl.className = `stat-value ${
-      safeTps < 15 ? 'tps-bad' : safeTps < 18 ? 'tps-warn' : 'tps-good'
-    }`;
-
-    tpsEl.innerHTML = `${safeTps}<span class="stat-unit"> tps</span>`;
+    tpsEl.className = hasTps
+      ? `stat-value ${safeTps < 15 ? 'tps-bad' : safeTps < 18 ? 'tps-warn' : 'tps-good'}`
+      : 'stat-value';
+    tpsEl.innerHTML = hasTps
+      ? `${safeTps.toFixed(1)}<span class="stat-unit"> tps</span>`
+      : '—';
   }
 
   if ($('statUptime')) {
