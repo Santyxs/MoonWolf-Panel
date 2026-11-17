@@ -1438,7 +1438,11 @@ async fn local_console_command(app: &Arc<RwLock<AppState>>, command: &str) -> Op
     loop {
         {
             let state = app.read().await;
-            for entry in state.console_logs.iter().filter(|entry| entry.seq > before_seq) {
+            for entry in state
+                .console_logs
+                .iter()
+                .filter(|entry| entry.seq > before_seq)
+            {
                 let line = entry.message.trim();
                 if !line.is_empty() && !line.starts_with('>') {
                     output.push(line.to_string());
@@ -1506,8 +1510,14 @@ async fn server_version_at_least(server_dir: &std::path::Path, minimum: (u32, u3
         .next()
         .unwrap_or("")
         .trim_matches(|c: char| !c.is_ascii_digit() && c != '.');
-    let mut parts = version.split('.').filter_map(|part| part.parse::<u32>().ok());
-    let found = (parts.next().unwrap_or(0), parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+    let mut parts = version
+        .split('.')
+        .filter_map(|part| part.parse::<u32>().ok());
+    let found = (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    );
     found >= minimum
 }
 
