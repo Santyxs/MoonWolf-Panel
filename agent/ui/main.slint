@@ -549,4 +549,245 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // Placeholder for rest - NEED FULL FILE
+            if root.update-visible : Rectangle {
+                height: 56px;
+                border-radius: 14px;
+                background: @linear-gradient(90deg, #272054 0%, #15122e 100%);
+                border-width: 1px;
+                border-color: #5a4ca8;
+                HorizontalBox {
+                    padding: 12px;
+                    spacing: 10px;
+                    Text {
+                        text: root.update-text;
+                        color: #e4e0ff;
+                        font-size: 11px;
+                        font-weight: 600;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                        horizontal-alignment: left;
+                        overflow: elide;
+                    }
+                    if root.update-installable : ActionButton {
+                        width: 80px;
+                        height: 34px;
+                        label: "Instalar";
+                        primary: true;
+                        clicked => { root.apply-update(); }
+                    }
+                    if root.update-failed : ActionButton {
+                        width: 80px;
+                        height: 34px;
+                        label: "Reintentar";
+                        clicked => { root.check-update(); }
+                    }
+                    if !root.update-installable && !root.update-failed : Text {
+                        text: "Descargando";
+                        color: #b6aaff;
+                        font-size: 10px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            if root.restart-visible : Rectangle {
+                height: 52px;
+                border-radius: 14px;
+                background: @linear-gradient(90deg, #35291a 0%, #1d1710 100%);
+                border-width: 1px;
+                border-color: #7a5630;
+                HorizontalBox {
+                    padding: 12px;
+                    spacing: 10px;
+                    Text {
+                        text: "Hay un reinicio pendiente";
+                        color: #f0d49a;
+                        font-size: 11px;
+                        font-weight: 600;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                        horizontal-alignment: left;
+                    }
+                    ActionButton {
+                        width: 96px;
+                        height: 34px;
+                        label: "Reiniciar";
+                        clicked => { root.restart-agent(); }
+                    }
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+        }
+
+        // ── Fondo oscuro de los modales ──
+        if root.settings-visible || root.logs-visible || root.serverdir-visible : Rectangle {
+            height: 100%;
+            background: #05060ccc;
+            TouchArea {
+                clicked => {
+                    root.settings-visible = false;
+                    root.logs-visible = false;
+                    root.serverdir-visible = false;
+                }
+            }
+        }
+
+        // ── Configuración ──
+        if root.settings-visible : Modal {
+            x: 14px;
+            y: (root.height - self.height) / 2;
+            width: root.width - 28px;
+            height: root.update-visible ? 336px : 262px;
+            title: "Configuración";
+            subtitle: "Gestiona las opciones de MoonWolf Agent.";
+            close => { root.settings-visible = false; }
+
+            ActionButton {
+                label: "Abrir carpeta de configuración";
+                clicked => { root.open-config(); }
+            }
+            ActionButton {
+                label: "Buscar actualizaciones";
+                clicked => { root.check-update(); }
+            }
+            if root.update-visible : Rectangle {
+                height: 56px;
+                border-radius: 12px;
+                background: @linear-gradient(90deg, #272054 0%, #15122e 100%);
+                border-width: 1px;
+                border-color: #5a4ca8;
+                HorizontalBox {
+                    padding-left: 12px;
+                    padding-right: 10px;
+                    spacing: 8px;
+                    alignment: center;
+                    Text {
+                        text: root.update-text;
+                        color: #e4e0ff;
+                        font-size: 11px;
+                        font-weight: 600;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                        horizontal-alignment: left;
+                        overflow: elide;
+                    }
+                    if root.update-installable : ActionButton {
+                        width: 76px;
+                        height: 32px;
+                        label: "Instalar";
+                        primary: true;
+                        clicked => { root.apply-update(); }
+                    }
+                    if root.update-failed : ActionButton {
+                        width: 76px;
+                        height: 32px;
+                        label: "Reintentar";
+                        clicked => { root.check-update(); }
+                    }
+                    if !root.update-installable && !root.update-failed : Text {
+                        text: "Descargando";
+                        color: #b6aaff;
+                        font-size: 10px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            ActionButton {
+                label: "Ocultar en segundo plano";
+                clicked => { root.hide-tray(); }
+            }
+        }
+
+        // ── Registros ──
+        if root.logs-visible : Modal {
+            x: 14px;
+            y: (root.height - self.height) / 2;
+            width: root.width - 28px;
+            height: 356px;
+            title: "Registros del Agent";
+            close => { root.logs-visible = false; }
+
+            HorizontalBox {
+                spacing: 10px;
+                padding: 0px;
+                ActionButton {
+                    horizontal-stretch: 1;
+                    label: "Limpiar";
+                    clicked => { root.clear-logs(); }
+                }
+                ActionButton {
+                    horizontal-stretch: 1;
+                    label: "Guardar archivo";
+                    clicked => { root.save-logs(); }
+                }
+            }
+            Rectangle {
+                vertical-stretch: 1;
+                min-height: 180px;
+                border-radius: 12px;
+                background: #080a15;
+                border-width: 1px;
+                border-color: Theme.line;
+                clip: true;
+
+                Text {
+                    x: 12px;
+                    y: 10px;
+                    width: parent.width - 24px;
+                    height: parent.height - 20px;
+                    text: root.logs-text == "" ? "Todavía no hay registros.\nLos eventos del Agent aparecerán aquí." : root.logs-text;
+                    color: root.logs-text == "" ? #5a5f7a : #c8cce0;
+                    font-family: "Consolas";
+                    font-size: 10px;
+                    wrap: word-wrap;
+                    overflow: elide;
+                    horizontal-alignment: left;
+                    vertical-alignment: top;
+                }
+            }
+        }
+
+        // ── Carpeta del servidor ──
+        if root.serverdir-visible : Modal {
+            x: 14px;
+            y: (root.height - self.height) / 2;
+            width: root.width - 28px;
+            height: 270px;
+            title: "Carpeta del servidor";
+            subtitle: "Indica la ruta de la carpeta local del servidor.";
+            close => { root.serverdir-visible = false; }
+
+            LineEdit {
+                text <=> root.serverdir-input;
+                placeholder-text: "Ruta completa de la carpeta...";
+                height: 40px;
+                horizontal-stretch: 1;
+            }
+            Rectangle { vertical-stretch: 1; background: transparent; }
+            HorizontalBox {
+                spacing: 10px;
+                height: 40px;
+                padding: 0px;
+                ActionButton {
+                    horizontal-stretch: 1;
+                    height: 40px;
+                    label: "Cancelar";
+                    clicked => { root.serverdir-visible = false; }
+                }
+                ActionButton {
+                    horizontal-stretch: 1;
+                    height: 40px;
+                    label: "Guardar";
+                    primary: true;
+                    clicked => {
+                        root.change-server(root.serverdir-input);
+                        root.serverdir-visible = false;
+                    }
+                }
+            }
+        }
+    }
+}
