@@ -1564,14 +1564,20 @@ function updateStats(stats = {}) {
 
 const LOG_IGNORE_PATTERNS = [
   /Thread RCON Client \/127\.0\.0\.1 (started|shutting down)/i,
-  // Spam automático del panel (métricas cada ~5s)
-  /^\s*>\s*(list|tps|tick query)\s*$/i,
+];
+
+// Respuestas típicas de list/tps/tick query (solo se ocultan tras comando del agent)
+const METRIC_REPLY_PATTERNS = [
   /There are \d+ of a max of \d+ players online/i,
   /TPS from last 1m,? 5m,? 15m:/i,
   /Average tick time:.*TPS/i,
   /Target tick rate:.*Average time per tick/i,
   /Server TPS:.*|MSPT:.*|\bmspt\b/i,
+  /Tick statistics.*|tick rate/i,
 ];
+
+// Ventana breve tras un comando de métricas inyectado por el agent
+let suppressMetricRepliesUntil = 0;
 
 /* ══════════════════════════════════════════════
    9. TERMINAL / CONSOLA
@@ -1580,7 +1586,20 @@ const LOG_IGNORE_PATTERNS = [
 function shouldIgnoreLog(line) {
   const text = String(line || '');
 
-  return LOG_IGNORE_PATTERNS.some(re => re.test(text));
+  if (LOG_IGNORE_PATTERNS.some(re => re.test(text))) return true;
+
+  // Eco del comando automático del panel → ocultar y silenciar respuestas ~2.5s
+  if (/^\s*>\s*(list|tps|tick query)\s*$/i.test(text)) {
+    suppressMetricRepliesUntil = Date.now() + 2500;
+    return true;
+  }
+
+  // Respuestas de métricas solo si acabamos de ver el comando del agent
+  if (Date.now() < suppressMetricRepliesUntil) {
+    if (METRIC_REPLY_PATTERNS.some(re => re.test(text))) return true;
+  }
+
+  return false;
 }
 
 const CONSOLE_FORMAT_RE = /\x1b\[([0-9;]*)m|\u00a7x(?:\u00a7[0-9a-f]){6}|\u00a7([0-9a-fk-or])/gi;
