@@ -1566,7 +1566,7 @@ const LOG_IGNORE_PATTERNS = [
   /Thread RCON Client \/127\.0\.0\.1 (started|shutting down)/i,
 ];
 
-// Respuestas típicas de list/tps/tick query (solo se ocultan tras comando del agent)
+// Respuestas típicas de list/tps/tick query (solo tras spam automático del agent)
 const METRIC_REPLY_PATTERNS = [
   /There are \d+ of a max of \d+ players online/i,
   /TPS from last 1m,? 5m,? 15m:/i,
@@ -1576,8 +1576,12 @@ const METRIC_REPLY_PATTERNS = [
   /Tick statistics.*|tick rate/i,
 ];
 
-// Ventana breve tras un comando de métricas inyectado por el agent
+const METRIC_CMD_RE = /^(list|tps|tick query)\s*$/i;
+
+// Tras comando de métricas del agent: ocultar eco + respuestas un momento
 let suppressMetricRepliesUntil = 0;
+// Tras comando de métricas escrito por el usuario en el panel: no ocultar nada
+let allowUserMetricUntil = 0;
 
 /* ══════════════════════════════════════════════
    9. TERMINAL / CONSOLA
@@ -1588,13 +1592,15 @@ function shouldIgnoreLog(line) {
 
   if (LOG_IGNORE_PATTERNS.some(re => re.test(text))) return true;
 
-  // Eco del comando automático del panel → ocultar y silenciar respuestas ~2.5s
+  // Si el usuario acaba de enviar list/tps desde el panel, no filtrar nada
+  if (Date.now() < allowUserMetricUntil) return false;
+
+  // Eco del comando automático del agent → ocultar y silenciar respuestas ~2.5s
   if (/^\s*>\s*(list|tps|tick query)\s*$/i.test(text)) {
     suppressMetricRepliesUntil = Date.now() + 2500;
     return true;
   }
 
-  // Respuestas de métricas solo si acabamos de ver el comando del agent
   if (Date.now() < suppressMetricRepliesUntil) {
     if (METRIC_REPLY_PATTERNS.some(re => re.test(text))) return true;
   }
@@ -1961,6 +1967,12 @@ async function sendCmd() {
   const rawCmd = input.value;
   const cmd = rawCmd.trim().replace(/^\/+/, '').trim();
   if (!cmd) return;
+
+  // list/tps manual: no aplicar el filtro de spam del agent
+  if (METRIC_CMD_RE.test(cmd)) {
+    allowUserMetricUntil = Date.now() + 4000;
+    suppressMetricRepliesUntil = 0;
+  }
 
   if (!agentOnline || !cloudSocket?.connected) {
     toast('MoonWolf Cloud o MoonWolf Agent no están conectados.', 'err');
