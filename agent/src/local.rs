@@ -3019,6 +3019,8 @@ async fn restart_server(
 #[derive(Deserialize)]
 struct CmdBody {
     cmd: String,
+    #[serde(default)]
+    silent: bool,
 }
 
 async fn send_command(
@@ -3062,8 +3064,9 @@ async fn send_command(
         )));
     }
 
-    // Eco local para que el usuario vea el comando en la consola del panel.
-    {
+    // Los comandos internos de métricas no deben ensuciar la consola visible.
+    // Sus respuestas siguen entrando en el búfer para que el recolector las procese.
+    if !body.silent {
         let mut s = st.app.write().await;
         s.add_console_log("info", format!("> {cmd}"));
     }

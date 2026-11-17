@@ -911,7 +911,12 @@ async fn connect_once(
 
     let (initial_logs, mut last_console_seq) = {
         let s = app.read().await;
-        let logs: Vec<_> = s.console_logs.iter().map(log_to_panel).collect();
+        let logs: Vec<_> = s
+            .console_logs
+            .iter()
+            .filter(|entry| !is_internal_stats_line(&entry.message))
+            .map(log_to_panel)
+            .collect();
         (logs, s.console_seq)
     };
     if !initial_logs.is_empty() {
@@ -974,6 +979,7 @@ async fn connect_once(
                 s.console_logs
                     .iter()
                     .filter(|l| l.seq > last_console_seq)
+                    .filter(|l| !is_internal_stats_line(&l.message))
                     .map(log_to_panel)
                     .collect()
             };
@@ -1087,6 +1093,15 @@ async fn connect_once(
     }
     pending_ice.lock().await.clear();
     Ok(())
+}
+
+// Oculta únicamente las respuestas reconocibles de las consultas automáticas
+// de métricas. Las líneas permanecen en el búfer interno para poder analizarlas.
+fn is_internal_stats_line(message: &str) -> bool {
+    let line = message.to_ascii_lowercase();
+    line.contains("system chat: there are ")
+        || line.contains("tps from last ")
+        || line.contains("average tick time:")
 }
 
 fn log_to_panel(entry: &LogEntry) -> serde_json::Value {
@@ -1418,7 +1433,7 @@ async fn local_console_command(app: &Arc<RwLock<AppState>>, command: &str) -> Op
     let response = reqwest::Client::new()
         .post(format!("http://127.0.0.1:{LOCAL_PORT}/api/command"))
         .bearer_auth(token)
-        .json(&json!({ "cmd": command }))
+        .json(&json!({ "cmd": command, "silent": true }))
         .timeout(Duration::from_secs(2))
         .send()
         .await
