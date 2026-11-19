@@ -1500,8 +1500,6 @@ async fn create_backup(
                 }
             }
         }
-            }
-        }
 
         create_result
             .map_err(|e| anyhow::anyhow!("Tarea ZIP falló: {e}"))?
