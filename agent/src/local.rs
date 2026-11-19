@@ -3008,13 +3008,11 @@ async fn stop_server_process(st: &LocalState) -> Result<StopOutcome, String> {
         match write_result {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
-                command_error =
-                    Some(format!("No se pudo enviar el comando de apagado: {error}"));
+                command_error = Some(format!("No se pudo enviar el comando de apagado: {error}"));
             }
             Err(_) => {
-                command_error = Some(
-                    "Timeout al enviar el comando de apagado a Java (5s)".to_owned(),
-                );
+                command_error =
+                    Some("Timeout al enviar el comando de apagado a Java (5s)".to_owned());
             }
         }
     } else {
