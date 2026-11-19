@@ -2644,11 +2644,9 @@ async fn server_status(State(st): State<LocalState>) -> Response {
                     *mc = None;
                     false
                 }
-                Ok(None) => true,
-                Err(_) => {
-                    *mc = None;
-                    false
-                }
+                // Ok(None) = sigue vivo. Err = estado desconocido: no descartar el
+                // Child (kill_on_drop podría matar Java ante un error temporal).
+                Ok(None) | Err(_) => true,
             }
         } else {
             false
@@ -2789,21 +2787,6 @@ async fn start_server(
     let java_configured = s.config.java_path.clone();
     drop(s);
 
-    {
-        let mut mc = st.mc.write().await;
-        if let Some(child) = mc.as_mut() {
-            match child.try_wait() {
-                Ok(Some(_)) => {
-                    *mc = None;
-                }
-                Ok(None) => return Ok(json_fail("El servidor ya está en ejecución")),
-                Err(_) => {
-                    *mc = None;
-                }
-            }
-        }
-    }
-
     if tokio::fs::metadata(&root).await.is_err() {
         let _ = tokio::fs::create_dir_all(&root).await;
     }
@@ -2871,25 +2854,49 @@ async fn start_server(
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            let msg = format!(
-                "No se pudo arrancar Java desde {} ({}): {e}",
-                java_bin.display(),
-                java_source
-            );
-            let mut s = st.app.write().await;
-            s.add_console_log("error", msg.clone());
-            return Ok(json_fail(&msg));
+    // Check + spawn + store under the same write lock so two concurrent
+    // /api/start calls cannot both pass the "not running" check and launch Java.
+    let (pid, stdout, stderr) = {
+        let mut mc = st.mc.write().await;
+        if let Some(existing) = mc.as_mut() {
+            match existing.try_wait() {
+                Ok(Some(_)) => {
+                    *mc = None;
+                }
+                Ok(None) => {
+                    return Ok(json_fail("El servidor ya está en ejecución"));
+                }
+                // Estado desconocido: no descartar el Child (kill_on_drop).
+                Err(_) => {
+                    return Ok(json_fail(
+                        "El servidor ya está en ejecución (estado desconocido)",
+                    ));
+                }
+            }
         }
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let msg = format!(
+                    "No se pudo arrancar Java desde {} ({}): {e}",
+                    java_bin.display(),
+                    java_source
+                );
+                drop(mc);
+                let mut s = st.app.write().await;
+                s.add_console_log("error", msg.clone());
+                return Ok(json_fail(&msg));
+            }
+        };
+
+        let pid = child.id();
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        *mc = Some(child);
+        (pid, stdout, stderr)
     };
 
-    let pid = child.id();
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-
-    *st.mc.write().await = Some(child);
     {
         let mut s = st.app.write().await;
         s.mc_running = true;
@@ -2938,15 +2945,17 @@ async fn start_server(
                         break;
                     }
                     Ok(None) => drop(lock),
-                    Err(_) => {
-                        *lock = None;
+                    // Error temporal al consultar el estado: conservar el Child.
+                    // Descartarlo con kill_on_drop(true) podría matar Java.
+                    Err(error) => {
                         drop(lock);
                         let mut s = app.write().await;
-                        s.mc_running = false;
-                        s.mc_pid = None;
-                        s.mc_started_at_ms = None;
-                        s.add_console_log("warn", "No se pudo comprobar el estado del servidor");
-                        break;
+                        s.add_console_log(
+                            "warn",
+                            format!(
+                                "No se pudo comprobar el estado del servidor (se reintentará): {error}"
+                            ),
+                        );
                     }
                 }
             }
@@ -2980,21 +2989,37 @@ async fn stop_server_process(st: &LocalState) -> Result<StopOutcome, String> {
         return Ok(StopOutcome::NotRunning);
     };
 
+    // El timeout total incluye el envío del comando stop (write + flush).
+    let deadline = tokio::time::Instant::now() + SERVER_SHUTDOWN_TIMEOUT;
+    const STOP_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
     let mut command_error = None;
     if let Some(stdin) = child.stdin.as_mut() {
         use tokio::io::AsyncWriteExt;
-        if let Err(error) = stdin.write_all(format!("{stop_cmd}\r\n").as_bytes()).await {
-            command_error = Some(format!("No se pudo enviar el comando de apagado: {error}"));
-        } else if let Err(error) = stdin.flush().await {
-            command_error = Some(format!(
-                "No se pudo confirmar el comando de apagado: {error}"
-            ));
+        let write_result = tokio::time::timeout(STOP_COMMAND_TIMEOUT, async {
+            stdin
+                .write_all(format!("{stop_cmd}\r\n").as_bytes())
+                .await?;
+            stdin.flush().await?;
+            Ok::<(), std::io::Error>(())
+        })
+        .await;
+
+        match write_result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                command_error =
+                    Some(format!("No se pudo enviar el comando de apagado: {error}"));
+            }
+            Err(_) => {
+                command_error = Some(
+                    "Timeout al enviar el comando de apagado a Java (5s)".to_owned(),
+                );
+            }
         }
     } else {
         command_error = Some("La entrada de consola de Java ya no está disponible.".to_owned());
     }
-
-    let deadline = tokio::time::Instant::now() + SERVER_SHUTDOWN_TIMEOUT;
     let mut exited = false;
 
     loop {
