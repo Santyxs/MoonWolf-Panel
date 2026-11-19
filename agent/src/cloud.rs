@@ -926,11 +926,16 @@ async fn connect_once(
             .await;
     }
 
-    let mut last_mc_running = app.read().await.mc_running;
-    // Al (re)conectar, sincronizar el estado del proceso Java con el backend.
-    // Si no, el panel puede quedarse en offline aunque el servidor ya esté arriba.
+    let (mut last_mc_running, mut last_mc_ready) = {
+        let s = app.read().await;
+        (s.mc_running, s.mc_ready)
+    };
+    // Al (re)conectar, sincronizar el estado real del proceso Java con el backend.
+    // mc_ready se mantiene fuera del ring buffer de logs (MAX_LOGS).
     {
-        let status = if last_mc_running {
+        let status = if last_mc_running && last_mc_ready {
+            "online"
+        } else if last_mc_running {
             "starting"
         } else {
             "offline"
@@ -954,13 +959,14 @@ async fn connect_once(
     loop {
         sleep_ms(500).await;
 
-        let (shutting_down, connected, console_seq, mc_running) = {
+        let (shutting_down, connected, console_seq, mc_running, mc_ready) = {
             let s = app.read().await;
             (
                 s.shutting_down,
                 s.cloud_connected,
                 s.console_seq,
                 s.mc_running,
+                s.mc_ready,
             )
         };
 
@@ -1000,10 +1006,15 @@ async fn connect_once(
             last_console_seq = console_seq;
         }
 
-        if mc_running != last_mc_running {
-            // Al arrancar el proceso Java emitimos "starting".
-            // El backend pasa a "online" cuando detecta el log de listo del servidor.
-            let status = if mc_running { "starting" } else { "offline" };
+        if mc_running != last_mc_running || mc_ready != last_mc_ready {
+            // Estado real del proceso, sin depender de que el log "Done" siga en el buffer.
+            let status = if mc_running && mc_ready {
+                "online"
+            } else if mc_running {
+                "starting"
+            } else {
+                "offline"
+            };
             let _ = client
                 .emit(
                     "event",
@@ -1014,36 +1025,37 @@ async fn connect_once(
                 )
                 .await;
             last_mc_running = mc_running;
+            last_mc_ready = mc_ready;
             last_activity = Instant::now();
         }
 
         if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
-            // Heartbeat de presencia. Solo reafirmamos "offline".
-            // El estado "starting"/"online" lo gestiona el backend a partir de logs.
-            if !mc_running {
-                match client
-                    .emit(
-                        "event",
-                        json!({
-                            "name": "status",
-                            "payload": "offline",
-                        }),
-                    )
-                    .await
-                {
-                    Ok(_) => {
-                        last_heartbeat = Instant::now();
-                        last_activity = Instant::now();
-                    }
-                    Err(e) => {
-                        warn!("heartbeat falló: {e}");
-                        break;
-                    }
-                }
+            // Heartbeat: reafirma el estado real (offline/starting/online).
+            let status = if mc_running && mc_ready {
+                "online"
+            } else if mc_running {
+                "starting"
             } else {
-                // Solo marcar actividad; no pisar el status del backend.
-                last_heartbeat = Instant::now();
-                last_activity = Instant::now();
+                "offline"
+            };
+            match client
+                .emit(
+                    "event",
+                    json!({
+                        "name": "status",
+                        "payload": status,
+                    }),
+                )
+                .await
+            {
+                Ok(_) => {
+                    last_heartbeat = Instant::now();
+                    last_activity = Instant::now();
+                }
+                Err(e) => {
+                    warn!("heartbeat falló: {e}");
+                    break;
+                }
             }
         }
 
