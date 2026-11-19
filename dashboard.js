@@ -1578,10 +1578,10 @@ const METRIC_REPLY_PATTERNS = [
 
 const METRIC_CMD_RE = /^(list|tps|tick query)\s*$/i;
 
-// Tras comando de métricas del agent: ocultar eco + respuestas un momento
+// Tras eco de sonda automática del agent (legacy / agents viejos): ocultar respuestas.
+// Los comandos manuales del usuario se distinguen con pendingUserMetricCmd (sin ventana global).
 let suppressMetricRepliesUntil = 0;
-// Tras comando de métricas escrito por el usuario en el panel: no ocultar nada
-let allowUserMetricUntil = 0;
+let pendingUserMetricCmd = false;
 
 /* ══════════════════════════════════════════════
    9. TERMINAL / CONSOLA
@@ -1592,11 +1592,15 @@ function shouldIgnoreLog(line) {
 
   if (LOG_IGNORE_PATTERNS.some(re => re.test(text))) return true;
 
-  // Si el usuario acaba de enviar list/tps desde el panel, no filtrar nada
-  if (Date.now() < allowUserMetricUntil) return false;
-
-  // Eco del comando automático del agent → ocultar y silenciar respuestas ~2.5s
+  // Eco de list/tps/tick query:
+  // - Si el usuario lo acaba de pedir (pendingUserMetricCmd), mostrar eco + respuesta.
+  // - Si no (sonda automática del Agent legada), ocultar eco y respuestas breves.
   if (/^\s*>\s*(list|tps|tick query)\s*$/i.test(text)) {
+    if (pendingUserMetricCmd) {
+      pendingUserMetricCmd = false;
+      suppressMetricRepliesUntil = 0;
+      return false;
+    }
     suppressMetricRepliesUntil = Date.now() + 2500;
     return true;
   }
@@ -1968,12 +1972,6 @@ async function sendCmd() {
   const cmd = rawCmd.trim().replace(/^\/+/, '').trim();
   if (!cmd) return;
 
-  // list/tps manual: no aplicar el filtro de spam del agent
-  if (METRIC_CMD_RE.test(cmd)) {
-    allowUserMetricUntil = Date.now() + 4000;
-    suppressMetricRepliesUntil = 0;
-  }
-
   if (!agentOnline || !cloudSocket?.connected) {
     toast('MoonWolf Cloud o MoonWolf Agent no están conectados.', 'err');
     return;
@@ -1982,6 +1980,12 @@ async function sendCmd() {
   if (!hasPermission('control')) {
     toast('Este acceso no tiene permiso para enviar comandos.', 'err');
     return;
+  }
+
+  // Solo tras validar conexión: marcar comando manual de métricas (sin ventana global).
+  if (METRIC_CMD_RE.test(cmd)) {
+    pendingUserMetricCmd = true;
+    suppressMetricRepliesUntil = 0;
   }
 
   sendingConsoleCommand = true;
