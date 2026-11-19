@@ -4710,6 +4710,16 @@ async fn db_status() -> Response {
         {
             Ok(_) => json_ok(json!({
                 "connected": true,
+                "host": host,
+                "port": port,
+            })),
+            Err(e) => json_ok(json!({
+                "connected": false,
+                "error": e.to_string(),
+                "host": host,
+                "port": port,
+            })),
+        },
         Err(e) => json_ok(json!({
             "connected": false,
             "error": e.to_string(),
