@@ -2753,6 +2753,25 @@ fn is_minecraft_ready_line(message: &str) -> bool {
         || message.contains("listening on [::]")
 }
 
+fn is_metric_reply_line(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("there are ") && lower.contains("players online")
+        || lower.contains("tps from last")
+        || lower.contains("average tick time")
+        || lower.contains("target tick rate")
+        || lower.contains("server tps")
+        || lower.contains("mspt")
+        || lower.contains("tick statistics")
+        || lower.contains("tick rate")
+}
+
+fn is_metric_probe_command(cmd: &str) -> bool {
+    matches!(
+        cmd.trim().to_ascii_lowercase().as_str(),
+        "list" | "tps" | "tick query"
+    )
+}
+
 async fn read_console_stream<R>(stream: R, app: Arc<RwLock<AppState>>, level: &'static str)
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -2782,7 +2801,12 @@ where
                 if became_ready {
                     state.mc_ready = true;
                 }
-                state.add_console_log(level, line);
+                let silent = state.metric_probe_active && is_metric_reply_line(&line);
+                if silent {
+                    // Respuesta consumida por la sonda interna; no ensuciar el panel.
+                    state.metric_probe_active = false;
+                }
+                state.add_console_log_ex(level, line, silent);
             }
             Err(error) => {
                 let mut state = app.write().await;
@@ -3246,10 +3270,15 @@ async fn send_command(
     }
 
     // Los comandos internos de métricas no deben ensuciar la consola visible.
-    // Sus respuestas siguen entrando en el búfer para que el recolector las procese.
-    if !body.silent {
+    // Sus respuestas siguen entrando en el búfer (silent) para el recolector.
+    {
         let mut s = st.app.write().await;
-        s.add_console_log("info", format!("> {cmd}"));
+        if body.silent && is_metric_probe_command(cmd) {
+            s.metric_probe_active = true;
+        }
+        if !body.silent {
+            s.add_console_log("info", format!("> {cmd}"));
+        }
     }
 
     Ok(json_ok(json!({})))
