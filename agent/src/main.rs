@@ -388,6 +388,9 @@ pub struct LogEntry {
     pub message: String,
     #[serde(skip)]
     pub seq: u64,
+    /// No reenviar al panel (sondas internas list/tps del Agent).
+    #[serde(skip)]
+    pub silent: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -433,6 +436,8 @@ pub struct AppState {
     /// True cuando el proceso Java ya publicó el mensaje de listo (Done/listening).
     /// Independiente del ring buffer de consola (MAX_LOGS).
     pub mc_ready: bool,
+    /// Sonda interna list/tps en curso: las respuestas no se reenvían al panel.
+    pub metric_probe_active: bool,
     pub mc_pid: Option<u32>,
     pub mc_started_at_ms: Option<i64>,
     pub update_available: Option<UpdateInfo>,
@@ -459,6 +464,7 @@ impl AppState {
             gui_revision: 0,
             mc_running: false,
             mc_ready: false,
+            metric_probe_active: false,
             mc_pid: None,
             mc_started_at_ms: None,
             update_available: None,
@@ -479,6 +485,7 @@ impl AppState {
             level: level.to_string(),
             message: message.into(),
             seq: self.log_seq,
+            silent: false,
         };
         match level {
             "error" => tracing::error!("{}", entry.message),
@@ -492,6 +499,10 @@ impl AppState {
     }
 
     pub fn add_console_log(&mut self, level: &str, message: impl Into<String>) {
+        self.add_console_log_ex(level, message, false);
+    }
+
+    pub fn add_console_log_ex(&mut self, level: &str, message: impl Into<String>, silent: bool) {
         let text: String = message.into();
         self.console_seq = self.console_seq.saturating_add(1);
         let entry = LogEntry {
@@ -499,6 +510,7 @@ impl AppState {
             level: level.to_string(),
             message: text,
             seq: self.console_seq,
+            silent,
         };
         if self.console_logs.len() >= MAX_LOGS {
             self.console_logs.pop_front();
