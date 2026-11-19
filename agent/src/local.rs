@@ -46,6 +46,8 @@ ESTADO
 struct LocalState {
     app: Arc<RwLock<AppState>>,
     mc: Arc<RwLock<Option<Child>>>,
+    /// Serializa start/stop/restart enteros (preparación + spawn/kill).
+    lifecycle: Arc<Mutex<()>>,
     uploads: Arc<Mutex<HashMap<String, Arc<Mutex<UploadManifest>>>>>,
     backup_progress: Arc<Mutex<BackupProgress>>,
     backup_operation: Arc<Mutex<Option<String>>>,
@@ -83,6 +85,7 @@ pub async fn serve(app: Arc<RwLock<AppState>>, port: u16) -> anyhow::Result<()> 
     let state = LocalState {
         app,
         mc: Arc::new(RwLock::new(None)),
+        lifecycle: Arc::new(Mutex::new(())),
         uploads: Arc::new(Mutex::new(HashMap::new())),
         backup_progress: Arc::new(Mutex::new(BackupProgress::default())),
         backup_operation: Arc::new(Mutex::new(None)),
@@ -2636,24 +2639,26 @@ SERVIDOR
 ══════════════════════════════════════════════ */
 
 async fn server_status(State(st): State<LocalState>) -> Response {
-    let running = {
+    // "online" | "offline" | "unknown"
+    // unknown = hay Child pero try_wait falló: no lo descartamos (kill_on_drop).
+    let (status, running) = {
         let mut mc = st.mc.write().await;
         if let Some(child) = mc.as_mut() {
             match child.try_wait() {
                 Ok(Some(_)) => {
                     *mc = None;
-                    false
+                    ("offline", false)
                 }
-                // Ok(None) = sigue vivo. Err = estado desconocido: no descartar el
-                // Child (kill_on_drop podría matar Java ante un error temporal).
-                Ok(None) | Err(_) => true,
+                Ok(None) => ("online", true),
+                Err(_) => ("unknown", true),
             }
         } else {
-            false
+            ("offline", false)
         }
     };
     {
         let mut s = st.app.write().await;
+        // Conservar mc_running=true en unknown para no tratarlo como apagado.
         s.mc_running = running;
         if !running {
             s.mc_pid = None;
@@ -2661,8 +2666,9 @@ async fn server_status(State(st): State<LocalState>) -> Response {
         }
     }
     json_ok(json!({
-        "status": if running { "online" } else { "offline" },
+        "status": status,
         "running": running,
+        "unknown": status == "unknown",
     }))
 }
 
@@ -2787,6 +2793,16 @@ async fn start_server(
     let java_configured = s.config.java_path.clone();
     drop(s);
 
+    // Cubre preparación + spawn para que stop/restart no interfieran a mitad.
+    let _lifecycle = st.lifecycle.lock().await;
+    start_server_inner(st, root, java_configured).await
+}
+
+async fn start_server_inner(
+    st: LocalState,
+    root: PathBuf,
+    java_configured: String,
+) -> Result<Response, StatusCode> {
     if tokio::fs::metadata(&root).await.is_err() {
         let _ = tokio::fs::create_dir_all(&root).await;
     }
@@ -2979,11 +2995,16 @@ enum StopOutcome {
 /// Solicita un apagado normal y espera a que Java termine.
 /// Solo fuerza la terminación cuando supera el límite de espera.
 async fn stop_server_process(st: &LocalState) -> Result<StopOutcome, String> {
+    let _lifecycle = st.lifecycle.lock().await;
+    stop_server_process_inner(st).await
+}
+
+async fn stop_server_process_inner(st: &LocalState) -> Result<StopOutcome, String> {
     let root = st.app.read().await.config.server_dir.clone();
     let stop_cmd = load_startup_config(&root).await.stop_command;
 
-    // Mantener el lock durante el apagado evita que otra solicitud envíe comandos
-    // o intente arrancar otro proceso mientras el anterior sigue vivo.
+    // Mantener el lock de mc durante el apagado evita que otra solicitud envíe
+    // comandos o intente arrancar otro proceso mientras el anterior sigue vivo.
     let mut mc = st.mc.write().await;
     let Some(child) = mc.as_mut() else {
         return Ok(StopOutcome::NotRunning);
@@ -3137,10 +3158,15 @@ async fn restart_server(
 ) -> Result<Response, StatusCode> {
     let s = st.app.read().await;
     check_auth(&headers, &s.config.local_token)?;
+    let root = s.config.server_dir.clone();
+    let java_configured = s.config.java_path.clone();
     drop(s);
 
+    // Un solo hold de lifecycle para stop + start (sin ventana entre ambos).
+    let _lifecycle = st.lifecycle.lock().await;
+
     // No arrancar un segundo Java si el anterior no ha terminado realmente.
-    if let Err(error) = stop_server_process(&st).await {
+    if let Err(error) = stop_server_process_inner(&st).await {
         let mut s = st.app.write().await;
         s.add_console_log(
             "error",
@@ -3152,7 +3178,7 @@ async fn restart_server(
     }
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    start_server(State(st), headers).await
+    start_server_inner(st, root, java_configured).await
 }
 
 #[derive(Deserialize)]
