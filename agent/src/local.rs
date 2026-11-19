@@ -2661,6 +2661,7 @@ async fn server_status(State(st): State<LocalState>) -> Response {
         // Conservar mc_running=true en unknown para no tratarlo como apagado.
         s.mc_running = running;
         if !running {
+            s.mc_ready = false;
             s.mc_pid = None;
             s.mc_started_at_ms = None;
         }
@@ -2744,6 +2745,14 @@ fn resolve_java_binary(config_java_path: &str) -> (PathBuf, String) {
     (PathBuf::from("java"), "PATH del sistema".to_string())
 }
 
+fn is_minecraft_ready_line(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    (message.contains("done (") && message.contains("for help, type"))
+        || message.contains("listening on /")
+        || message.contains("listening on 0.0.0.0")
+        || message.contains("listening on [::]")
+}
+
 async fn read_console_stream<R>(stream: R, app: Arc<RwLock<AppState>>, level: &'static str)
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -2768,7 +2777,11 @@ where
 
                 // Una salida con bytes que no sean UTF-8 no debe detener la lectura.
                 let line = String::from_utf8_lossy(&buffer).into_owned();
+                let became_ready = is_minecraft_ready_line(&line);
                 let mut state = app.write().await;
+                if became_ready {
+                    state.mc_ready = true;
+                }
                 state.add_console_log(level, line);
             }
             Err(error) => {
@@ -2916,6 +2929,7 @@ async fn start_server_inner(
     {
         let mut s = st.app.write().await;
         s.mc_running = true;
+        s.mc_ready = false;
         s.mc_pid = pid;
         s.mc_started_at_ms = Some(crate::now_ms());
         s.add_console_log(
@@ -2952,6 +2966,7 @@ async fn start_server_inner(
                         drop(lock);
                         let mut s = app.write().await;
                         s.mc_running = false;
+                        s.mc_ready = false;
                         s.mc_pid = None;
                         s.mc_started_at_ms = None;
                         s.add_console_log(
@@ -3101,6 +3116,7 @@ async fn stop_server_process_inner(st: &LocalState) -> Result<StopOutcome, Strin
     {
         let mut s = st.app.write().await;
         s.mc_running = false;
+        s.mc_ready = false;
         s.mc_pid = None;
         s.mc_started_at_ms = None;
 
