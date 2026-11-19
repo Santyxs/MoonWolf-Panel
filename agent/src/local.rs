@@ -2989,7 +2989,9 @@ async fn stop_server_process(st: &LocalState) -> Result<StopOutcome, String> {
         {
             command_error = Some(format!("No se pudo enviar el comando de apagado: {error}"));
         } else if let Err(error) = stdin.flush().await {
-            command_error = Some(format!("No se pudo confirmar el comando de apagado: {error}"));
+            command_error = Some(format!(
+                "No se pudo confirmar el comando de apagado: {error}"
+            ));
         }
     } else {
         command_error = Some("La entrada de consola de Java ya no está disponible.".to_owned());
@@ -3072,7 +3074,9 @@ async fn stop_server_process(st: &LocalState) -> Result<StopOutcome, String> {
         } else if let Some(error) = command_error {
             s.add_console_log(
                 "warn",
-                format!("Minecraft terminó, pero hubo un problema al solicitar el apagado: {error}"),
+                format!(
+                    "Minecraft terminó, pero hubo un problema al solicitar el apagado: {error}"
+                ),
             );
             s.add_console_log("info", "Servidor detenido correctamente.");
         } else {
@@ -3118,7 +3122,10 @@ async fn restart_server(
     // No arrancar un segundo Java si el anterior no ha terminado realmente.
     if let Err(error) = stop_server_process(&st).await {
         let mut s = st.app.write().await;
-        s.add_console_log("error", format!("No se pudo reiniciar el servidor: {error}"));
+        s.add_console_log(
+            "error",
+            format!("No se pudo reiniciar el servidor: {error}"),
+        );
         return Ok(json_fail(&format!(
             "No se pudo reiniciar el servidor porque el proceso anterior no terminó: {error}"
         )));
