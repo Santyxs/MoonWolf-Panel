@@ -999,6 +999,7 @@ async fn copy_file(
         Ok(Err(e)) => Ok(json_fail(&format!("No se pudo copiar: {e}"))),
         Err(e) => Ok(json_fail(&format!("Tarea copia falló: {e}"))),
     }
+    }
 }
 
 async fn move_file(
@@ -1500,6 +1501,8 @@ async fn create_backup(
                 }
             }
         }
+            }
+        }
 
         create_result
             .map_err(|e| anyhow::anyhow!("Tarea ZIP falló: {e}"))?
@@ -1665,28 +1668,21 @@ async fn restore_backup(
         *op = Some("restauración".into());
     }
 
-    let was_running = {
-        let mc = st.mc.write().await;
-        mc.is_some()
-    };
+    let was_running = st.mc.read().await.is_some();
     if was_running {
-        let mut mc = st.mc.write().await;
-        if let Some(child) = mc.as_mut() {
-            if let Some(stdin) = child.stdin.as_mut() {
-                use tokio::io::AsyncWriteExt;
-                let _ = stdin.write_all(b"stop\r\n").await;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            if child.try_wait().ok().flatten().is_none() {
-                let _ = child.kill().await;
-            }
-            *mc = None;
-        }
-        {
-            let mut s = st.app.write().await;
-            s.mc_running = false;
-            s.mc_pid = None;
-            s.mc_started_at_ms = None;
+        if let Err(error) = stop_server_process(&st).await {
+            let mut op = st.backup_operation.lock().await;
+            *op = None;
+            drop(op);
+
+            let mut state = st.app.write().await;
+            state.add_console_log(
+                "error",
+                format!("No se pudo restaurar la copia porque Minecraft no terminó: {error}"),
+            );
+            return Ok(json_fail(&format!(
+                "No se pudo iniciar la restauración porque Minecraft seguía ejecutándose: {error}"
+            )));
         }
     }
 
@@ -1998,6 +1994,13 @@ async fn save_startup(
     }
     if let Some(v) = body.auto_restart_on_crash {
         cfg.auto_restart_on_crash = v;
+    }
+    if let Some(v) = body.auto_start_on_boot {
+        cfg.auto_start_on_boot = v;
+    }
+    if let Some(v) = body.server_port {
+        let _ = v;
+    }
     }
     if let Some(v) = body.auto_start_on_boot {
         cfg.auto_start_on_boot = v;
@@ -2963,55 +2966,174 @@ async fn start_server(
     Ok(json_ok(json!({})))
 }
 
-async fn stop_server(
-    State(st): State<LocalState>,
-    headers: HeaderMap,
-) -> Result<Response, StatusCode> {
-    let s = st.app.read().await;
-    check_auth(&headers, &s.config.local_token)?;
-    let root = s.config.server_dir.clone();
-    drop(s);
+// Tiempo máximo para que Minecraft guarde el mundo, cierre plugins y termine Java.
+const SERVER_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const SERVER_SHUTDOWN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopOutcome {
+    NotRunning,
+    Graceful,
+    Forced,
+}
+
+/// Solicita un apagado normal y espera a que Java termine.
+/// Solo fuerza la terminación cuando supera el límite de espera.
+async fn stop_server_process(st: &LocalState) -> Result<StopOutcome, String> {
+    let root = st.app.read().await.config.server_dir.clone();
     let stop_cmd = load_startup_config(&root).await.stop_command;
 
+    // Mantener el lock durante el apagado evita que otra solicitud envíe comandos
+    // o intente arrancar otro proceso mientras el anterior sigue vivo.
     let mut mc = st.mc.write().await;
     let Some(child) = mc.as_mut() else {
-        return Ok(json_fail("El servidor no está corriendo"));
+        return Ok(StopOutcome::NotRunning);
     };
 
+    let mut command_error = None;
     if let Some(stdin) = child.stdin.as_mut() {
         use tokio::io::AsyncWriteExt;
-        let _ = stdin
-            .write_all(format!("{}\r\n", stop_cmd).as_bytes())
-            .await;
+        if let Err(error) = stdin
+            .write_all(format!("{stop_cmd}\r\n").as_bytes())
+            .await
+        {
+            command_error = Some(format!("No se pudo enviar el comando de apagado: {error}"));
+        } else if let Err(error) = stdin.flush().await {
+            command_error = Some(format!("No se pudo confirmar el comando de apagado: {error}"));
+        }
+    } else {
+        command_error = Some("La entrada de consola de Java ya no está disponible.".to_owned());
     }
 
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    match child.try_wait() {
-        Ok(Some(_)) => {
-            *mc = None;
+    let deadline = tokio::time::Instant::now() + SERVER_SHUTDOWN_TIMEOUT;
+    let mut exited = false;
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                exited = true;
+                break;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                command_error.get_or_insert_with(|| {
+                    format!("No se pudo consultar el estado de Java: {error}")
+                });
+            }
         }
-        _ => {
-            let _ = child.kill().await;
-            *mc = None;
+
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+
+        tokio::time::sleep(SERVER_SHUTDOWN_POLL_INTERVAL).await;
+    }
+
+    let mut forced = false;
+    if !exited {
+        match child.kill().await {
+            Ok(()) => {
+                // tokio::process::Child::kill espera a que el proceso haya terminado.
+                exited = true;
+                forced = true;
+            }
+            Err(kill_error) => match child.try_wait() {
+                Ok(Some(_status)) => {
+                    exited = true;
+                }
+                Ok(None) => {
+                    return Err(format!(
+                        "No se pudo detener Java después de esperar {} segundos. El proceso sigue en ejecución: {kill_error}",
+                        SERVER_SHUTDOWN_TIMEOUT.as_secs()
+                    ));
+                }
+                Err(check_error) => {
+                    return Err(format!(
+                        "No se pudo confirmar que Java haya terminado. Error al forzar el cierre: {kill_error}; error al comprobar el proceso: {check_error}"
+                    ));
+                }
+            },
         }
     }
+
+    if !exited {
+        return Err("No se pudo confirmar que el proceso Java haya terminado.".to_owned());
+    }
+
+    // Solo se elimina el handle cuando Java ya terminó. Soltamos el lock antes
+    // de tocar el estado general para no bloquear las consultas de estado.
+    *mc = None;
+    drop(mc);
 
     {
         let mut s = st.app.write().await;
         s.mc_running = false;
         s.mc_pid = None;
         s.mc_started_at_ms = None;
-        s.add_console_log("info", "Servidor detenido");
+
+        if forced {
+            s.add_console_log(
+                "error",
+                format!(
+                    "Minecraft no terminó en {} segundos y tuvo que cerrarse a la fuerza. Puede que algunos datos no se hayan guardado.",
+                    SERVER_SHUTDOWN_TIMEOUT.as_secs()
+                ),
+            );
+        } else if let Some(error) = command_error {
+            s.add_console_log(
+                "warn",
+                format!("Minecraft terminó, pero hubo un problema al solicitar el apagado: {error}"),
+            );
+            s.add_console_log("info", "Servidor detenido correctamente.");
+        } else {
+            s.add_console_log("info", "Servidor detenido correctamente.");
+        }
     }
-    Ok(json_ok(json!({})))
+
+    Ok(if forced {
+        StopOutcome::Forced
+    } else {
+        StopOutcome::Graceful
+    })
+}
+
+async fn stop_server(
+    State(st): State<LocalState>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    let s = st.app.read().await;
+    check_auth(&headers, &s.config.local_token)?;
+    drop(s);
+
+    match stop_server_process(&st).await {
+        Ok(StopOutcome::NotRunning) => Ok(json_fail("El servidor no está corriendo")),
+        Ok(StopOutcome::Graceful) => Ok(json_ok(json!({"forced": false}))),
+        Ok(StopOutcome::Forced) => Ok(json_ok(json!({"forced": true}))),
+        Err(error) => {
+            let mut s = st.app.write().await;
+            s.add_console_log("error", format!("No se pudo completar el apagado: {error}"));
+            Ok(json_fail(&error))
+        }
+    }
 }
 
 async fn restart_server(
     State(st): State<LocalState>,
     headers: HeaderMap,
 ) -> Result<Response, StatusCode> {
-    let _ = stop_server(State(st.clone()), headers.clone()).await;
+    let s = st.app.read().await;
+    check_auth(&headers, &s.config.local_token)?;
+    drop(s);
+
+    // No arrancar un segundo Java si el anterior no ha terminado realmente.
+    if let Err(error) = stop_server_process(&st).await {
+        let mut s = st.app.write().await;
+        s.add_console_log("error", format!("No se pudo reiniciar el servidor: {error}"));
+        return Ok(json_fail(&format!(
+            "No se pudo reiniciar el servidor porque el proceso anterior no terminó: {error}"
+        )));
+    }
+
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     start_server(State(st), headers).await
 }
@@ -4598,16 +4720,6 @@ async fn db_status() -> Response {
         {
             Ok(_) => json_ok(json!({
                 "connected": true,
-                "host": host,
-                "port": port,
-            })),
-            Err(e) => json_ok(json!({
-                "connected": false,
-                "error": e.to_string(),
-                "host": host,
-                "port": port,
-            })),
-        },
         Err(e) => json_ok(json!({
             "connected": false,
             "error": e.to_string(),
