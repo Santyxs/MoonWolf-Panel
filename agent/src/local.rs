@@ -1995,13 +1995,6 @@ async fn save_startup(
     if let Some(v) = body.auto_start_on_boot {
         cfg.auto_start_on_boot = v;
     }
-    if let Some(v) = body.server_port {
-        let _ = v;
-    }
-    }
-    if let Some(v) = body.auto_start_on_boot {
-        cfg.auto_start_on_boot = v;
-    }
 
     if let Err(e) = save_startup_config(&root, &cfg).await {
         return Ok(json_fail(&format!("No se pudo guardar startup: {e}")));
