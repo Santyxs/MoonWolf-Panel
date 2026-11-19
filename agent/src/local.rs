@@ -999,7 +999,6 @@ async fn copy_file(
         Ok(Err(e)) => Ok(json_fail(&format!("No se pudo copiar: {e}"))),
         Err(e) => Ok(json_fail(&format!("Tarea copia falló: {e}"))),
     }
-    }
 }
 
 async fn move_file(
