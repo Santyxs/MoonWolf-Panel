@@ -741,9 +741,9 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
                             "status" => {
                                 let incoming = payload.as_str().unwrap_or("");
                                 let current = entry.status.as_ref().and_then(Value::as_str).unwrap_or("");
-                                // No degradar "online" → "starting" ni ignorar el avance starting→online.
-                                let ignore = (incoming == "online" && current == "starting")
-                                    || (incoming == "starting" && current == "online");
+                                // Permitir starting→online y cualquier paso a offline.
+                                // Solo bloquear degradar online→starting (log tardío / reconnect ruidoso).
+                                let ignore = incoming == "starting" && current == "online";
                                 if !ignore {
                                     entry.status = Some(payload.clone());
                                     status_update = Some(payload.clone());
