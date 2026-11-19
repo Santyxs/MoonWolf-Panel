@@ -430,6 +430,9 @@ pub struct AppState {
     pub console_seq: u64,
     pub gui_revision: u64,
     pub mc_running: bool,
+    /// True cuando el proceso Java ya publicó el mensaje de listo (Done/listening).
+    /// Independiente del ring buffer de consola (MAX_LOGS).
+    pub mc_ready: bool,
     pub mc_pid: Option<u32>,
     pub mc_started_at_ms: Option<i64>,
     pub update_available: Option<UpdateInfo>,
@@ -455,6 +458,7 @@ impl AppState {
             console_seq: 0,
             gui_revision: 0,
             mc_running: false,
+            mc_ready: false,
             mc_pid: None,
             mc_started_at_ms: None,
             update_available: None,
