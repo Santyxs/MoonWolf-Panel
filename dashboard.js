@@ -78,6 +78,54 @@ const activities = [];
 let lastAgentActivityState = null;
 let lastStatusActivity = null;
 
+/* Caché de secciones: no vaciar la UI en cada visita; revalidar en segundo plano. */
+const VIEW_CACHE_TTL_MS = 45_000;
+const viewCache = new Map();
+const viewInflight = new Map();
+
+function getViewCache(key, ttl = VIEW_CACHE_TTL_MS) {
+  const entry = viewCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.at > ttl) return null;
+  return entry.data;
+}
+
+function setViewCache(key, data) {
+  viewCache.set(key, { at: Date.now(), data });
+}
+
+function invalidateViewCache(key) {
+  if (key) viewCache.delete(key);
+  else viewCache.clear();
+}
+
+function sectionHasContent(element) {
+  if (!element) return false;
+  const html = element.innerHTML || '';
+  if (!html.trim()) return false;
+  return !/Cargando|Conectando|ver-loading/i.test(html);
+}
+
+function cachedApi(cacheKey, pathname, init, ttl = VIEW_CACHE_TTL_MS) {
+  const cached = getViewCache(cacheKey, ttl);
+  if (cached) return Promise.resolve(cached);
+
+  const existing = viewInflight.get(cacheKey);
+  if (existing) return existing;
+
+  const request = api(pathname, init)
+    .then(data => {
+      if (data && data.ok !== false) setViewCache(cacheKey, data);
+      return data;
+    })
+    .finally(() => {
+      if (viewInflight.get(cacheKey) === request) viewInflight.delete(cacheKey);
+    });
+
+  viewInflight.set(cacheKey, request);
+  return request;
+}
+
 /* ══════════════════════════════════════════════
    3. PERMISOS
    ══════════════════════════════════════════════ */
@@ -1378,6 +1426,7 @@ function setAgentOnline(online) {
   updateAgentStatusBadges();
 
   if (nextState) {
+    invalidateViewCache();
     void refreshServerStatus();
     if (lastAgentActivityState !== true) {
       addActivity('MoonWolf Agent conectado', 'ok', '🟢');
@@ -2023,23 +2072,26 @@ function fileIcon(type) {
   }[type] || '📄';
 }
 
-function populateFiles(dir = '') {
+function populateFiles(dir = '', options = {}) {
   currentDir = dir;
 
   const list = $('fileList');
 
   if (!list) return;
 
-  list.innerHTML = `
+  const soft = Boolean(options.soft) || sectionHasContent(list);
+  if (!soft) {
+    list.innerHTML = `
     <div class="empty-state">
       <div class="empty-icon" style="display:inline-block;animation:spin 1s linear infinite">⟳</div>
       <div class="empty-msg">Cargando...</div>
     </div>
   `;
+  }
 
   renderBreadcrumb(dir);
 
-  api(`/api/files?dir=${encodeURIComponent(dir)}`)
+  cachedApi(`files:${dir}`, `/api/files?dir=${encodeURIComponent(dir)}`, undefined, 15_000)
     .then(data => {
       if (!data.ok) {
         throw new Error(data.error || 'No se pudo leer la carpeta.');
@@ -3476,7 +3528,8 @@ async function installPlugin(version) {
     installStatus.className = 'plg-install-status installed';
     installStatus.innerHTML = `<span>✓</span><strong>Instalado correctamente</strong><span>${escHtml(filename)}</span>`;
     toast(`✅ ${filename} instalado`, 'ok');
-    loadInstalledPlugins();
+    invalidateViewCache('plugins:installed');
+        loadInstalledPlugins();
   } catch (error) {
     installStatus.className = 'plg-install-status failed';
     installStatus.innerHTML = `<span>⚠</span><strong>Instalación fallida</strong><span>${escHtml(error.message)}</span>`;
@@ -3485,19 +3538,22 @@ async function installPlugin(version) {
   }
 }
 
-async function loadInstalledPlugins() {
+async function loadInstalledPlugins(options = {}) {
   const element = $('plgInstalledList');
 
   if (!element) return;
 
-  element.innerHTML = `
+  const soft = Boolean(options.soft) || sectionHasContent(element);
+  if (!soft) {
+    element.innerHTML = `
     <div class="empty-state">
       <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
       <div class="empty-msg">Cargando...</div>
     </div>
   `;
+  }
 
-  const data = await api('/api/plugins/installed');
+  const data = await cachedApi('plugins:installed', '/api/plugins/installed');
 
   if (!data.ok) {
     element.innerHTML = `<div class="empty-state">${escHtml(data.error)}</div>`;
@@ -3539,6 +3595,7 @@ async function loadInstalledPlugins() {
       if (!data.ok) {
         toast(`❌ ${data.error}`, 'err');
       } else {
+        invalidateViewCache('plugins:installed');
         loadInstalledPlugins();
       }
     });
@@ -3881,9 +3938,10 @@ async function installVersionSelection(software, version, build) {
   }
 }
 
-async function loadVersionState() {
+async function loadVersionState(options = {}) {
   const container = $('versionList');
-  if (container) {
+  const soft = Boolean(options.soft) || sectionHasContent(container);
+  if (container && !soft) {
     container.innerHTML = `
       <div class="ver-loading-page">
         <div class="ver-loading-spinner">⟳</div>
@@ -3894,8 +3952,8 @@ async function loadVersionState() {
 
   try {
     const [softwareData, startupData] = await Promise.all([
-      api('/api/versions/software'),
-      api('/api/startup'),
+      cachedApi('versions:software', '/api/versions/software'),
+      cachedApi('startup', '/api/startup'),
     ]);
 
     if (!softwareData?.ok) {
@@ -3990,22 +4048,25 @@ async function createDatabase() {
   loadDatabases();
 }
 
-async function loadDatabases() {
+async function loadDatabases(options = {}) {
   const container = $('dbList');
 
   if (!container) return;
 
-  container.innerHTML = `
+  const soft = Boolean(options.soft) || sectionHasContent(container);
+  if (!soft) {
+    container.innerHTML = `
     <div class="empty-state">
       <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
       <div class="empty-msg">Conectando con MySQL...</div>
     </div>
   `;
+  }
 
   let status = { connected: false };
 
   try {
-    status = await api('/api/databases/status');
+    status = await cachedApi('databases:status', '/api/databases/status', undefined, 15_000);
   } catch (error) {
     container.innerHTML = `
       <div class="empty-state">
@@ -4030,7 +4091,7 @@ async function loadDatabases() {
     return;
   }
 
-  const data = await api('/api/databases');
+  const data = await cachedApi('databases', '/api/databases');
 
   if (!data.ok) {
     container.innerHTML = `
@@ -4394,19 +4455,22 @@ function bindShareSettings() {
    15. BACKUPS
    ══════════════════════════════════════════════ */
 
-async function loadBackups() {
+async function loadBackups(options = {}) {
   const container = $('backupList');
 
   if (!container) return;
 
-  container.innerHTML = `
+  const soft = Boolean(options.soft) || sectionHasContent(container);
+  if (!soft) {
+    container.innerHTML = `
     <div class="empty-state">
       <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
       <div class="empty-msg">Cargando copias de seguridad...</div>
     </div>
   `;
+  }
 
-  const data = await api('/api/backups');
+  const data = await cachedApi('backups', '/api/backups');
 
   if (!data.ok) {
     container.innerHTML = `<div class="empty-state"><div class="empty-msg">${escHtml(data.error)}</div></div>`;
@@ -4474,7 +4538,7 @@ async function loadBackups() {
       }
 
       toast('✅ Copia de seguridad eliminada', 'ok');
-      loadBackups();
+      invalidateViewCache('backups'); loadBackups({ soft: false });
     });
   });
 }
@@ -4592,7 +4656,7 @@ async function createBackup() {
       data.warning ? 'warn' : 'ok'
     );
 
-    loadBackups();
+    invalidateViewCache('backups'); loadBackups({ soft: false });
   } catch (error) {
     setBackupProgressUI({ label: error.message, pct: '✕', state: 'error' });
     hideBackupProgress(4000);
@@ -4655,7 +4719,7 @@ async function restoreBackup(name) {
       'ok'
     );
     addActivity(`Copia restaurada: ${name}`, 'ok', '♻️');
-    loadBackups();
+    invalidateViewCache('backups'); loadBackups({ soft: false });
   } catch (error) {
     toast(`❌ ${error.message}`, 'err');
     if (button) { button.disabled = false; }
@@ -4666,15 +4730,18 @@ async function restoreBackup(name) {
    16. PUERTOS
    ══════════════════════════════════════════════ */
 
-async function loadPorts() {
+async function loadPorts(options = {}) {
   const element = $('portList');
   if (!element) return;
 
-  element.innerHTML =
+  const soft = Boolean(options.soft) || sectionHasContent(element);
+  if (!soft) {
+    element.innerHTML =
     '<div class="empty-state"><div style="animation:spin 1s linear infinite;font-size:28px">⟳</div><div class="empty-msg">Comprobando puertos...</div></div>';
+  }
 
   try {
-    const data = await api('/api/ports');
+    const data = await cachedApi('ports', '/api/ports', undefined, 20_000);
     if (!data.ok) throw new Error(data.error || 'No se pudieron cargar los puertos');
 
     const props = data.properties || {};
@@ -4848,19 +4915,22 @@ function requiredJavaLabel(version) {
   return java ? `Java ${java} · gestionado por MoonWolf` : 'Versión no reconocida';
 }
 
-async function loadStartup() {
+async function loadStartup(options = {}) {
   const element = $('startupList');
 
   if (!element) return;
 
-  element.innerHTML = `
+  const soft = Boolean(options.soft) || sectionHasContent(element);
+  if (!soft) {
+    element.innerHTML = `
     <div class="empty-state">
       <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
       <div class="empty-msg">Cargando configuración...</div>
     </div>
   `;
+  }
 
-  const data = await api('/api/startup');
+  const data = await cachedApi('startup', '/api/startup');
 
   if (!data.ok) {
     element.innerHTML = `
@@ -5352,6 +5422,38 @@ function renderActivity() {
    20. NAVEGACIÓN (switchView)
    ══════════════════════════════════════════════ */
 
+function prefetchView(id) {
+  if (!agentOnline || !id) return;
+  // Solo calienta la caché HTTP; no toca el DOM.
+  switch (id) {
+    case 'files':
+      cachedApi(`files:${currentDir || ''}`, `/api/files?dir=${encodeURIComponent(currentDir || '')}`, undefined, 15_000);
+      break;
+    case 'versions':
+      cachedApi('versions:software', '/api/versions/software');
+      cachedApi('startup', '/api/startup');
+      break;
+    case 'plugins':
+      cachedApi('plugins:installed', '/api/plugins/installed');
+      break;
+    case 'databases':
+      cachedApi('databases:status', '/api/databases/status', undefined, 15_000);
+      cachedApi('databases', '/api/databases');
+      break;
+    case 'backups':
+      cachedApi('backups', '/api/backups');
+      break;
+    case 'ports':
+      cachedApi('ports', '/api/ports', undefined, 20_000);
+      break;
+    case 'startup':
+      cachedApi('startup', '/api/startup');
+      break;
+    default:
+      break;
+  }
+}
+
 function switchView(id) {
   const editorOpen = Boolean(currentFile && $('filesEditorPanel')?.style.display !== 'none');
   if (editorOpen && id !== 'files' && !closeFileEditor()) return;
@@ -5366,19 +5468,19 @@ function switchView(id) {
 
   switch (id) {
     case 'files':
-      populateFiles(currentDir);
+      populateFiles(currentDir, { soft: true });
       break;
 
     case 'versions':
-      loadVersionState().catch(error => toast(error.message, 'err'));
+      loadVersionState({ soft: true }).catch(error => toast(error.message, 'err'));
       break;
 
     case 'plugins':
-      loadInstalledPlugins();
+      loadInstalledPlugins({ soft: true });
       break;
 
     case 'databases':
-      loadDatabases();
+      loadDatabases({ soft: true });
       break;
 
     case 'users':
@@ -5386,15 +5488,15 @@ function switchView(id) {
       break;
 
     case 'backups':
-      loadBackups();
+      loadBackups({ soft: true });
       break;
 
     case 'ports':
-      loadPorts();
+      loadPorts({ soft: true });
       break;
 
     case 'startup':
-      loadStartup();
+      loadStartup({ soft: true });
       break;
 
     case 'activitylog':
@@ -5449,6 +5551,8 @@ function bindEvents() {
 
   document.querySelectorAll('.sb-item').forEach(item => {
     item.addEventListener('click', () => switchView(item.dataset.view));
+    item.addEventListener('mouseenter', () => prefetchView(item.dataset.view));
+    item.addEventListener('focus', () => prefetchView(item.dataset.view));
   });
 
   $('btnStart')?.addEventListener('click', startServer);
@@ -5676,6 +5780,7 @@ function bindEvents() {
       }
 
       if (tab === 'installed') {
+        invalidateViewCache('plugins:installed');
         loadInstalledPlugins();
       }
     });
