@@ -106,12 +106,17 @@ function sectionHasContent(element) {
   return !/Cargando|Conectando|ver-loading/i.test(html);
 }
 
-function cachedApi(cacheKey, pathname, init, ttl = VIEW_CACHE_TTL_MS) {
-  const cached = getViewCache(cacheKey, ttl);
-  if (cached) return Promise.resolve(cached);
+function cachedApi(cacheKey, pathname, init, ttl = VIEW_CACHE_TTL_MS, force = false) {
+  if (!force) {
+    const cached = getViewCache(cacheKey, ttl);
+    if (cached) return Promise.resolve(cached);
 
-  const existing = viewInflight.get(cacheKey);
-  if (existing) return existing;
+    const existing = viewInflight.get(cacheKey);
+    if (existing) return existing;
+  } else {
+    invalidateViewCache(cacheKey);
+    viewInflight.delete(cacheKey);
+  }
 
   const request = api(pathname, init)
     .then(data => {
@@ -124,6 +129,12 @@ function cachedApi(cacheKey, pathname, init, ttl = VIEW_CACHE_TTL_MS) {
 
   viewInflight.set(cacheKey, request);
   return request;
+}
+
+/** true = puede reutilizar DOM; false = mostrar spinner si hace falta. force ignora caché HTTP. */
+function resolveSoftLoad(options, element) {
+  if (options && options.force) return false;
+  return Boolean(options?.soft) || sectionHasContent(element);
 }
 
 /* ══════════════════════════════════════════════
@@ -2079,7 +2090,7 @@ function populateFiles(dir = '', options = {}) {
 
   if (!list) return;
 
-  const soft = Boolean(options.soft) || sectionHasContent(list);
+  const soft = resolveSoftLoad(options, list);
   if (!soft) {
     list.innerHTML = `
     <div class="empty-state">
@@ -2091,7 +2102,7 @@ function populateFiles(dir = '', options = {}) {
 
   renderBreadcrumb(dir);
 
-  cachedApi(`files:${dir}`, `/api/files?dir=${encodeURIComponent(dir)}`, undefined, 15_000)
+  cachedApi(`files:${dir}`, `/api/files?dir=${encodeURIComponent(dir)}`, undefined, 15_000, Boolean(options.force))
     .then(data => {
       if (!data.ok) {
         throw new Error(data.error || 'No se pudo leer la carpeta.');
@@ -2168,7 +2179,7 @@ function populateFiles(dir = '', options = {}) {
           <button class="small-btn" id="btnRetryFiles" type="button">↻ Reintentar</button>
         </div>
       `;
-      $('btnRetryFiles')?.addEventListener('click', () => populateFiles(currentDir));
+      $('btnRetryFiles')?.addEventListener('click', () => populateFiles(currentDir, { force: true }));
     });
 }
 
@@ -3528,8 +3539,7 @@ async function installPlugin(version) {
     installStatus.className = 'plg-install-status installed';
     installStatus.innerHTML = `<span>✓</span><strong>Instalado correctamente</strong><span>${escHtml(filename)}</span>`;
     toast(`✅ ${filename} instalado`, 'ok');
-    invalidateViewCache('plugins:installed');
-        loadInstalledPlugins();
+    loadInstalledPlugins({ force: true });
   } catch (error) {
     installStatus.className = 'plg-install-status failed';
     installStatus.innerHTML = `<span>⚠</span><strong>Instalación fallida</strong><span>${escHtml(error.message)}</span>`;
@@ -3543,7 +3553,7 @@ async function loadInstalledPlugins(options = {}) {
 
   if (!element) return;
 
-  const soft = Boolean(options.soft) || sectionHasContent(element);
+  const soft = resolveSoftLoad(options, element);
   if (!soft) {
     element.innerHTML = `
     <div class="empty-state">
@@ -3553,7 +3563,7 @@ async function loadInstalledPlugins(options = {}) {
   `;
   }
 
-  const data = await cachedApi('plugins:installed', '/api/plugins/installed');
+  const data = await cachedApi('plugins:installed', '/api/plugins/installed', undefined, VIEW_CACHE_TTL_MS, Boolean(options.force));
 
   if (!data.ok) {
     element.innerHTML = `<div class="empty-state">${escHtml(data.error)}</div>`;
@@ -3595,8 +3605,7 @@ async function loadInstalledPlugins(options = {}) {
       if (!data.ok) {
         toast(`❌ ${data.error}`, 'err');
       } else {
-        invalidateViewCache('plugins:installed');
-        loadInstalledPlugins();
+        loadInstalledPlugins({ force: true });
       }
     });
   });
@@ -3656,7 +3665,7 @@ function renderVersionSoftware() {
         <button type="button" class="btn btn-primary ver-retry-btn" id="verRetry">Reintentar</button>
       </div>
     `;
-    $('verRetry')?.addEventListener('click', () => loadVersionState());
+    $('verRetry')?.addEventListener('click', () => loadVersionState({ force: true }));
     return;
   }
 
@@ -3940,7 +3949,7 @@ async function installVersionSelection(software, version, build) {
 
 async function loadVersionState(options = {}) {
   const container = $('versionList');
-  const soft = Boolean(options.soft) || sectionHasContent(container);
+  const soft = resolveSoftLoad(options, container);
   if (container && !soft) {
     container.innerHTML = `
       <div class="ver-loading-page">
@@ -3951,9 +3960,10 @@ async function loadVersionState(options = {}) {
   }
 
   try {
+    const force = Boolean(options.force);
     const [softwareData, startupData] = await Promise.all([
-      cachedApi('versions:software', '/api/versions/software'),
-      cachedApi('startup', '/api/startup'),
+      cachedApi('versions:software', '/api/versions/software', undefined, VIEW_CACHE_TTL_MS, force),
+      cachedApi('startup', '/api/startup', undefined, VIEW_CACHE_TTL_MS, force),
     ]);
 
     if (!softwareData?.ok) {
@@ -4045,7 +4055,7 @@ async function createDatabase() {
     showDbCredentials(data.credentials);
   }
 
-  loadDatabases();
+  loadDatabases({ force: true });
 }
 
 async function loadDatabases(options = {}) {
@@ -4053,7 +4063,7 @@ async function loadDatabases(options = {}) {
 
   if (!container) return;
 
-  const soft = Boolean(options.soft) || sectionHasContent(container);
+  const soft = resolveSoftLoad(options, container);
   if (!soft) {
     container.innerHTML = `
     <div class="empty-state">
@@ -4066,7 +4076,8 @@ async function loadDatabases(options = {}) {
   let status = { connected: false };
 
   try {
-    status = await cachedApi('databases:status', '/api/databases/status', undefined, 15_000);
+    const force = Boolean(options.force);
+    status = await cachedApi('databases:status', '/api/databases/status', undefined, 15_000, force);
   } catch (error) {
     container.innerHTML = `
       <div class="empty-state">
@@ -4091,7 +4102,7 @@ async function loadDatabases(options = {}) {
     return;
   }
 
-  const data = await cachedApi('databases', '/api/databases');
+  const data = await cachedApi('databases', '/api/databases', undefined, VIEW_CACHE_TTL_MS, Boolean(options.force));
 
   if (!data.ok) {
     container.innerHTML = `
@@ -4164,7 +4175,7 @@ async function loadDatabases(options = {}) {
       }
 
       toast('✅ Base de datos eliminada', 'ok');
-      loadDatabases();
+      loadDatabases({ force: true });
     });
   });
 
@@ -4460,7 +4471,7 @@ async function loadBackups(options = {}) {
 
   if (!container) return;
 
-  const soft = Boolean(options.soft) || sectionHasContent(container);
+  const soft = resolveSoftLoad(options, container);
   if (!soft) {
     container.innerHTML = `
     <div class="empty-state">
@@ -4470,7 +4481,7 @@ async function loadBackups(options = {}) {
   `;
   }
 
-  const data = await cachedApi('backups', '/api/backups');
+  const data = await cachedApi('backups', '/api/backups', undefined, VIEW_CACHE_TTL_MS, Boolean(options.force));
 
   if (!data.ok) {
     container.innerHTML = `<div class="empty-state"><div class="empty-msg">${escHtml(data.error)}</div></div>`;
@@ -4734,14 +4745,14 @@ async function loadPorts(options = {}) {
   const element = $('portList');
   if (!element) return;
 
-  const soft = Boolean(options.soft) || sectionHasContent(element);
+  const soft = resolveSoftLoad(options, element);
   if (!soft) {
     element.innerHTML =
     '<div class="empty-state"><div style="animation:spin 1s linear infinite;font-size:28px">⟳</div><div class="empty-msg">Comprobando puertos...</div></div>';
   }
 
   try {
-    const data = await cachedApi('ports', '/api/ports', undefined, 20_000);
+    const data = await cachedApi('ports', '/api/ports', undefined, 20_000, Boolean(options.force));
     if (!data.ok) throw new Error(data.error || 'No se pudieron cargar los puertos');
 
     const props = data.properties || {};
@@ -4846,11 +4857,11 @@ async function loadPorts(options = {}) {
       </div>
     `;
 
-    $('btnRefreshPorts')?.addEventListener('click', loadPorts);
+    $('btnRefreshPorts')?.addEventListener('click', () => loadPorts({ force: true }));
     $('btnSavePorts')?.addEventListener('click', savePorts);
   } catch (error) {
     element.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-msg">${escHtml(error.message)}</div><button class="small-btn" id="btnRetryPorts">↺ Reintentar</button></div>`;
-    $('btnRetryPorts')?.addEventListener('click', loadPorts);
+    $('btnRetryPorts')?.addEventListener('click', () => loadPorts({ force: true }));
   }
 }
 
@@ -4879,7 +4890,7 @@ async function savePorts() {
 
     toast('✅ Puertos guardados. Reinicia el servidor para aplicar los cambios.', 'ok');
     addActivity('Configuración de puertos actualizada', 'ok', '🔌');
-    await loadPorts();
+    await loadPorts({ force: true });
   } catch (error) {
     toast(error.message, 'err');
   } finally {
@@ -4920,7 +4931,7 @@ async function loadStartup(options = {}) {
 
   if (!element) return;
 
-  const soft = Boolean(options.soft) || sectionHasContent(element);
+  const soft = resolveSoftLoad(options, element);
   if (!soft) {
     element.innerHTML = `
     <div class="empty-state">
@@ -4930,7 +4941,7 @@ async function loadStartup(options = {}) {
   `;
   }
 
-  const data = await cachedApi('startup', '/api/startup');
+  const data = await cachedApi('startup', '/api/startup', undefined, VIEW_CACHE_TTL_MS, Boolean(options.force));
 
   if (!data.ok) {
     element.innerHTML = `
@@ -5233,7 +5244,7 @@ async function saveStartup() {
   }
 
   toast('✅ Configuración de arranque guardada', 'ok');
-  loadStartup();
+  loadStartup({ force: true });
 }
 
 /* ══════════════════════════════════════════════
@@ -5780,8 +5791,7 @@ function bindEvents() {
       }
 
       if (tab === 'installed') {
-        invalidateViewCache('plugins:installed');
-        loadInstalledPlugins();
+        loadInstalledPlugins({ force: true });
       }
     });
   });
@@ -5794,7 +5804,7 @@ function bindEvents() {
     }
   });
 
-  $('btnRefreshInstalled')?.addEventListener('click', loadInstalledPlugins);
+  $('btnRefreshInstalled')?.addEventListener('click', () => loadInstalledPlugins({ force: true }));
 
   $('btnClosePlgModal')?.addEventListener('click', () => {
     if ($('plgVersionModal')) {
