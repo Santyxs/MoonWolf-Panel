@@ -374,17 +374,21 @@ function ensureLoginGate() {
       width:100%;
       margin-top:12px;
       padding:11px;
-      border:0;
+      border:1px solid rgba(0,200,255,.6);
       border-radius:9px;
-      background:#6c5ce7;
-      color:#fff;
+      background:linear-gradient(180deg,#3fdcff 0%,#0a8fbf 100%);
+      color:#02141c;
       font-weight:700;
-      cursor:pointer
+      letter-spacing:.06em;
+      cursor:pointer;
+      box-shadow:0 0 18px rgba(0,200,255,.25);
+      transition:filter .15s ease, box-shadow .15s ease, transform .15s ease
     }
 
-    .mw-cloud-card button:disabled{
-      opacity:.55;
-      cursor:default
+    .mw-cloud-card button:hover:not(:disabled){
+      filter:brightness(1.1);
+      box-shadow:0 0 24px rgba(0,200,255,.4);
+      transform:translateY(-1px)
     }
 
     #mwCloudError{
