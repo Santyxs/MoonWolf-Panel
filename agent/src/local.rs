@@ -2801,11 +2801,8 @@ where
                 if became_ready {
                     state.mc_ready = true;
                 }
-                let silent = state.metric_probe_active && is_metric_reply_line(&line);
-                if silent {
-                    // Respuesta consumida por la sonda interna; no ensuciar el panel.
-                    state.metric_probe_active = false;
-                }
+                let probe_active = state.metric_probe_until_ms > crate::now_ms();
+                let silent = probe_active && is_metric_reply_line(&line);
                 state.add_console_log_ex(level, line, silent);
             }
             Err(error) => {
@@ -3274,7 +3271,8 @@ async fn send_command(
     {
         let mut s = st.app.write().await;
         if body.silent && is_metric_probe_command(cmd) {
-            s.metric_probe_active = true;
+            // Ventana corta: list/tps pueden devolver varias líneas.
+            s.metric_probe_until_ms = crate::now_ms() + 2_500;
         }
         if !body.silent {
             s.add_console_log("info", format!("> {cmd}"));
