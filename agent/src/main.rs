@@ -616,18 +616,18 @@ pub async fn check_update_once(app: Arc<RwLock<AppState>>) -> anyhow::Result<()>
         .iter()
         .find(|a| a.name.eq_ignore_ascii_case("SHA256SUMS.txt"))
     {
-        Some(sums) => match fetch_expected_sha256(client, &sums.browser_download_url, &asset.name)
-            .await
-        {
-            Ok(hash) => {
-                info!("SHA256SUMS.txt: hash esperado para {}: {hash}", asset.name);
-                Some(hash)
+        Some(sums) => {
+            match fetch_expected_sha256(client, &sums.browser_download_url, &asset.name).await {
+                Ok(hash) => {
+                    info!("SHA256SUMS.txt: hash esperado para {}: {hash}", asset.name);
+                    Some(hash)
+                }
+                Err(e) => {
+                    warn!("No se pudo leer SHA256SUMS.txt del release: {e:#}");
+                    None
+                }
             }
-            Err(e) => {
-                warn!("No se pudo leer SHA256SUMS.txt del release: {e:#}");
-                None
-            }
-        },
+        }
         None => {
             warn!("El release no incluye SHA256SUMS.txt; se omitirá la verificación de integridad");
             None
@@ -703,7 +703,6 @@ fn paths_equal(a: &Path, b: &Path) -> bool {
     ca == cb
 }
 
-
 async fn fetch_expected_sha256(
     client: &reqwest::Client,
     sums_url: &str,
@@ -756,9 +755,7 @@ async fn verify_file_sha256(path: &Path, expected_hex: &str) -> anyhow::Result<(
     }
     let actual_hex = hasher.finalize_hex();
     if actual_hex != expected_hex.to_ascii_lowercase() {
-        anyhow::bail!(
-            "SHA-256 no coincide (esperado {expected_hex}, obtenido {actual_hex})"
-        );
+        anyhow::bail!("SHA-256 no coincide (esperado {expected_hex}, obtenido {actual_hex})");
     }
     Ok(())
 }
@@ -775,8 +772,8 @@ impl Sha256Hasher {
     fn new() -> Self {
         Self {
             state: [
-                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c,
-                0x1f83d9ab, 0x5be0cd19,
+                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+                0x5be0cd19,
             ],
             buffer: [0; 64],
             buffer_len: 0,
