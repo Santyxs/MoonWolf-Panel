@@ -399,6 +399,9 @@ pub struct UpdateInfo {
     pub version: String,
     pub download_url: String,
     pub size: u64,
+    /// SHA-256 en hex (minúsculas) desde SHA256SUMS.txt del release, si existe.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -608,10 +611,34 @@ pub async fn check_update_once(app: Arc<RwLock<AppState>>) -> anyhow::Result<()>
         })
         .ok_or_else(|| anyhow::anyhow!("No hay asset de Agent en el release"))?;
 
+    let expected_sha256 = match release
+        .assets
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("SHA256SUMS.txt"))
+    {
+        Some(sums) => match fetch_expected_sha256(client, &sums.browser_download_url, &asset.name)
+            .await
+        {
+            Ok(hash) => {
+                info!("SHA256SUMS.txt: hash esperado para {}: {hash}", asset.name);
+                Some(hash)
+            }
+            Err(e) => {
+                warn!("No se pudo leer SHA256SUMS.txt del release: {e:#}");
+                None
+            }
+        },
+        None => {
+            warn!("El release no incluye SHA256SUMS.txt; se omitirá la verificación de integridad");
+            None
+        }
+    };
+
     let info_update = UpdateInfo {
         version: tag.clone(),
         download_url: asset.browser_download_url.clone(),
         size: asset.size,
+        sha256: expected_sha256,
     };
 
     {
@@ -676,6 +703,68 @@ fn paths_equal(a: &Path, b: &Path) -> bool {
     ca == cb
 }
 
+
+async fn fetch_expected_sha256(
+    client: &reqwest::Client,
+    sums_url: &str,
+    asset_name: &str,
+) -> anyhow::Result<String> {
+    let body = client
+        .get(sums_url)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+
+    let asset_lower = asset_name.to_ascii_lowercase();
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // Formatos: "HASH  name" | "HASH *name"
+        let mut parts = line.split_whitespace();
+        let hash = parts.next().unwrap_or("");
+        let name = parts.next().unwrap_or("").trim_start_matches('*');
+        if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+            continue;
+        }
+        if name.eq_ignore_ascii_case(asset_name)
+            || name.eq_ignore_ascii_case("MoonWolf-Agent.exe")
+            || name.to_ascii_lowercase().contains("moonwolf-agent")
+                && asset_lower.contains("moonwolf-agent")
+        {
+            return Ok(hash.to_ascii_lowercase());
+        }
+    }
+    anyhow::bail!("SHA256SUMS.txt no contiene una entrada para {asset_name}");
+}
+
+async fn verify_file_sha256(path: &Path, expected_hex: &str) -> anyhow::Result<()> {
+    use sha2::{Digest, Sha256};
+    use tokio::io::AsyncReadExt;
+
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let actual = hasher.finalize();
+    let actual_hex = actual.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    if actual_hex != expected_hex.to_ascii_lowercase() {
+        anyhow::bail!(
+            "SHA-256 no coincide (esperado {expected_hex}, obtenido {actual_hex})"
+        );
+    }
+    Ok(())
+}
+
 async fn download_and_stage(
     app: Arc<RwLock<AppState>>,
     info_update: &UpdateInfo,
@@ -717,6 +806,39 @@ async fn download_and_stage(
         s.update_progress = (downloaded as f32 / total as f32).min(1.0);
     }
     file.sync_all().await.ok();
+    drop(file);
+
+    // Verificar integridad con SHA256SUMS.txt del release antes de aceptar el binario.
+    if let Some(expected) = info_update.sha256.as_deref() {
+        match verify_file_sha256(&dest, expected).await {
+            Ok(()) => {
+                let mut s = app.write().await;
+                s.add_log(
+                    "info",
+                    format!(
+                        "SHA-256 verificado para v{} ({})",
+                        info_update.version,
+                        &expected[..expected.len().min(12)]
+                    ),
+                );
+            }
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&dest).await;
+                let mut s = app.write().await;
+                s.update_status = "error".into();
+                s.update_file = None;
+                s.update_error = Some(e.to_string());
+                s.add_log("error", format!("Actualización rechazada: {e:#}"));
+                return Err(e);
+            }
+        }
+    } else {
+        let mut s = app.write().await;
+        s.add_log(
+            "warn",
+            "Actualización descargada sin SHA-256 del release (no se pudo verificar integridad)",
+        );
+    }
 
     {
         let mut s = app.write().await;
