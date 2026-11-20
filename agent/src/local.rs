@@ -178,6 +178,10 @@ HELPERS GENERALES
 ══════════════════════════════════════════════ */
 
 fn check_auth(headers: &HeaderMap, expected: &str) -> Result<(), StatusCode> {
+    // Nunca aceptar configuración sin token: un local_token vacío dejaría la API abierta.
+    if expected.is_empty() {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     let auth = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -190,7 +194,7 @@ fn check_auth(headers: &HeaderMap, expected: &str) -> Result<(), StatusCode> {
         .get("x-moonwolf-token")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if token == expected || alt == expected || expected.is_empty() {
+    if (!token.is_empty() && token == expected) || (!alt.is_empty() && alt == expected) {
         Ok(())
     } else {
         Err(StatusCode::UNAUTHORIZED)
