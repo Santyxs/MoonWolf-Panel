@@ -439,8 +439,9 @@ pub struct AppState {
     /// True cuando el proceso Java ya publicó el mensaje de listo (Done/listening).
     /// Independiente del ring buffer de consola (MAX_LOGS).
     pub mc_ready: bool,
-    /// Sonda interna list/tps en curso: las respuestas no se reenvían al panel.
-    pub metric_probe_active: bool,
+    /// Hasta este instante (epoch ms) las respuestas de métricas de sondas
+    /// internas no se reenvían al panel (cubre respuestas multilínea).
+    pub metric_probe_until_ms: i64,
     pub mc_pid: Option<u32>,
     pub mc_started_at_ms: Option<i64>,
     pub update_available: Option<UpdateInfo>,
@@ -467,7 +468,7 @@ impl AppState {
             gui_revision: 0,
             mc_running: false,
             mc_ready: false,
-            metric_probe_active: false,
+            metric_probe_until_ms: 0,
             mc_pid: None,
             mc_started_at_ms: None,
             update_available: None,
