@@ -170,6 +170,36 @@ component StatusDot inherits Rectangle {
     }
 }
 
+component LogChip inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    in property <color> tone: Theme.accent;
+    callback clicked();
+
+    height: 26px;
+    horizontal-stretch: 1;
+    border-radius: 13px;
+    background: root.active ? root.tone.with-alpha(0.18) : Theme.field;
+    border-width: 1px;
+    border-color: root.active ? root.tone : (ta.has-hover ? #00c8ff88 : Theme.field-border);
+    animate background { duration: 120ms; }
+    animate border-color { duration: 120ms; }
+
+    Text {
+        text: root.label;
+        color: root.active ? root.tone : Theme.muted;
+        font-size: 10px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
 component Modal inherits Rectangle {
     in property <string> title;
     in property <string> subtitle;
@@ -271,6 +301,7 @@ export component MainWindow inherits Window {
     callback restart-agent();
     callback hide-tray();
     callback quit-agent();
+    callback log-filter-changed(int);
 
     in-out property <string> status-title: "Conectando...";
     in-out property <string> status-description: "Conectando con MoonWolf Cloud";
@@ -293,6 +324,7 @@ export component MainWindow inherits Window {
     in-out property <bool> serverdir-visible: false;
     in-out property <string> serverdir-input: "";
     in-out property <string> copy-label: "Copiar";
+    in-out property <int> log-filter: 0;
 
     Rectangle {
         height: 100%;
@@ -730,10 +762,38 @@ export component MainWindow inherits Window {
             x: 14px;
             y: (root.height - self.height) / 2;
             width: root.width - 28px;
-            height: 356px;
+            height: 392px;
             title: "Registros del Agent";
             close => { root.logs-visible = false; }
 
+            HorizontalBox {
+                spacing: 6px;
+                padding: 0px;
+                height: 26px;
+                LogChip {
+                    label: "Todos";
+                    active: root.log-filter == 0;
+                    clicked => { root.log-filter = 0; root.log-filter-changed(0); }
+                }
+                LogChip {
+                    label: "Info";
+                    tone: Theme.accent;
+                    active: root.log-filter == 1;
+                    clicked => { root.log-filter = 1; root.log-filter-changed(1); }
+                }
+                LogChip {
+                    label: "Aviso";
+                    tone: Theme.amber;
+                    active: root.log-filter == 2;
+                    clicked => { root.log-filter = 2; root.log-filter-changed(2); }
+                }
+                LogChip {
+                    label: "Error";
+                    tone: #ff5c70;
+                    active: root.log-filter == 3;
+                    clicked => { root.log-filter = 3; root.log-filter-changed(3); }
+                }
+            }
             HorizontalBox {
                 spacing: 10px;
                 padding: 0px;
@@ -762,7 +822,7 @@ export component MainWindow inherits Window {
                     y: 10px;
                     width: parent.width - 24px;
                     height: parent.height - 20px;
-                    text: root.logs-text == "" ? "Todavía no hay registros.\nLos eventos del Agent aparecerán aquí." : root.logs-text;
+                    text: root.logs-text == "" ? "No hay registros para este filtro.\nLos eventos del Agent aparecerán aquí." : root.logs-text;
                     color: root.logs-text == "" ? #4a5d70 : #b4d4e6;
                     font-family: "Consolas";
                     font-size: 10px;
