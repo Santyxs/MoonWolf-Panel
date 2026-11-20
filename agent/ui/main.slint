@@ -261,15 +261,21 @@ component Modal inherits Rectangle {
         border-width: 1px;
         border-color: close-ta.has-hover ? #8a4a62 : Theme.field-border;
         animate background { duration: 120ms; }
-        Text {
-            height: 100%;
-            text: "×";
-            color: close-ta.has-hover ? #ffb4c4 : #a8bccf;
-            font-size: 18px;
-            font-weight: 600;
-            horizontal-alignment: center;
-            vertical-alignment: center;
+
+        Path {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 10px;
+            height: 10px;
+            viewbox-width: 10;
+            viewbox-height: 10;
+            commands: "M 0 0 L 10 10 M 10 0 L 0 10";
+            stroke: close-ta.has-hover ? #ffb4c4 : #a8bccf;
+            stroke-width: 1.6px;
+            stroke-line-cap: round;
+            animate stroke { duration: 120ms; }
         }
+
         close-ta := TouchArea {
             mouse-cursor: pointer;
             clicked => { root.close(); }
