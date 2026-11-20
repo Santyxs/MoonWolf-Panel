@@ -3,18 +3,19 @@ import { LineEdit, VerticalBox, HorizontalBox, ScrollView } from "std-widgets.sl
 // ─── Tema ───────────────────────────────────────────────────────────────────
 
 global Theme {
-    out property <color> bg: #0b0d19;
-    out property <color> card: #11142a;
-    out property <color> line: #252a46;
-    out property <color> field: #1b1f3a;
-    out property <color> field-border: #343a5c;
-    out property <color> accent: #8b7bff;
-    out property <color> accent-soft: #c3b9ff;
-    out property <color> green: #3dd9a8;
-    out property <color> amber: #f0b84a;
-    out property <color> text: #f4f2ff;
-    out property <color> muted: #8a90b4;
-    out property <color> muted-dim: #6a7094;
+    out property <color> bg: #05080d;
+    out property <color> card: #0b1016;
+    out property <color> line: #1b2a3a;
+    out property <color> field: #0f151d;
+    out property <color> field-border: #2a3c50;
+    out property <color> accent: #00c8ff;
+    out property <color> accent-soft: #7ee3ff;
+    out property <color> accent-deep: #0077aa;
+    out property <color> green: #2ee6a0;
+    out property <color> amber: #f5c242;
+    out property <color> text: #d9e6f2;
+    out property <color> muted: #7a91a8;
+    out property <color> muted-dim: #5a7188;
 }
 
 // ─── Componentes ────────────────────────────────────────────────────────────
@@ -28,24 +29,24 @@ component ActionButton inherits Rectangle {
 
     height: 38px;
     border-radius: 10px;
-    background: root.primary ? #6d5be5
-             : root.danger  ? #3a2528
+    background: root.primary ? #0a8fbf
+             : root.danger  ? #2c1a1f
              : Theme.field;
     border-width: 1px;
-    border-color: root.primary ? #b3a8ff
+    border-color: root.primary ? #6fe0ff
                  : root.danger  ? #7a3a42
                  : Theme.field-border;
     drop-shadow-blur: root.primary ? 18px : 0px;
     drop-shadow-offset-y: 4px;
-    drop-shadow-color: #6d5be566;
+    drop-shadow-color: #00c8ff55;
 
     animate background { duration: 140ms; easing: ease-out; }
     animate border-color { duration: 140ms; easing: ease-out; }
 
     if root.primary : Rectangle {
         border-radius: root.border-radius;
-        background: @linear-gradient(180deg, #a899ff 0%, #6d5be5 100%);
-        opacity: ta.pressed ? 0.75 : ta.has-hover ? 1.0 : 0.88;
+        background: @linear-gradient(180deg, #3fdcff 0%, #0a8fbf 100%);
+        opacity: ta.pressed ? 0.75 : ta.has-hover ? 1.0 : 0.9;
         animate opacity { duration: 140ms; easing: ease-out; }
     }
 
@@ -53,7 +54,7 @@ component ActionButton inherits Rectangle {
         width: 100%;
         height: 100%;
         text: root.label;
-        color: #ffffff;
+        color: root.primary ? #02141c : root.danger ? #ffb4bc : Theme.text;
         font-size: root.label-font-size;
         font-weight: 700;
         horizontal-alignment: center;
@@ -69,15 +70,15 @@ component ActionButton inherits Rectangle {
 
     states [
         hover when ta.has-hover && !root.primary && !root.danger: {
-            background: #272c4d;
-            border-color: #5a6296;
+            background: #14202c;
+            border-color: #00c8ff88;
         }
         hover-danger when ta.has-hover && root.danger: {
-            background: #4c2f34;
+            background: #3d2229;
             border-color: #a24b57;
         }
         pressed when ta.pressed && !root.primary: {
-            background: #151830;
+            background: #0a1118;
         }
     ]
 }
@@ -113,7 +114,7 @@ component FieldRow inherits Rectangle {
             color: Theme.muted-dim;
             font-size: 8px;
             font-weight: 800;
-            letter-spacing: 1.2px;
+            letter-spacing: 1.4px;
             horizontal-alignment: left;
         }
         Text {
@@ -177,9 +178,9 @@ component Modal inherits Rectangle {
     property <bool> ready: false;
 
     border-radius: 18px;
-    background: #14172e;
+    background: #0a1017;
     border-width: 1px;
-    border-color: #6a5ad8;
+    border-color: #1e5a78;
     drop-shadow-blur: 40px;
     drop-shadow-offset-y: 10px;
     drop-shadow-color: #000000d0;
@@ -191,7 +192,7 @@ component Modal inherits Rectangle {
     Rectangle {
         height: 70px;
         y: 0px;
-        background: @linear-gradient(180deg, #8b7bff22 0%, #8b7bff00 100%);
+        background: @linear-gradient(180deg, #00c8ff26 0%, #00c8ff00 100%);
     }
 
     VerticalBox {
@@ -226,14 +227,14 @@ component Modal inherits Rectangle {
         width: 28px;
         height: 28px;
         border-radius: 8px;
-        background: close-ta.has-hover ? #3a2a40 : Theme.field;
+        background: close-ta.has-hover ? #3a2028 : Theme.field;
         border-width: 1px;
         border-color: close-ta.has-hover ? #8a4a62 : Theme.field-border;
         animate background { duration: 120ms; }
         Text {
             height: 100%;
             text: "×";
-            color: close-ta.has-hover ? #ffb4c4 : #c0c4d8;
+            color: close-ta.has-hover ? #ffb4c4 : #a8bccf;
             font-size: 18px;
             font-weight: 600;
             horizontal-alignment: center;
@@ -251,11 +252,11 @@ component Modal inherits Rectangle {
 export component MainWindow inherits Window {
     title: "MoonWolf Agent";
     min-width: 320px;
-    preferred-width: 340px;
-    max-width: 380px;
-    min-height: 460px;
-    preferred-height: 500px;
-    max-height: 560px;
+    preferred-width: 360px;
+    max-width: 400px;
+    min-height: 470px;
+    preferred-height: 510px;
+    max-height: 570px;
     background: Theme.bg;
 
     callback open-panel();
@@ -295,7 +296,7 @@ export component MainWindow inherits Window {
 
     Rectangle {
         height: 100%;
-        background: @linear-gradient(170deg, #141731 0%, #0b0d19 45%, #090b15 100%);
+        background: @linear-gradient(170deg, #0a1620 0%, #05080d 45%, #04060a 100%);
 
         // Resplandor ambiental superior
         Rectangle {
@@ -303,7 +304,7 @@ export component MainWindow inherits Window {
             y: -150px;
             width: 380px;
             height: 300px;
-            background: @radial-gradient(circle, #7a68f044 0%, #7a68f000 70%);
+            background: @radial-gradient(circle, #00c8ff33 0%, #00c8ff00 70%);
         }
 
         VerticalBox {
@@ -320,33 +321,34 @@ export component MainWindow inherits Window {
                 spacing: 12px;
                 alignment: center;
 
+                // Logo: luna con degradado
                 Rectangle {
                     width: 42px;
                     height: 42px;
                     border-radius: 13px;
-                    background: #1c1846;
+                    background: @linear-gradient(145deg, #121c2a 0%, #0a1420 100%);
                     border-width: 1.5px;
-                    border-color: #8b7bff;
+                    border-color: #1e5a78;
                     drop-shadow-blur: 16px;
-                    drop-shadow-color: #7a68f088;
+                    drop-shadow-color: #00c8ff66;
 
                     Rectangle {
                         x: 9px; y: 9px;
                         width: 24px; height: 24px;
                         border-radius: 12px;
-                        background: #ffffff;
+                        background: @linear-gradient(135deg, #5ed0ff 0%, #0077aa 100%);
                     }
                     Rectangle {
                         x: 16px; y: 6px;
                         width: 22px; height: 22px;
                         border-radius: 11px;
-                        background: #1c1846;
+                        background: #0c1520;
                     }
                     Rectangle {
-                        x: 27px; y: 27px;
+                        x: 15px; y: 17px;
                         width: 3px; height: 3px;
                         border-radius: 2px;
-                        background: #c3b9ff;
+                        background: #a8ecff;
                     }
                 }
 
@@ -355,7 +357,7 @@ export component MainWindow inherits Window {
                     alignment: center;
                     Text {
                         text: "MoonWolf";
-                        color: Theme.text;
+                        color: #ffffff;
                         font-size: 19px;
                         font-weight: 800;
                     }
@@ -364,7 +366,7 @@ export component MainWindow inherits Window {
                         color: Theme.accent;
                         font-size: 8px;
                         font-weight: 800;
-                        letter-spacing: 3px;
+                        letter-spacing: 3.5px;
                     }
                 }
                 Rectangle { horizontal-stretch: 1; }
@@ -375,10 +377,12 @@ export component MainWindow inherits Window {
                 height: 58px;
                 border-radius: 13px;
                 background: root.cloud-connected
-                    ? @linear-gradient(90deg, #12302c 0%, #11142a 70%)
-                    : @linear-gradient(90deg, #2c2615 0%, #11142a 70%);
+                    ? @linear-gradient(90deg, #0a2a24 0%, #0b1016 75%)
+                    : @linear-gradient(90deg, #2c2615 0%, #0b1016 75%);
                 border-width: 1px;
-                border-color: root.cloud-connected ? #2b5a50 : #4a4326;
+                border-color: root.cloud-connected ? #1d5a48 : #4a4326;
+                drop-shadow-blur: 14px;
+                drop-shadow-color: root.cloud-connected ? #2ee6a022 : #f5c24218;
                 clip: true;
 
                 HorizontalBox {
@@ -401,7 +405,7 @@ export component MainWindow inherits Window {
                         }
                         Text {
                             text: root.cloud-connected ? "Conexión activa con MoonWolf Cloud" : root.status-description;
-                            color: root.cloud-connected ? #8fd9c3 : #d6bf84;
+                            color: root.cloud-connected ? #8fe8c8 : #d6bf84;
                             font-size: 10px;
                             overflow: elide;
                             horizontal-alignment: left;
@@ -415,17 +419,28 @@ export component MainWindow inherits Window {
                 color: Theme.muted-dim;
                 font-size: 9px;
                 font-weight: 800;
-                letter-spacing: 1.5px;
+                letter-spacing: 1.8px;
                 horizontal-alignment: left;
             }
 
             // ── Tarjeta de información ──
             Rectangle {
                 border-radius: 14px;
-                background: @linear-gradient(180deg, #151933 0%, #0f1226 100%);
+                background: @linear-gradient(180deg, #0e161f 0%, #0a1017 100%);
                 border-width: 1px;
                 border-color: Theme.line;
+                drop-shadow-blur: 18px;
+                drop-shadow-offset-y: 6px;
+                drop-shadow-color: #00000066;
                 clip: true;
+
+                // Línea de acento superior
+                Rectangle {
+                    y: 0px;
+                    height: 2px;
+                    background: @linear-gradient(90deg, #00c8ff00 0%, #00c8ff 50%, #00c8ff00 100%);
+                    opacity: 0.55;
+                }
 
                 VerticalBox {
                     padding: 2px;
@@ -468,7 +483,7 @@ export component MainWindow inherits Window {
                                     color: Theme.muted-dim;
                                     font-size: 8px;
                                     font-weight: 800;
-                                    letter-spacing: 1.2px;
+                                    letter-spacing: 1.4px;
                                     horizontal-alignment: left;
                                 }
                                 Text {
@@ -500,7 +515,7 @@ export component MainWindow inherits Window {
                                     color: Theme.muted-dim;
                                     font-size: 8px;
                                     font-weight: 800;
-                                    letter-spacing: 1.0px;
+                                    letter-spacing: 1.2px;
                                     horizontal-alignment: left;
                                 }
                                 Text {
@@ -552,15 +567,15 @@ export component MainWindow inherits Window {
             if root.update-visible : Rectangle {
                 height: 56px;
                 border-radius: 14px;
-                background: @linear-gradient(90deg, #272054 0%, #15122e 100%);
+                background: @linear-gradient(90deg, #0c2e3e 0%, #0a1017 100%);
                 border-width: 1px;
-                border-color: #5a4ca8;
+                border-color: #1b6a8a;
                 HorizontalBox {
                     padding: 12px;
                     spacing: 10px;
                     Text {
                         text: root.update-text;
-                        color: #e4e0ff;
+                        color: #d2f4ff;
                         font-size: 11px;
                         font-weight: 600;
                         horizontal-stretch: 1;
@@ -583,7 +598,7 @@ export component MainWindow inherits Window {
                     }
                     if !root.update-installable && !root.update-failed : Text {
                         text: "Descargando";
-                        color: #b6aaff;
+                        color: Theme.accent-soft;
                         font-size: 10px;
                         font-weight: 700;
                         vertical-alignment: center;
@@ -594,7 +609,7 @@ export component MainWindow inherits Window {
             if root.restart-visible : Rectangle {
                 height: 52px;
                 border-radius: 14px;
-                background: @linear-gradient(90deg, #35291a 0%, #1d1710 100%);
+                background: @linear-gradient(90deg, #35291a 0%, #14100a 100%);
                 border-width: 1px;
                 border-color: #7a5630;
                 HorizontalBox {
@@ -619,12 +634,21 @@ export component MainWindow inherits Window {
             }
 
             Rectangle { vertical-stretch: 1; }
+
+            Text {
+                text: "MOONWOLF · 2026";
+                color: Theme.muted-dim;
+                font-size: 8px;
+                font-weight: 700;
+                letter-spacing: 2px;
+                horizontal-alignment: center;
+            }
         }
 
         // ── Fondo oscuro de los modales ──
         if root.settings-visible || root.logs-visible || root.serverdir-visible : Rectangle {
             height: 100%;
-            background: #05060ccc;
+            background: #020407cc;
             TouchArea {
                 clicked => {
                     root.settings-visible = false;
@@ -655,9 +679,9 @@ export component MainWindow inherits Window {
             if root.update-visible : Rectangle {
                 height: 56px;
                 border-radius: 12px;
-                background: @linear-gradient(90deg, #272054 0%, #15122e 100%);
+                background: @linear-gradient(90deg, #0c2e3e 0%, #0a1017 100%);
                 border-width: 1px;
-                border-color: #5a4ca8;
+                border-color: #1b6a8a;
                 HorizontalBox {
                     padding-left: 12px;
                     padding-right: 10px;
@@ -665,7 +689,7 @@ export component MainWindow inherits Window {
                     alignment: center;
                     Text {
                         text: root.update-text;
-                        color: #e4e0ff;
+                        color: #d2f4ff;
                         font-size: 11px;
                         font-weight: 600;
                         horizontal-stretch: 1;
@@ -688,7 +712,7 @@ export component MainWindow inherits Window {
                     }
                     if !root.update-installable && !root.update-failed : Text {
                         text: "Descargando";
-                        color: #b6aaff;
+                        color: Theme.accent-soft;
                         font-size: 10px;
                         font-weight: 700;
                         vertical-alignment: center;
@@ -728,7 +752,7 @@ export component MainWindow inherits Window {
                 vertical-stretch: 1;
                 min-height: 180px;
                 border-radius: 12px;
-                background: #080a15;
+                background: #04070b;
                 border-width: 1px;
                 border-color: Theme.line;
                 clip: true;
@@ -739,7 +763,7 @@ export component MainWindow inherits Window {
                     width: parent.width - 24px;
                     height: parent.height - 20px;
                     text: root.logs-text == "" ? "Todavía no hay registros.\nLos eventos del Agent aparecerán aquí." : root.logs-text;
-                    color: root.logs-text == "" ? #5a5f7a : #c8cce0;
+                    color: root.logs-text == "" ? #4a5d70 : #b4d4e6;
                     font-family: "Consolas";
                     font-size: 10px;
                     wrap: word-wrap;
