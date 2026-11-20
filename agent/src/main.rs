@@ -150,7 +150,7 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn now_secs() -> i64 {
+pub fn now_secs() -> i64 {
     now_ms() / 1000
 }
 
@@ -621,17 +621,17 @@ pub async fn check_update_once(app: Arc<RwLock<AppState>>) -> anyhow::Result<()>
             match fetch_expected_sha256(client, &sums.browser_download_url, &asset.name).await {
                 Ok(hash) => {
                     info!("SHA256SUMS.txt: hash esperado para {}: {hash}", asset.name);
-                    Some(hash)
+                    hash
                 }
                 Err(e) => {
                     warn!("No se pudo leer SHA256SUMS.txt del release: {e:#}");
-                    None
+                    anyhow::bail!("Actualización rechazada: no se pudo leer el checksum SHA-256 del release ({e:#})");
                 }
             }
         }
         None => {
-            warn!("El release no incluye SHA256SUMS.txt; se omitirá la verificación de integridad");
-            None
+            warn!("El release no incluye SHA256SUMS.txt; actualización rechazada");
+            anyhow::bail!("Actualización rechazada: el release no incluye archivo SHA256SUMS.txt");
         }
     };
 
@@ -639,7 +639,7 @@ pub async fn check_update_once(app: Arc<RwLock<AppState>>) -> anyhow::Result<()>
         version: tag.clone(),
         download_url: asset.browser_download_url.clone(),
         size: asset.size,
-        sha256: expected_sha256,
+        sha256: Some(expected_sha256),
     };
 
     {
@@ -944,36 +944,42 @@ async fn download_and_stage(
     file.sync_all().await.ok();
     drop(file);
 
-    // Verificar integridad con SHA256SUMS.txt del release antes de aceptar el binario.
-    if let Some(expected) = info_update.sha256.as_deref() {
-        match verify_file_sha256(&dest, expected).await {
-            Ok(()) => {
-                let mut s = app.write().await;
-                s.add_log(
-                    "info",
-                    format!(
-                        "SHA-256 verificado para v{} ({})",
-                        info_update.version,
-                        &expected[..expected.len().min(12)]
-                    ),
-                );
-            }
-            Err(e) => {
-                let _ = tokio::fs::remove_file(&dest).await;
-                let mut s = app.write().await;
-                s.update_status = "error".into();
-                s.update_file = None;
-                s.update_error = Some(e.to_string());
-                s.add_log("error", format!("Actualización rechazada: {e:#}"));
-                return Err(e);
-            }
+    // Exigir y verificar integridad con SHA256SUMS.txt del release antes de aceptar el binario.
+    let expected = match info_update.sha256.as_deref() {
+        Some(e) if !e.trim().is_empty() => e.trim(),
+        _ => {
+            let _ = tokio::fs::remove_file(&dest).await;
+            let mut s = app.write().await;
+            s.update_status = "error".into();
+            s.update_file = None;
+            let err_msg = "Actualización rechazada: checksum SHA-256 no disponible".to_string();
+            s.update_error = Some(err_msg.clone());
+            s.add_log("error", &err_msg);
+            anyhow::bail!("{err_msg}");
         }
-    } else {
-        let mut s = app.write().await;
-        s.add_log(
-            "warn",
-            "Actualización descargada sin SHA-256 del release (no se pudo verificar integridad)",
-        );
+    };
+
+    match verify_file_sha256(&dest, expected).await {
+        Ok(()) => {
+            let mut s = app.write().await;
+            s.add_log(
+                "info",
+                format!(
+                    "SHA-256 verificado para v{} ({})",
+                    info_update.version,
+                    &expected[..expected.len().min(12)]
+                ),
+            );
+        }
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&dest).await;
+            let mut s = app.write().await;
+            s.update_status = "error".into();
+            s.update_file = None;
+            s.update_error = Some(e.to_string());
+            s.add_log("error", format!("Actualización rechazada por suma de verificación: {e:#}"));
+            return Err(e);
+        }
     }
 
     {

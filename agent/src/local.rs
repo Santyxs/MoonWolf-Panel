@@ -16,7 +16,6 @@ use serde_json::json;
 use sqlx::Row;
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock};
-use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 use walkdir::WalkDir;
 use zip::ZipWriter;
@@ -90,10 +89,6 @@ pub async fn serve(app: Arc<RwLock<AppState>>, port: u16) -> anyhow::Result<()> 
         backup_progress: Arc::new(Mutex::new(BackupProgress::default())),
         backup_operation: Arc::new(Mutex::new(None)),
     };
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
 
     let router = Router::new()
         .route("/api/health", get(health))
@@ -149,8 +144,7 @@ pub async fn serve(app: Arc<RwLock<AppState>>, port: u16) -> anyhow::Result<()> 
         .route("/api/databases/{name}/reset-password", post(db_reset))
         .route("/api/databases/{name}", delete(db_delete))
         .layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT))
-        .with_state(state)
-        .layer(cors);
+        .with_state(state);
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     info!("API local en {addr}");
@@ -1309,9 +1303,15 @@ async fn compute_total_bytes(root: &Path) -> u64 {
     .unwrap_or(0)
 }
 
-async fn get_backup_progress(State(st): State<LocalState>) -> Response {
+async fn get_backup_progress(
+    State(st): State<LocalState>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    let s = st.app.read().await;
+    check_auth(&headers, &s.config.local_token)?;
+    drop(s);
     let p = st.backup_progress.lock().await.clone();
-    json_ok(json!({ "progress": p }))
+    Ok(json_ok(json!({ "progress": p })))
 }
 
 async fn list_backups(
@@ -1696,50 +1696,172 @@ async fn restore_backup(
         let file = std::fs::File::open(&zip_path_clone)?;
         let mut archive = zip::ZipArchive::new(file)?;
 
-        for entry in std::fs::read_dir(&root_clone)? {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            let name = entry.file_name().to_string_lossy().to_string();
-            if backup_excluded(&name) {
-                continue;
-            }
-            let p = entry.path();
-            if entry.file_type()?.is_dir() {
-                let _ = std::fs::remove_dir_all(&p);
-            } else {
-                let _ = std::fs::remove_file(&p);
-            }
+        // 1. Extraer y validar en una carpeta temporal dentro de .moonwolf
+        let ts = crate::now_secs();
+        let rnd: u32 = rand::rng().random();
+        let staging_dir = backups_dir(&root_clone).join(format!(".restore-stage-{ts}-{rnd}"));
+        let rollback_dir = backups_dir(&root_clone).join(format!(".restore-rollback-{ts}-{rnd}"));
+
+        if staging_dir.exists() {
+            let _ = std::fs::remove_dir_all(&staging_dir);
         }
+        std::fs::create_dir_all(&staging_dir)?;
 
-        for i in 0..archive.len() {
-            let mut entry = archive.by_index(i)?;
-            let rel = entry
-                .enclosed_name()
-                .ok_or_else(|| anyhow::anyhow!("Entrada inválida en ZIP"))?
-                .to_path_buf();
+        let extract_result = (|| -> anyhow::Result<()> {
+            for i in 0..archive.len() {
+                let mut entry = archive.by_index(i)?;
+                let rel = entry
+                    .enclosed_name()
+                    .ok_or_else(|| anyhow::anyhow!("Entrada inválida en ZIP"))?
+                    .to_path_buf();
 
-            let first = rel
-                .components()
-                .next()
-                .map(|c| c.as_os_str().to_string_lossy().to_string())
-                .unwrap_or_default();
-            if backup_excluded(&first) {
-                continue;
-            }
-
-            let target = root_clone.join(&rel);
-            if entry.is_dir() {
-                std::fs::create_dir_all(&target)?;
-            } else {
-                if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent)?;
+                let first = rel
+                    .components()
+                    .next()
+                    .map(|c| c.as_os_str().to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if backup_excluded(&first) {
+                    continue;
                 }
-                let mut out = std::fs::File::create(&target)?;
-                std::io::copy(&mut entry, &mut out)?;
+
+                let target = staging_dir.join(&rel);
+                if entry.is_dir() {
+                    std::fs::create_dir_all(&target)?;
+                } else {
+                    if let Some(parent) = target.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    let mut out = std::fs::File::create(&target)?;
+                    std::io::copy(&mut entry, &mut out)?;
+                }
             }
+            Ok(())
+        })();
+
+        if let Err(e) = extract_result {
+            let _ = std::fs::remove_dir_all(&staging_dir);
+            anyhow::bail!("Error al extraer y validar copia en staging temporal: {e}");
         }
+
+        // Helper para copiar directorio recursivamente
+        fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+            std::fs::create_dir_all(dst)?;
+            for entry in std::fs::read_dir(src)? {
+                let entry = entry?;
+                let file_type = entry.file_type()?;
+                let dest_path = dst.join(entry.file_name());
+                if file_type.is_dir() {
+                    copy_dir_all(&entry.path(), &dest_path)?;
+                } else {
+                    std::fs::copy(entry.path(), &dest_path)?;
+                }
+            }
+            Ok(())
+        }
+
+        // Helper para limpiar servidor ignorando rutas internas/excluidas
+        fn clear_server_files(root: &Path) -> std::io::Result<()> {
+            for entry in std::fs::read_dir(root)? {
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                let name = entry.file_name().to_string_lossy().to_string();
+                if backup_excluded(&name) {
+                    continue;
+                }
+                let p = entry.path();
+                if entry.file_type()?.is_dir() {
+                    let _ = std::fs::remove_dir_all(&p);
+                } else {
+                    let _ = std::fs::remove_file(&p);
+                }
+            }
+            Ok(())
+        }
+
+        // 2. Crear copia de rollback del servidor actual
+        if rollback_dir.exists() {
+            let _ = std::fs::remove_dir_all(&rollback_dir);
+        }
+        std::fs::create_dir_all(&rollback_dir)?;
+
+        let backup_created = (|| -> std::io::Result<()> {
+            for entry in std::fs::read_dir(&root_clone)? {
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                let name = entry.file_name().to_string_lossy().to_string();
+                if backup_excluded(&name) {
+                    continue;
+                }
+                let src_p = entry.path();
+                let dst_p = rollback_dir.join(&name);
+                if entry.file_type()?.is_dir() {
+                    copy_dir_all(&src_p, &dst_p)?;
+                } else {
+                    std::fs::copy(&src_p, &dst_p)?;
+                }
+            }
+            Ok(())
+        })();
+
+        if let Err(e) = backup_created {
+            let _ = std::fs::remove_dir_all(&staging_dir);
+            let _ = std::fs::remove_dir_all(&rollback_dir);
+            anyhow::bail!("No se pudo crear copia de rollback previa: {e}");
+        }
+
+        // 3. Sustituir el servidor aplicando staging
+        let replace_result = (|| -> anyhow::Result<()> {
+            clear_server_files(&root_clone)?;
+
+            for entry in std::fs::read_dir(&staging_dir)? {
+                let entry = entry?;
+                let name = entry.file_name().to_string_lossy().to_string();
+                if backup_excluded(&name) {
+                    continue;
+                }
+                let src_p = entry.path();
+                let dst_p = root_clone.join(&name);
+                if entry.file_type()?.is_dir() {
+                    copy_dir_all(&src_p, &dst_p)?;
+                } else {
+                    std::fs::copy(&src_p, &dst_p)?;
+                }
+            }
+            Ok(())
+        })();
+
+        if let Err(e) = replace_result {
+            // Rollback si falla la sustitución
+            let _ = clear_server_files(&root_clone);
+            let _ = (|| -> std::io::Result<()> {
+                for entry in std::fs::read_dir(&rollback_dir)? {
+                    let entry = match entry {
+                        Ok(e) => e,
+                        Err(_) => continue,
+                    };
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let src_p = entry.path();
+                    let dst_p = root_clone.join(&name);
+                    if entry.file_type()?.is_dir() {
+                        copy_dir_all(&src_p, &dst_p)?;
+                    } else {
+                        std::fs::copy(&src_p, &dst_p)?;
+                    }
+                }
+                Ok(())
+            })();
+            let _ = std::fs::remove_dir_all(&staging_dir);
+            // Conservar rollback_dir para que el usuario/admin tenga el rescate
+            anyhow::bail!("Sustitución fallida. Se aplicó rollback automático desde copia de seguridad ({e})");
+        }
+
+        // Éxito: limpiar staging y rollback
+        let _ = std::fs::remove_dir_all(&staging_dir);
+        let _ = std::fs::remove_dir_all(&rollback_dir);
         Ok(())
     })
     .await;
@@ -2642,7 +2764,14 @@ async fn save_ports(
 SERVIDOR
 ══════════════════════════════════════════════ */
 
-async fn server_status(State(st): State<LocalState>) -> Response {
+async fn server_status(
+    State(st): State<LocalState>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    {
+        let s = st.app.read().await;
+        check_auth(&headers, &s.config.local_token)?;
+    }
     // "online" | "offline" | "unknown"
     // unknown = hay Child pero try_wait falló: no lo descartamos (kill_on_drop).
     let (status, running) = {
@@ -2670,11 +2799,11 @@ async fn server_status(State(st): State<LocalState>) -> Response {
             s.mc_started_at_ms = None;
         }
     }
-    json_ok(json!({
+    Ok(json_ok(json!({
         "status": status,
         "running": running,
         "unknown": status == "unknown",
-    }))
+    })))
 }
 
 async fn find_server_jar(root: &Path, preferred: &str) -> Option<PathBuf> {
@@ -4664,19 +4793,23 @@ async fn plugins_install(
     }))
 }
 
-async fn plugins_installed(State(st): State<LocalState>) -> Response {
+async fn plugins_installed(
+    State(st): State<LocalState>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
     let server_dir = {
         let s = st.app.read().await;
+        check_auth(&headers, &s.config.local_token)?;
         s.config.server_dir.clone()
     };
     let dir = plugins_dir(&server_dir);
     if !dir.exists() {
-        return json_ok(json!({ "plugins": [] }));
+        return Ok(json_ok(json!({ "plugins": [] })));
     }
 
     let mut rd = match tokio::fs::read_dir(&dir).await {
         Ok(r) => r,
-        Err(_) => return json_ok(json!({ "plugins": [] })),
+        Err(_) => return Ok(json_ok(json!({ "plugins": [] }))),
     };
     let mut plugins = Vec::new();
     while let Ok(Some(ent)) = rd.next_entry().await {
@@ -4709,7 +4842,7 @@ async fn plugins_installed(State(st): State<LocalState>) -> Response {
             .cmp(b.get("filename").and_then(|x| x.as_str()).unwrap_or(""))
     });
 
-    json_ok(json!({ "plugins": plugins }))
+    Ok(json_ok(json!({ "plugins": plugins })))
 }
 
 async fn plugins_delete(
