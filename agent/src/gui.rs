@@ -1,4 +1,4 @@
-//! Interfaz nativa de MoonWolf Agent implementada con Slint (Windows).
+//! Interfaz nativa de MoonWolf Agent implementada con Slint.
 
 use std::{path::PathBuf, process::Command, sync::Arc};
 
@@ -182,6 +182,14 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         })
     });
 
+    let app_for_filter = Arc::clone(&app);
+    ui.on_log_filter_changed(move |_| {
+        spawn_async(Arc::clone(&app_for_filter), |app| async move {
+            let mut state = app.write().await;
+            state.gui_revision = state.gui_revision.wrapping_add(1);
+        })
+    });
+
     let app_for_save = Arc::clone(&app);
     ui.on_save_logs(move || {
         spawn_async(Arc::clone(&app_for_save), |app| async move {
@@ -210,7 +218,6 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     let app_for_update = Arc::clone(&app);
     ui.on_check_update(move || {
         spawn_async(Arc::clone(&app_for_update), |app| async move {
-            // check_update_once registra el error y actualiza el estado visible.
             let _ = crate::check_update_once(app).await;
         })
     });
@@ -245,7 +252,6 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
                         let _ = slint::invoke_from_event_loop(|| {
                             let _ = slint::quit_event_loop();
                         });
-                        // Forzar salida si tareas en segundo plano mantienen el proceso vivo
                         std::thread::spawn(|| {
                             std::thread::sleep(std::time::Duration::from_millis(1500));
                             std::process::exit(0);
@@ -282,8 +288,6 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     ui.on_hide_tray(move || {
         if let Some(ui) = weak_for_hide.upgrade() {
             let window = ui.window();
-            // Ocultar a la bandeja: sin ventana y sin icono en la barra de tareas.
-            // Se restaura con el icono de la system tray.
             if window.is_minimized() {
                 window.set_minimized(false);
             }
@@ -372,9 +376,16 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
                             snapshot.update_error.clone().unwrap_or_default()
                         };
                         ui.set_update_text(update.into());
+                        let filter = ui.get_log_filter();
                         let logs = snapshot
                             .logs
                             .iter()
+                            .filter(|l| match filter {
+                                1 => l.level == "info",
+                                2 => l.level == "warn",
+                                3 => l.level == "error",
+                                _ => true,
+                            })
                             .map(|l| format!("[{}] {}", l.level.to_uppercase(), l.message))
                             .collect::<Vec<_>>()
                             .join("\n");
@@ -386,11 +397,6 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     });
 
     info!("Iniciando interfaz nativa Slint");
-    // `ui.run()` termina el event loop cuando la última ventana deja de ser
-    // visible. Al ocultar la ventana para dejar el Agent en la bandeja, eso
-    // cerraba el proceso antes de que el icono pudiera volver a mostrarlo.
-    // Este loop solo termina cuando se llama explícitamente a quit_event_loop
-    // desde Salir, Reiniciar o la aplicación de una actualización.
     ui.show()?;
     let ui_result = slint::run_event_loop_until_quit();
     refresh_task.abort();
