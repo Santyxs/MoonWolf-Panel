@@ -1856,7 +1856,9 @@ async fn restore_backup(
             })();
             let _ = std::fs::remove_dir_all(&staging_dir);
             // Conservar rollback_dir para que el usuario/admin tenga el rescate
-            anyhow::bail!("Sustitución fallida. Se aplicó rollback automático desde copia de seguridad ({e})");
+            anyhow::bail!(
+                "Sustitución fallida. Se aplicó rollback automático desde copia de seguridad ({e})"
+            );
         }
 
         // Éxito: limpiar staging y rollback

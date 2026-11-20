@@ -625,7 +625,9 @@ pub async fn check_update_once(app: Arc<RwLock<AppState>>) -> anyhow::Result<()>
                 }
                 Err(e) => {
                     warn!("No se pudo leer SHA256SUMS.txt del release: {e:#}");
-                    anyhow::bail!("Actualización rechazada: no se pudo leer el checksum SHA-256 del release ({e:#})");
+                    anyhow::bail!(
+                        "Actualización rechazada: no se pudo leer el checksum SHA-256 del release ({e:#})"
+                    );
                 }
             }
         }
@@ -977,7 +979,10 @@ async fn download_and_stage(
             s.update_status = "error".into();
             s.update_file = None;
             s.update_error = Some(e.to_string());
-            s.add_log("error", format!("Actualización rechazada por suma de verificación: {e:#}"));
+            s.add_log(
+                "error",
+                format!("Actualización rechazada por suma de verificación: {e:#}"),
+            );
             return Err(e);
         }
     }
