@@ -1698,7 +1698,9 @@ async fn restore_backup(
 
         // 1. Extraer y validar en una carpeta temporal dentro de .moonwolf
         let ts = crate::now_secs();
-        let rnd: u32 = rand::rng().random();
+        let mut rnd_bytes = [0u8; 4];
+        rand::rng().fill_bytes(&mut rnd_bytes);
+        let rnd = u32::from_be_bytes(rnd_bytes);
         let staging_dir = backups_dir(&root_clone).join(format!(".restore-stage-{ts}-{rnd}"));
         let rollback_dir = backups_dir(&root_clone).join(format!(".restore-rollback-{ts}-{rnd}"));
 
