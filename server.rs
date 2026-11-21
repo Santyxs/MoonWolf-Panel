@@ -1356,8 +1356,8 @@ async fn styles_css(Query(query): Query<HashMap<String, String>>) -> Response {
 }
 
 async fn app_icon() -> Response {
-    // Mismo icono que usa el Agent (agent/assets/icon.ico).
-    match read_asset("agent/assets/icon.ico").await {
+    // Mismo icono que usa el Agent (assets/icon.ico).
+    match read_asset("assets/icon.ico").await {
         Ok(bytes) => static_response(bytes, "image/x-icon", "public, max-age=86400"),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
