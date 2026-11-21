@@ -23,7 +23,7 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     let _ = tray_menu.append(&tray_open);
     let _ = tray_menu.append(&muda::PredefinedMenuItem::separator());
     let _ = tray_menu.append(&tray_quit);
-    let tray_image = image::load_from_memory(include_bytes!("../assets/MoonWolf-Agent.ico"))?;
+    let tray_image = image::load_from_memory(include_bytes!("../assets/icon.ico"))?;
     let tray_rgba = tray_image.into_rgba8();
     let (tray_width, tray_height) = (tray_rgba.width(), tray_rgba.height());
     let tray_icon = tray_icon::Icon::from_rgba(tray_rgba.into_raw(), tray_width, tray_height)?;

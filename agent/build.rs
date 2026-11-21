@@ -1,5 +1,5 @@
 fn main() {
-    println!("cargo:rerun-if-changed=assets/MoonWolf-Agent.ico");
+    println!("cargo:rerun-if-changed=assets/icon.ico");
     println!("cargo:rerun-if-changed=ui/main.slint");
     println!("cargo:rerun-if-env-changed=MOONWOLF_AGENT_VERSION");
 
@@ -18,7 +18,7 @@ fn main() {
         let build = parts.get(3).copied().unwrap_or("0");
         let file_version = format!("{major}.{minor}.{patch}.{build}");
         let mut res = winres::WindowsResource::new();
-        res.set_icon("assets/MoonWolf-Agent.ico");
+        res.set_icon("assets/icon.ico");
         res.set("ProductName", "MoonWolf Agent");
         res.set("FileDescription", "MoonWolf Agent");
         res.set("CompanyName", "MoonWolfCorp");

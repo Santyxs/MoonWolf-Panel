@@ -335,13 +335,11 @@ function ensureLoginGate() {
       height:56px;
       margin:0 auto 14px;
       border-radius:16px;
-      background:linear-gradient(145deg,#121c2a,#0e1824);
-      border:1px solid #1e3a52;
       display:grid;
       place-items:center;
       box-shadow:0 0 24px rgba(0,200,255,.18)
     }
-    .mw-cloud-logo svg{display:block}
+    .mw-cloud-logo img{display:block;width:100%;height:100%}
     .mw-cloud-card h1{
       font-size:18px;
       color:#eee;
@@ -418,17 +416,7 @@ function ensureLoginGate() {
   gate.innerHTML = `
     <div class="mw-cloud-card">
       <div class="mw-cloud-logo" aria-hidden="true">
-        <svg viewBox="0 0 48 48" width="32" height="32" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="24" cy="24" r="18" fill="url(#mwLoginMoon)"/>
-          <circle cx="30" cy="20" r="14" fill="#171a21"/>
-          <circle cx="18" cy="18" r="2.2" fill="#a8ecff" opacity="0.9"/>
-          <defs>
-            <linearGradient id="mwLoginMoon" x1="8" y1="8" x2="40" y2="40">
-              <stop stop-color="#5ed0ff"/>
-              <stop offset="1" stop-color="#0077aa"/>
-            </linearGradient>
-          </defs>
-        </svg>
+        <img src="/icon.ico" width="56" height="56" alt="">
       </div>
       <h1>MOONWOLF CLOUD</h1>
 

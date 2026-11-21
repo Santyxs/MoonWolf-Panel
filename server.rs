@@ -1355,6 +1355,14 @@ async fn styles_css(Query(query): Query<HashMap<String, String>>) -> Response {
     }
 }
 
+async fn app_icon() -> Response {
+    // Mismo icono que usa el Agent (agent/assets/icon.ico).
+    match read_asset("agent/assets/icon.ico").await {
+        Ok(bytes) => static_response(bytes, "image/x-icon", "public, max-age=86400"),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 async fn security_headers(request: Request<Body>, next: Next) -> Response {
     let is_api = request.uri().path().starts_with("/api/");
     let mut response = next.run(request).await;
@@ -1501,6 +1509,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/index.html", get(index))
         .route("/dashboard.js", get(dashboard_js))
         .route("/styles.css", get(styles_css))
+        .route("/favicon.ico", get(app_icon))
+        .route("/icon.ico", get(app_icon))
         .route("/health", get(health))
         .route("/api/health", get(health))
         .route("/api/pair", post(pair))

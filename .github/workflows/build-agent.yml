@@ -78,7 +78,7 @@ jobs:
             "agent/Cargo.toml",
             "agent/build.rs",
             "agent/src/main.rs",
-            "agent/assets/MoonWolf-Agent.ico",
+            "agent/assets/icon.ico",
             "agent/ui/main.slint"
           )
 

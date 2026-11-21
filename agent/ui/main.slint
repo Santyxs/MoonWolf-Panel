@@ -294,6 +294,8 @@ export component MainWindow inherits Window {
     preferred-height: 510px;
     max-height: 570px;
     background: Theme.bg;
+    icon: @image-url("../assets/icon.ico");
+
 
     callback open-panel();
     callback open-config();
@@ -360,34 +362,11 @@ export component MainWindow inherits Window {
                 alignment: center;
 
                 // Logo: luna con degradado
-                Rectangle {
+                Image {
+                    source: @image-url("../assets/icon.ico");
                     width: 42px;
                     height: 42px;
-                    border-radius: 13px;
-                    background: @linear-gradient(145deg, #121c2a 0%, #0a1420 100%);
-                    border-width: 1.5px;
-                    border-color: #1e5a78;
-                    drop-shadow-blur: 16px;
-                    drop-shadow-color: #00c8ff66;
-
-                    Rectangle {
-                        x: 9px; y: 9px;
-                        width: 24px; height: 24px;
-                        border-radius: 12px;
-                        background: @linear-gradient(135deg, #5ed0ff 0%, #0077aa 100%);
-                    }
-                    Rectangle {
-                        x: 16px; y: 6px;
-                        width: 22px; height: 22px;
-                        border-radius: 11px;
-                        background: #0c1520;
-                    }
-                    Rectangle {
-                        x: 15px; y: 17px;
-                        width: 3px; height: 3px;
-                        border-radius: 2px;
-                        background: #a8ecff;
-                    }
+                    image-fit: contain;
                 }
 
                 VerticalBox {
