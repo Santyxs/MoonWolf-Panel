@@ -1689,6 +1689,8 @@ async fn download_backup(
     headers: HeaderMap,
     AxumPath(name): AxumPath<String>,
 ) -> Result<Response, StatusCode> {
+    use tokio::io::AsyncReadExt;
+
     let s = st.app.read().await;
     check_auth(&headers, &s.config.local_token)?;
     let root = s.config.server_dir.clone();
@@ -1706,18 +1708,38 @@ async fn download_backup(
         return Err(StatusCode::NOT_FOUND);
     }
 
-    let data = tokio::fs::read(&path)
+    let meta = tokio::fs::metadata(&path)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let file = tokio::fs::File::open(&path)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    Response::builder()
+    // Streaming: un backup de varios GB no debe cargarse entero en RAM.
+    let stream = futures::stream::unfold(file, |mut file| async move {
+        let mut buf = vec![0u8; 64 * 1024];
+        match file.read(&mut buf).await {
+            Ok(0) => None,
+            Ok(n) => {
+                buf.truncate(n);
+                Some((Ok::<_, std::io::Error>(bytes::Bytes::from(buf)), file))
+            }
+            Err(e) => Some((Err(e), file)),
+        }
+    });
+
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/zip")
         .header(
             "content-disposition",
             format!("attachment; filename=\"{name}\""),
-        )
-        .body(axum::body::Body::from(data))
+        );
+    if meta.len() > 0 {
+        builder = builder.header("content-length", meta.len());
+    }
+    builder
+        .body(axum::body::Body::from_stream(stream))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
