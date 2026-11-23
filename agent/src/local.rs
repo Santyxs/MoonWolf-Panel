@@ -4628,6 +4628,29 @@ async fn builds_neoforge(version: &str) -> Result<Vec<serde_json::Value>, String
     })])
 }
 
+
+/// Comprueba que el jar del instalador existe, tiene tamaño razonable y es un ZIP válido.
+async fn installer_jar_ready(path: &Path) -> bool {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let file = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(_) => return false,
+        };
+        let meta = match file.metadata() {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
+        // Instaladores reales (Fabric/Quilt/Forge/NeoForge) pesan mucho más.
+        if meta.len() < 32_768 {
+            return false;
+        }
+        zip::ZipArchive::new(file).is_ok()
+    })
+    .await
+    .unwrap_or(false)
+}
+
 #[derive(Deserialize)]
 struct VersionsInstallBody {
     software: Option<String>,
@@ -4682,18 +4705,19 @@ async fn versions_install(
         }
         let inst_name = "fabric-installer.jar".to_string();
         let inst_path = server_dir.join(&inst_name);
-        // No confiar en exists() solo: un .jar a 0 bytes o a medias de un intento
-        // fallido no es un instalador válido.
-        let installer_ready = match tokio::fs::metadata(&inst_path).await {
-            Ok(m) if m.len() > 0 => true,
-            Ok(_) => {
+        let installer_ready = installer_jar_ready(&inst_path).await;
+        if !installer_ready {
+            let _ = tokio::fs::remove_file(&inst_path).await;
+            if let Err(e) = download_to(&inst_url, &inst_path).await {
                 let _ = tokio::fs::remove_file(&inst_path).await;
-                false
+                return json_fail(&format!("Descarga installer falló: {e}"));
             }
-            Err(_) => false,
-        };
-        if !installer_ready && let Err(e) = download_to(&inst_url, &inst_path).await {
-            return json_fail(&format!("Descarga installer falló: {e}"));
+            if !installer_jar_ready(&inst_path).await {
+                let _ = tokio::fs::remove_file(&inst_path).await;
+                return json_fail(
+                    "El instalador descargado no es un JAR válido; inténtalo de nuevo.",
+                );
+            }
         }
         return json_ok(json!({
             "type": "fabric-installer",
@@ -4730,18 +4754,19 @@ async fn versions_install(
         }
         let inst_name = "quilt-installer.jar".to_string();
         let inst_path = server_dir.join(&inst_name);
-        // No confiar en exists() solo: un .jar a 0 bytes o a medias de un intento
-        // fallido no es un instalador válido.
-        let installer_ready = match tokio::fs::metadata(&inst_path).await {
-            Ok(m) if m.len() > 0 => true,
-            Ok(_) => {
+        let installer_ready = installer_jar_ready(&inst_path).await;
+        if !installer_ready {
+            let _ = tokio::fs::remove_file(&inst_path).await;
+            if let Err(e) = download_to(&inst_url, &inst_path).await {
                 let _ = tokio::fs::remove_file(&inst_path).await;
-                false
+                return json_fail(&format!("Descarga installer falló: {e}"));
             }
-            Err(_) => false,
-        };
-        if !installer_ready && let Err(e) = download_to(&inst_url, &inst_path).await {
-            return json_fail(&format!("Descarga installer falló: {e}"));
+            if !installer_jar_ready(&inst_path).await {
+                let _ = tokio::fs::remove_file(&inst_path).await;
+                return json_fail(
+                    "El instalador descargado no es un JAR válido; inténtalo de nuevo.",
+                );
+            }
         }
         return json_ok(json!({
             "type": "quilt-installer",
@@ -4774,16 +4799,19 @@ async fn versions_install(
         });
         let inst_name = format!("{}-installer.jar", sw);
         let inst_path = server_dir.join(&inst_name);
-        let installer_ready = match tokio::fs::metadata(&inst_path).await {
-            Ok(m) if m.len() > 0 => true,
-            Ok(_) => {
+        let installer_ready = installer_jar_ready(&inst_path).await;
+        if !installer_ready {
+            let _ = tokio::fs::remove_file(&inst_path).await;
+            if let Err(e) = download_to(&url, &inst_path).await {
                 let _ = tokio::fs::remove_file(&inst_path).await;
-                false
+                return json_fail(&format!("Descarga installer falló: {e}"));
             }
-            Err(_) => false,
-        };
-        if !installer_ready && let Err(e) = download_to(&url, &inst_path).await {
-            return json_fail(&format!("Descarga installer falló: {e}"));
+            if !installer_jar_ready(&inst_path).await {
+                let _ = tokio::fs::remove_file(&inst_path).await;
+                return json_fail(
+                    "El instalador descargado no es un JAR válido; inténtalo de nuevo.",
+                );
+            }
         }
         return json_ok(json!({
             "type": format!("{}-installer", sw),
@@ -5675,9 +5703,14 @@ async fn db_delete(AxumPath(name): AxumPath<String>) -> Response {
 
     let username = mysql_username_for_db(&name);
     let q_drop_user = format!("DROP USER IF EXISTS '{}'@'%'", username.replace('\'', "''"));
-    let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop_user))
+    if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(q_drop_user))
         .execute(pool)
-        .await;
+        .await
+    {
+        return json_fail(&format!(
+            "Base de datos eliminada, pero no se pudo eliminar el usuario MySQL '{username}': {e}"
+        ));
+    }
 
     json_ok(json!({}))
 }
