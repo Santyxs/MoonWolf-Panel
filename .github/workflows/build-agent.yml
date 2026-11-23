@@ -50,10 +50,6 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 25
 
-    env:
-      CARGO_PROFILE_RELEASE_LTO: "false"
-      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
-
     permissions:
       contents: read
 
