@@ -7,7 +7,7 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
-use futures::{StreamExt, future::FutureExt};
+use futures_util::{StreamExt, future::FutureExt};
 use rust_socketio::asynchronous::{Client, ClientBuilder};
 use rust_socketio::{Event, Payload, TransportType};
 use serde_json::json;
