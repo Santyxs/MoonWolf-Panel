@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::{
     Arc, OnceLock,
@@ -3261,7 +3263,7 @@ async fn start_server_inner(
                                     );
                                 }
 
-                                let result = start_server_inner(
+                                let result = start_server_restartable(
                                     restart_state.clone(),
                                     server_root,
                                     java_configured,
@@ -3298,6 +3300,18 @@ async fn start_server_inner(
     }
 
     Ok(json_ok(json!({})))
+}
+
+/// Envuelve `start_server_inner` borrando el tipo concreto de su futuro
+/// (`Pin<Box<dyn Future + Send>>`) para romper la dependencia circular de `Send`:
+/// el watcher de procesos arrancado dentro de `start_server_inner` puede volver
+/// a llamarla tras un crash, y `tokio::spawn` exige futuros `Send`.
+fn start_server_restartable(
+    st: LocalState,
+    root: PathBuf,
+    java_configured: String,
+) -> Pin<Box<dyn Future<Output = Result<Response, StatusCode>> + Send>> {
+    Box::pin(start_server_inner(st, root, java_configured))
 }
 
 // Tiempo máximo para que Minecraft guarde el mundo, cierre plugins y termine Java.
