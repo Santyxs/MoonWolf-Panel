@@ -37,7 +37,10 @@ fn embed_windows_resources() {
     let file_version = format!("{major}.{minor}.{patch}.{build}");
 
     let icon = match fs::canonicalize("../assets/icon.ico") {
-        Ok(p) => p.to_string_lossy().trim_start_matches(r"\\?\").replace('\\', "/"),
+        Ok(p) => p
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .replace('\\', "/"),
         Err(e) => {
             println!("cargo:warning=no se encontró el icono: {e}");
             return;
@@ -97,7 +100,9 @@ FILETYPE 0x1
         Ok(s) if s.success() && res_path.is_file() => {
             println!("cargo:rustc-link-arg-bins={}", res_path.display());
         }
-        other => println!("cargo:warning=rc.exe falló ({other:?}); el .exe no tendrá icono ni versión"),
+        other => {
+            println!("cargo:warning=rc.exe falló ({other:?}); el .exe no tendrá icono ni versión")
+        }
     }
 }
 
