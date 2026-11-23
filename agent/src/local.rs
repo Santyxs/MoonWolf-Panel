@@ -638,6 +638,8 @@ async fn download_file(
     headers: HeaderMap,
     Query(q): Query<PathQuery>,
 ) -> Result<Response, StatusCode> {
+    use tokio::io::AsyncReadExt;
+
     let s = st.app.read().await;
     check_auth(&headers, &s.config.local_token)?;
     let root = s.config.server_dir.clone();
@@ -651,21 +653,44 @@ async fn download_file(
     if !path.is_file() {
         return Err(StatusCode::NOT_FOUND);
     }
-    let data = tokio::fs::read(&path)
+
+    let meta = tokio::fs::metadata(&path)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file.bin".into());
-    Response::builder()
+
+    // Streaming por chunks: no cargar backups/mundos enteros en RAM.
+    let stream = futures::stream::unfold(file, |mut file| async move {
+        let mut buf = vec![0u8; 64 * 1024];
+        match file.read(&mut buf).await {
+            Ok(0) => None,
+            Ok(n) => {
+                buf.truncate(n);
+                Some((Ok::<_, std::io::Error>(bytes::Bytes::from(buf)), file))
+            }
+            Err(e) => Some((Err(e), file)),
+        }
+    });
+
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/octet-stream")
         .header(
             "content-disposition",
             format!("attachment; filename=\"{name}\""),
-        )
-        .body(axum::body::Body::from(data))
+        );
+    if meta.len() > 0 {
+        builder = builder.header("content-length", meta.len());
+    }
+    builder
+        .body(axum::body::Body::from_stream(stream))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
@@ -692,16 +717,36 @@ async fn delete_files(
         .chain(body.path)
         .collect();
 
+    let mut deleted = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+
     for rel in paths {
-        if let Ok(p) = resolve_safe(&root, &rel).await {
-            if p.is_dir() {
-                let _ = tokio::fs::remove_dir_all(&p).await;
-            } else {
-                let _ = tokio::fs::remove_file(&p).await;
+        let path = match resolve_safe(&root, &rel).await {
+            Ok(p) => p,
+            Err(e) => {
+                errors.push(format!("{rel}: {e}"));
+                continue;
             }
+        };
+        let result = if path.is_dir() {
+            tokio::fs::remove_dir_all(&path).await
+        } else {
+            tokio::fs::remove_file(&path).await
+        };
+        match result {
+            Ok(()) => deleted += 1,
+            Err(e) => errors.push(format!("{rel}: {e}")),
         }
     }
-    Ok(json_ok(json!({})))
+
+    if !errors.is_empty() {
+        let detail = errors.join("; ");
+        return Ok(json_fail(&format!(
+            "No se pudieron eliminar {n} elemento(s): {detail}",
+            n = errors.len()
+        )));
+    }
+    Ok(json_ok(json!({ "deleted": deleted })))
 }
 
 #[derive(Deserialize)]
