@@ -10,7 +10,9 @@ fn main() {
     println!("cargo:rerun-if-env-changed=MOONWOLF_AGENT_VERSION");
     println!("cargo:rerun-if-env-changed=RC");
 
-    slint_build::compile("ui/main.slint").expect("No se pudo compilar la interfaz Slint");
+    if env::var_os("CARGO_FEATURE_GUI").is_some() {
+        slint_build::compile("ui/main.slint").expect("No se pudo compilar la interfaz Slint");
+    }
 
     let is_windows_msvc = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
         && env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
