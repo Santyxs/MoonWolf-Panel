@@ -107,7 +107,6 @@ FILETYPE 0x1
 }
 
 fn find_rc_exe() -> Option<PathBuf> {
-
     if let Some(p) = env::var_os("RC").map(PathBuf::from).filter(|p| p.is_file()) {
         return Some(p);
     }
