@@ -5602,10 +5602,8 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
             Err(e) => {
                 let q_drop = format!("DROP DATABASE `{}`", name.replace('`', "``"));
                 let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop)).execute(pool).await;
-                let q_drop_user = format!(
-                    "DROP USER IF EXISTS '{}'@'%'",
-                    username.replace('\'', "''")
-                );
+                let q_drop_user =
+                    format!("DROP USER IF EXISTS '{}'@'%'", username.replace('\'', "''"));
                 let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop_user))
                     .execute(pool)
                     .await;
@@ -5633,10 +5631,7 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
         {
             let q_drop = format!("DROP DATABASE `{}`", name.replace('`', "``"));
             let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop)).execute(pool).await;
-            let q_drop_user = format!(
-                "DROP USER IF EXISTS '{}'@'%'",
-                username.replace('\'', "''")
-            );
+            let q_drop_user = format!("DROP USER IF EXISTS '{}'@'%'", username.replace('\'', "''"));
             let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop_user))
                 .execute(pool)
                 .await;
@@ -5656,10 +5651,7 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
         {
             let q_drop = format!("DROP DATABASE `{}`", name.replace('`', "``"));
             let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop)).execute(pool).await;
-            let q_drop_user = format!(
-                "DROP USER IF EXISTS '{}'@'%'",
-                username.replace('\'', "''")
-            );
+            let q_drop_user = format!("DROP USER IF EXISTS '{}'@'%'", username.replace('\'', "''"));
             let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop_user))
                 .execute(pool)
                 .await;
@@ -5669,10 +5661,7 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
         if let Err(e) = sqlx::query("FLUSH PRIVILEGES").execute(pool).await {
             let q_drop = format!("DROP DATABASE `{}`", name.replace('`', "``"));
             let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop)).execute(pool).await;
-            let q_drop_user = format!(
-                "DROP USER IF EXISTS '{}'@'%'",
-                username.replace('\'', "''")
-            );
+            let q_drop_user = format!("DROP USER IF EXISTS '{}'@'%'", username.replace('\'', "''"));
             let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop_user))
                 .execute(pool)
                 .await;
