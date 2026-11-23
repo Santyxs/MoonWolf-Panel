@@ -1032,9 +1032,16 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
 
     let pid = std::process::id();
     let exe_path = PathBuf::from(win_path_str(&current_exe));
+    let pending = update_pending_path(&current_exe);
+    // Marca de actualización en curso: el nuevo proceso solo borrará .exe.old
+    // tras inicializar de verdad (API local lista). Si no, el siguiente arranque restaura.
+    if let Err(e) = std::fs::write(&pending, b"pending") {
+        warn!("No se pudo escribir marca de actualización pendiente: {e}");
+    }
 
     // Restaura el ejecutable anterior si el nuevo no arranca.
     let restore_previous = || {
+        let _ = std::fs::remove_file(&pending);
         let _ = std::fs::remove_file(&current_exe);
         if let Err(e) = std::fs::rename(&old, &current_exe) {
             warn!(
@@ -1063,7 +1070,7 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
         }
     };
 
-    // No esperamos al hijo; solo comprobamos que sigue vivo un instante
+    // Comprobación rápida: si muere al instante, restaurar ya.
     std::thread::sleep(std::time::Duration::from_millis(200));
     match child.try_wait() {
         Ok(Some(status)) => {
@@ -1087,6 +1094,87 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
     }
 
     Ok(())
+}
+
+fn update_pending_path(exe: &Path) -> PathBuf {
+    exe.with_extension("exe.update-pending")
+}
+
+fn update_old_path(exe: &Path) -> PathBuf {
+    exe.with_extension("exe.old")
+}
+
+/// Si una actualización anterior marcó "booting" y no llegó a finalizar,
+/// restaura el .exe.old y relanza esa versión.
+fn recover_incomplete_update() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let exe = exe.canonicalize().unwrap_or(exe);
+    let pending = update_pending_path(&exe);
+    let old = update_old_path(&exe);
+    if !pending.is_file() || !old.is_file() {
+        return;
+    }
+    let state = std::fs::read_to_string(&pending).unwrap_or_default();
+    if state.trim() != "booting" {
+        return;
+    }
+
+    warn!(
+        "Actualización incompleta detectada; restaurando versión anterior desde {}",
+        old.display()
+    );
+    let broken = exe.with_extension("exe.broken");
+    let _ = std::fs::remove_file(&broken);
+    if let Err(e) = std::fs::rename(&exe, &broken) {
+        warn!("No se pudo apartar el ejecutable roto: {e}");
+        return;
+    }
+    if let Err(e) = std::fs::rename(&old, &exe) {
+        warn!("No se pudo restaurar el ejecutable anterior: {e}");
+        let _ = std::fs::rename(&broken, &exe);
+        return;
+    }
+    let _ = std::fs::remove_file(&pending);
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match std::process::Command::new(&exe).args(&args).spawn() {
+        Ok(_) => {
+            info!("Versión anterior relanzada tras fallo de actualización");
+            std::process::exit(0);
+        }
+        Err(e) => {
+            warn!("No se pudo relanzar la versión anterior: {e}");
+        }
+    }
+}
+
+/// Tras --wait-pid, marca que este proceso está intentando arrancar la actualización.
+fn mark_update_booting() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let pending = update_pending_path(&exe);
+    if pending.is_file() {
+        let _ = std::fs::write(pending, b"booting");
+    }
+}
+
+/// API local lista: la actualización se considera exitosa; elimina respaldo y marca.
+fn finalize_successful_update() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let pending = update_pending_path(&exe);
+    if !pending.is_file() {
+        return;
+    }
+    let old = update_old_path(&exe);
+    let broken = exe.with_extension("exe.broken");
+    let _ = std::fs::remove_file(&pending);
+    let _ = std::fs::remove_file(&old);
+    let _ = std::fs::remove_file(&broken);
+    info!("Actualización finalizada; respaldo .exe.old eliminado");
 }
 
 fn maybe_wait_for_previous_instance() {
@@ -1123,11 +1211,7 @@ fn wait_for_pid(pid: u32) {
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
     std::thread::sleep(std::time::Duration::from_millis(500));
-    // Borrar backup .exe.old si existe junto a este ejecutable
-    if let Ok(exe) = std::env::current_exe() {
-        let old = exe.with_extension("exe.old");
-        let _ = std::fs::remove_file(old);
-    }
+    // No borrar .exe.old aquí: solo tras inicialización real (finalize_successful_update).
 }
 
 #[cfg(not(windows))]
@@ -1188,6 +1272,8 @@ async fn main() {
 
 async fn run() -> anyhow::Result<()> {
     maybe_wait_for_previous_instance();
+    recover_incomplete_update();
+    mark_update_booting();
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -1225,6 +1311,8 @@ async fn run() -> anyhow::Result<()> {
         s.local_ready = true;
         s.add_log("info", "Servidor local listo");
     }
+    // Solo ahora es seguro descartar el respaldo de la actualización.
+    finalize_successful_update();
     info!("API local escuchando en http://127.0.0.1:{LOCAL_PORT}");
 
     let cloud_handle = {
