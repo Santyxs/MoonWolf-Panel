@@ -5167,6 +5167,24 @@ fn valid_db_name(name: &str) -> bool {
         )
 }
 
+/// MySQL limita el nombre de usuario a 32 caracteres. Si el nombre de la BD
+/// cabe, se reutiliza tal cual (es único). Si es más largo, se combina un
+/// prefijo con un hash estable del nombre completo para evitar colisiones.
+fn mysql_username_for_db(db_name: &str) -> String {
+    if db_name.len() <= 32 {
+        return db_name.to_string();
+    }
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in db_name.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    let hash = format!("{h:08x}");
+    let prefix_len = 32usize.saturating_sub(1 + hash.len());
+    let prefix: String = db_name.chars().take(prefix_len).collect();
+    format!("{prefix}_{hash}")
+}
+
 fn gen_db_password() -> String {
     let mut bytes = [0u8; 18];
     rand::rng().fill_bytes(&mut bytes);
@@ -5214,7 +5232,7 @@ async fn db_list() -> Response {
     };
 
     let query = "SELECT s.SCHEMA_NAME AS name, \
-        COALESCE(SUM(t.DATA_LENGTH + t.INDEX_LENGTH), 0) AS sizeByt_s, \
+        COALESCE(SUM(t.DATA_LENGTH + t.INDEX_LENGTH), 0) AS sizeBytes, \
         COUNT(t.TABLE_NAME) AS tableCount \
         FROM information_schema.SCHEMATA s \
         LEFT JOIN information_schema.TABLES t ON t.TABLE_SCHEMA = s.SCHEMA_NAME \
@@ -5246,7 +5264,7 @@ async fn db_list() -> Response {
         let size_bytes: i64 = row.try_get("sizeBytes").unwrap_or(0);
         let tables: i64 = row.try_get("tableCount").unwrap_or(0);
 
-        let username: String = name.chars().take(32).collect();
+        let username = mysql_username_for_db(&name);
         let user = users.get(&username).cloned();
 
         databases.push(json!({
@@ -5308,7 +5326,7 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
     let mut credentials = None;
 
     if create_user {
-        let username = name.chars().take(32).collect::<String>();
+        let username = mysql_username_for_db(&name);
         let password = gen_db_password();
 
         let q_user = format!(
@@ -5316,25 +5334,53 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
             username.replace('\'', "''"),
             password.replace('\'', "''")
         );
-        let _ = sqlx::query(sqlx::AssertSqlSafe(q_user)).execute(pool).await;
+        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(q_user)).execute(pool).await {
+            let q_drop = format!("DROP DATABASE `{}`", name.replace('`', "``"));
+            let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop)).execute(pool).await;
+            return json_fail(&format!("No se pudo crear el usuario MySQL: {e}"));
+        }
 
         let q_alter = format!(
             "ALTER USER '{}'@'%' IDENTIFIED BY '{}'",
             username.replace('\'', "''"),
             password.replace('\'', "''")
         );
-        let _ = sqlx::query(sqlx::AssertSqlSafe(q_alter))
+        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(q_alter))
             .execute(pool)
-            .await;
+            .await
+        {
+            let q_drop = format!("DROP DATABASE `{}`", name.replace('`', "``"));
+            let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop)).execute(pool).await;
+            let q_drop_user = format!(
+                "DROP USER IF EXISTS '{}'@'%'",
+                username.replace('\'', "''")
+            );
+            let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop_user))
+                .execute(pool)
+                .await;
+            return json_fail(&format!("No se pudo establecer la contraseña del usuario: {e}"));
+        }
 
         let q_grant = format!(
             "GRANT ALL PRIVILEGES ON `{}`.* TO '{}'@'%'",
             name.replace('`', "``"),
             username.replace('\'', "''")
         );
-        let _ = sqlx::query(sqlx::AssertSqlSafe(q_grant))
+        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(q_grant))
             .execute(pool)
-            .await;
+            .await
+        {
+            let q_drop = format!("DROP DATABASE `{}`", name.replace('`', "``"));
+            let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop)).execute(pool).await;
+            let q_drop_user = format!(
+                "DROP USER IF EXISTS '{}'@'%'",
+                username.replace('\'', "''")
+            );
+            let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop_user))
+                .execute(pool)
+                .await;
+            return json_fail(&format!("No se pudo asignar permisos al usuario: {e}"));
+        }
 
         let host = std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
         let port = std::env::var("MOONWOLF_MYSQL_PORT").unwrap_or_else(|_| "3306".into());
@@ -5361,7 +5407,7 @@ async fn db_reset(AxumPath(name): AxumPath<String>) -> Response {
         Err(e) => return json_fail(&format!("MySQL: {e}")),
     };
 
-    let username: String = name.chars().take(32).collect();
+    let username = mysql_username_for_db(&name);
     let exists: Option<String> = sqlx::query_scalar("SELECT user FROM mysql.user WHERE user = ?")
         .bind(&username)
         .fetch_optional(pool)
@@ -5378,9 +5424,12 @@ async fn db_reset(AxumPath(name): AxumPath<String>) -> Response {
         username.replace('\'', "''"),
         password.replace('\'', "''")
     );
-    let _ = sqlx::query(sqlx::AssertSqlSafe(q_alter))
+    if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(q_alter))
         .execute(pool)
-        .await;
+        .await
+    {
+        return json_fail(&format!("No se pudo restablecer la contraseña: {e}"));
+    }
 
     let host = std::env::var("MOONWOLF_MYSQL_HOST").unwrap_or_else(|_| "localhost".into());
     let port = std::env::var("MOONWOLF_MYSQL_PORT").unwrap_or_else(|_| "3306".into());
@@ -5411,7 +5460,7 @@ async fn db_delete(AxumPath(name): AxumPath<String>) -> Response {
         return json_fail(&format!("No se pudo eliminar: {e}"));
     }
 
-    let username: String = name.chars().take(32).collect();
+    let username = mysql_username_for_db(&name);
     let q_drop_user = format!("DROP USER IF EXISTS '{}'@'%'", username.replace('\'', "''"));
     let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop_user))
         .execute(pool)
