@@ -368,17 +368,38 @@ async fn download_to(url: &str, dest: &Path) -> Result<(), String> {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
 
-    let mut file = tokio::fs::File::create(dest)
-        .await
-        .map_err(|e| format!("create: {e}"))?;
+    // Escribir a un .part y renombrar al final para no dejar el destino a medias
+    // (p. ej. fabric-installer.jar incompleto que en el siguiente intento se
+    // tomaría por "ya descargado" con exists()).
+    let mut part = dest.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    let _ = tokio::fs::remove_file(&part).await;
 
-    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("chunk: {e}"))? {
-        file.write_all(&chunk)
+    let result = async {
+        let mut file = tokio::fs::File::create(&part)
             .await
-            .map_err(|e| format!("write: {e}"))?;
+            .map_err(|e| format!("create: {e}"))?;
+
+        while let Some(chunk) = resp.chunk().await.map_err(|e| format!("chunk: {e}"))? {
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| format!("write: {e}"))?;
+        }
+        file.flush().await.ok();
+        drop(file);
+
+        tokio::fs::rename(&part, dest)
+            .await
+            .map_err(|e| format!("rename: {e}"))?;
+        Ok(())
     }
-    file.flush().await.ok();
-    Ok(())
+    .await;
+
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&part).await;
+    }
+    result
 }
 
 fn semver_cmp(a: &str, b: &str) -> std::cmp::Ordering {
@@ -4522,7 +4543,17 @@ async fn versions_install(
         }
         let inst_name = "fabric-installer.jar".to_string();
         let inst_path = server_dir.join(&inst_name);
-        if !inst_path.exists()
+        // No confiar en exists() solo: un .jar a 0 bytes o a medias de un intento
+        // fallido no es un instalador válido.
+        let installer_ready = match tokio::fs::metadata(&inst_path).await {
+            Ok(m) if m.len() > 0 => true,
+            Ok(_) => {
+                let _ = tokio::fs::remove_file(&inst_path).await;
+                false
+            }
+            Err(_) => false,
+        };
+        if !installer_ready
             && let Err(e) = download_to(&inst_url, &inst_path).await
         {
             return json_fail(&format!("Descarga installer falló: {e}"));
@@ -4562,7 +4593,17 @@ async fn versions_install(
         }
         let inst_name = "quilt-installer.jar".to_string();
         let inst_path = server_dir.join(&inst_name);
-        if !inst_path.exists()
+        // No confiar en exists() solo: un .jar a 0 bytes o a medias de un intento
+        // fallido no es un instalador válido.
+        let installer_ready = match tokio::fs::metadata(&inst_path).await {
+            Ok(m) if m.len() > 0 => true,
+            Ok(_) => {
+                let _ = tokio::fs::remove_file(&inst_path).await;
+                false
+            }
+            Err(_) => false,
+        };
+        if !installer_ready
             && let Err(e) = download_to(&inst_url, &inst_path).await
         {
             return json_fail(&format!("Descarga installer falló: {e}"));
@@ -4598,7 +4639,15 @@ async fn versions_install(
         });
         let inst_name = format!("{}-installer.jar", sw);
         let inst_path = server_dir.join(&inst_name);
-        if !inst_path.exists()
+        let installer_ready = match tokio::fs::metadata(&inst_path).await {
+            Ok(m) if m.len() > 0 => true,
+            Ok(_) => {
+                let _ = tokio::fs::remove_file(&inst_path).await;
+                false
+            }
+            Err(_) => false,
+        };
+        if !installer_ready
             && let Err(e) = download_to(&url, &inst_path).await
         {
             return json_fail(&format!("Descarga installer falló: {e}"));
