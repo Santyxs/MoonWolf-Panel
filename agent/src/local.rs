@@ -2227,6 +2227,17 @@ async fn save_startup(
             "La memoria mínima no puede ser mayor que la máxima",
         ));
     }
+    if cfg.java_mode.eq_ignore_ascii_case("override") {
+        let override_path = cfg.java_override_path.trim();
+        if override_path.is_empty() {
+            return Ok(json_fail(
+                "Java personalizado activado: indica la ruta al ejecutable de Java",
+            ));
+        }
+        if let Err(msg) = resolve_override_java_binary(override_path) {
+            return Ok(json_fail(&msg));
+        }
+    }
     if let Some(v) = body.extra_args {
         cfg.extra_args = v;
     }
@@ -2974,6 +2985,32 @@ fn find_best_java_runtime() -> Option<(u32, PathBuf)> {
     best
 }
 
+/// Valida una ruta de Java en modo override: debe existir y ser un archivo.
+/// No hace fallback a runtimes gestionados ni al PATH.
+fn resolve_override_java_binary(override_path: &str) -> Result<PathBuf, String> {
+    let configured = override_path.trim();
+    if configured.is_empty() {
+        return Err("Java personalizado activado, pero no hay ruta configurada".into());
+    }
+    let p = PathBuf::from(configured);
+    if p.is_file() {
+        return Ok(p);
+    }
+    // En Windows, permitir indicar la ruta sin la extensión .exe.
+    #[cfg(windows)]
+    {
+        if !configured.to_ascii_lowercase().ends_with(".exe") {
+            let with_exe = PathBuf::from(format!("{configured}.exe"));
+            if with_exe.is_file() {
+                return Ok(with_exe);
+            }
+        }
+    }
+    Err(format!(
+        "La ruta de Java personalizado no es un ejecutable válido: {configured}"
+    ))
+}
+
 fn resolve_java_binary(config_java_path: &str) -> (PathBuf, String) {
     let configured = config_java_path.trim();
     if !configured.is_empty() && configured != "java" {
@@ -3099,26 +3136,41 @@ async fn start_server_inner(
         }
     };
 
-    // Ruta de Java: si startup.json pide override, usar javaOverridePath;
-    // en modo managed se mantiene la ruta del AgentConfig (o auto-detección).
-    let java_path_to_use = if cfg.java_mode.eq_ignore_ascii_case("override") {
-        let override_path = cfg.java_override_path.trim();
-        if !override_path.is_empty() {
-            override_path.to_string()
-        } else {
-            java_configured
+    // Ruta de Java:
+    // - override: exige javaOverridePath válida (archivo ejecutable). Sin fallback silencioso.
+    // - managed: AgentConfig / auto-detección vía resolve_java_binary.
+    let (java_bin, java_source) = if cfg.java_mode.eq_ignore_ascii_case("override") {
+        let override_path = cfg.java_override_path.trim().to_string();
+        if override_path.is_empty() {
+            let msg = "Java personalizado activado, pero no hay ruta configurada";
+            let mut s = st.app.write().await;
+            s.add_console_log("error", msg);
+            return Ok(json_fail(msg));
+        }
+        let resolved = tokio::task::spawn_blocking(move || {
+            resolve_override_java_binary(&override_path)
+        })
+        .await
+        .map_err(|e| {
+            tracing::error!("Validación de Java personalizado falló: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        match resolved {
+            Ok(path) => (path, "ruta personalizada (override)".to_string()),
+            Err(msg) => {
+                let mut s = st.app.write().await;
+                s.add_console_log("error", &msg);
+                return Ok(json_fail(&msg));
+            }
         }
     } else {
-        java_configured
-    };
-
-    let (java_bin, java_source) =
-        tokio::task::spawn_blocking(move || resolve_java_binary(&java_path_to_use))
+        tokio::task::spawn_blocking(move || resolve_java_binary(&java_configured))
             .await
             .map_err(|e| {
                 tracing::error!("Detección de Java falló: {e}");
                 StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            })?
+    };
     {
         let mut s = st.app.write().await;
         s.add_console_log(
