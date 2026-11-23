@@ -15,7 +15,7 @@ path = "server.rs"
 [dependencies]
 anyhow = "1.0.104"
 bytes = { version = "1", features = ["serde"] }
-axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1", "json"] }
+axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1", "json", "query", "form", "matched-path", "tracing"] }
 getrandom = "0.4"
 hmac = "0.13.0"
 serde = { version = "1.0.229", features = ["derive"] }
