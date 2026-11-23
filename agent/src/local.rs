@@ -2,7 +2,10 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, OnceLock};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, OnceLock,
+};
 
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path as AxumPath, Query, State};
@@ -50,6 +53,7 @@ struct LocalState {
     uploads: Arc<Mutex<HashMap<String, Arc<Mutex<UploadManifest>>>>>,
     backup_progress: Arc<Mutex<BackupProgress>>,
     backup_operation: Arc<Mutex<Option<String>>>,
+    intentional_stop: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -88,6 +92,7 @@ pub async fn serve(app: Arc<RwLock<AppState>>, port: u16) -> anyhow::Result<()> 
         uploads: Arc::new(Mutex::new(HashMap::new())),
         backup_progress: Arc::new(Mutex::new(BackupProgress::default())),
         backup_operation: Arc::new(Mutex::new(None)),
+        intentional_stop: Arc::new(AtomicBool::new(false)),
     };
 
     let router = Router::new()
@@ -144,11 +149,48 @@ pub async fn serve(app: Arc<RwLock<AppState>>, port: u16) -> anyhow::Result<()> 
         .route("/api/databases/{name}/reset-password", post(db_reset))
         .route("/api/databases/{name}", delete(db_delete))
         .layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT))
-        .with_state(state);
+        .with_state(state.clone());
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     info!("API local en {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    let startup_state = state.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let (root, java_configured) = {
+            let app = startup_state.app.read().await;
+            (app.config.server_dir.clone(), app.config.java_path.clone())
+        };
+
+        if !load_startup_config(&root).await.auto_start_on_boot
+            || startup_state.intentional_stop.load(Ordering::Acquire)
+        {
+            return;
+        }
+
+        let _lifecycle = startup_state.lifecycle.lock().await;
+        if startup_state.intentional_stop.load(Ordering::Acquire)
+            || startup_state.mc.read().await.is_some()
+        {
+            return;
+        }
+
+        match start_server_inner(startup_state.clone(), root, java_configured).await {
+            Ok(_) if startup_state.mc.read().await.is_some() => {
+                info!("Arranque automático de Minecraft completado.");
+            }
+            Ok(_) => {
+                let mut app = startup_state.app.write().await;
+                app.add_console_log("error", "El arranque automático no pudo iniciar Minecraft.");
+            }
+            Err(error) => {
+                let mut app = startup_state.app.write().await;
+                app.add_console_log("error", format!("Falló el arranque automático: {error}"));
+            }
+        }
+    });
+
     axum::serve(listener, router).await?;
     Ok(())
 }
@@ -722,7 +764,12 @@ async fn upload_chunk(
     let root = s.config.server_dir.clone();
     drop(s);
 
-    if q.upload_id.len() < 8 || q.upload_id.len() > 120 {
+    if q.upload_id.len() < 8
+        || q.upload_id.len() > 120
+        || !q.upload_id.bytes().all(|c| {
+            c.is_ascii_alphanumeric() || c == b'-' || c == b'_'
+        })
+    {
         return Ok(json_fail("Identificador de subida no válido"));
     }
     if q.path.trim().is_empty() {
@@ -731,9 +778,10 @@ async fn upload_chunk(
     if body.len() > UPLOAD_MAX_CHUNK {
         return Ok(json_fail("Bloque demasiado grande"));
     }
-    if q.offset + body.len() as u64 > q.total_size {
-        return Ok(json_fail("El bloque excede el tamaño indicado"));
-    }
+    let validated_chunk_end = match q.offset.checked_add(body.len() as u64) {
+        Some(end) if end <= q.total_size => end,
+        _ => return Ok(json_fail("El bloque excede el tamaño indicado")),
+    };
 
     let full = match resolve_safe(&root, &q.path).await {
         Ok(p) => p,
@@ -801,7 +849,7 @@ async fn upload_chunk(
             return Ok(json_fail(&format!("Write falló: {e}")));
         }
 
-        let chunk_end = q.offset + body.len() as u64;
+        let chunk_end = validated_chunk_end;
         let duplicate = manifest
             .chunks
             .iter()
@@ -1672,9 +1720,11 @@ async fn restore_backup(
         *op = Some("restauración".into());
     }
 
+    let _lifecycle = st.lifecycle.lock().await;
+    st.intentional_stop.store(true, Ordering::Release);
     let was_running = st.mc.read().await.is_some();
     if was_running {
-        if let Err(error) = stop_server_process(&st).await {
+        if let Err(error) = stop_server_process_inner(&st).await {
             let mut op = st.backup_operation.lock().await;
             *op = None;
             drop(op);
@@ -1761,22 +1811,19 @@ async fn restore_backup(
             Ok(())
         }
 
-        // Helper para limpiar servidor ignorando rutas internas/excluidas
+        // Helper para limpiar servidor. Los errores deben abortar la restauración.
         fn clear_server_files(root: &Path) -> std::io::Result<()> {
             for entry in std::fs::read_dir(root)? {
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
+                let entry = entry?;
                 let name = entry.file_name().to_string_lossy().to_string();
                 if backup_excluded(&name) {
                     continue;
                 }
                 let p = entry.path();
                 if entry.file_type()?.is_dir() {
-                    let _ = std::fs::remove_dir_all(&p);
+                    std::fs::remove_dir_all(&p)?;
                 } else {
-                    let _ = std::fs::remove_file(&p);
+                    std::fs::remove_file(&p)?;
                 }
             }
             Ok(())
@@ -1790,10 +1837,7 @@ async fn restore_backup(
 
         let backup_created = (|| -> std::io::Result<()> {
             for entry in std::fs::read_dir(&root_clone)? {
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
+                let entry = entry?;
                 let name = entry.file_name().to_string_lossy().to_string();
                 if backup_excluded(&name) {
                     continue;
@@ -1837,14 +1881,12 @@ async fn restore_backup(
         })();
 
         if let Err(e) = replace_result {
-            // Rollback si falla la sustitución
-            let _ = clear_server_files(&root_clone);
-            let _ = (|| -> std::io::Result<()> {
+            // Rollback si falla la sustitución. No declarar éxito si tampoco
+            // se consigue recuperar íntegramente el contenido anterior.
+            let rollback_result = (|| -> std::io::Result<()> {
+                clear_server_files(&root_clone)?;
                 for entry in std::fs::read_dir(&rollback_dir)? {
-                    let entry = match entry {
-                        Ok(e) => e,
-                        Err(_) => continue,
-                    };
+                    let entry = entry?;
                     let name = entry.file_name().to_string_lossy().to_string();
                     let src_p = entry.path();
                     let dst_p = root_clone.join(&name);
@@ -1857,10 +1899,18 @@ async fn restore_backup(
                 Ok(())
             })();
             let _ = std::fs::remove_dir_all(&staging_dir);
-            // Conservar rollback_dir para que el usuario/admin tenga el rescate
-            anyhow::bail!(
-                "Sustitución fallida. Se aplicó rollback automático desde copia de seguridad ({e})"
-            );
+            match rollback_result {
+                Ok(()) => {
+                    let _ = std::fs::remove_dir_all(&rollback_dir);
+                    anyhow::bail!(
+                        "Sustitución fallida; se recuperó el contenido anterior mediante rollback ({e})"
+                    )
+                },
+                Err(rollback_error) => anyhow::bail!(
+                    "Sustitución fallida ({e}) y el rollback también falló ({rollback_error}). La copia de rescate se conserva en {}",
+                    rollback_dir.display()
+                ),
+            }
         }
 
         // Éxito: limpiar staging y rollback
@@ -1881,11 +1931,48 @@ async fn restore_backup(
                 let mut s = st.app.write().await;
                 s.add_console_log("info", format!("Copia restaurada: {}", name));
             }
-            Ok(json_ok(
-                json!({ "restored": true, "wasRunning": was_running }),
-            ))
+
+            let mut restarted = false;
+            if was_running {
+                let java_configured = st.app.read().await.config.java_path.clone();
+                match start_server_inner(st.clone(), root.clone(), java_configured).await {
+                    Ok(_) if st.mc.read().await.is_some() => {
+                        restarted = true;
+                    }
+                    Ok(_) => {
+                        let mut s = st.app.write().await;
+                        s.add_console_log(
+                            "error",
+                            "La copia se restauró, pero Minecraft no pudo volver a arrancar.",
+                        );
+                    }
+                    Err(error) => {
+                        let mut s = st.app.write().await;
+                        s.add_console_log(
+                            "error",
+                            format!("La copia se restauró, pero falló el reinicio de Minecraft: {error}"),
+                        );
+                    }
+                }
+            }
+
+            Ok(json_ok(json!({ "restored": true, "wasRunning": restarted, "restartFailed": was_running && !restarted })))
         }
-        Ok(Err(e)) => Ok(json_fail(&format!("No se pudo restaurar: {e}"))),
+        Ok(Err(e)) => {
+            let message = e.to_string();
+            if was_running && !message.contains("rollback también falló") {
+                let java_configured = st.app.read().await.config.java_path.clone();
+                let restart = start_server_inner(st.clone(), root.clone(), java_configured).await;
+                if restart.is_err() || st.mc.read().await.is_none() {
+                    let mut s = st.app.write().await;
+                    s.add_console_log(
+                        "error",
+                        "La restauración falló y tampoco se pudo volver a iniciar Minecraft.",
+                    );
+                }
+            }
+            Ok(json_fail(&format!("No se pudo restaurar: {e}")))
+        }
         Err(e) => Ok(json_fail(&format!("Tarea restauración falló: {e}"))),
     }
 }
@@ -3081,6 +3168,7 @@ async fn start_server_inner(
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         *mc = Some(child);
+        st.intentional_stop.store(false, Ordering::Release);
         (pid, stdout, stderr)
     };
 
@@ -3111,26 +3199,72 @@ async fn start_server_inner(
     }
 
     {
-        let mc = Arc::clone(&st.mc);
-        let app = Arc::clone(&st.app);
+        let watcher_state = st.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-                let mut lock = mc.write().await;
+                let mut lock = watcher_state.mc.write().await;
                 let Some(child) = lock.as_mut() else { break };
                 match child.try_wait() {
                     Ok(Some(status)) => {
                         *lock = None;
                         drop(lock);
-                        let mut s = app.write().await;
-                        s.mc_running = false;
-                        s.mc_ready = false;
-                        s.mc_pid = None;
-                        s.mc_started_at_ms = None;
-                        s.add_console_log(
-                            "warn",
-                            format!("Servidor Minecraft terminó (código {:?})", status.code()),
-                        );
+
+                        let (server_root, java_configured) = {
+                            let mut state = watcher_state.app.write().await;
+                            state.mc_running = false;
+                            state.mc_ready = false;
+                            state.mc_pid = None;
+                            state.mc_started_at_ms = None;
+                            state.add_console_log(
+                                "warn",
+                                format!("Servidor Minecraft terminó (código {:?})", status.code()),
+                            );
+                            (state.config.server_dir.clone(), state.config.java_path.clone())
+                        };
+
+                        if !watcher_state.intentional_stop.load(Ordering::Acquire)
+                            && load_startup_config(&server_root).await.auto_restart_on_crash
+                        {
+                            let restart_state = watcher_state.clone();
+                            tokio::spawn(async move {
+                                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                                if restart_state.intentional_stop.load(Ordering::Acquire) {
+                                    return;
+                                }
+
+                                let _lifecycle = restart_state.lifecycle.lock().await;
+                                if restart_state.intentional_stop.load(Ordering::Acquire)
+                                    || restart_state.mc.read().await.is_some()
+                                    || !load_startup_config(&server_root).await.auto_restart_on_crash
+                                {
+                                    return;
+                                }
+
+                                {
+                                    let mut state = restart_state.app.write().await;
+                                    state.add_console_log(
+                                        "warn",
+                                        "Minecraft terminó inesperadamente. Intentando reiniciarlo automáticamente...",
+                                    );
+                                }
+
+                                let result = start_server_inner(
+                                    restart_state.clone(),
+                                    server_root,
+                                    java_configured,
+                                )
+                                .await;
+
+                                if result.is_err() || restart_state.mc.read().await.is_none() {
+                                    let mut state = restart_state.app.write().await;
+                                    state.add_console_log(
+                                        "error",
+                                        "No se pudo completar el reinicio automático de Minecraft.",
+                                    );
+                                }
+                            });
+                        }
                         break;
                     }
                     Ok(None) => drop(lock),
@@ -3138,7 +3272,7 @@ async fn start_server_inner(
                     // Descartarlo con kill_on_drop(true) podría matar Java.
                     Err(error) => {
                         drop(lock);
-                        let mut s = app.write().await;
+                        let mut s = watcher_state.app.write().await;
                         s.add_console_log(
                             "warn",
                             format!(
@@ -3168,11 +3302,13 @@ enum StopOutcome {
 /// Solicita un apagado normal y espera a que Java termine.
 /// Solo fuerza la terminación cuando supera el límite de espera.
 async fn stop_server_process(st: &LocalState) -> Result<StopOutcome, String> {
+    st.intentional_stop.store(true, Ordering::Release);
     let _lifecycle = st.lifecycle.lock().await;
     stop_server_process_inner(st).await
 }
 
 async fn stop_server_process_inner(st: &LocalState) -> Result<StopOutcome, String> {
+    st.intentional_stop.store(true, Ordering::Release);
     let root = st.app.read().await.config.server_dir.clone();
     let stop_cmd = load_startup_config(&root).await.stop_command;
 
