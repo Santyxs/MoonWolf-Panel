@@ -398,9 +398,7 @@ async fn download_to(url: &str, dest: &Path) -> Result<(), String> {
         file.flush().await.ok();
         drop(file);
 
-        tokio::fs::rename(&part, dest)
-            .await
-            .map_err(|e| format!("rename: {e}"))?;
+        replace_file(&part, dest).await?;
         Ok(())
     }
     .await;
@@ -409,6 +407,47 @@ async fn download_to(url: &str, dest: &Path) -> Result<(), String> {
         let _ = tokio::fs::remove_file(&part).await;
     }
     result
+}
+
+/// Sustituye `dest` por `src` de forma segura en Windows (rename sobre un
+/// fichero existente suele fallar). Si el destino está bloqueado (p. ej. jar
+/// en uso por Minecraft), se propaga el error.
+async fn replace_file(src: &Path, dest: &Path) -> Result<(), String> {
+    if src == dest {
+        return Ok(());
+    }
+    if dest.exists() {
+        // Apartar el anterior; si remove falla (archivo en uso), no dejamos
+        // el temporal como destino final a medias.
+        let backup = {
+            let mut id = [0u8; 4];
+            {
+                use rand::Rng;
+                rand::rng().fill_bytes(&mut id);
+            }
+            let id = id.iter().map(|b| format!("{b:02x}")).collect::<String>();
+            let base = dest
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file");
+            dest.with_file_name(format!("{base}.{id}.old"))
+        };
+        if let Err(e) = tokio::fs::rename(dest, &backup).await {
+            return Err(format!(
+                "No se pudo sustituir el archivo existente (¿en uso?): {e}"
+            ));
+        }
+        if let Err(e) = tokio::fs::rename(src, dest).await {
+            // Intentar devolver el original
+            let _ = tokio::fs::rename(&backup, dest).await;
+            return Err(format!("No se pudo mover el archivo descargado: {e}"));
+        }
+        let _ = tokio::fs::remove_file(&backup).await;
+        return Ok(());
+    }
+    tokio::fs::rename(src, dest)
+        .await
+        .map_err(|e| format!("rename: {e}"))
 }
 
 /// Tamaño de chunk para descargas en streaming (archivos / backups).
@@ -4780,12 +4819,18 @@ async fn versions_install(
     let backup = server_dir.join(format!("server.bak_{}.jar", crate::now_secs()));
 
     if current.exists() {
-        let _ = tokio::fs::rename(&current, &backup).await;
+        if let Err(e) = tokio::fs::rename(&current, &backup).await {
+            let _ = tokio::fs::remove_file(&temp).await;
+            return json_fail(&format!(
+                "No se pudo apartar el server.jar actual (¿en uso?): {e}"
+            ));
+        }
     }
-    if let Err(e) = tokio::fs::rename(&temp, &current).await {
+    if let Err(e) = replace_file(&temp, &current).await {
         if backup.exists() {
             let _ = tokio::fs::rename(&backup, &current).await;
         }
+        let _ = tokio::fs::remove_file(&temp).await;
         return json_fail(&format!("No se pudo mover el nuevo server.jar: {e}"));
     }
 
