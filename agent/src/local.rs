@@ -402,6 +402,28 @@ async fn download_to(url: &str, dest: &Path) -> Result<(), String> {
     result
 }
 
+/// Tamaño de chunk para descargas en streaming (archivos / backups).
+const FILE_STREAM_CHUNK: usize = 256 * 1024;
+
+/// Stream de bytes desde un fichero abierto, sin cargarlo entero en memoria.
+fn file_byte_stream(
+    file: tokio::fs::File,
+) -> impl futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send {
+    use tokio::io::AsyncReadExt;
+    futures::stream::unfold(file, |mut file| async move {
+        let mut buf = bytes::BytesMut::with_capacity(FILE_STREAM_CHUNK);
+        buf.resize(FILE_STREAM_CHUNK, 0);
+        match file.read(&mut buf[..]).await {
+            Ok(0) => None,
+            Ok(n) => {
+                buf.truncate(n);
+                Some((Ok(buf.freeze()), file))
+            }
+            Err(e) => Some((Err(e), file)),
+        }
+    })
+}
+
 fn semver_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     let pa: Vec<i64> = a.split('.').map(|s| s.parse().unwrap_or(0)).collect();
     let pb: Vec<i64> = b.split('.').map(|s| s.parse().unwrap_or(0)).collect();
@@ -638,8 +660,6 @@ async fn download_file(
     headers: HeaderMap,
     Query(q): Query<PathQuery>,
 ) -> Result<Response, StatusCode> {
-    use tokio::io::AsyncReadExt;
-
     let s = st.app.read().await;
     check_auth(&headers, &s.config.local_token)?;
     let root = s.config.server_dir.clone();
@@ -666,18 +686,7 @@ async fn download_file(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file.bin".into());
 
-    // Streaming por chunks: no cargar backups/mundos enteros en RAM.
-    let stream = futures::stream::unfold(file, |mut file| async move {
-        let mut buf = vec![0u8; 64 * 1024];
-        match file.read(&mut buf).await {
-            Ok(0) => None,
-            Ok(n) => {
-                buf.truncate(n);
-                Some((Ok::<_, std::io::Error>(bytes::Bytes::from(buf)), file))
-            }
-            Err(e) => Some((Err(e), file)),
-        }
-    });
+    let stream = file_byte_stream(file);
 
     let mut builder = Response::builder()
         .status(StatusCode::OK)
@@ -1689,8 +1698,6 @@ async fn download_backup(
     headers: HeaderMap,
     AxumPath(name): AxumPath<String>,
 ) -> Result<Response, StatusCode> {
-    use tokio::io::AsyncReadExt;
-
     let s = st.app.read().await;
     check_auth(&headers, &s.config.local_token)?;
     let root = s.config.server_dir.clone();
@@ -1715,18 +1722,7 @@ async fn download_backup(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    // Streaming: un backup de varios GB no debe cargarse entero en RAM.
-    let stream = futures::stream::unfold(file, |mut file| async move {
-        let mut buf = vec![0u8; 64 * 1024];
-        match file.read(&mut buf).await {
-            Ok(0) => None,
-            Ok(n) => {
-                buf.truncate(n);
-                Some((Ok::<_, std::io::Error>(bytes::Bytes::from(buf)), file))
-            }
-            Err(e) => Some((Err(e), file)),
-        }
-    });
+    let stream = file_byte_stream(file);
 
     let mut builder = Response::builder()
         .status(StatusCode::OK)
