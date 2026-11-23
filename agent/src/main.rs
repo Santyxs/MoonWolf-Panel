@@ -386,7 +386,6 @@ pub struct LogEntry {
     pub message: String,
     #[serde(skip)]
     pub seq: u64,
-    /// No reenviar al panel (sondas internas list/tps del Agent).
     #[serde(skip)]
     pub silent: bool,
 }
@@ -397,7 +396,6 @@ pub struct UpdateInfo {
     pub version: String,
     pub download_url: String,
     pub size: u64,
-    /// SHA-256 en hex (minúsculas) desde SHA256SUMS.txt del release, si existe.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
 }
@@ -434,11 +432,7 @@ pub struct AppState {
     pub console_seq: u64,
     pub gui_revision: u64,
     pub mc_running: bool,
-    /// True cuando el proceso Java ya publicó el mensaje de listo (Done/listening).
-    /// Independiente del ring buffer de consola (MAX_LOGS).
     pub mc_ready: bool,
-    /// Hasta este instante (epoch ms) las respuestas de métricas de sondas
-    /// internas no se reenvían al panel (cubre respuestas multilínea).
     pub metric_probe_until_ms: i64,
     pub mc_pid: Option<u32>,
     pub mc_started_at_ms: Option<i64>,
@@ -661,7 +655,6 @@ pub async fn check_update_once(app: Arc<RwLock<AppState>>) -> anyhow::Result<()>
     Ok(())
 }
 
-/// Borra archivos residuales de actualizaciones anteriores en la carpeta updates.
 async fn clean_updates_dir(keep: Option<&Path>) -> anyhow::Result<()> {
     let dir = AgentConfig::config_dir().join("updates");
     if !dir.exists() {
@@ -761,7 +754,6 @@ async fn verify_file_sha256(path: &Path, expected_hex: &str) -> anyhow::Result<(
     Ok(())
 }
 
-/// SHA-256 sin dependencias extra (el workflow usa --locked y no hay Cargo.lock en el repo).
 struct Sha256Hasher {
     state: [u32; 8],
     buffer: [u8; 64],
@@ -814,9 +806,6 @@ impl Sha256Hasher {
         let bit_len = self.total_len.wrapping_mul(8);
         self.update(&[0x80]);
         while self.buffer_len != 56 {
-            if self.buffer_len == 0 {
-                // pad zeros until 56; if we just flushed at 0 after 0x80, keep padding
-            }
             if self.buffer_len < 56 {
                 let zeros = 56 - self.buffer_len;
                 self.update(&vec![0u8; zeros]);
@@ -913,7 +902,6 @@ async fn download_and_stage(
 
     let dir = AgentConfig::config_dir().join("updates");
     tokio::fs::create_dir_all(&dir).await?;
-    // Eliminar actualizaciones descargadas anteriores para no acumular .exe
     let _ = clean_updates_dir(None).await;
     let dest = dir.join(format!("MoonWolf-Agent-v{}.exe", info_update.version));
 
@@ -944,7 +932,6 @@ async fn download_and_stage(
     file.sync_all().await.ok();
     drop(file);
 
-    // Exigir y verificar integridad con SHA256SUMS.txt del release antes de aceptar el binario.
     let expected = match info_update.sha256.as_deref() {
         Some(e) if !e.trim().is_empty() => e.trim(),
         _ => {
@@ -999,8 +986,6 @@ async fn download_and_stage(
 }
 
 #[cfg(windows)]
-
-/// Ruta Windows usable (sin prefijo \\?\).
 fn win_path_str(p: &Path) -> String {
     let s = p.to_string_lossy();
     s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
@@ -1018,7 +1003,6 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
     let old = current_exe.with_extension("exe.old");
     let _ = tokio::fs::remove_file(&old).await;
 
-    // En Windows se puede renombrar el .exe en ejecución; el proceso sigue en el .old
     tokio::fs::rename(&current_exe, &old).await.map_err(|e| {
         anyhow::anyhow!("No se pudo renombrar el ejecutable actual (¿en uso?): {e}")
     })?;
@@ -1033,13 +1017,10 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
     let pid = std::process::id();
     let exe_path = PathBuf::from(win_path_str(&current_exe));
     let pending = update_pending_path(&current_exe);
-    // Marca de actualización en curso: el nuevo proceso solo borrará .exe.old
-    // tras inicializar de verdad (API local lista). Si no, el siguiente arranque restaura.
     if let Err(e) = std::fs::write(&pending, b"pending") {
         warn!("No se pudo escribir marca de actualización pendiente: {e}");
     }
 
-    // Restaura el ejecutable anterior si el nuevo no arranca.
     let restore_previous = || {
         let _ = std::fs::remove_file(&pending);
         let _ = std::fs::remove_file(&current_exe);
@@ -1054,8 +1035,6 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
         true
     };
 
-    // Arrancar YA el nuevo Agent con --wait-pid: espera a que este proceso muera y sigue.
-    // Es el mecanismo más fiable (sin PowerShell ni .bat).
     let mut child = match std::process::Command::new(&exe_path)
         .args(["--wait-pid", &pid.to_string()])
         .stdin(Stdio::null())
@@ -1070,7 +1049,6 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
         }
     };
 
-    // Comprobación rápida: si muere al instante, restaurar ya.
     std::thread::sleep(std::time::Duration::from_millis(200));
     match child.try_wait() {
         Ok(Some(status)) => {
@@ -1088,7 +1066,6 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
             );
         }
         Err(e) => {
-            // Estado desconocido: no restaurar (el hijo podría estar vivo).
             warn!("No se pudo comprobar el proceso hijo: {e}");
         }
     }
@@ -1104,8 +1081,6 @@ fn update_old_path(exe: &Path) -> PathBuf {
     exe.with_extension("exe.old")
 }
 
-/// Si una actualización anterior marcó "booting" y no llegó a finalizar,
-/// restaura el .exe.old y relanza esa versión.
 fn recover_incomplete_update() {
     let Ok(exe) = std::env::current_exe() else {
         return;
@@ -1149,7 +1124,6 @@ fn recover_incomplete_update() {
     }
 }
 
-/// Tras --wait-pid, marca que este proceso está intentando arrancar la actualización.
 fn mark_update_booting() {
     let Ok(exe) = std::env::current_exe() else {
         return;
@@ -1160,7 +1134,6 @@ fn mark_update_booting() {
     }
 }
 
-/// API local lista: la actualización se considera exitosa; elimina respaldo y marca.
 fn finalize_successful_update() {
     let Ok(exe) = std::env::current_exe() else {
         return;
@@ -1211,7 +1184,6 @@ fn wait_for_pid(pid: u32) {
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
     std::thread::sleep(std::time::Duration::from_millis(500));
-    // No borrar .exe.old aquí: solo tras inicialización real (finalize_successful_update).
 }
 
 #[cfg(not(windows))]
@@ -1221,6 +1193,7 @@ fn wait_for_pid(_pid: u32) {}
 pub async fn apply_update(_current_exe: &PathBuf, _new_exe: &PathBuf) -> anyhow::Result<()> {
     anyhow::bail!("apply_update solo implementado en Windows por ahora");
 }
+
 #[cfg(windows)]
 fn show_windows_error_dialog(msg: &str) {
     let title: Vec<u16> = "MoonWolf Agent"
@@ -1311,7 +1284,6 @@ async fn run() -> anyhow::Result<()> {
         s.local_ready = true;
         s.add_log("info", "Servidor local listo");
     }
-    // Solo ahora es seguro descartar el respaldo de la actualización.
     finalize_successful_update();
     info!("API local escuchando en http://127.0.0.1:{LOCAL_PORT}");
 
