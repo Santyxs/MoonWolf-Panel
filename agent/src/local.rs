@@ -595,11 +595,16 @@ struct PathQuery {
     path: Option<String>,
 }
 
+/// Tamaño máximo para abrir un archivo como texto en el panel (JSON en memoria).
+const MAX_TEXT_EDIT_BYTES: u64 = 5 * 1024 * 1024;
+
 async fn get_file_content(
     State(st): State<LocalState>,
     headers: HeaderMap,
     Query(q): Query<PathQuery>,
 ) -> Result<Response, StatusCode> {
+    use tokio::io::AsyncReadExt;
+
     let s = st.app.read().await;
     check_auth(&headers, &s.config.local_token)?;
     let root = s.config.server_dir.clone();
@@ -613,13 +618,39 @@ async fn get_file_content(
     if !path.is_file() {
         return Ok(json_fail("No se puede leer el archivo"));
     }
-    match tokio::fs::read_to_string(&path).await {
-        Ok(content) => Ok(json_ok(json!({
-            "content": content,
-            "filename": path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(),
-        }))),
-        Err(_) => Ok(json_fail("No se puede leer el archivo")),
+
+    let meta = match tokio::fs::metadata(&path).await {
+        Ok(m) => m,
+        Err(_) => return Ok(json_fail("No se puede leer el archivo")),
+    };
+    if meta.len() > MAX_TEXT_EDIT_BYTES {
+        return Ok(json_fail(
+            "El archivo es demasiado grande para editarlo como texto (máx. 5 MB). Usa la descarga.",
+        ));
     }
+
+    // Lectura acotada: no usamos read_to_string sobre ficheros arbitrarios.
+    let mut file = match tokio::fs::File::open(&path).await {
+        Ok(f) => f,
+        Err(_) => return Ok(json_fail("No se puede leer el archivo")),
+    };
+    let mut buf = Vec::with_capacity(meta.len() as usize);
+    if file.read_to_end(&mut buf).await.is_err() {
+        return Ok(json_fail("No se puede leer el archivo"));
+    }
+    let content = match String::from_utf8(buf) {
+        Ok(s) => s,
+        Err(_) => {
+            return Ok(json_fail(
+                "El archivo no es texto UTF-8 válido. Usa la descarga para archivos binarios.",
+            ));
+        }
+    };
+
+    Ok(json_ok(json!({
+        "content": content,
+        "filename": path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(),
+    })))
 }
 
 #[derive(Deserialize)]
