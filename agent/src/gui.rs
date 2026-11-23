@@ -11,66 +11,22 @@ use crate::{AgentConfig, AppState};
 slint::include_modules!();
 
 const PANEL_URL: &str = "https://moonwolf-panel.onrender.com";
-const WINDOW_TITLE: &str = "MoonWolf Agent";
 
 pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
     let ui = MainWindow::new()?;
     let weak = ui.as_weak();
-
-    let tray_menu = muda::Menu::new();
-    let tray_open = muda::MenuItem::with_id("tray_open", "Abrir MoonWolf Agent", true, None);
-    let tray_quit = muda::MenuItem::with_id("tray_quit", "Salir", true, None);
-    let _ = tray_menu.append(&tray_open);
-    let _ = tray_menu.append(&muda::PredefinedMenuItem::separator());
-    let _ = tray_menu.append(&tray_quit);
-    let tray_image = image::load_from_memory(include_bytes!("../../assets/icon.ico"))?;
-    let tray_rgba = tray_image.into_rgba8();
-    let (tray_width, tray_height) = (tray_rgba.width(), tray_rgba.height());
-    let tray_icon = tray_icon::Icon::from_rgba(tray_rgba.into_raw(), tray_width, tray_height)?;
-    let _tray = tray_icon::TrayIconBuilder::new()
-        .with_tooltip(WINDOW_TITLE)
-        .with_icon(tray_icon)
-        .with_menu(Box::new(tray_menu))
-        .with_menu_on_left_click(false)
-        .build()?;
-
-    let weak_tray = weak.clone();
-    tray_icon::TrayIconEvent::set_event_handler(Some(move |event| {
-        if matches!(
-            event,
-            tray_icon::TrayIconEvent::Click {
-                button: tray_icon::MouseButton::Left,
-                button_state: tray_icon::MouseButtonState::Up,
-                ..
+    let tray = TrayIcon::new()?;
+    {
+        let weak = weak.clone();
+        tray.on_open_window(move || {
+            if let Some(ui) = weak.upgrade() {
+                let _ = ui.window().show();
             }
-        ) {
-            let weak = weak_tray.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = weak.upgrade() {
-                    let _ = ui.window().show();
-                }
-            });
-        }
-    }));
-    let weak_menu = weak.clone();
-    muda::MenuEvent::set_event_handler(Some(move |event: muda::MenuEvent| {
-        let weak = weak_menu.clone();
-        match event.id.0.as_str() {
-            "tray_open" => {
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = weak.upgrade() {
-                        let _ = ui.window().show();
-                    }
-                });
-            }
-            "tray_quit" => {
-                let _ = slint::invoke_from_event_loop(move || {
-                    let _ = slint::quit_event_loop();
-                });
-            }
-            _ => {}
-        }
-    }));
+        });
+    }
+    tray.on_quit_app(move || {
+        let _ = slint::quit_event_loop();
+    });
 
     {
         ui.on_open_panel(move || {
@@ -322,7 +278,6 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
                 };
                 last_revision = Some(revision);
 
-                // Cada actualización recibe su propia copia del handle débil.
                 let weak = weak.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = weak.upgrade() {
@@ -407,6 +362,7 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
         state.shutting_down = true;
         state.add_log("info", "MoonWolf Agent cerrado");
     }
+    drop(tray);
     Ok(())
 }
 
