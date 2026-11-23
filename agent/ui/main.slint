@@ -283,6 +283,29 @@ component Modal inherits Rectangle {
     }
 }
 
+// ─── Bandeja del sistema (nativa de Slint) ─────────────────────────────────
+
+export component TrayIcon inherits SystemTrayIcon {
+    in property <string> tray-tooltip: "MoonWolf Agent";
+    callback open-window();
+    callback quit-app();
+
+    icon: @image-url("../../assets/icon.ico");
+    tooltip: root.tray-tooltip;
+
+    Menu {
+        MenuItem {
+            title: "Abrir MoonWolf Agent";
+            activated => { root.open-window(); }
+        }
+        MenuSeparator { }
+        MenuItem {
+            title: "Salir";
+            activated => { root.quit-app(); }
+        }
+    }
+}
+
 // ─── Ventana principal ──────────────────────────────────────────────────────
 
 export component MainWindow inherits Window {
@@ -295,7 +318,6 @@ export component MainWindow inherits Window {
     max-height: 570px;
     background: Theme.bg;
     icon: @image-url("../../assets/icon.ico");
-
 
     callback open-panel();
     callback open-config();
@@ -338,7 +360,6 @@ export component MainWindow inherits Window {
         height: 100%;
         background: @linear-gradient(170deg, #0a1620 0%, #05080d 45%, #04060a 100%);
 
-        // Resplandor ambiental superior
         Rectangle {
             x: (parent.width - 380px) / 2;
             y: -150px;
@@ -361,7 +382,7 @@ export component MainWindow inherits Window {
                 spacing: 12px;
                 alignment: center;
 
-                // Logo: luna con degradado
+                // Logo
                 Image {
                     source: @image-url("../../assets/icon.ico");
                     width: 42px;
