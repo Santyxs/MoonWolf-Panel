@@ -18,7 +18,7 @@ use axum::{
     routing::{get, patch, post},
 };
 use bytes::{Bytes, BytesMut};
-use getrandom::fill as os_fill;
+use rand::Rng;
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -136,7 +136,7 @@ fn hex_encode(data: &[u8]) -> String {
 
 fn new_uuid_v4() -> String {
     let mut b = [0u8; 16];
-    os_fill(&mut b).expect("system entropy source failed");
+    rand::rng().fill_bytes(&mut b);
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
     format!(
@@ -496,7 +496,7 @@ fn hash_token(token: &str) -> String {
 
 fn random_code(length: usize) -> String {
     let mut bytes = vec![0_u8; length];
-    os_fill(&mut bytes).expect("system entropy source failed");
+    rand::rng().fill_bytes(&mut bytes);
     bytes
         .iter()
         .map(|b| TOKEN_ALPHABET[(*b as usize) % TOKEN_ALPHABET.len()] as char)
@@ -521,7 +521,7 @@ fn make_share_token() -> String {
 
 fn make_secret() -> String {
     let mut bytes = [0_u8; 32];
-    os_fill(&mut bytes).expect("system entropy source failed");
+    rand::rng().fill_bytes(&mut bytes);
     b64_url_encode(&bytes)
 }
 
@@ -545,7 +545,7 @@ fn create_panel_session(
         .map(|v| v.min(normal_exp))
         .unwrap_or(normal_exp);
     let mut nonce = [0_u8; 16];
-    os_fill(&mut nonce).expect("system entropy source failed");
+    rand::rng().fill_bytes(&mut nonce);
     let session = PanelSession {
         agent_id: agent_id.to_owned(),
         permission: permission.to_owned(),
@@ -935,10 +935,7 @@ async fn register_socket_handlers(
                             match name {
                                 "status" => {
                                     let incoming = payload.as_str().unwrap_or("");
-                                    let current =
-                                        entry.status.as_ref().and_then(Value::as_str).unwrap_or("");
-                                    // Permitir starting→online y cualquier paso a offline.
-                                    // Solo bloquear degradar online→starting (log tardío / reconnect ruidoso).
+                                    let current = entry.status.as_ref().and_then(Value::as_str).unwrap_or("");
                                     let ignore = incoming == "starting" && current == "online";
                                     if !ignore {
                                         entry.status = Some(payload.clone());
@@ -1028,8 +1025,6 @@ async fn register_socket_handlers(
                 },
             );
 
-            // Respuestas binarias: inspecciona únicamente los metadatos para localizar
-            // el panel y reenvía el paquete de bytes sin convertirlo a Base64.
             let state_rpc_binary_result = state.clone();
             let agent_id_rpc_binary_result = agent_id.clone();
             socket.on(
@@ -1926,9 +1921,7 @@ async fn delete_share_token(
             );
         }
     };
-    // Cerrar WebRTC en el Agent ANTES de quitar el panel del mapa.
-    // Si solo hacemos remove + disconnect, on_disconnect ya no encuentra el
-    // panel y no emite direct_close; el canal directo podría seguir usable.
+    
     let closing: Vec<(String, String, SocketRef)> = {
         let mut panels = state.panels.lock().await;
         let ids: Vec<String> = panels
@@ -2023,7 +2016,6 @@ async fn styles_css(Query(query): Query<HashMap<String, String>>) -> Response {
 }
 
 async fn app_icon() -> Response {
-    // Mismo icono que usa el Agent (assets/icon.ico).
     match read_asset("assets/icon.ico").await {
         Ok(bytes) => static_response(bytes, "image/x-icon", "public, max-age=86400"),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
