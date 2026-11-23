@@ -4716,10 +4716,12 @@ async function restoreBackup(name) {
     }
 
     toast(
-      data.wasRunning
-        ? '✅ Copia restaurada. El servidor se está reiniciando.'
-        : '✅ Copia restaurada.',
-      'ok'
+      data.restartFailed
+        ? '⚠️ Copia restaurada, pero Minecraft no pudo reiniciarse. Revisa la consola.'
+        : data.wasRunning
+          ? '✅ Copia restaurada. Minecraft se está iniciando.'
+          : '✅ Copia restaurada.',
+      data.restartFailed ? 'warn' : 'ok'
     );
     addActivity(`Copia restaurada: ${name}`, 'ok', '♻️');
     invalidateViewCache('backups'); loadBackups({ soft: false });
