@@ -1033,22 +1033,46 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
     let pid = std::process::id();
     let exe_path = PathBuf::from(win_path_str(&current_exe));
 
+    // Restaura el ejecutable anterior si el nuevo no arranca.
+    let restore_previous = || {
+        let _ = std::fs::remove_file(&current_exe);
+        if let Err(e) = std::fs::rename(&old, &current_exe) {
+            warn!(
+                "No se pudo restaurar el ejecutable anterior desde {}: {e}",
+                old.display()
+            );
+            return false;
+        }
+        info!(
+            "Ejecutable anterior restaurado desde {}",
+            old.display()
+        );
+        true
+    };
+
     // Arrancar YA el nuevo Agent con --wait-pid: espera a que este proceso muera y sigue.
     // Es el mecanismo más fiable (sin PowerShell ni .bat).
-    let mut child = std::process::Command::new(&exe_path)
+    let mut child = match std::process::Command::new(&exe_path)
         .args(["--wait-pid", &pid.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| anyhow::anyhow!("No se pudo iniciar el Agent actualizado: {e}"))?;
+    {
+        Ok(c) => c,
+        Err(e) => {
+            restore_previous();
+            anyhow::bail!("No se pudo iniciar el Agent actualizado: {e}");
+        }
+    };
 
     // No esperamos al hijo; solo comprobamos que sigue vivo un instante
     std::thread::sleep(std::time::Duration::from_millis(200));
     match child.try_wait() {
         Ok(Some(status)) => {
+            restore_previous();
             anyhow::bail!(
-                "El Agent actualizado salió de inmediato (código {:?}). Ruta: {}",
+                "El Agent actualizado salió de inmediato (código {:?}). Se restauró la versión anterior. Ruta: {}",
                 status.code(),
                 exe_path.display()
             );
@@ -1060,6 +1084,7 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
             );
         }
         Err(e) => {
+            // Estado desconocido: no restaurar (el hijo podría estar vivo).
             warn!("No se pudo comprobar el proceso hijo: {e}");
         }
     }
