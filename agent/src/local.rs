@@ -368,12 +368,21 @@ async fn download_to(url: &str, dest: &Path) -> Result<(), String> {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
 
-    // Escribir a un .part y renombrar al final para no dejar el destino a medias
-    // (p. ej. fabric-installer.jar incompleto que en el siguiente intento se
-    // tomaría por "ya descargado" con exists()).
-    let mut part = dest.as_os_str().to_owned();
-    part.push(".part");
-    let part = PathBuf::from(part);
+    // Temporal único por operación: dos descargas concurrentes del mismo
+    // destino (p. ej. el mismo plugin) no deben compartir el mismo .part.
+    let part = {
+        let mut id = [0u8; 8];
+        {
+            use rand::Rng;
+            rand::rng().fill_bytes(&mut id);
+        }
+        let id = id.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let base = dest
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("download");
+        dest.with_file_name(format!("{base}.{id}.part"))
+    };
     let _ = tokio::fs::remove_file(&part).await;
 
     let result = async {
@@ -4753,7 +4762,15 @@ async fn versions_install(
         _ => return json_fail("URL de descarga requerida"),
     };
 
-    let temp = server_dir.join(format!(".moonwolf-server-download-{}", std::process::id()));
+    let temp = {
+        let mut id = [0u8; 8];
+        {
+            use rand::Rng;
+            rand::rng().fill_bytes(&mut id);
+        }
+        let id = id.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        server_dir.join(format!(".moonwolf-server-download-{id}"))
+    };
     if let Err(e) = download_to(&url, &temp).await {
         let _ = tokio::fs::remove_file(&temp).await;
         return json_fail(&format!("Descarga falló: {e}"));
