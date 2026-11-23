@@ -3147,14 +3147,13 @@ async fn start_server_inner(
             s.add_console_log("error", msg);
             return Ok(json_fail(msg));
         }
-        let resolved = tokio::task::spawn_blocking(move || {
-            resolve_override_java_binary(&override_path)
-        })
-        .await
-        .map_err(|e| {
-            tracing::error!("Validación de Java personalizado falló: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        let resolved =
+            tokio::task::spawn_blocking(move || resolve_override_java_binary(&override_path))
+                .await
+                .map_err(|e| {
+                    tracing::error!("Validación de Java personalizado falló: {e}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
         match resolved {
             Ok(path) => (path, "ruta personalizada (override)".to_string()),
             Err(msg) => {
