@@ -3,8 +3,8 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc, OnceLock,
+    atomic::{AtomicBool, Ordering},
 };
 
 use axum::body::Bytes;
@@ -766,9 +766,10 @@ async fn upload_chunk(
 
     if q.upload_id.len() < 8
         || q.upload_id.len() > 120
-        || !q.upload_id.bytes().all(|c| {
-            c.is_ascii_alphanumeric() || c == b'-' || c == b'_'
-        })
+        || !q
+            .upload_id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
     {
         return Ok(json_fail("Identificador de subida no válido"));
     }
@@ -1950,13 +1951,17 @@ async fn restore_backup(
                         let mut s = st.app.write().await;
                         s.add_console_log(
                             "error",
-                            format!("La copia se restauró, pero falló el reinicio de Minecraft: {error}"),
+                            format!(
+                                "La copia se restauró, pero falló el reinicio de Minecraft: {error}"
+                            ),
                         );
                     }
                 }
             }
 
-            Ok(json_ok(json!({ "restored": true, "wasRunning": restarted, "restartFailed": was_running && !restarted })))
+            Ok(json_ok(
+                json!({ "restored": true, "wasRunning": restarted, "restartFailed": was_running && !restarted }),
+            ))
         }
         Ok(Err(e)) => {
             let message = e.to_string();
@@ -3220,11 +3225,16 @@ async fn start_server_inner(
                                 "warn",
                                 format!("Servidor Minecraft terminó (código {:?})", status.code()),
                             );
-                            (state.config.server_dir.clone(), state.config.java_path.clone())
+                            (
+                                state.config.server_dir.clone(),
+                                state.config.java_path.clone(),
+                            )
                         };
 
                         if !watcher_state.intentional_stop.load(Ordering::Acquire)
-                            && load_startup_config(&server_root).await.auto_restart_on_crash
+                            && load_startup_config(&server_root)
+                                .await
+                                .auto_restart_on_crash
                         {
                             let restart_state = watcher_state.clone();
                             tokio::spawn(async move {
@@ -3236,7 +3246,9 @@ async fn start_server_inner(
                                 let _lifecycle = restart_state.lifecycle.lock().await;
                                 if restart_state.intentional_stop.load(Ordering::Acquire)
                                     || restart_state.mc.read().await.is_some()
-                                    || !load_startup_config(&server_root).await.auto_restart_on_crash
+                                    || !load_startup_config(&server_root)
+                                        .await
+                                        .auto_restart_on_crash
                                 {
                                     return;
                                 }

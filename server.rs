@@ -8,29 +8,29 @@ use std::{
     time::Duration,
 };
 
-use bytes::{Bytes, BytesMut};
 use axum::{
+    Json, Router,
     body::Body,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
-    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, patch, post},
-    Json, Router,
 };
+use bytes::{Bytes, BytesMut};
 use getrandom::fill as os_fill;
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use socketioxide::{
+    SocketIo,
     extract::{Data, SocketRef},
     handler::ConnectHandler,
     socket::DisconnectReason,
-    SocketIo,
 };
-use sqlx::{postgres::PgPoolOptions, PgPool, Row};
+use sqlx::{PgPool, Row, postgres::PgPoolOptions};
 use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer};
@@ -43,7 +43,10 @@ const SESSION_TTL_MS: i64 = 12 * 60 * 60 * 1000;
 const PAIRING_TTL_MS: i64 = 5 * 60 * 1000;
 const MAX_SOCKET_PAYLOAD: u64 = 20 * 1024 * 1024;
 const MAX_CACHED_LOGS: usize = 300;
-const ICE_SERVERS: [&str; 2] = ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"];
+const ICE_SERVERS: [&str; 2] = [
+    "stun:stun.l.google.com:19302",
+    "stun:stun.cloudflare.com:3478",
+];
 const TOKEN_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 type HmacSha256 = Hmac<Sha256>;
 
@@ -138,7 +141,22 @@ fn new_uuid_v4() -> String {
     b[8] = (b[8] & 0x3f) | 0x80;
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+        b[0],
+        b[1],
+        b[2],
+        b[3],
+        b[4],
+        b[5],
+        b[6],
+        b[7],
+        b[8],
+        b[9],
+        b[10],
+        b[11],
+        b[12],
+        b[13],
+        b[14],
+        b[15]
     )
 }
 
@@ -366,7 +384,11 @@ impl ShareToken {
 }
 
 impl AppState {
-    fn new(session_secret: String, local_agent_token: Option<String>, share_db: Option<PgPool>) -> Self {
+    fn new(
+        session_secret: String,
+        local_agent_token: Option<String>,
+        share_db: Option<PgPool>,
+    ) -> Self {
         Self {
             session_secret: Arc::new(session_secret),
             local_agent_token: local_agent_token.map(Arc::new),
@@ -385,7 +407,10 @@ impl AppState {
     async fn rate_limited(&self, key: String, limit: u32, window_ms: i64) -> bool {
         let now = now_ms();
         let mut limits = self.rate_limits.lock().await;
-        let entry = limits.entry(key).or_insert(RateWindow { count: 0, reset_at: now + window_ms });
+        let entry = limits.entry(key).or_insert(RateWindow {
+            count: 0,
+            reset_at: now + window_ms,
+        });
         if now >= entry.reset_at {
             entry.count = 0;
             entry.reset_at = now + window_ms;
@@ -395,7 +420,10 @@ impl AppState {
     }
 
     async fn find_share_token(&self, token: &str) -> anyhow::Result<Option<ShareToken>> {
-        let pool = self.share_db.as_ref().ok_or_else(|| anyhow::anyhow!("DATABASE_URL no está configurada"))?;
+        let pool = self
+            .share_db
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("DATABASE_URL no está configurada"))?;
         let hash = hash_token(token);
         let row = sqlx::query(
             "SELECT id, agent_id, token_hash, label, permission, created_at, expires_at, revoked_at \
@@ -407,8 +435,15 @@ impl AppState {
         row.map(share_from_row).transpose()
     }
 
-    async fn find_share_token_by_id(&self, id: &str, agent_id: &str) -> anyhow::Result<Option<ShareToken>> {
-        let pool = self.share_db.as_ref().ok_or_else(|| anyhow::anyhow!("DATABASE_URL no está configurada"))?;
+    async fn find_share_token_by_id(
+        &self,
+        id: &str,
+        agent_id: &str,
+    ) -> anyhow::Result<Option<ShareToken>> {
+        let pool = self
+            .share_db
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("DATABASE_URL no está configurada"))?;
         let row = sqlx::query(
             "SELECT id, agent_id, token_hash, label, permission, created_at, expires_at, revoked_at \
              FROM moonwolf_share_tokens WHERE id = $1 AND agent_id = $2 LIMIT 1",
@@ -421,7 +456,10 @@ impl AppState {
     }
 
     async fn list_share_tokens(&self, agent_id: &str) -> anyhow::Result<Vec<ShareToken>> {
-        let pool = self.share_db.as_ref().ok_or_else(|| anyhow::anyhow!("DATABASE_URL no está configurada"))?;
+        let pool = self
+            .share_db
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("DATABASE_URL no está configurada"))?;
         let rows = sqlx::query(
             "SELECT id, agent_id, token_hash, label, permission, created_at, expires_at, revoked_at \
              FROM moonwolf_share_tokens WHERE agent_id = $1 AND revoked_at IS NULL \
@@ -463,7 +501,10 @@ fn hash_token(token: &str) -> String {
 fn random_code(length: usize) -> String {
     let mut bytes = vec![0_u8; length];
     os_fill(&mut bytes).expect("system entropy source failed");
-    bytes.iter().map(|b| TOKEN_ALPHABET[(*b as usize) % TOKEN_ALPHABET.len()] as char).collect()
+    bytes
+        .iter()
+        .map(|b| TOKEN_ALPHABET[(*b as usize) % TOKEN_ALPHABET.len()] as char)
+        .collect()
 }
 
 fn make_pairing_code() -> String {
@@ -473,7 +514,13 @@ fn make_pairing_code() -> String {
 
 fn make_share_token() -> String {
     let raw = random_code(16);
-    format!("MW-SHARE-{}-{}-{}-{}", &raw[0..4], &raw[4..8], &raw[8..12], &raw[12..16])
+    format!(
+        "MW-SHARE-{}-{}-{}-{}",
+        &raw[0..4],
+        &raw[4..8],
+        &raw[8..12],
+        &raw[12..16]
+    )
 }
 
 fn make_secret() -> String {
@@ -488,10 +535,19 @@ fn session_signature(secret: &str, payload: &str) -> anyhow::Result<String> {
     Ok(b64_url_encode(mac.finalize().into_bytes().as_slice()))
 }
 
-fn create_panel_session(secret: &str, agent_id: &str, permission: &str, kind: &str, share_token_id: Option<String>, requested_exp: Option<i64>) -> anyhow::Result<String> {
+fn create_panel_session(
+    secret: &str,
+    agent_id: &str,
+    permission: &str,
+    kind: &str,
+    share_token_id: Option<String>,
+    requested_exp: Option<i64>,
+) -> anyhow::Result<String> {
     let now = now_ms();
     let normal_exp = now.saturating_add(SESSION_TTL_MS);
-    let exp = requested_exp.map(|v| v.min(normal_exp)).unwrap_or(normal_exp);
+    let exp = requested_exp
+        .map(|v| v.min(normal_exp))
+        .unwrap_or(normal_exp);
     let mut nonce = [0_u8; 16];
     os_fill(&mut nonce).expect("system entropy source failed");
     let session = PanelSession {
@@ -523,7 +579,10 @@ fn verify_panel_session(secret: &str, token: &str) -> Option<PanelSession> {
 }
 
 fn valid_agent_id(value: &str) -> bool {
-    (16..=64).contains(&value.len()) && value.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+    (16..=64).contains(&value.len())
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-')
 }
 
 fn is_share_token_code(value: &str) -> bool {
@@ -532,14 +591,21 @@ fn is_share_token_code(value: &str) -> bool {
         && parts[0] == "MW"
         && parts[1] == "SHARE"
         && parts[2..].iter().all(|part| {
-            part.len() == 4 && part.bytes().all(|c| c.is_ascii_uppercase() || (b'2'..=b'9').contains(&c))
+            part.len() == 4
+                && part
+                    .bytes()
+                    .all(|c| c.is_ascii_uppercase() || (b'2'..=b'9').contains(&c))
         })
 }
 
 async fn authenticate_socket(state: &AppState, auth: &Value) -> Result<SocketIdentity, String> {
     match auth.get("role").and_then(Value::as_str).unwrap_or("") {
         "agent" => {
-            let agent_id = auth.get("agentId").and_then(Value::as_str).unwrap_or("").to_owned();
+            let agent_id = auth
+                .get("agentId")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
             let token = auth.get("token").and_then(Value::as_str).unwrap_or("");
             if !valid_agent_id(&agent_id) || token.len() < 32 {
                 return Err("unauthorized".into());
@@ -557,19 +623,35 @@ async fn authenticate_socket(state: &AppState, auth: &Value) -> Result<SocketIde
         }
         "panel" => {
             let raw = auth.get("session").and_then(Value::as_str).unwrap_or("");
-            let mut session = verify_panel_session(&state.session_secret, raw).ok_or_else(|| "unauthorized".to_owned())?;
+            let mut session = verify_panel_session(&state.session_secret, raw)
+                .ok_or_else(|| "unauthorized".to_owned())?;
             if session.kind == "share" {
-                let id = session.share_token_id.clone().ok_or_else(|| "unauthorized".to_owned())?;
-                let share = state.find_share_token_by_id(&id, &session.agent_id).await.map_err(|_| "share_store_unavailable".to_owned())?;
-                let share = share.filter(|v| v.active()).ok_or_else(|| "unauthorized".to_owned())?;
-                session.permission = normalize_permission(&share.permission).unwrap_or_else(|| "read".into());
-                if let Some(exp) = share.expires_at { session.exp = session.exp.min(exp); }
+                let id = session
+                    .share_token_id
+                    .clone()
+                    .ok_or_else(|| "unauthorized".to_owned())?;
+                let share = state
+                    .find_share_token_by_id(&id, &session.agent_id)
+                    .await
+                    .map_err(|_| "share_store_unavailable".to_owned())?;
+                let share = share
+                    .filter(|v| v.active())
+                    .ok_or_else(|| "unauthorized".to_owned())?;
+                session.permission =
+                    normalize_permission(&share.permission).unwrap_or_else(|| "read".into());
+                if let Some(exp) = share.expires_at {
+                    session.exp = session.exp.min(exp);
+                }
             }
             Ok(SocketIdentity::Panel { session })
         }
         "local-agent" => {
             let token = auth.get("token").and_then(Value::as_str).unwrap_or("");
-            let expected = state.local_agent_token.as_deref().map(|s| s.as_str()).unwrap_or("");
+            let expected = state
+                .local_agent_token
+                .as_deref()
+                .map(|s| s.as_str())
+                .unwrap_or("");
             if expected.is_empty() || !constant_time_equal(token, expected) {
                 return Err("unauthorized".into());
             }
@@ -580,7 +662,9 @@ async fn authenticate_socket(state: &AppState, auth: &Value) -> Result<SocketIde
 }
 
 fn constant_time_equal(a: &str, b: &str) -> bool {
-    if a.len() != b.len() { return false; }
+    if a.len() != b.len() {
+        return false;
+    }
     a.as_bytes().ct_eq(b.as_bytes()).unwrap_u8() == 1
 }
 
@@ -592,7 +676,12 @@ fn normalize_permission(permission: &str) -> Option<String> {
 }
 
 fn permission_allows(actual: &str, required: &str) -> bool {
-    let rank = |p: &str| match p { "read" => 1, "control" => 2, "admin" => 3, _ => 0 };
+    let rank = |p: &str| match p {
+        "read" => 1,
+        "control" => 2,
+        "admin" => 3,
+        _ => 0,
+    };
     rank(actual) >= rank(required)
 }
 
@@ -601,32 +690,70 @@ fn required_permission(method: &str, path: &str) -> &'static str {
     let method = method.to_ascii_uppercase();
     let is_admin = match method.as_str() {
         "GET" | "HEAD" => [
-            "/api/files", "/api/files/content", "/api/files/download",
-            "/api/databases/status", "/api/databases", "/api/backups", "/api/backups/download/:name",
+            "/api/files",
+            "/api/files/content",
+            "/api/files/download",
+            "/api/databases/status",
+            "/api/databases",
+            "/api/backups",
+            "/api/backups/download/:name",
             "/api/backups/progress",
-        ].iter().any(|p| route_matches(path, p)),
+        ]
+        .iter()
+        .any(|p| route_matches(path, p)),
         "POST" => [
-            "/api/files/content", "/api/files/create", "/api/files/rename", "/api/files/copy",
-            "/api/files/move", "/api/files/compress", "/api/files/bulk", "/api/files/delete",
-            "/api/files/upload-chunk", "/api/databases", "/api/databases/:name/reset-password",
-            "/api/backups", "/api/backups/:name/restore", "/api/startup", "/api/startup/detect-version",
-            "/api/ports", "/api/plugins/install", "/api/versions/install",
-        ].iter().any(|p| route_matches(path, p)),
-        "DELETE" => ["/api/databases/:name", "/api/backups/:name", "/api/plugins/installed/:file"]
-            .iter().any(|p| route_matches(path, p)),
+            "/api/files/content",
+            "/api/files/create",
+            "/api/files/rename",
+            "/api/files/copy",
+            "/api/files/move",
+            "/api/files/compress",
+            "/api/files/bulk",
+            "/api/files/delete",
+            "/api/files/upload-chunk",
+            "/api/databases",
+            "/api/databases/:name/reset-password",
+            "/api/backups",
+            "/api/backups/:name/restore",
+            "/api/startup",
+            "/api/startup/detect-version",
+            "/api/ports",
+            "/api/plugins/install",
+            "/api/versions/install",
+        ]
+        .iter()
+        .any(|p| route_matches(path, p)),
+        "DELETE" => [
+            "/api/databases/:name",
+            "/api/backups/:name",
+            "/api/plugins/installed/:file",
+        ]
+        .iter()
+        .any(|p| route_matches(path, p)),
         _ => false,
     };
-    if is_admin { "admin" } else if method == "GET" || method == "HEAD" { "read" } else { "control" }
+    if is_admin {
+        "admin"
+    } else if method == "GET" || method == "HEAD" {
+        "read"
+    } else {
+        "control"
+    }
 }
 
 fn route_matches(path: &str, pattern: &str) -> bool {
     let actual: Vec<_> = path.split('/').collect();
     let expected: Vec<_> = pattern.split('/').collect();
-    actual.len() == expected.len() && expected.iter().zip(actual.iter()).all(|(a, b)| a.starts_with(':') || a == b)
+    actual.len() == expected.len()
+        && expected
+            .iter()
+            .zip(actual.iter())
+            .all(|(a, b)| a.starts_with(':') || a == b)
 }
 
 fn header_client_ip(headers: &HeaderMap) -> String {
-    headers.get("x-forwarded-for")
+    headers
+        .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.split(',').last())
         .map(str::trim)
@@ -639,17 +766,33 @@ fn socket_client_ip(socket: &SocketRef) -> String {
     header_client_ip(&socket.req_parts().headers)
 }
 
-async fn auth_middleware(state: Arc<AppState>, socket: SocketRef, auth: Value) -> Result<(), String> {
+async fn auth_middleware(
+    state: Arc<AppState>,
+    socket: SocketRef,
+    auth: Value,
+) -> Result<(), String> {
     let ip = socket_client_ip(&socket);
-    if state.rate_limited(format!("socket-connect:{ip}"), 40, 60_000).await {
+    if state
+        .rate_limited(format!("socket-connect:{ip}"), 40, 60_000)
+        .await
+    {
         return Err("rate_limited".into());
     }
     let identity = authenticate_socket(&state, &auth).await?;
-    state.identities.lock().await.insert(socket.id.to_string(), identity);
+    state
+        .identities
+        .lock()
+        .await
+        .insert(socket.id.to_string(), identity);
     Ok(())
 }
 
-async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: SocketRef, identity: SocketIdentity) {
+async fn register_socket_handlers(
+    state: Arc<AppState>,
+    io: SocketIo,
+    socket: SocketRef,
+    identity: SocketIdentity,
+) {
     match identity {
         SocketIdentity::LocalAgent => {
             socket.join("local-agent");
@@ -661,12 +804,24 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
         }
         SocketIdentity::Agent { agent_id } => {
             let agent_id_for_connect = agent_id.clone();
-            let previous = state.agents.lock().await.insert(agent_id.clone(), socket.clone());
+            let previous = state
+                .agents
+                .lock()
+                .await
+                .insert(agent_id.clone(), socket.clone());
             if let Some(previous) = previous {
-                if previous.id.to_string() != socket.id.to_string() { let _ = previous.disconnect(); }
+                if previous.id.to_string() != socket.id.to_string() {
+                    let _ = previous.disconnect();
+                }
             }
             socket.join(format!("agent:{agent_id}"));
-            state.cache.lock().await.entry(agent_id.clone()).or_default().rpc_binary = false;
+            state
+                .cache
+                .lock()
+                .await
+                .entry(agent_id.clone())
+                .or_default()
+                .rpc_binary = false;
             let _ = io
                 .to(format!("panels:{agent_id}"))
                 .emit("agent_capabilities", &json!({"rpcBinary": false}))
@@ -679,192 +834,300 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
             let io_capabilities = io.clone();
             let agent_id_capabilities = agent_id.clone();
             let agent_socket_id = socket.id.to_string();
-            socket.on("agent_capabilities", move |_socket: SocketRef, Data(capabilities): Data<Value>| {
-                let state = state_capabilities.clone();
-                let io = io_capabilities.clone();
-                let agent_id = agent_id_capabilities.clone();
-                let socket_id = agent_socket_id.clone();
-                async move {
-                    if state.rate_limited(format!("agent-capabilities:{agent_id}"), 20, 60_000).await { return; }
-                    let is_current = state.agents.lock().await
-                        .get(&agent_id)
-                        .map(|current| current.id.to_string() == socket_id)
-                        .unwrap_or(false);
-                    if !is_current { return; }
+            socket.on(
+                "agent_capabilities",
+                move |_socket: SocketRef, Data(capabilities): Data<Value>| {
+                    let state = state_capabilities.clone();
+                    let io = io_capabilities.clone();
+                    let agent_id = agent_id_capabilities.clone();
+                    let socket_id = agent_socket_id.clone();
+                    async move {
+                        if state
+                            .rate_limited(format!("agent-capabilities:{agent_id}"), 20, 60_000)
+                            .await
+                        {
+                            return;
+                        }
+                        let is_current = state
+                            .agents
+                            .lock()
+                            .await
+                            .get(&agent_id)
+                            .map(|current| current.id.to_string() == socket_id)
+                            .unwrap_or(false);
+                        if !is_current {
+                            return;
+                        }
 
-                    let rpc_binary = capabilities.get("rpcBinary")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false);
-                    state.cache.lock().await
-                        .entry(agent_id.clone())
-                        .or_default()
-                        .rpc_binary = rpc_binary;
-                    let _ = io
-                        .to(format!("panels:{agent_id}"))
-                        .emit("agent_capabilities", &json!({"rpcBinary": rpc_binary}))
-                        .await;
-                }
-            });
+                        let rpc_binary = capabilities
+                            .get("rpcBinary")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        state
+                            .cache
+                            .lock()
+                            .await
+                            .entry(agent_id.clone())
+                            .or_default()
+                            .rpc_binary = rpc_binary;
+                        let _ = io
+                            .to(format!("panels:{agent_id}"))
+                            .emit("agent_capabilities", &json!({"rpcBinary": rpc_binary}))
+                            .await;
+                    }
+                },
+            );
 
             socket.on("pairing_create", move |socket: SocketRef| {
                 let state = state_pair.clone();
                 let agent_id = agent_id_pair.clone();
                 async move {
-                    if state.rate_limited(format!("{}:pairing_create", socket.id), 6, 60_000).await { return; }
+                    if state
+                        .rate_limited(format!("{}:pairing_create", socket.id), 6, 60_000)
+                        .await
+                    {
+                        return;
+                    }
                     let mut pairings = state.pairings.lock().await;
                     pairings.retain(|_, p| p.expires_at > now_ms() && p.agent_id != agent_id);
                     let mut code = make_pairing_code();
-                    while pairings.contains_key(&code) { code = make_pairing_code(); }
+                    while pairings.contains_key(&code) {
+                        code = make_pairing_code();
+                    }
                     let expires_at = now_ms() + PAIRING_TTL_MS;
-                    pairings.insert(code.clone(), PairingCode { agent_id, expires_at });
-                    let _ = socket.emit("pairing_ready", &json!({"code":code,"expiresAt":expires_at,"ttlMs":PAIRING_TTL_MS}));
+                    pairings.insert(
+                        code.clone(),
+                        PairingCode {
+                            agent_id,
+                            expires_at,
+                        },
+                    );
+                    let _ = socket.emit(
+                        "pairing_ready",
+                        &json!({"code":code,"expiresAt":expires_at,"ttlMs":PAIRING_TTL_MS}),
+                    );
                 }
             });
 
             let state_event = state.clone();
             let io_event = io.clone();
             let agent_id_event = agent_id.clone();
-            socket.on("event", move |_socket: SocketRef, Data(event): Data<Value>| {
-                let state = state_event.clone();
-                let io = io_event.clone();
-                let agent_id = agent_id_event.clone();
-                async move {
-                    if state.rate_limited(format!("agent-event:{agent_id}"), 240, 60_000).await { return; }
-                    let Some(name) = event.get("name").and_then(Value::as_str) else { return; };
-                    if !["status", "log", "log_batch", "stats"].contains(&name) { return; }
-                    let payload = event.get("payload").cloned().unwrap_or(Value::Null);
-                    let mut status_update = None;
-                    {
-                        let mut cache = state.cache.lock().await;
-                        let entry = cache.entry(agent_id.clone()).or_default();
-                        match name {
-                            "status" => {
-                                let incoming = payload.as_str().unwrap_or("");
-                                let current = entry.status.as_ref().and_then(Value::as_str).unwrap_or("");
-                                // Permitir starting→online y cualquier paso a offline.
-                                // Solo bloquear degradar online→starting (log tardío / reconnect ruidoso).
-                                let ignore = incoming == "starting" && current == "online";
-                                if !ignore {
-                                    entry.status = Some(payload.clone());
-                                    status_update = Some(payload.clone());
+            socket.on(
+                "event",
+                move |_socket: SocketRef, Data(event): Data<Value>| {
+                    let state = state_event.clone();
+                    let io = io_event.clone();
+                    let agent_id = agent_id_event.clone();
+                    async move {
+                        if state
+                            .rate_limited(format!("agent-event:{agent_id}"), 240, 60_000)
+                            .await
+                        {
+                            return;
+                        }
+                        let Some(name) = event.get("name").and_then(Value::as_str) else {
+                            return;
+                        };
+                        if !["status", "log", "log_batch", "stats"].contains(&name) {
+                            return;
+                        }
+                        let payload = event.get("payload").cloned().unwrap_or(Value::Null);
+                        let mut status_update = None;
+                        {
+                            let mut cache = state.cache.lock().await;
+                            let entry = cache.entry(agent_id.clone()).or_default();
+                            match name {
+                                "status" => {
+                                    let incoming = payload.as_str().unwrap_or("");
+                                    let current =
+                                        entry.status.as_ref().and_then(Value::as_str).unwrap_or("");
+                                    // Permitir starting→online y cualquier paso a offline.
+                                    // Solo bloquear degradar online→starting (log tardío / reconnect ruidoso).
+                                    let ignore = incoming == "starting" && current == "online";
+                                    if !ignore {
+                                        entry.status = Some(payload.clone());
+                                        status_update = Some(payload.clone());
+                                    }
                                 }
-                            }
-                            "stats" => entry.stats = Some(payload.clone()),
-                            "log" => {
-                                entry.logs.push(payload.clone());
-                                status_update = update_server_status_from_log(entry, &payload);
-                            }
-                            "log_batch" => {
-                                if let Some(items) = payload.as_array() {
-                                    for item in items {
-                                        entry.logs.push(item.clone());
-                                        if let Some(update) = update_server_status_from_log(entry, item) {
-                                            status_update = Some(update);
+                                "stats" => entry.stats = Some(payload.clone()),
+                                "log" => {
+                                    entry.logs.push(payload.clone());
+                                    status_update = update_server_status_from_log(entry, &payload);
+                                }
+                                "log_batch" => {
+                                    if let Some(items) = payload.as_array() {
+                                        for item in items {
+                                            entry.logs.push(item.clone());
+                                            if let Some(update) =
+                                                update_server_status_from_log(entry, item)
+                                            {
+                                                status_update = Some(update);
+                                            }
                                         }
                                     }
                                 }
+                                _ => {}
                             }
-                            _ => {}
+                            if entry.logs.len() > MAX_CACHED_LOGS {
+                                let remove = entry.logs.len() - MAX_CACHED_LOGS;
+                                entry.logs.drain(0..remove);
+                            }
                         }
-                        if entry.logs.len() > MAX_CACHED_LOGS {
-                            let remove = entry.logs.len() - MAX_CACHED_LOGS;
-                            entry.logs.drain(0..remove);
+
+                        if let Some(status) = status_update {
+                            *state.last_status.lock().await = status.clone();
+                            let _ = io.to("local-agent").emit("status", &status).await;
+                            let _ = io
+                                .to(format!("panels:{agent_id}"))
+                                .emit("status", &status)
+                                .await;
+                        }
+
+                        if name != "status" {
+                            let _ = io
+                                .to(format!("panels:{agent_id}"))
+                                .emit(name, &payload)
+                                .await;
                         }
                     }
-
-                    if let Some(status) = status_update {
-                        *state.last_status.lock().await = status.clone();
-                        let _ = io.to("local-agent").emit("status", &status).await;
-                        let _ = io.to(format!("panels:{agent_id}")).emit("status", &status).await;
-                    }
-
-                    if name != "status" {
-                        let _ = io.to(format!("panels:{agent_id}")).emit(name, &payload).await;
-                    }
-                }
-            });
+                },
+            );
 
             let state_rpc_result = state.clone();
             let agent_id_rpc_result = agent_id.clone();
-            socket.on("rpc_result", move |_socket: SocketRef, Data(result): Data<Value>| {
-                let state = state_rpc_result.clone();
-                let agent_id = agent_id_rpc_result.clone();
-                async move {
-                    if state.rate_limited(format!("agent-rpc-result:{agent_id}"), 240, 60_000).await { return; }
-                    let Some(id) = result.get("id") else { return; };
-                    let id_key = id.to_string();
-                    let target_socket = {
-                        let mut panels = state.panels.lock().await;
-                        let mut target_socket = None;
-
-                        for panel in panels.values_mut() {
-                            if panel.agent_id == agent_id && panel.pending_rpc.remove(&id_key) {
-                                target_socket = Some(panel.socket.clone());
-                                break;
-                            }
+            socket.on(
+                "rpc_result",
+                move |_socket: SocketRef, Data(result): Data<Value>| {
+                    let state = state_rpc_result.clone();
+                    let agent_id = agent_id_rpc_result.clone();
+                    async move {
+                        if state
+                            .rate_limited(format!("agent-rpc-result:{agent_id}"), 240, 60_000)
+                            .await
+                        {
+                            return;
                         }
+                        let Some(id) = result.get("id") else {
+                            return;
+                        };
+                        let id_key = id.to_string();
+                        let target_socket = {
+                            let mut panels = state.panels.lock().await;
+                            let mut target_socket = None;
 
-                        target_socket
-                    };
+                            for panel in panels.values_mut() {
+                                if panel.agent_id == agent_id && panel.pending_rpc.remove(&id_key) {
+                                    target_socket = Some(panel.socket.clone());
+                                    break;
+                                }
+                            }
 
-                    if let Some(socket) = target_socket {
-                        let _ = socket.emit("rpc_result", &result);
+                            target_socket
+                        };
+
+                        if let Some(socket) = target_socket {
+                            let _ = socket.emit("rpc_result", &result);
+                        }
                     }
-                }
-            });
+                },
+            );
 
             // Respuestas binarias: inspecciona únicamente los metadatos para localizar
             // el panel y reenvía el paquete de bytes sin convertirlo a Base64.
             let state_rpc_binary_result = state.clone();
             let agent_id_rpc_binary_result = agent_id.clone();
-            socket.on("rpc_result_binary", move |_socket: SocketRef, Data(packet): Data<Bytes>| {
-                let state = state_rpc_binary_result.clone();
-                let agent_id = agent_id_rpc_binary_result.clone();
-                async move {
-                    if state.rate_limited(format!("agent-rpc-result:{agent_id}"), 240, 60_000).await { return; }
-                    let Some((result, _)) = decode_rpc_binary_packet(packet.as_ref()) else { return; };
-                    let Some(id) = result.get("id") else { return; };
-                    let id_key = id.to_string();
-                    let target_socket = {
-                        let mut panels = state.panels.lock().await;
-                        let mut target_socket = None;
-                        for panel in panels.values_mut() {
-                            if panel.agent_id == agent_id && panel.pending_rpc.remove(&id_key) {
-                                target_socket = Some(panel.socket.clone());
-                                break;
-                            }
+            socket.on(
+                "rpc_result_binary",
+                move |_socket: SocketRef, Data(packet): Data<Bytes>| {
+                    let state = state_rpc_binary_result.clone();
+                    let agent_id = agent_id_rpc_binary_result.clone();
+                    async move {
+                        if state
+                            .rate_limited(format!("agent-rpc-result:{agent_id}"), 240, 60_000)
+                            .await
+                        {
+                            return;
                         }
-                        target_socket
-                    };
-                    if let Some(socket) = target_socket {
-                        let _ = socket.emit("rpc_result_binary", &packet);
+                        let Some((result, _)) = decode_rpc_binary_packet(packet.as_ref()) else {
+                            return;
+                        };
+                        let Some(id) = result.get("id") else {
+                            return;
+                        };
+                        let id_key = id.to_string();
+                        let target_socket = {
+                            let mut panels = state.panels.lock().await;
+                            let mut target_socket = None;
+                            for panel in panels.values_mut() {
+                                if panel.agent_id == agent_id && panel.pending_rpc.remove(&id_key) {
+                                    target_socket = Some(panel.socket.clone());
+                                    break;
+                                }
+                            }
+                            target_socket
+                        };
+                        if let Some(socket) = target_socket {
+                            let _ = socket.emit("rpc_result_binary", &packet);
+                        }
                     }
-                }
-            });
+                },
+            );
 
             // ICE/WebRTC: señalización Agent -> navegador.
             let state_signal = state.clone();
             let agent_id_signal = agent_id.clone();
-            socket.on("direct_signal", move |_socket: SocketRef, Data(msg): Data<Value>| {
-                let state = state_signal.clone();
-                let agent_id = agent_id_signal.clone();
-                async move {
-                    if state.rate_limited(format!("agent-direct-signal:{agent_id}"), 240, 60_000).await { return; }
-                    let Some(peer_id) = msg.get("peerId").and_then(Value::as_str) else { return; };
-                    let panel = state.panels.lock().await.get(peer_id).cloned();
-                    let Some(panel) = panel.filter(|p| p.agent_id == agent_id) else { return; };
-                    let kind = msg.get("type").and_then(Value::as_str).unwrap_or("");
-                    if !["answer", "candidate"].contains(&kind) { return; }
-                    let mut forwarded = json!({"type":kind});
-                    if kind == "answer" {
-                        forwarded["sdp"] = Value::String(msg.get("sdp").and_then(Value::as_str).unwrap_or("").chars().take(32_768).collect());
-                    } else {
-                        forwarded["candidate"] = Value::String(msg.get("candidate").and_then(Value::as_str).unwrap_or("").chars().take(2_048).collect());
-                        if let Some(mid) = msg.get("sdpMid") { forwarded["sdpMid"] = Value::String(mid.as_str().unwrap_or("").chars().take(64).collect()); }
+            socket.on(
+                "direct_signal",
+                move |_socket: SocketRef, Data(msg): Data<Value>| {
+                    let state = state_signal.clone();
+                    let agent_id = agent_id_signal.clone();
+                    async move {
+                        if state
+                            .rate_limited(format!("agent-direct-signal:{agent_id}"), 240, 60_000)
+                            .await
+                        {
+                            return;
+                        }
+                        let Some(peer_id) = msg.get("peerId").and_then(Value::as_str) else {
+                            return;
+                        };
+                        let panel = state.panels.lock().await.get(peer_id).cloned();
+                        let Some(panel) = panel.filter(|p| p.agent_id == agent_id) else {
+                            return;
+                        };
+                        let kind = msg.get("type").and_then(Value::as_str).unwrap_or("");
+                        if !["answer", "candidate"].contains(&kind) {
+                            return;
+                        }
+                        let mut forwarded = json!({"type":kind});
+                        if kind == "answer" {
+                            forwarded["sdp"] = Value::String(
+                                msg.get("sdp")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")
+                                    .chars()
+                                    .take(32_768)
+                                    .collect(),
+                            );
+                        } else {
+                            forwarded["candidate"] = Value::String(
+                                msg.get("candidate")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")
+                                    .chars()
+                                    .take(2_048)
+                                    .collect(),
+                            );
+                            if let Some(mid) = msg.get("sdpMid") {
+                                forwarded["sdpMid"] = Value::String(
+                                    mid.as_str().unwrap_or("").chars().take(64).collect(),
+                                );
+                            }
+                        }
+                        let _ = panel.socket.emit("direct_signal", &forwarded);
                     }
-                    let _ = panel.socket.emit("direct_signal", &forwarded);
-                }
-            });
+                },
+            );
 
             let state_disconnect = state.clone();
             let io_disconnect = io.clone();
@@ -875,7 +1138,11 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
                 let agent_id = agent_id_disconnect.clone();
                 async move {
                     let mut agents = state.agents.lock().await;
-                    if agents.get(&agent_id).map(|s| s.id.to_string() == socket.id.to_string()).unwrap_or(false) {
+                    if agents
+                        .get(&agent_id)
+                        .map(|s| s.id.to_string() == socket.id.to_string())
+                        .unwrap_or(false)
+                    {
                         agents.remove(&agent_id);
                         drop(agents);
                         if let Some(cache) = state.cache.lock().await.get_mut(&agent_id) {
@@ -894,40 +1161,60 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
             let panel_id = socket.id.to_string();
             let agent_id = session.agent_id.clone();
             socket.join(format!("panels:{agent_id}"));
-            state.panels.lock().await.insert(panel_id.clone(), PanelConnection {
-                socket: socket.clone(),
-                agent_id: agent_id.clone(),
-                permission: session.permission.clone(),
-                kind: session.kind.clone(),
-                session_exp: session.exp,
-                share_token_id: session.share_token_id.clone(),
-                pending_rpc: HashSet::new(),
-            });
+            state.panels.lock().await.insert(
+                panel_id.clone(),
+                PanelConnection {
+                    socket: socket.clone(),
+                    agent_id: agent_id.clone(),
+                    permission: session.permission.clone(),
+                    kind: session.kind.clone(),
+                    session_exp: session.exp,
+                    share_token_id: session.share_token_id.clone(),
+                    pending_rpc: HashSet::new(),
+                },
+            );
 
-            let online = state.agents.lock().await.get(&agent_id).map(|s| s.connected()).unwrap_or(false);
-            let rpc_binary = state.cache.lock().await
+            let online = state
+                .agents
+                .lock()
+                .await
+                .get(&agent_id)
+                .map(|s| s.connected())
+                .unwrap_or(false);
+            let rpc_binary = state
+                .cache
+                .lock()
+                .await
                 .get(&agent_id)
                 .map(|cache| cache.rpc_binary)
                 .unwrap_or(false);
             let _ = socket.emit("agent_capabilities", &json!({"rpcBinary": rpc_binary}));
-            let _ = socket
-                .emit(
-                    "direct_config",
-                    &json!({"iceServers":[{"urls":ICE_SERVERS[0]},{"urls":ICE_SERVERS[1]}]}),
-                );
+            let _ = socket.emit(
+                "direct_config",
+                &json!({"iceServers":[{"urls":ICE_SERVERS[0]},{"urls":ICE_SERVERS[1]}]}),
+            );
             let _ = socket.emit("cloud_ready", &json!({"agentOnline":online}));
             let _ = socket.emit("agent_status", &json!({"online":online}));
             let cached = state.cache.lock().await.get(&agent_id).cloned();
             if online {
                 if let Some(cache) = cached {
-                    if !cache.logs.is_empty() { let _ = socket.emit("history", &cache.logs); }
-                    if let Some(status) = cache.status { let _ = socket.emit("status", &status); }
-                    if let Some(stats) = cache.stats { let _ = socket.emit("stats", &stats); }
+                    if !cache.logs.is_empty() {
+                        let _ = socket.emit("history", &cache.logs);
+                    }
+                    if let Some(status) = cache.status {
+                        let _ = socket.emit("status", &status);
+                    }
+                    if let Some(stats) = cache.stats {
+                        let _ = socket.emit("stats", &stats);
+                    }
                 }
             }
-            let _ = socket.emit("session_info", &json!({
-                "permission":session.permission,"kind":session.kind,"expiresAt":session.exp
-            }));
+            let _ = socket.emit(
+                "session_info",
+                &json!({
+                    "permission":session.permission,"kind":session.kind,"expiresAt":session.exp
+                }),
+            );
 
             let exp_socket = socket.clone();
             let exp_delay = session.exp.saturating_sub(now_ms()).max(0) as u64;
@@ -940,51 +1227,67 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
             let rpc_panel_id = panel_id.clone();
             let rpc_agent_id = agent_id.clone();
             let rpc_session = session.clone();
-            socket.on("rpc", move |socket: SocketRef, Data(request): Data<Value>| {
-                let state = state_rpc.clone();
-                let panel_id = rpc_panel_id.clone();
-                let agent_id = rpc_agent_id.clone();
-                let session = rpc_session.clone();
-                async move { handle_panel_rpc(state, socket, panel_id, agent_id, session, request, None).await; }
-            });
+            socket.on(
+                "rpc",
+                move |socket: SocketRef, Data(request): Data<Value>| {
+                    let state = state_rpc.clone();
+                    let panel_id = rpc_panel_id.clone();
+                    let agent_id = rpc_agent_id.clone();
+                    let session = rpc_session.clone();
+                    async move {
+                        handle_panel_rpc(state, socket, panel_id, agent_id, session, request, None)
+                            .await;
+                    }
+                },
+            );
 
             let state_rpc_binary = state.clone();
             let rpc_binary_panel_id = panel_id.clone();
             let rpc_binary_agent_id = agent_id.clone();
             let rpc_binary_session = session.clone();
-            socket.on("rpc_binary", move |socket: SocketRef, Data(packet): Data<Bytes>| {
-                let state = state_rpc_binary.clone();
-                let panel_id = rpc_binary_panel_id.clone();
-                let agent_id = rpc_binary_agent_id.clone();
-                let session = rpc_binary_session.clone();
-                async move {
-                    let Some((request, body)) = decode_rpc_binary_packet(packet.as_ref()) else {
-                        emit_rpc_error(&socket, None, 400, "Paquete RPC binario no válido.");
-                        return;
-                    };
-                    handle_panel_rpc(
-                        state,
-                        socket,
-                        panel_id,
-                        agent_id,
-                        session,
-                        request,
-                        Some(Bytes::copy_from_slice(body)),
-                    ).await;
-                }
-            });
+            socket.on(
+                "rpc_binary",
+                move |socket: SocketRef, Data(packet): Data<Bytes>| {
+                    let state = state_rpc_binary.clone();
+                    let panel_id = rpc_binary_panel_id.clone();
+                    let agent_id = rpc_binary_agent_id.clone();
+                    let session = rpc_binary_session.clone();
+                    async move {
+                        let Some((request, body)) = decode_rpc_binary_packet(packet.as_ref())
+                        else {
+                            emit_rpc_error(&socket, None, 400, "Paquete RPC binario no válido.");
+                            return;
+                        };
+                        handle_panel_rpc(
+                            state,
+                            socket,
+                            panel_id,
+                            agent_id,
+                            session,
+                            request,
+                            Some(Bytes::copy_from_slice(body)),
+                        )
+                        .await;
+                    }
+                },
+            );
 
             let state_signal = state.clone();
             let signal_panel_id = panel_id.clone();
             let signal_agent_id = agent_id.clone();
             let signal_session = session.clone();
-            socket.on("direct_signal", move |socket: SocketRef, Data(msg): Data<Value>| {
-                let state = state_signal.clone();
-                let panel_id = signal_panel_id.clone();
-                let agent_id = signal_agent_id.clone();
-                let session = signal_session.clone();
-                async move { handle_panel_signal(state, socket, panel_id, agent_id, session, msg).await; }
-            });
+            socket.on(
+                "direct_signal",
+                move |socket: SocketRef, Data(msg): Data<Value>| {
+                    let state = state_signal.clone();
+                    let panel_id = signal_panel_id.clone();
+                    let agent_id = signal_agent_id.clone();
+                    let session = signal_session.clone();
+                    async move {
+                        handle_panel_signal(state, socket, panel_id, agent_id, session, msg).await;
+                    }
+                },
+            );
 
             let state_disconnect = state.clone();
             socket.on_disconnect(move |socket: SocketRef, _reason: DisconnectReason| {
@@ -995,7 +1298,8 @@ async fn register_socket_handlers(state: Arc<AppState>, io: SocketIo, socket: So
                     let panel = state.panels.lock().await.remove(&panel_id);
                     if panel.is_some() {
                         if let Some(agent) = state.agents.lock().await.get(&agent_id).cloned() {
-                            let _ = agent.emit("direct_close", &json!({"peerId":socket.id.to_string()}));
+                            let _ = agent
+                                .emit("direct_close", &json!({"peerId":socket.id.to_string()}));
                         }
                     }
                 }
@@ -1009,7 +1313,10 @@ async fn notify_agent_state(io: &SocketIo, agent_id: &str, online: bool) {
     let status = json!({"online":online});
     let room = format!("panels:{agent_id}");
     let _ = io.to(room).emit("cloud_ready", &payload).await;
-    let _ = io.to(format!("panels:{agent_id}")).emit("agent_status", &status).await;
+    let _ = io
+        .to(format!("panels:{agent_id}"))
+        .emit("agent_status", &status)
+        .await;
 }
 
 async fn handle_panel_rpc(
@@ -1023,13 +1330,31 @@ async fn handle_panel_rpc(
 ) {
     let path_raw = request.get("path").and_then(Value::as_str).unwrap_or("");
     let upload = path_raw.starts_with("/api/files/upload-chunk");
-    if state.rate_limited(format!("{}:rpc", panel_id), if upload { 2_000 } else { 120 }, 60_000).await {
-        emit_rpc_error(&socket, request.get("id").cloned(), 429, "Demasiadas solicitudes en tiempo real. Espera un momento.");
+    if state
+        .rate_limited(
+            format!("{}:rpc", panel_id),
+            if upload { 2_000 } else { 120 },
+            60_000,
+        )
+        .await
+    {
+        emit_rpc_error(
+            &socket,
+            request.get("id").cloned(),
+            429,
+            "Demasiadas solicitudes en tiempo real. Espera un momento.",
+        );
         return;
     }
-    let Some(id) = request.get("id").cloned().filter(|v| !v.is_null()) else { return; };
+    let Some(id) = request.get("id").cloned().filter(|v| !v.is_null()) else {
+        return;
+    };
     let id_key = id.to_string();
-    let method = request.get("method").and_then(Value::as_str).unwrap_or("GET").to_ascii_uppercase();
+    let method = request
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("GET")
+        .to_ascii_uppercase();
     if !["GET", "POST", "PUT", "PATCH", "DELETE"].contains(&method.as_str()) {
         emit_rpc_error(&socket, Some(id), 400, "Método no válido.");
         return;
@@ -1046,14 +1371,28 @@ async fn handle_panel_rpc(
             return;
         };
         match state.find_share_token_by_id(token_id, &agent_id).await {
-            Ok(Some(share)) if share.active() => permission = normalize_permission(&share.permission).unwrap_or_else(|| "read".into()),
-            _ => { let _ = socket.emit("share_revoked", &json!({})); let _ = socket.disconnect(); return; }
+            Ok(Some(share)) if share.active() => {
+                permission =
+                    normalize_permission(&share.permission).unwrap_or_else(|| "read".into())
+            }
+            _ => {
+                let _ = socket.emit("share_revoked", &json!({}));
+                let _ = socket.disconnect();
+                return;
+            }
         }
         if !permission_allows(&permission, required_permission(&method, &path)) {
-            emit_rpc_error(&socket, Some(id), 403, "No tienes permisos para realizar esta acción.");
+            emit_rpc_error(
+                &socket,
+                Some(id),
+                403,
+                "No tienes permisos para realizar esta acción.",
+            );
             return;
         }
-        if let Some(panel) = state.panels.lock().await.get_mut(&panel_id) { panel.permission = permission.clone(); }
+        if let Some(panel) = state.panels.lock().await.get_mut(&panel_id) {
+            panel.permission = permission.clone();
+        }
     }
     let agent = state.agents.lock().await.get(&agent_id).cloned();
     let Some(agent) = agent.filter(|s| s.connected()) else {
@@ -1062,9 +1401,16 @@ async fn handle_panel_rpc(
     };
     {
         let mut panels = state.panels.lock().await;
-        let Some(panel) = panels.get_mut(&panel_id) else { return; };
+        let Some(panel) = panels.get_mut(&panel_id) else {
+            return;
+        };
         if panel.pending_rpc.len() >= 100 {
-            emit_rpc_error(&socket, Some(id), 429, "Demasiadas solicitudes pendientes. Espera a que terminen algunas operaciones.");
+            emit_rpc_error(
+                &socket,
+                Some(id),
+                429,
+                "Demasiadas solicitudes pendientes. Espera a que terminen algunas operaciones.",
+            );
             return;
         }
         panel.pending_rpc.insert(id_key);
@@ -1076,13 +1422,15 @@ async fn handle_panel_rpc(
         });
         let send_result = if let Some(body) = binary_body {
             sanitized["contentType"] = Value::String(
-                request.get("contentType")
+                request
+                    .get("contentType")
                     .and_then(Value::as_str)
                     .unwrap_or("application/octet-stream")
                     .to_owned(),
             );
             sanitized["hasBody"] = Value::Bool(
-                request.get("hasBody")
+                request
+                    .get("hasBody")
                     .and_then(Value::as_bool)
                     .unwrap_or(!body.is_empty()),
             );
@@ -1090,26 +1438,52 @@ async fn handle_panel_rpc(
                 Some(packet) => agent.emit("rpc_binary", &packet),
                 None => {
                     panel.pending_rpc.remove(&id.to_string());
-                    emit_rpc_error(&socket, Some(id), 400, "No se pudo preparar la solicitud binaria.");
+                    emit_rpc_error(
+                        &socket,
+                        Some(id),
+                        400,
+                        "No se pudo preparar la solicitud binaria.",
+                    );
                     return;
                 }
             }
         } else {
-            if let Some(body) = request.get("body") { sanitized["body"] = body.clone(); }
+            if let Some(body) = request.get("body") {
+                sanitized["body"] = body.clone();
+            }
             agent.emit("rpc", &sanitized)
         };
         if let Err(e) = send_result {
             panel.pending_rpc.remove(&id.to_string());
             warn!("No se pudo enviar RPC al Agent: {e}");
-            emit_rpc_error(&socket, Some(id), 503, "No se pudo enviar la operación al MoonWolf Agent.");
+            emit_rpc_error(
+                &socket,
+                Some(id),
+                503,
+                "No se pudo enviar la operación al MoonWolf Agent.",
+            );
         }
     }
 }
 
-async fn handle_panel_signal(state: Arc<AppState>, socket: SocketRef, panel_id: String, agent_id: String, session: PanelSession, msg: Value) {
-    if state.rate_limited(format!("{}:direct-signal", panel_id), 300, 60_000).await { return; }
+async fn handle_panel_signal(
+    state: Arc<AppState>,
+    socket: SocketRef,
+    panel_id: String,
+    agent_id: String,
+    session: PanelSession,
+    msg: Value,
+) {
+    if state
+        .rate_limited(format!("{}:direct-signal", panel_id), 300, 60_000)
+        .await
+    {
+        return;
+    }
     let kind = msg.get("type").and_then(Value::as_str).unwrap_or("");
-    if !["offer", "candidate"].contains(&kind) { return; }
+    if !["offer", "candidate"].contains(&kind) {
+        return;
+    }
     let agent = state.agents.lock().await.get(&agent_id).cloned();
     let Some(agent) = agent.filter(|s| s.connected()) else {
         let _ = socket.emit("direct_signal", &json!({"type":"unavailable"}));
@@ -1117,26 +1491,61 @@ async fn handle_panel_signal(state: Arc<AppState>, socket: SocketRef, panel_id: 
     };
     let mut permission = session.permission.clone();
     if session.kind == "share" {
-        let Some(id) = session.share_token_id.as_deref() else { let _ = socket.emit("share_revoked", &json!({})); let _ = socket.disconnect(); return; };
+        let Some(id) = session.share_token_id.as_deref() else {
+            let _ = socket.emit("share_revoked", &json!({}));
+            let _ = socket.disconnect();
+            return;
+        };
         match state.find_share_token_by_id(id, &agent_id).await {
-            Ok(Some(share)) if share.active() => permission = normalize_permission(&share.permission).unwrap_or_else(|| "read".into()),
-            _ => { let _ = socket.emit("share_revoked", &json!({})); let _ = socket.disconnect(); return; }
+            Ok(Some(share)) if share.active() => {
+                permission =
+                    normalize_permission(&share.permission).unwrap_or_else(|| "read".into())
+            }
+            _ => {
+                let _ = socket.emit("share_revoked", &json!({}));
+                let _ = socket.disconnect();
+                return;
+            }
         }
     }
     let mut forwarded = json!({"peerId":panel_id,"type":kind});
     if kind == "offer" {
-        forwarded["sdp"] = Value::String(msg.get("sdp").and_then(Value::as_str).unwrap_or("").chars().take(32_768).collect());
+        forwarded["sdp"] = Value::String(
+            msg.get("sdp")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .chars()
+                .take(32_768)
+                .collect(),
+        );
         forwarded["iceServers"] = json!([{"urls":ICE_SERVERS[0]},{"urls":ICE_SERVERS[1]}]);
-        forwarded["ctx"] = json!({"kind":session.kind,"permission":permission,"expiresAt":session.exp});
+        forwarded["ctx"] =
+            json!({"kind":session.kind,"permission":permission,"expiresAt":session.exp});
     } else {
-        forwarded["candidate"] = Value::String(msg.get("candidate").and_then(Value::as_str).unwrap_or("").chars().take(2_048).collect());
-        forwarded["sdpMid"] = Value::String(msg.get("sdpMid").and_then(Value::as_str).unwrap_or("0").chars().take(64).collect());
+        forwarded["candidate"] = Value::String(
+            msg.get("candidate")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .chars()
+                .take(2_048)
+                .collect(),
+        );
+        forwarded["sdpMid"] = Value::String(
+            msg.get("sdpMid")
+                .and_then(Value::as_str)
+                .unwrap_or("0")
+                .chars()
+                .take(64)
+                .collect(),
+        );
     }
-    if let Err(e) = agent.emit("direct_signal", &forwarded) { warn!("direct_signal: {e}"); }
+    if let Err(e) = agent.emit("direct_signal", &forwarded) {
+        warn!("direct_signal: {e}");
+    }
 }
 
 fn emit_rpc_error(socket: &SocketRef, id: Option<Value>, status: u16, message: &str) {
-        let body = serde_json::to_vec(&json!({"ok":false,"error":message})).unwrap_or_default();
+    let body = serde_json::to_vec(&json!({"ok":false,"error":message})).unwrap_or_default();
     let response = json!({
         "id":id.unwrap_or(Value::Null),"ok":false,"status":status,
         "contentType":"application/json","bodyBase64":b64_std_encode(&body)
@@ -1155,48 +1564,126 @@ async fn health() -> impl IntoResponse {
 }
 
 #[derive(Deserialize)]
-struct PairBody { code: String }
+struct PairBody {
+    code: String,
+}
 
-async fn pair(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<PairBody>) -> Response {
+async fn pair(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<PairBody>,
+) -> Response {
     let ip = header_client_ip(&headers);
-    if state.rate_limited(format!("pair:{ip}"), 10, 5 * 60_000).await {
-        return api_error(StatusCode::TOO_MANY_REQUESTS, "Demasiados intentos, espera unos minutos.");
+    if state
+        .rate_limited(format!("pair:{ip}"), 10, 5 * 60_000)
+        .await
+    {
+        return api_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Demasiados intentos, espera unos minutos.",
+        );
     }
     let code = body.code.trim().to_ascii_uppercase();
-    let (agent_id, permission, kind, share_token_id, expires_at, used_pairing) = if is_share_token_code(&code) {
-        match state.find_share_token(&code).await {
-            Ok(Some(share)) if share.active() => (share.agent_id.clone(), share.permission.clone(), "share".to_owned(), Some(share.id.clone()), share.expires_at, false),
-            Ok(_) => return api_error(StatusCode::UNAUTHORIZED, "Token compartido inválido, revocado o caducado."),
-            Err(e) => { error!("Share token lookup: {e:#}"); return api_error(StatusCode::SERVICE_UNAVAILABLE, "El servicio de autorizaciones no está disponible. Inténtalo de nuevo más tarde."); }
-        }
-    } else {
-        let pairing = state.pairings.lock().await.remove(&code);
-        let Some(pairing) = pairing.filter(|p| p.expires_at > now_ms()) else {
-            return api_error(StatusCode::UNAUTHORIZED, "Código de emparejamiento inválido o caducado.");
+    let (agent_id, permission, kind, share_token_id, expires_at, used_pairing) =
+        if is_share_token_code(&code) {
+            match state.find_share_token(&code).await {
+                Ok(Some(share)) if share.active() => (
+                    share.agent_id.clone(),
+                    share.permission.clone(),
+                    "share".to_owned(),
+                    Some(share.id.clone()),
+                    share.expires_at,
+                    false,
+                ),
+                Ok(_) => {
+                    return api_error(
+                        StatusCode::UNAUTHORIZED,
+                        "Token compartido inválido, revocado o caducado.",
+                    );
+                }
+                Err(e) => {
+                    error!("Share token lookup: {e:#}");
+                    return api_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "El servicio de autorizaciones no está disponible. Inténtalo de nuevo más tarde.",
+                    );
+                }
+            }
+        } else {
+            let pairing = state.pairings.lock().await.remove(&code);
+            let Some(pairing) = pairing.filter(|p| p.expires_at > now_ms()) else {
+                return api_error(
+                    StatusCode::UNAUTHORIZED,
+                    "Código de emparejamiento inválido o caducado.",
+                );
+            };
+            (
+                pairing.agent_id,
+                "admin".to_owned(),
+                "owner".to_owned(),
+                None,
+                None,
+                true,
+            )
         };
-        (pairing.agent_id, "admin".to_owned(), "owner".to_owned(), None, None, true)
-    };
     let agent = state.agents.lock().await.get(&agent_id).cloned();
     let Some(agent) = agent.filter(|s| s.connected()) else {
-        return api_error(StatusCode::CONFLICT, "El MoonWolf Agent ya no está conectado.");
+        return api_error(
+            StatusCode::CONFLICT,
+            "El MoonWolf Agent ya no está conectado.",
+        );
     };
-    let session = match create_panel_session(&state.session_secret, &agent_id, &permission, &kind, share_token_id, expires_at) {
+    let session = match create_panel_session(
+        &state.session_secret,
+        &agent_id,
+        &permission,
+        &kind,
+        share_token_id,
+        expires_at,
+    ) {
         Ok(v) => v,
-        Err(e) => { error!("No se pudo crear sesión: {e:#}"); return api_error(StatusCode::INTERNAL_SERVER_ERROR, "No se pudo crear la sesión."); }
+        Err(e) => {
+            error!("No se pudo crear sesión: {e:#}");
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "No se pudo crear la sesión.",
+            );
+        }
     };
-    if used_pairing { let _ = agent.emit("pairing_consumed", &json!({})); }
+    if used_pairing {
+        let _ = agent.emit("pairing_consumed", &json!({}));
+    }
     Json(json!({"ok":true,"session":session,"permission":permission,"kind":kind,"agent":{"id":agent_id,"online":true}})).into_response()
 }
 
-async fn session_from_headers(state: &AppState, headers: &HeaderMap) -> Result<PanelSession, StatusCode> {
-    let authorization = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or("");
-    let token = authorization.strip_prefix("Bearer ").ok_or(StatusCode::UNAUTHORIZED)?.trim();
-    let mut session = verify_panel_session(&state.session_secret, token).ok_or(StatusCode::UNAUTHORIZED)?;
+async fn session_from_headers(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<PanelSession, StatusCode> {
+    let authorization = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let token = authorization
+        .strip_prefix("Bearer ")
+        .ok_or(StatusCode::UNAUTHORIZED)?
+        .trim();
+    let mut session =
+        verify_panel_session(&state.session_secret, token).ok_or(StatusCode::UNAUTHORIZED)?;
     if session.kind == "share" {
-        let id = session.share_token_id.as_deref().ok_or(StatusCode::UNAUTHORIZED)?;
-        let share = state.find_share_token_by_id(id, &session.agent_id).await.map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-        let share = share.filter(|v| v.active()).ok_or(StatusCode::UNAUTHORIZED)?;
-        session.permission = normalize_permission(&share.permission).unwrap_or_else(|| "read".into());
+        let id = session
+            .share_token_id
+            .as_deref()
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+        let share = state
+            .find_share_token_by_id(id, &session.agent_id)
+            .await
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        let share = share
+            .filter(|v| v.active())
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+        session.permission =
+            normalize_permission(&share.permission).unwrap_or_else(|| "read".into());
     }
     Ok(session)
 }
@@ -1204,10 +1691,20 @@ async fn session_from_headers(state: &AppState, headers: &HeaderMap) -> Result<P
 async fn list_share_tokens(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let session = match session_from_headers(&state, &headers).await {
         Ok(s) => s,
-        Err(StatusCode::SERVICE_UNAVAILABLE) => return api_error(StatusCode::SERVICE_UNAVAILABLE, "Neon no está disponible; no se pudieron consultar los accesos compartidos."),
+        Err(StatusCode::SERVICE_UNAVAILABLE) => {
+            return api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Neon no está disponible; no se pudieron consultar los accesos compartidos.",
+            );
+        }
         Err(_) => return api_error(StatusCode::UNAUTHORIZED, "No autorizado."),
     };
-    if session.permission != "admin" { return api_error(StatusCode::FORBIDDEN, "Necesitas el permiso Administrador para gestionar accesos compartidos."); }
+    if session.permission != "admin" {
+        return api_error(
+            StatusCode::FORBIDDEN,
+            "Necesitas el permiso Administrador para gestionar accesos compartidos.",
+        );
+    }
     match state.list_share_tokens(&session.agent_id).await {
         Ok(tokens) => Json(json!({"ok":true,"tokens":tokens.iter().map(ShareToken::public_json).collect::<Vec<_>>()})).into_response(),
         Err(e) => { error!("share tokens list: {e:#}"); api_error(StatusCode::SERVICE_UNAVAILABLE, "Neon no está disponible; no se pudieron consultar los accesos compartidos.") }
@@ -1216,21 +1713,63 @@ async fn list_share_tokens(State(state): State<Arc<AppState>>, headers: HeaderMa
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CreateShareBody { permission: String, #[serde(default)] expires: Option<String>, #[serde(default)] label: Option<String> }
+struct CreateShareBody {
+    permission: String,
+    #[serde(default)]
+    expires: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+}
 
-async fn create_share_token(State(state): State<Arc<AppState>>, headers: HeaderMap, Json(body): Json<CreateShareBody>) -> Response {
+async fn create_share_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<CreateShareBody>,
+) -> Response {
     let session = match session_from_headers(&state, &headers).await {
         Ok(s) => s,
-        Err(StatusCode::SERVICE_UNAVAILABLE) => return api_error(StatusCode::SERVICE_UNAVAILABLE, "No se pudo verificar el acceso compartido."),
+        Err(StatusCode::SERVICE_UNAVAILABLE) => {
+            return api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "No se pudo verificar el acceso compartido.",
+            );
+        }
         Err(_) => return api_error(StatusCode::UNAUTHORIZED, "No autorizado."),
     };
-    if session.permission != "admin" { return api_error(StatusCode::FORBIDDEN, "Necesitas el permiso Administrador para crear accesos compartidos."); }
-    let Some(permission) = normalize_permission(&body.permission) else { return api_error(StatusCode::BAD_REQUEST, "Permiso no válido."); };
-    let expires = body.expires.unwrap_or_else(|| "never".into()).to_ascii_lowercase();
-    let duration = match expires.as_str() { "never" => None, "1h" => Some(60 * 60_000), "1d" => Some(24 * 60 * 60_000), "7d" => Some(7 * 24 * 60 * 60_000), "30d" => Some(30 * 24 * 60 * 60_000), _ => return api_error(StatusCode::BAD_REQUEST, "Caducidad no válida.") };
+    if session.permission != "admin" {
+        return api_error(
+            StatusCode::FORBIDDEN,
+            "Necesitas el permiso Administrador para crear accesos compartidos.",
+        );
+    }
+    let Some(permission) = normalize_permission(&body.permission) else {
+        return api_error(StatusCode::BAD_REQUEST, "Permiso no válido.");
+    };
+    let expires = body
+        .expires
+        .unwrap_or_else(|| "never".into())
+        .to_ascii_lowercase();
+    let duration = match expires.as_str() {
+        "never" => None,
+        "1h" => Some(60 * 60_000),
+        "1d" => Some(24 * 60 * 60_000),
+        "7d" => Some(7 * 24 * 60 * 60_000),
+        "30d" => Some(30 * 24 * 60 * 60_000),
+        _ => return api_error(StatusCode::BAD_REQUEST, "Caducidad no válida."),
+    };
     let token = make_share_token();
-    let requested_label = body.label.unwrap_or_default().trim().chars().take(60).collect::<String>();
-    let label = if requested_label.is_empty() { "Acceso compartido".to_owned() } else { requested_label };
+    let requested_label = body
+        .label
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(60)
+        .collect::<String>();
+    let label = if requested_label.is_empty() {
+        "Acceso compartido".to_owned()
+    } else {
+        requested_label
+    };
     let record = ShareToken {
         id: new_uuid_v4(),
         agent_id: session.agent_id.clone(),
@@ -1242,61 +1781,172 @@ async fn create_share_token(State(state): State<Arc<AppState>>, headers: HeaderM
         revoked_at: None,
     };
     let label = &record.label;
-    let Some(pool) = state.share_db.as_ref() else { return api_error(StatusCode::SERVICE_UNAVAILABLE, "DATABASE_URL no está configurada."); };
+    let Some(pool) = state.share_db.as_ref() else {
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "DATABASE_URL no está configurada.",
+        );
+    };
     let result = sqlx::query("INSERT INTO moonwolf_share_tokens (id,agent_id,token_hash,label,permission,created_at,expires_at,revoked_at) VALUES ($1,$2,$3,$4,$5,$6,$7,NULL)")
         .bind(&record.id).bind(&record.agent_id).bind(&record.token_hash).bind(label).bind(&record.permission).bind(record.created_at).bind(record.expires_at).execute(pool).await;
-    if let Err(e) = result { error!("share token create: {e:#}"); return api_error(StatusCode::SERVICE_UNAVAILABLE, "Neon no está disponible; no se pudo guardar el acceso compartido."); }
+    if let Err(e) = result {
+        error!("share token create: {e:#}");
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Neon no está disponible; no se pudo guardar el acceso compartido.",
+        );
+    }
     Json(json!({"ok":true,"token":token,"access":record.public_json()})).into_response()
 }
 
 #[derive(Deserialize)]
-struct UpdateShareBody { permission: String }
+struct UpdateShareBody {
+    permission: String,
+}
 
-async fn update_share_token(State(state): State<Arc<AppState>>, headers: HeaderMap, Path(id): Path<String>, Json(body): Json<UpdateShareBody>) -> Response {
+async fn update_share_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateShareBody>,
+) -> Response {
     let session = match session_from_headers(&state, &headers).await {
         Ok(s) => s,
-        Err(StatusCode::SERVICE_UNAVAILABLE) => return api_error(StatusCode::SERVICE_UNAVAILABLE, "No se pudo verificar el acceso compartido."),
+        Err(StatusCode::SERVICE_UNAVAILABLE) => {
+            return api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "No se pudo verificar el acceso compartido.",
+            );
+        }
         Err(_) => return api_error(StatusCode::UNAUTHORIZED, "No autorizado."),
     };
-    if session.permission != "admin" { return api_error(StatusCode::FORBIDDEN, "Necesitas el permiso Administrador para editar accesos compartidos."); }
-    let Some(permission) = normalize_permission(&body.permission) else { return api_error(StatusCode::BAD_REQUEST, "Permiso no válido."); };
-    let Some(pool) = state.share_db.as_ref() else { return api_error(StatusCode::SERVICE_UNAVAILABLE, "DATABASE_URL no está configurada."); };
+    if session.permission != "admin" {
+        return api_error(
+            StatusCode::FORBIDDEN,
+            "Necesitas el permiso Administrador para editar accesos compartidos.",
+        );
+    }
+    let Some(permission) = normalize_permission(&body.permission) else {
+        return api_error(StatusCode::BAD_REQUEST, "Permiso no válido.");
+    };
+    let Some(pool) = state.share_db.as_ref() else {
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "DATABASE_URL no está configurada.",
+        );
+    };
     let row = sqlx::query("UPDATE moonwolf_share_tokens SET permission=$1 WHERE id=$2 AND agent_id=$3 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>$4) RETURNING id,agent_id,token_hash,label,permission,created_at,expires_at,revoked_at")
         .bind(&permission).bind(&id).bind(&session.agent_id).bind(now_ms()).fetch_optional(pool).await;
-    let record = match row { Ok(Some(row)) => match share_from_row(row) { Ok(v) => v, Err(e) => { error!("share token row: {e:#}"); return api_error(StatusCode::INTERNAL_SERVER_ERROR, "Error al leer el acceso compartido."); } }, Ok(None) => return api_error(StatusCode::NOT_FOUND, "Acceso compartido no encontrado."), Err(e) => { error!("share token update: {e:#}"); return api_error(StatusCode::SERVICE_UNAVAILABLE, "Neon no está disponible; no se pudo actualizar el acceso compartido."); } };
+    let record = match row {
+        Ok(Some(row)) => match share_from_row(row) {
+            Ok(v) => v,
+            Err(e) => {
+                error!("share token row: {e:#}");
+                return api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Error al leer el acceso compartido.",
+                );
+            }
+        },
+        Ok(None) => return api_error(StatusCode::NOT_FOUND, "Acceso compartido no encontrado."),
+        Err(e) => {
+            error!("share token update: {e:#}");
+            return api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Neon no está disponible; no se pudo actualizar el acceso compartido.",
+            );
+        }
+    };
     let updates: Vec<(SocketRef, String, i64)> = {
         let mut panels = state.panels.lock().await;
-        panels.values_mut().filter(|p| p.share_token_id.as_deref() == Some(record.id.as_str())).map(|p| {
-            p.permission = permission.clone();
-            (p.socket.clone(), p.agent_id.clone(), p.session_exp)
-        }).collect()
+        panels
+            .values_mut()
+            .filter(|p| p.share_token_id.as_deref() == Some(record.id.as_str()))
+            .map(|p| {
+                p.permission = permission.clone();
+                (p.socket.clone(), p.agent_id.clone(), p.session_exp)
+            })
+            .collect()
     };
     for (panel, agent_id, session_exp) in updates {
         if let Some(agent) = state.agents.lock().await.get(&agent_id).cloned() {
-            let _ = agent.emit("direct_ctx", &json!({"peerId":panel.id.to_string(),"permission":permission}));
+            let _ = agent.emit(
+                "direct_ctx",
+                &json!({"peerId":panel.id.to_string(),"permission":permission}),
+            );
         }
-        let _ = panel.emit("session_info", &json!({"permission":permission,"kind":"share","expiresAt":session_exp}));
+        let _ = panel.emit(
+            "session_info",
+            &json!({"permission":permission,"kind":"share","expiresAt":session_exp}),
+        );
     }
     Json(json!({"ok":true,"access":record.public_json()})).into_response()
 }
 
-async fn delete_share_token(State(state): State<Arc<AppState>>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+async fn delete_share_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
     let session = match session_from_headers(&state, &headers).await {
         Ok(s) => s,
-        Err(StatusCode::SERVICE_UNAVAILABLE) => return api_error(StatusCode::SERVICE_UNAVAILABLE, "No se pudo verificar el acceso compartido."),
+        Err(StatusCode::SERVICE_UNAVAILABLE) => {
+            return api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "No se pudo verificar el acceso compartido.",
+            );
+        }
         Err(_) => return api_error(StatusCode::UNAUTHORIZED, "No autorizado."),
     };
-    if session.permission != "admin" { return api_error(StatusCode::FORBIDDEN, "Necesitas el permiso Administrador para revocar accesos compartidos."); }
-    let Some(pool) = state.share_db.as_ref() else { return api_error(StatusCode::SERVICE_UNAVAILABLE, "DATABASE_URL no está configurada."); };
+    if session.permission != "admin" {
+        return api_error(
+            StatusCode::FORBIDDEN,
+            "Necesitas el permiso Administrador para revocar accesos compartidos.",
+        );
+    }
+    let Some(pool) = state.share_db.as_ref() else {
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "DATABASE_URL no está configurada.",
+        );
+    };
     let row = sqlx::query("UPDATE moonwolf_share_tokens SET revoked_at=$1 WHERE id=$2 AND agent_id=$3 AND revoked_at IS NULL RETURNING id,agent_id,token_hash,label,permission,created_at,expires_at,revoked_at")
         .bind(now_ms()).bind(&id).bind(&session.agent_id).fetch_optional(pool).await;
-    let record = match row { Ok(Some(row)) => match share_from_row(row) { Ok(v) => v, Err(e) => { error!("share token row: {e:#}"); return api_error(StatusCode::INTERNAL_SERVER_ERROR, "Error al leer el acceso compartido."); } }, Ok(None) => return api_error(StatusCode::NOT_FOUND, "Acceso compartido no encontrado."), Err(e) => { error!("share token revoke: {e:#}"); return api_error(StatusCode::SERVICE_UNAVAILABLE, "Neon no está disponible; no se pudo revocar el acceso compartido."); } };
+    let record = match row {
+        Ok(Some(row)) => match share_from_row(row) {
+            Ok(v) => v,
+            Err(e) => {
+                error!("share token row: {e:#}");
+                return api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Error al leer el acceso compartido.",
+                );
+            }
+        },
+        Ok(None) => return api_error(StatusCode::NOT_FOUND, "Acceso compartido no encontrado."),
+        Err(e) => {
+            error!("share token revoke: {e:#}");
+            return api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Neon no está disponible; no se pudo revocar el acceso compartido.",
+            );
+        }
+    };
     let sockets: Vec<SocketRef> = {
         let mut panels = state.panels.lock().await;
-        let ids: Vec<String> = panels.iter().filter(|(_, p)| p.share_token_id.as_deref() == Some(record.id.as_str())).map(|(k, _)| k.clone()).collect();
-        ids.into_iter().filter_map(|id| panels.remove(&id).map(|p| p.socket)).collect()
+        let ids: Vec<String> = panels
+            .iter()
+            .filter(|(_, p)| p.share_token_id.as_deref() == Some(record.id.as_str()))
+            .map(|(k, _)| k.clone())
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| panels.remove(&id).map(|p| p.socket))
+            .collect()
     };
-    for socket in sockets { let _ = socket.emit("share_revoked", &json!({})); let _ = socket.disconnect(); }
+    for socket in sockets {
+        let _ = socket.emit("share_revoked", &json!({}));
+        let _ = socket.disconnect();
+    }
     Json(json!({"ok":true})).into_response()
 }
 
@@ -1312,15 +1962,22 @@ async fn read_asset(name: &str) -> Result<Vec<u8>, std::io::Error> {
 
 fn static_response(bytes: Vec<u8>, content_type: &'static str, cache: &'static str) -> Response {
     let mut response = Response::new(Body::from(bytes));
-    response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
-    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
     response
 }
 
 async fn index() -> Response {
     let html = match read_asset("index.html").await {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-        Err(e) => { error!("No se pudo leer index.html: {e}"); return StatusCode::NOT_FOUND.into_response(); }
+        Err(e) => {
+            error!("No se pudo leer index.html: {e}");
+            return StatusCode::NOT_FOUND.into_response();
+        }
     };
     let mut output = html;
     for asset in ["dashboard.js", "styles.css"] {
@@ -1337,7 +1994,11 @@ async fn dashboard_js(Query(query): Query<HashMap<String, String>>) -> Response 
     match read_asset("dashboard.js").await {
         Ok(bytes) => {
             let version = hex_encode(Sha1::digest(&bytes).as_slice())[..10].to_owned();
-            let cache = if query.get("v").map(String::as_str) == Some(version.as_str()) { "public, max-age=31536000, immutable" } else { "public, max-age=300" };
+            let cache = if query.get("v").map(String::as_str) == Some(version.as_str()) {
+                "public, max-age=31536000, immutable"
+            } else {
+                "public, max-age=300"
+            };
             static_response(bytes, "text/javascript; charset=utf-8", cache)
         }
         Err(_) => StatusCode::NOT_FOUND.into_response(),
@@ -1348,7 +2009,11 @@ async fn styles_css(Query(query): Query<HashMap<String, String>>) -> Response {
     match read_asset("styles.css").await {
         Ok(bytes) => {
             let version = hex_encode(Sha1::digest(&bytes).as_slice())[..10].to_owned();
-            let cache = if query.get("v").map(String::as_str) == Some(version.as_str()) { "public, max-age=31536000, immutable" } else { "public, max-age=300" };
+            let cache = if query.get("v").map(String::as_str) == Some(version.as_str()) {
+                "public, max-age=31536000, immutable"
+            } else {
+                "public, max-age=300"
+            };
             static_response(bytes, "text/css; charset=utf-8", cache)
         }
         Err(_) => StatusCode::NOT_FOUND.into_response(),
@@ -1367,27 +2032,50 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response {
     let is_api = request.uri().path().starts_with("/api/");
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
     headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
-    headers.insert("referrer-policy", HeaderValue::from_static("strict-origin-when-cross-origin"));
-    headers.insert("strict-transport-security", HeaderValue::from_static("max-age=31536000; includeSubDomains"));
+    headers.insert(
+        "referrer-policy",
+        HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
+    headers.insert(
+        "strict-transport-security",
+        HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+    );
     headers.insert("x-dns-prefetch-control", HeaderValue::from_static("off"));
     headers.insert("x-download-options", HeaderValue::from_static("noopen"));
-    headers.insert("x-permitted-cross-domain-policies", HeaderValue::from_static("none"));
+    headers.insert(
+        "x-permitted-cross-domain-policies",
+        HeaderValue::from_static("none"),
+    );
     headers.insert("x-xss-protection", HeaderValue::from_static("0"));
-    headers.insert("cross-origin-opener-policy", HeaderValue::from_static("same-origin"));
-    headers.insert("cross-origin-resource-policy", HeaderValue::from_static("same-origin"));
+    headers.insert(
+        "cross-origin-opener-policy",
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        "cross-origin-resource-policy",
+        HeaderValue::from_static("same-origin"),
+    );
     headers.insert("origin-agent-cluster", HeaderValue::from_static("?1"));
-    headers.insert("permissions-policy", HeaderValue::from_static("camera=(), microphone=(), geolocation=()"));
+    headers.insert(
+        "permissions-policy",
+        HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+    );
     headers.insert("content-security-policy", HeaderValue::from_static(
         "default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com https://cdn.socket.io; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' wss://moonwolf-panel.onrender.com ws://moonwolf-panel.onrender.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests"    ));
-    if is_api { headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store")); }
+    if is_api {
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     response
 }
 
 async fn initialize_share_store(database_url: &str) -> anyhow::Result<PgPool> {
-    use std::str::FromStr;
     use sqlx::postgres::{PgConnectOptions, PgSslMode};
+    use std::str::FromStr;
     let options = PgConnectOptions::from_str(database_url)?.ssl_mode(PgSslMode::Require);
     let pool = PgPoolOptions::new()
         .max_connections(5)
@@ -1399,8 +2087,10 @@ async fn initialize_share_store(database_url: &str) -> anyhow::Result<PgPool> {
          id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, token_hash CHAR(64) NOT NULL UNIQUE,\
          label TEXT NOT NULL DEFAULT 'Acceso compartido',\
          permission TEXT NOT NULL CHECK (permission IN ('read','control','admin')),\
-         created_at BIGINT NOT NULL, expires_at BIGINT NULL, revoked_at BIGINT NULL)"
-    ).execute(&pool).await?;
+         created_at BIGINT NOT NULL, expires_at BIGINT NULL, revoked_at BIGINT NULL)",
+    )
+    .execute(&pool)
+    .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS moonwolf_share_tokens_agent_created_idx ON moonwolf_share_tokens (agent_id, created_at DESC)")
         .execute(&pool).await?;
     Ok(pool)
@@ -1408,14 +2098,18 @@ async fn initialize_share_store(database_url: &str) -> anyhow::Result<PgPool> {
 
 fn load_session_secret() -> String {
     if let Ok(secret) = env::var("SESSION_SECRET") {
-        if secret.len() >= 32 { return secret; }
+        if secret.len() >= 32 {
+            return secret;
+        }
         warn!("SESSION_SECRET existe pero tiene menos de 32 caracteres; se ignorará.");
     }
 
     let app_dir = env::var_os("APPDATA")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
-            let home = env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("."));
+            let home = env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
             home.join("AppData").join("Roaming")
         })
         .join("MoonWolf");
@@ -1436,30 +2130,54 @@ fn load_session_secret() -> String {
     }
 
     let secret = make_secret();
-    if let Err(e) = std::fs::create_dir_all(&app_dir).and_then(|_| std::fs::write(&secret_path, &secret)) {
-        warn!("No se pudo persistir SESSION_SECRET en {}: {e}", secret_path.display());
+    if let Err(e) =
+        std::fs::create_dir_all(&app_dir).and_then(|_| std::fs::write(&secret_path, &secret))
+    {
+        warn!(
+            "No se pudo persistir SESSION_SECRET en {}: {e}",
+            secret_path.display()
+        );
     }
-    warn!("SESSION_SECRET generada localmente. En Render configura una clave persistente para evitar invalidar sesiones al reiniciar.");
+    warn!(
+        "SESSION_SECRET generada localmente. En Render configura una clave persistente para evitar invalidar sesiones al reiniciar."
+    );
     secret
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .with_target(false)
         .init();
 
     let share_db = match env::var("DATABASE_URL") {
         Ok(url) if !url.trim().is_empty() => match initialize_share_store(&url).await {
-            Ok(pool) => { info!("PostgreSQL conectado; tokens compartidos habilitados."); Some(pool) }
-            Err(e) => { error!("PostgreSQL no disponible: {e:#}. El servidor seguirá activo, pero los tokens compartidos no funcionarán."); None }
+            Ok(pool) => {
+                info!("PostgreSQL conectado; tokens compartidos habilitados.");
+                Some(pool)
+            }
+            Err(e) => {
+                error!(
+                    "PostgreSQL no disponible: {e:#}. El servidor seguirá activo, pero los tokens compartidos no funcionarán."
+                );
+                None
+            }
         },
-        _ => { warn!("DATABASE_URL no configurada; los tokens compartidos quedan deshabilitados."); None }
+        _ => {
+            warn!("DATABASE_URL no configurada; los tokens compartidos quedan deshabilitados.");
+            None
+        }
     };
 
     let local_agent_token = env::var("LOCAL_AGENT_TOKEN").ok().filter(|v| !v.is_empty());
-    let state = Arc::new(AppState::new(load_session_secret(), local_agent_token, share_db));
+    let state = Arc::new(AppState::new(
+        load_session_secret(),
+        local_agent_token,
+        share_db,
+    ));
 
     let (socket_layer, io) = SocketIo::builder()
         .max_payload(MAX_SOCKET_PAYLOAD)
@@ -1478,8 +2196,16 @@ async fn main() -> anyhow::Result<()> {
         loop {
             interval.tick().await;
             let now = now_ms();
-            cleanup_state.rate_limits.lock().await.retain(|_, entry| entry.reset_at > now);
-            cleanup_state.pairings.lock().await.retain(|_, pairing| pairing.expires_at > now);
+            cleanup_state
+                .rate_limits
+                .lock()
+                .await
+                .retain(|_, entry| entry.reset_at > now);
+            cleanup_state
+                .pairings
+                .lock()
+                .await
+                .retain(|_, pairing| pairing.expires_at > now);
         }
     });
 
@@ -1501,7 +2227,14 @@ async fn main() -> anyhow::Result<()> {
 
     let cors = CorsLayer::new()
         .allow_origin(ALLOWED_ORIGIN.parse::<HeaderValue>()?)
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
 
     let app = Router::new()
@@ -1514,8 +2247,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health))
         .route("/api/health", get(health))
         .route("/api/pair", post(pair))
-        .route("/api/share-tokens", get(list_share_tokens).post(create_share_token))
-        .route("/api/share-tokens/{id}", patch(update_share_token).delete(delete_share_token))
+        .route(
+            "/api/share-tokens",
+            get(list_share_tokens).post(create_share_token),
+        )
+        .route(
+            "/api/share-tokens/{id}",
+            patch(update_share_token).delete(delete_share_token),
+        )
         .fallback(|| async { StatusCode::NOT_FOUND })
         .with_state(state)
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
@@ -1524,7 +2263,10 @@ async fn main() -> anyhow::Result<()> {
         .layer(CompressionLayer::new())
         .layer(middleware::from_fn(security_headers));
 
-    let port: u16 = env::var("PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(3000);
+    let port: u16 = env::var("PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3000);
     let address = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(address).await?;
     info!("MoonWolf Rust backend escuchando en http://0.0.0.0:{port}");
