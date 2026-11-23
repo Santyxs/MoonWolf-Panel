@@ -7,11 +7,6 @@ description = "MoonWolf Agent"
 authors = ["Santyxs"]
 license = "MIT"
 repository = "https://github.com/Santyxs/MoonWolf-Panel"
-build = "build.rs"
-
-[[bin]]
-name = "moonwolf-agent"
-path = "src/main.rs"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_ProcessStatus"] }
@@ -39,7 +34,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 walkdir = "2"
 anyhow = "1"
-async-trait = "0.1"
 bytes = "1"
 webrtc = "0.21.1"
 
@@ -49,6 +43,3 @@ slint-build = "1.18"
 [profile.release]
 opt-level = 3
 lto = "thin"
-codegen-units = 16
-strip = true
-panic = "abort"
