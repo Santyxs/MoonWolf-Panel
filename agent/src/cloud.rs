@@ -1381,10 +1381,10 @@ async fn collect_server_stats(
         tps = query_tps(app, server_dir, "tick query").await;
     }
 
-    if max_players == 0 {
-        if let Some(max) = read_max_players_prop(server_dir).await {
-            max_players = max;
-        }
+    if max_players == 0
+        && let Some(max) = read_max_players_prop(server_dir).await
+    {
+        max_players = max;
     }
 
     let sys = system_memory().unwrap_or((0.0, 0.0));
@@ -1408,10 +1408,10 @@ async fn query_tps(
     server_dir: &std::path::Path,
     command: &str,
 ) -> Option<f64> {
-    if let Some(output) = local_console_command(app, command).await {
-        if let Some(tps) = parse_tps_response(&output) {
-            return Some(tps);
-        }
+    if let Some(output) = local_console_command(app, command).await
+        && let Some(tps) = parse_tps_response(&output)
+    {
+        return Some(tps);
     }
     rcon_command_output(server_dir, command)
         .await
@@ -1502,7 +1502,7 @@ fn parse_tps_response(output: &str) -> Option<f64> {
             .split(|c: char| !(c.is_ascii_digit() || c == '.'))
             .filter(|part| !part.is_empty())
             .filter_map(|part| part.parse::<f64>().ok())
-            .last()
+            .next_back()
     }?;
 
     if candidate.is_finite() && (0.0..=20.1).contains(&candidate) {
@@ -1644,19 +1644,16 @@ async fn rcon_command_output(
 
     rcon_write_packet(&mut stream, 2, RCON_EXEC, command).await?;
     let mut body = String::new();
-    loop {
-        match timeout(Duration::from_millis(800), rcon_read_packet(&mut stream)).await {
-            Ok(Ok((_id, typ, payload))) => {
-                if typ == RCON_RESPONSE || typ == RCON_EXEC {
-                    body.push_str(&payload);
-                    if payload.is_empty() {
-                        break;
-                    }
-                } else {
-                    break;
-                }
+    while let Ok(Ok((_id, typ, payload))) =
+        timeout(Duration::from_millis(800), rcon_read_packet(&mut stream)).await
+    {
+        if typ == RCON_RESPONSE || typ == RCON_EXEC {
+            body.push_str(&payload);
+            if payload.is_empty() {
+                break;
             }
-            _ => break,
+        } else {
+            break;
         }
     }
 

@@ -56,7 +56,7 @@ const B64_STD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxy
 const B64_URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 fn b64_encode(data: &[u8], alphabet: &[u8; 64], pad: bool) -> String {
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     let mut i = 0;
     while i + 3 <= data.len() {
         let n = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8) | (data[i + 2] as u32);
@@ -242,9 +242,7 @@ fn stamp_asset_version(html: &str, asset: &str, version: &str) -> String {
         let mut after = &rest[idx + asset.len()..];
 
         if after.starts_with('?') {
-            let end = after
-                .find(|c: char| c == '"' || c == '\'')
-                .unwrap_or(after.len());
+            let end = after.find(['"', '\'']).unwrap_or(after.len());
             after = &after[end..];
         }
         rest = after;
@@ -332,10 +330,8 @@ fn update_server_status_from_log(entry: &mut AgentCache, log: &Value) -> Option<
     };
 
     // No degradar online → starting si llega un log tardío de arranque.
-    if status == "starting" {
-        if entry.status.as_ref().and_then(Value::as_str) == Some("online") {
-            return None;
-        }
+    if status == "starting" && entry.status.as_ref().and_then(Value::as_str) == Some("online") {
+        return None;
     }
     let status = json!(status);
     entry.status = Some(status.clone());
@@ -755,7 +751,7 @@ fn header_client_ip(headers: &HeaderMap) -> String {
     headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').last())
+        .and_then(|v| v.split(',').next_back())
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .unwrap_or("unknown")
@@ -809,10 +805,10 @@ async fn register_socket_handlers(
                 .lock()
                 .await
                 .insert(agent_id.clone(), socket.clone());
-            if let Some(previous) = previous {
-                if previous.id.to_string() != socket.id.to_string() {
-                    let _ = previous.disconnect();
-                }
+            if let Some(previous) = previous
+                && previous.id.to_string() != socket.id.to_string()
+            {
+                let _ = previous.disconnect();
             }
             socket.join(format!("agent:{agent_id}"));
             state
@@ -1196,17 +1192,15 @@ async fn register_socket_handlers(
             let _ = socket.emit("cloud_ready", &json!({"agentOnline":online}));
             let _ = socket.emit("agent_status", &json!({"online":online}));
             let cached = state.cache.lock().await.get(&agent_id).cloned();
-            if online {
-                if let Some(cache) = cached {
-                    if !cache.logs.is_empty() {
-                        let _ = socket.emit("history", &cache.logs);
-                    }
-                    if let Some(status) = cache.status {
-                        let _ = socket.emit("status", &status);
-                    }
-                    if let Some(stats) = cache.stats {
-                        let _ = socket.emit("stats", &stats);
-                    }
+            if online && let Some(cache) = cached {
+                if !cache.logs.is_empty() {
+                    let _ = socket.emit("history", &cache.logs);
+                }
+                if let Some(status) = cache.status {
+                    let _ = socket.emit("status", &status);
+                }
+                if let Some(stats) = cache.stats {
+                    let _ = socket.emit("stats", &stats);
                 }
             }
             let _ = socket.emit(
@@ -1296,11 +1290,11 @@ async fn register_socket_handlers(
                 let agent_id = agent_id.clone();
                 async move {
                     let panel = state.panels.lock().await.remove(&panel_id);
-                    if panel.is_some() {
-                        if let Some(agent) = state.agents.lock().await.get(&agent_id).cloned() {
-                            let _ = agent
-                                .emit("direct_close", &json!({"peerId":socket.id.to_string()}));
-                        }
+                    if panel.is_some()
+                        && let Some(agent) = state.agents.lock().await.get(&agent_id).cloned()
+                    {
+                        let _ =
+                            agent.emit("direct_close", &json!({"peerId":socket.id.to_string()}));
                     }
                 }
             });

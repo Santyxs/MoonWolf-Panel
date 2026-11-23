@@ -38,7 +38,7 @@ const B64_STD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxy
 const B64_URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 fn b64_encode(data: &[u8], alphabet: &[u8; 64], pad: bool) -> String {
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     let mut i = 0;
     while i + 3 <= data.len() {
         let n = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8) | (data[i + 2] as u32);
@@ -171,7 +171,6 @@ pub fn format_file_stamp() -> String {
 }
 
 fn civil_from_secs(secs: i64) -> (i32, u32, u32, u32, u32, u32) {
-    let secs = secs;
     let days = secs.div_euclid(86_400);
     let tod = secs.rem_euclid(86_400) as u32;
     let hh = tod / 3600;
@@ -343,12 +342,11 @@ impl AgentConfig {
         let dir = path.parent().unwrap();
         fs::create_dir_all(dir)?;
 
-        if path.exists() {
-            if let Ok(current) = fs::read_to_string(&path) {
-                if serde_json::from_str::<serde_json::Value>(&current).is_ok() {
-                    let _ = fs::write(path.with_extension("json.bak"), current);
-                }
-            }
+        if path.exists()
+            && let Ok(current) = fs::read_to_string(&path)
+            && serde_json::from_str::<serde_json::Value>(&current).is_ok()
+        {
+            let _ = fs::write(path.with_extension("json.bak"), current);
         }
 
         let serialized = serde_json::to_string_pretty(self)?;
@@ -675,10 +673,10 @@ async fn clean_updates_dir(keep: Option<&Path>) -> anyhow::Result<()> {
     };
     while let Ok(Some(entry)) = entries.next_entry().await {
         let path = entry.path();
-        if let Some(keep) = keep {
-            if paths_equal(&path, keep) {
-                continue;
-            }
+        if let Some(keep) = keep
+            && paths_equal(&path, keep)
+        {
+            continue;
         }
         let name = path
             .file_name()
@@ -852,9 +850,9 @@ impl Sha256Hasher {
             0xc67178f2,
         ];
         let mut w = [0u32; 64];
-        for i in 0..16 {
+        for (i, slot) in w.iter_mut().enumerate().take(16) {
             let j = i * 4;
-            w[i] = u32::from_be_bytes([block[j], block[j + 1], block[j + 2], block[j + 3]]);
+            *slot = u32::from_be_bytes([block[j], block[j + 1], block[j + 2], block[j + 3]]);
         }
         for i in 16..64 {
             let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
@@ -1073,10 +1071,10 @@ fn maybe_wait_for_previous_instance() {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--wait-pid" {
-            if let Some(pid_s) = args.next() {
-                if let Ok(pid) = pid_s.parse::<u32>() {
-                    wait_for_pid(pid);
-                }
+            if let Some(pid_s) = args.next()
+                && let Ok(pid) = pid_s.parse::<u32>()
+            {
+                wait_for_pid(pid);
             }
             break;
         }

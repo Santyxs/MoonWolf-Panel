@@ -44,8 +44,10 @@ bytes = "1"
 webrtc = "0.21.1"
 
 [build-dependencies]
-winres = "0.1"
 slint-build = "1.18"
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
 
 [profile.release]
 opt-level = 3

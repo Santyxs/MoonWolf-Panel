@@ -201,10 +201,10 @@ pub async fn wait_ready(port: u16, max_attempts: u32) -> anyhow::Result<()> {
     let url = format!("http://127.0.0.1:{port}/api/health");
     let client = http_client();
     for attempt in 1..=max_attempts {
-        if let Ok(resp) = client.get(&url).send().await {
-            if resp.status().is_success() {
-                return Ok(());
-            }
+        if let Ok(resp) = client.get(&url).send().await
+            && resp.status().is_success()
+        {
+            return Ok(());
         }
         sleep_ms((250 * attempt).min(1500) as u64).await;
     }
@@ -668,7 +668,7 @@ async fn delete_files(
         .items
         .unwrap_or_default()
         .into_iter()
-        .chain(body.path.into_iter())
+        .chain(body.path)
         .collect();
 
     for rel in paths {
@@ -815,10 +815,11 @@ async fn upload_chunk(
     if manifest.path.is_empty() {
         manifest.path = q.path.clone();
         manifest.total_size = q.total_size;
-        if let Some(prev) = load_manifest(&root.join(UPLOAD_DIR_NAME), &q.upload_id).await {
-            if prev.path == q.path && prev.total_size == q.total_size {
-                *manifest = prev;
-            }
+        if let Some(prev) = load_manifest(&root.join(UPLOAD_DIR_NAME), &q.upload_id).await
+            && prev.path == q.path
+            && prev.total_size == q.total_size
+        {
+            *manifest = prev;
         }
     } else if manifest.path != q.path || manifest.total_size != q.total_size {
         return Ok(json_fail("La subida no coincide con sus datos originales"));
@@ -838,6 +839,7 @@ async fn upload_chunk(
 
         let mut file = match tokio::fs::OpenOptions::new()
             .create(true)
+            .truncate(false)
             .write(true)
             .open(&part_path)
             .await
@@ -868,11 +870,11 @@ async fn upload_chunk(
 
     let mut merged: Vec<ChunkRange> = Vec::new();
     for c in manifest.chunks.drain(..) {
-        if let Some(last) = merged.last_mut() {
-            if c.offset <= last.end {
-                last.end = last.end.max(c.end);
-                continue;
-            }
+        if let Some(last) = merged.last_mut()
+            && c.offset <= last.end
+        {
+            last.end = last.end.max(c.end);
+            continue;
         }
         merged.push(c);
     }
@@ -1342,10 +1344,10 @@ async fn compute_total_bytes(root: &Path) -> u64 {
             if backup_excluded(&first) {
                 continue;
             }
-            if entry.file_type().is_file() {
-                if let Ok(meta) = entry.metadata() {
-                    total += meta.len();
-                }
+            if entry.file_type().is_file()
+                && let Ok(meta) = entry.metadata()
+            {
+                total += meta.len();
             }
         }
         total
@@ -1461,12 +1463,12 @@ async fn create_backup(
         let server_running = st.mc.read().await.is_some();
         if server_running {
             let mut mc = st.mc.write().await;
-            if let Some(child) = mc.as_mut() {
-                if let Some(stdin) = child.stdin.as_mut() {
-                    use tokio::io::AsyncWriteExt;
-                    let _ = stdin.write_all(b"save-off\r\n").await;
-                    let _ = stdin.write_all(b"save-all flush\r\n").await;
-                }
+            if let Some(child) = mc.as_mut()
+                && let Some(stdin) = child.stdin.as_mut()
+            {
+                use tokio::io::AsyncWriteExt;
+                let _ = stdin.write_all(b"save-off\r\n").await;
+                let _ = stdin.write_all(b"save-all flush\r\n").await;
             }
         }
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -1536,9 +1538,8 @@ async fn create_backup(
                         processed += meta.len();
                         if let Ok(mut guard) = progress_ref.try_lock() {
                             guard.processed_bytes = processed;
-                            if guard.total_bytes > 0 {
-                                let pct = (processed * 100 / guard.total_bytes).min(99);
-                                guard.percent = pct as u32;
+                            if let Some(pct) = (processed * 100).checked_div(guard.total_bytes) {
+                                guard.percent = pct.min(99) as u32;
                             }
                         }
                     }
@@ -1551,11 +1552,11 @@ async fn create_backup(
 
         if server_running {
             let mut mc = st.mc.write().await;
-            if let Some(child) = mc.as_mut() {
-                if let Some(stdin) = child.stdin.as_mut() {
-                    use tokio::io::AsyncWriteExt;
-                    let _ = stdin.write_all(b"save-on\r\n").await;
-                }
+            if let Some(child) = mc.as_mut()
+                && let Some(stdin) = child.stdin.as_mut()
+            {
+                use tokio::io::AsyncWriteExt;
+                let _ = stdin.write_all(b"save-on\r\n").await;
             }
         }
 
@@ -1570,13 +1571,13 @@ async fn create_backup(
                 if !name.to_lowercase().ends_with(".zip") {
                     continue;
                 }
-                if let Ok(meta) = ent.metadata().await {
-                    if let Ok(modified) = meta.modified() {
-                        files.push((name, modified));
-                    }
+                if let Ok(meta) = ent.metadata().await
+                    && let Ok(modified) = meta.modified()
+                {
+                    files.push((name, modified));
                 }
             }
-            files.sort_by(|a, b| b.1.cmp(&a.1));
+            files.sort_by_key(|a| std::cmp::Reverse(a.1));
             for (name, _) in files.into_iter().skip(BACKUP_RETENTION) {
                 let _ = tokio::fs::remove_file(dir.join(&name)).await;
             }
@@ -1726,21 +1727,19 @@ async fn restore_backup(
     let _lifecycle = st.lifecycle.lock().await;
     st.intentional_stop.store(true, Ordering::Release);
     let was_running = st.mc.read().await.is_some();
-    if was_running {
-        if let Err(error) = stop_server_process_inner(&st).await {
-            let mut op = st.backup_operation.lock().await;
-            *op = None;
-            drop(op);
+    if was_running && let Err(error) = stop_server_process_inner(&st).await {
+        let mut op = st.backup_operation.lock().await;
+        *op = None;
+        drop(op);
 
-            let mut state = st.app.write().await;
-            state.add_console_log(
-                "error",
-                format!("No se pudo restaurar la copia porque Minecraft no terminó: {error}"),
-            );
-            return Ok(json_fail(&format!(
-                "No se pudo iniciar la restauración porque Minecraft seguía ejecutándose: {error}"
-            )));
-        }
+        let mut state = st.app.write().await;
+        state.add_console_log(
+            "error",
+            format!("No se pudo restaurar la copia porque Minecraft no terminó: {error}"),
+        );
+        return Ok(json_fail(&format!(
+            "No se pudo iniciar la restauración porque Minecraft seguía ejecutándose: {error}"
+        )));
     }
 
     let root_clone = root.clone();
@@ -2052,10 +2051,10 @@ fn startup_config_path(root: &Path) -> PathBuf {
 
 fn load_startup_config_sync(root: &Path) -> StartupConfig {
     let path = startup_config_path(root);
-    if let Ok(raw) = std::fs::read_to_string(&path) {
-        if let Ok(cfg) = serde_json::from_str::<StartupConfig>(&raw) {
-            return cfg;
-        }
+    if let Ok(raw) = std::fs::read_to_string(&path)
+        && let Ok(cfg) = serde_json::from_str::<StartupConfig>(&raw)
+    {
+        return cfg;
     }
     StartupConfig::default()
 }
@@ -2211,10 +2210,10 @@ async fn save_startup(
     if let Some(v) = body.extra_args {
         cfg.extra_args = v;
     }
-    if let Some(v) = body.stop_command {
-        if !v.is_empty() {
-            cfg.stop_command = v;
-        }
+    if let Some(v) = body.stop_command
+        && !v.is_empty()
+    {
+        cfg.stop_command = v;
     }
     if let Some(v) = body.auto_restart_on_crash {
         cfg.auto_restart_on_crash = v;
@@ -2342,22 +2341,20 @@ fn normalize_mc_version_candidate(part: &str) -> Option<String> {
     // Classic: 1.7 – 1.21.x
     if part.starts_with("1.") {
         let segments: Vec<&str> = part.split('.').collect();
-        if segments.len() >= 2 {
-            if let Ok(minor) = segments[1].parse::<u32>() {
-                if (7..=40).contains(&minor) {
-                    return Some(part.to_string());
-                }
-            }
+        if segments.len() >= 2
+            && let Ok(minor) = segments[1].parse::<u32>()
+            && (7..=40).contains(&minor)
+        {
+            return Some(part.to_string());
         }
     }
     // Paper/Mojang modern: 26.1, 26.3, etc.
-    if let Some(first) = part.split('.').next() {
-        if let Ok(major) = first.parse::<u32>() {
-            if (20..=40).contains(&major) {
-                // Avoid pure build numbers like "142" by requiring dotted form already.
-                return Some(part.to_string());
-            }
-        }
+    if let Some(first) = part.split('.').next()
+        && let Ok(major) = first.parse::<u32>()
+        && (20..=40).contains(&major)
+    {
+        // Avoid pure build numbers like "142" by requiring dotted form already.
+        return Some(part.to_string());
     }
     None
 }
@@ -2398,12 +2395,11 @@ async fn detect_version_from_version_json(root: &Path) -> Option<String> {
             "minecraftVersion",
             "minecraft_version",
         ] {
-            if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
-                if let Some(n) =
+            if let Some(s) = v.get(key).and_then(|x| x.as_str())
+                && let Some(n) =
                     normalize_mc_version_candidate(s).or_else(|| detect_version_from_name(s))
-                {
-                    return Some(n);
-                }
+            {
+                return Some(n);
             }
         }
     }
@@ -2418,10 +2414,10 @@ async fn detect_version_from_server_layout(root: &Path) -> Option<String> {
         "fabric-server-launcher.properties",
         "fabric-server-launcher.properties.txt",
     ] {
-        if let Ok(text) = tokio::fs::read_to_string(root.join(rel)).await {
-            if let Some(version) = detect_version_from_name(&text) {
-                return Some(version);
-            }
+        if let Ok(text) = tokio::fs::read_to_string(root.join(rel)).await
+            && let Some(version) = detect_version_from_name(&text)
+        {
+            return Some(version);
         }
     }
 
@@ -2519,24 +2515,23 @@ fn is_version_metadata_entry(name: &str) -> bool {
 }
 
 fn detect_version_from_metadata_text(name: &str, text: &str) -> Option<String> {
-    if name.to_ascii_lowercase().ends_with(".json") {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
-            for key in [
-                "id",
-                "name",
-                "version",
-                "minecraftVersion",
-                "minecraft_version",
-                "mcVersion",
-                "gameVersion",
-            ] {
-                if let Some(candidate) = value.get(key).and_then(|v| v.as_str()) {
-                    if let Some(version) = normalize_mc_version_candidate(candidate)
-                        .or_else(|| detect_version_from_name(candidate))
-                    {
-                        return Some(version);
-                    }
-                }
+    if name.to_ascii_lowercase().ends_with(".json")
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(text)
+    {
+        for key in [
+            "id",
+            "name",
+            "version",
+            "minecraftVersion",
+            "minecraft_version",
+            "mcVersion",
+            "gameVersion",
+        ] {
+            if let Some(candidate) = value.get(key).and_then(|v| v.as_str())
+                && let Some(version) = normalize_mc_version_candidate(candidate)
+                    .or_else(|| detect_version_from_name(candidate))
+            {
+                return Some(version);
             }
         }
     }
@@ -2680,10 +2675,7 @@ async fn read_properties(path: &Path) -> HashMap<String, String> {
 }
 
 async fn write_properties(path: &Path, values: &HashMap<String, String>) -> std::io::Result<()> {
-    let existing = match tokio::fs::read_to_string(path).await {
-        Ok(s) => s,
-        Err(_) => String::new(),
-    };
+    let existing = tokio::fs::read_to_string(path).await.unwrap_or_default();
 
     let mut lines: Vec<String> = Vec::new();
     let mut updated = std::collections::HashSet::new();
@@ -2827,10 +2819,10 @@ async fn save_ports(
     props.insert("rcon.port".into(), rcon_port.to_string());
     props.insert("enable-rcon".into(), enable_rcon.to_string());
 
-    if let Some(pw) = body.rcon_password {
-        if !pw.is_empty() {
-            props.insert("rcon.password".into(), pw);
-        }
+    if let Some(pw) = body.rcon_password
+        && !pw.is_empty()
+    {
+        props.insert("rcon.password".into(), pw);
     }
 
     if enable_rcon
@@ -3759,7 +3751,7 @@ async fn builds_sponge(sw: &str, version: &str) -> Result<Vec<serde_json::Value>
         candidates.push((vid.clone(), recommended));
     }
     // Prefer recommended, then newer-looking ids first (API order is usually newest first)
-    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    candidates.sort_by_key(|a| std::cmp::Reverse(a.1));
 
     let mut out = Vec::new();
     for (vid, recommended) in candidates.into_iter().take(20) {
@@ -4324,10 +4316,10 @@ async fn builds_bungeecord(_version: &str) -> Result<Vec<serde_json::Value>, Str
     // Builds recientes por número (aproximación: leer lastSuccessful buildNumber si es posible)
     if let Ok(text) =
         fetch_text("https://ci.md-5.net/job/BungeeCord/lastSuccessfulBuild/buildNumber").await
+        && let Ok(n) = text.trim().parse::<i64>()
     {
-        if let Ok(n) = text.trim().parse::<i64>() {
-            for build in ((n - 14).max(1)..=n).rev() {
-                out.push(json!({
+        for build in ((n - 14).max(1)..=n).rev() {
+            out.push(json!({
                     "build": build,
                     "channel": "RELEASE",
                     "time": null,
@@ -4337,7 +4329,6 @@ async fn builds_bungeecord(_version: &str) -> Result<Vec<serde_json::Value>, Str
                     "sha256": null,
                     "changes": format!("BungeeCord Jenkins build {build}"),
                 }));
-            }
         }
     }
     Ok(out)
@@ -4443,10 +4434,10 @@ async fn versions_install(
         }
         let inst_name = "fabric-installer.jar".to_string();
         let inst_path = server_dir.join(&inst_name);
-        if !inst_path.exists() {
-            if let Err(e) = download_to(&inst_url, &inst_path).await {
-                return json_fail(&format!("Descarga installer falló: {e}"));
-            }
+        if !inst_path.exists()
+            && let Err(e) = download_to(&inst_url, &inst_path).await
+        {
+            return json_fail(&format!("Descarga installer falló: {e}"));
         }
         return json_ok(json!({
             "type": "fabric-installer",
@@ -4483,10 +4474,10 @@ async fn versions_install(
         }
         let inst_name = "quilt-installer.jar".to_string();
         let inst_path = server_dir.join(&inst_name);
-        if !inst_path.exists() {
-            if let Err(e) = download_to(&inst_url, &inst_path).await {
-                return json_fail(&format!("Descarga installer falló: {e}"));
-            }
+        if !inst_path.exists()
+            && let Err(e) = download_to(&inst_url, &inst_path).await
+        {
+            return json_fail(&format!("Descarga installer falló: {e}"));
         }
         return json_ok(json!({
             "type": "quilt-installer",
@@ -4519,10 +4510,10 @@ async fn versions_install(
         });
         let inst_name = format!("{}-installer.jar", sw);
         let inst_path = server_dir.join(&inst_name);
-        if !inst_path.exists() {
-            if let Err(e) = download_to(&url, &inst_path).await {
-                return json_fail(&format!("Descarga installer falló: {e}"));
-            }
+        if !inst_path.exists()
+            && let Err(e) = download_to(&url, &inst_path).await
+        {
+            return json_fail(&format!("Descarga installer falló: {e}"));
         }
         return json_ok(json!({
             "type": format!("{}-installer", sw),
@@ -4596,20 +4587,20 @@ async fn plugins_search(Query(q): Query<PluginsSearchQuery>) -> Response {
     let mut results = Vec::new();
     let mut errors: Vec<String> = Vec::new();
 
-    if source == "all" || source == "modrinth" {
-        if let Err(e) = search_modrinth(&q_enc, &mut results).await {
-            errors.push(format!("Modrinth: {e}"));
-        }
+    if (source == "all" || source == "modrinth")
+        && let Err(e) = search_modrinth(&q_enc, &mut results).await
+    {
+        errors.push(format!("Modrinth: {e}"));
     }
-    if source == "all" || source == "spigot" {
-        if let Err(e) = search_spiget(&q_enc, &mut results).await {
-            errors.push(format!("SpigotMC: {e}"));
-        }
+    if (source == "all" || source == "spigot")
+        && let Err(e) = search_spiget(&q_enc, &mut results).await
+    {
+        errors.push(format!("SpigotMC: {e}"));
     }
-    if source == "all" || source == "hangar" {
-        if let Err(e) = search_hangar(&q_enc, &mut results).await {
-            errors.push(format!("Hangar: {e}"));
-        }
+    if (source == "all" || source == "hangar")
+        && let Err(e) = search_hangar(&q_enc, &mut results).await
+    {
+        errors.push(format!("Hangar: {e}"));
     }
 
     json_ok(json!({ "results": results, "errors": errors }))
