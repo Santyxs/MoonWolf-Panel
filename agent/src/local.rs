@@ -4627,8 +4627,6 @@ async fn builds_neoforge(version: &str) -> Result<Vec<serde_json::Value>, String
         "changes": format!("NeoForge {} · instalador oficial", build),
     })])
 }
-
-
 /// Comprueba que el jar del instalador existe, tiene tamaño razonable y es un ZIP válido.
 async fn installer_jar_ready(path: &Path) -> bool {
     let path = path.to_path_buf();
@@ -5603,10 +5601,7 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
             Err(e) => {
                 let q_drop = format!("DROP DATABASE `{}`", name.replace('`', "``"));
                 let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop)).execute(pool).await;
-                let q_drop_user = format!(
-                    "DROP USER IF EXISTS '{}'@'%'",
-                    username.replace('\'', "''")
-                );
+                let q_drop_user = format!("DROP USER IF EXISTS \'{}\'@\'%\'", username.replace('\'', "''"));
                 let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop_user))
                     .execute(pool)
                     .await;
@@ -5634,10 +5629,7 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
         {
             let q_drop = format!("DROP DATABASE `{}`", name.replace('`', "``"));
             let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop)).execute(pool).await;
-            let q_drop_user = format!(
-                "DROP USER IF EXISTS '{}'@'%'",
-                username.replace('\'', "''")
-            );
+            let q_drop_user = format!("DROP USER IF EXISTS \'{}\'@\'%\'", username.replace('\'', "''"));
             let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop_user))
                 .execute(pool)
                 .await;
@@ -5657,10 +5649,7 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
         {
             let q_drop = format!("DROP DATABASE `{}`", name.replace('`', "``"));
             let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop)).execute(pool).await;
-            let q_drop_user = format!(
-                "DROP USER IF EXISTS '{}'@'%'",
-                username.replace('\'', "''")
-            );
+            let q_drop_user = format!("DROP USER IF EXISTS \'{}\'@\'%\'", username.replace('\'', "''"));
             let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop_user))
                 .execute(pool)
                 .await;
@@ -5670,10 +5659,7 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
         if let Err(e) = sqlx::query("FLUSH PRIVILEGES").execute(pool).await {
             let q_drop = format!("DROP DATABASE `{}`", name.replace('`', "``"));
             let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop)).execute(pool).await;
-            let q_drop_user = format!(
-                "DROP USER IF EXISTS '{}'@'%'",
-                username.replace('\'', "''")
-            );
+            let q_drop_user = format!("DROP USER IF EXISTS \'{}\'@\'%\'", username.replace('\'', "''"));
             let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop_user))
                 .execute(pool)
                 .await;
