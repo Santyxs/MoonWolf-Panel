@@ -36,6 +36,7 @@ walkdir = "2"
 anyhow = "1"
 bytes = "1"
 webrtc = "0.21.1"
+async-trait = "0.1"
 
 [build-dependencies]
 slint-build = "1.18"
