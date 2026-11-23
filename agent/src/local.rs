@@ -5437,15 +5437,14 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
 
         // Comprobar antes de crear: un DROP USER de rollback no debe borrar
         // cuentas MySQL preexistentes (p. ej. de otra base de datos).
-        let user_existed: bool = sqlx::query_scalar::<_, String>(
-            "SELECT user FROM mysql.user WHERE user = ? LIMIT 1",
-        )
-        .bind(&username)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
-        .is_some();
+        let user_existed: bool =
+            sqlx::query_scalar::<_, String>("SELECT user FROM mysql.user WHERE user = ? LIMIT 1")
+                .bind(&username)
+                .fetch_optional(pool)
+                .await
+                .ok()
+                .flatten()
+                .is_some();
 
         if user_existed {
             let q_drop = format!("DROP DATABASE `{}`", name.replace('`', "``"));
@@ -5479,10 +5478,7 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
             let q_drop = format!("DROP DATABASE `{}`", name.replace('`', "``"));
             let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop)).execute(pool).await;
             // Solo DROP USER si lo acabamos de crear nosotros.
-            let q_drop_user = format!(
-                "DROP USER IF EXISTS '{}'@'%'",
-                username.replace('\'', "''")
-            );
+            let q_drop_user = format!("DROP USER IF EXISTS '{}'@'%'", username.replace('\'', "''"));
             let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop_user))
                 .execute(pool)
                 .await;
@@ -5502,10 +5498,7 @@ async fn db_create(Json(body): Json<DbCreateBody>) -> Response {
         {
             let q_drop = format!("DROP DATABASE `{}`", name.replace('`', "``"));
             let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop)).execute(pool).await;
-            let q_drop_user = format!(
-                "DROP USER IF EXISTS '{}'@'%'",
-                username.replace('\'', "''")
-            );
+            let q_drop_user = format!("DROP USER IF EXISTS '{}'@'%'", username.replace('\'', "''"));
             let _ = sqlx::query(sqlx::AssertSqlSafe(q_drop_user))
                 .execute(pool)
                 .await;
