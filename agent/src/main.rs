@@ -1043,10 +1043,7 @@ pub async fn apply_update(current_exe: &PathBuf, new_exe: &PathBuf) -> anyhow::R
             );
             return false;
         }
-        info!(
-            "Ejecutable anterior restaurado desde {}",
-            old.display()
-        );
+        info!("Ejecutable anterior restaurado desde {}", old.display());
         true
     };
 
