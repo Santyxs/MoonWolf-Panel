@@ -426,10 +426,7 @@ async fn replace_file(src: &Path, dest: &Path) -> Result<(), String> {
                 rand::rng().fill_bytes(&mut id);
             }
             let id = id.iter().map(|b| format!("{b:02x}")).collect::<String>();
-            let base = dest
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("file");
+            let base = dest.file_name().and_then(|n| n.to_str()).unwrap_or("file");
             dest.with_file_name(format!("{base}.{id}.old"))
         };
         if let Err(e) = tokio::fs::rename(dest, &backup).await {
