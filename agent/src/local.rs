@@ -4598,9 +4598,7 @@ async fn versions_install(
             }
             Err(_) => false,
         };
-        if !installer_ready
-            && let Err(e) = download_to(&inst_url, &inst_path).await
-        {
+        if !installer_ready && let Err(e) = download_to(&inst_url, &inst_path).await {
             return json_fail(&format!("Descarga installer falló: {e}"));
         }
         return json_ok(json!({
@@ -4648,9 +4646,7 @@ async fn versions_install(
             }
             Err(_) => false,
         };
-        if !installer_ready
-            && let Err(e) = download_to(&inst_url, &inst_path).await
-        {
+        if !installer_ready && let Err(e) = download_to(&inst_url, &inst_path).await {
             return json_fail(&format!("Descarga installer falló: {e}"));
         }
         return json_ok(json!({
@@ -4692,9 +4688,7 @@ async fn versions_install(
             }
             Err(_) => false,
         };
-        if !installer_ready
-            && let Err(e) = download_to(&url, &inst_path).await
-        {
+        if !installer_ready && let Err(e) = download_to(&url, &inst_path).await {
             return json_fail(&format!("Descarga installer falló: {e}"));
         }
         return json_ok(json!({
