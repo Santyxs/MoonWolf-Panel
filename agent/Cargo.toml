@@ -11,13 +11,10 @@ repository = "https://github.com/Santyxs/MoonWolf-Panel"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_ProcessStatus"] }
 slint = { version = "1.18", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-18", "image-default-formats"], optional = true }
-tray-icon = { version = "0.26", optional = true }
-muda = { version = "0.21", optional = true }
-image = { version = "0.25", default-features = false, features = ["ico", "png"], optional = true }
 
 [features]
 default = ["gui"]
-gui = ["dep:slint", "dep:muda", "dep:tray-icon", "dep:image"]
+gui = ["dep:slint"]
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "net", "time", "sync", "io-util", "process", "signal"] }
