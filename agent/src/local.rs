@@ -2222,10 +2222,7 @@ async fn save_startup(
     if let Some(v) = body.max_memory_mb {
         cfg.max_memory_mb = v;
     }
-    if cfg.min_memory_mb > 0
-        && cfg.max_memory_mb > 0
-        && cfg.min_memory_mb > cfg.max_memory_mb
-    {
+    if cfg.min_memory_mb > 0 && cfg.max_memory_mb > 0 && cfg.min_memory_mb > cfg.max_memory_mb {
         return Ok(json_fail(
             "La memoria mínima no puede ser mayor que la máxima",
         ));
