@@ -50,7 +50,6 @@ ESTADO
 struct LocalState {
     app: Arc<RwLock<AppState>>,
     mc: Arc<RwLock<Option<Child>>>,
-    /// Serializa start/stop/restart enteros (preparación + spawn/kill).
     lifecycle: Arc<Mutex<()>>,
     uploads: Arc<Mutex<HashMap<String, Arc<Mutex<UploadManifest>>>>>,
     backup_progress: Arc<Mutex<BackupProgress>>,
@@ -453,9 +452,9 @@ const FILE_STREAM_CHUNK: usize = 256 * 1024;
 /// Stream de bytes desde un fichero abierto, sin cargarlo entero en memoria.
 fn file_byte_stream(
     file: tokio::fs::File,
-) -> impl futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send {
+) -> impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send {
     use tokio::io::AsyncReadExt;
-    futures::stream::unfold(file, |mut file| async move {
+    futures_util::stream::unfold(file, |mut file| async move {
         let mut buf = bytes::BytesMut::with_capacity(FILE_STREAM_CHUNK);
         buf.resize(FILE_STREAM_CHUNK, 0);
         match file.read(&mut buf[..]).await {
