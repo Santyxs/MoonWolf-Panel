@@ -1926,7 +1926,10 @@ async fn delete_share_token(
             );
         }
     };
-    let sockets: Vec<SocketRef> = {
+    // Cerrar WebRTC en el Agent ANTES de quitar el panel del mapa.
+    // Si solo hacemos remove + disconnect, on_disconnect ya no encuentra el
+    // panel y no emite direct_close; el canal directo podría seguir usable.
+    let closing: Vec<(String, String, SocketRef)> = {
         let mut panels = state.panels.lock().await;
         let ids: Vec<String> = panels
             .iter()
@@ -1934,10 +1937,15 @@ async fn delete_share_token(
             .map(|(k, _)| k.clone())
             .collect();
         ids.into_iter()
-            .filter_map(|id| panels.remove(&id).map(|p| p.socket))
+            .filter_map(|peer_id| {
+                panels.remove(&peer_id).map(|p| (peer_id, p.agent_id, p.socket))
+            })
             .collect()
     };
-    for socket in sockets {
+    for (peer_id, agent_id, socket) in closing {
+        if let Some(agent) = state.agents.lock().await.get(&agent_id).cloned() {
+            let _ = agent.emit("direct_close", &json!({ "peerId": peer_id }));
+        }
         let _ = socket.emit("share_revoked", &json!({}));
         let _ = socket.disconnect();
     }
