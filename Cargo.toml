@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.100"
 description = "MoonWolf Panel cloud backend"
+authors = ["Santyxs"]
 license = "MIT"
+repository = "https://github.com/Santyxs/MoonWolf-Panel"
 
 [[bin]]
 name = "moonwolf-panel"
@@ -13,7 +15,7 @@ path = "server.rs"
 [dependencies]
 anyhow = "1.0.104"
 bytes = { version = "1", features = ["serde"] }
-axum = "0.8.9"
+axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1", "json"] }
 getrandom = "0.4"
 hmac = "0.13.0"
 serde = { version = "1.0.229", features = ["derive"] }
