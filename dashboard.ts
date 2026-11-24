@@ -103,7 +103,47 @@ interface UploadState {
 }
 
 interface ActivityEntry {
+  message: string;
+  level?: string;
+  icon?: string;
+  time?: string;
   [key: string]: unknown;
+}
+
+interface ApiResult {
+  ok?: boolean;
+  error?: string;
+  [key: string]: unknown;
+}
+
+interface StartupConfig {
+  jar?: string;
+  minecraftVersion?: string;
+  minMemoryMb?: number;
+  maxMemoryMb?: number;
+  stopCommand?: string;
+  autoRestartOnCrash?: boolean;
+  autoStartOnBoot?: boolean;
+  serverPort?: number;
+  javaPath?: string;
+  javaMode?: string;
+  javaOverridePath?: string;
+  extraArgs?: string;
+  [key: string]: unknown;
+}
+
+interface StartupResponse extends ApiResult {
+  config?: StartupConfig;
+  jars?: string[];
+  serverPort?: number;
+  versionDetection?: {
+    autoDetected?: boolean;
+    source?: string;
+  };
+  javaRuntime?: {
+    javaMajor?: string | number;
+    installed?: boolean;
+  };
 }
 
 /* ══════════════════════════════════════════════
@@ -122,6 +162,21 @@ const SESSION_KIND_KEY = 'moonwolf_panel_kind' as const;
 
 function $(id: string): HTMLElement | null {
   return document.getElementById(id);
+}
+
+function $input(id: string): HTMLInputElement | null {
+  const el = $(id);
+  return el instanceof HTMLInputElement ? el : null;
+}
+
+function $select(id: string): HTMLSelectElement | null {
+  const el = $(id);
+  return el instanceof HTMLSelectElement ? el : null;
+}
+
+function $btn(id: string): HTMLButtonElement | null {
+  const el = $(id);
+  return el instanceof HTMLButtonElement ? el : null;
 }
 
 function escHtml(value: unknown): string {
@@ -4574,7 +4629,7 @@ function bindShareSettings() {
     const token = $('shareCreatedToken')?.textContent || '';
     try {
       await navigator.clipboard.writeText(token);
-      flashButton(event.currentTarget, 'Copiado');
+      flashButton(event.currentTarget as HTMLElement | null, 'Copiado');
     } catch {
       toast('No se pudo copiar el token.', 'err');
     }
@@ -5028,7 +5083,7 @@ async function savePorts() {
    17. STARTUP
    ══════════════════════════════════════════════ */
 
-function requiredJavaLabel(version) {
+function requiredJavaLabel(version: string): string {
   const match = String(version || '').trim().match(/^(\d+)\.(\d+)(?:\.(\d+))?/);
   if (!match) return 'Java se seleccionará automáticamente';
 
@@ -5049,7 +5104,7 @@ function requiredJavaLabel(version) {
   return java ? `Java ${java} · gestionado por MoonWolf` : 'Versión no reconocida';
 }
 
-async function loadStartup(options = {}) {
+async function loadStartup(options: SoftLoadOptions = {}): Promise<void> {
   const element = $('startupList');
 
   if (!element) return;
@@ -5064,7 +5119,13 @@ async function loadStartup(options = {}) {
   `;
   }
 
-  const data = await cachedApi('startup', '/api/startup', undefined, VIEW_CACHE_TTL_MS, Boolean(options.force));
+  const data = (await cachedApi(
+    'startup',
+    '/api/startup',
+    undefined,
+    VIEW_CACHE_TTL_MS,
+    Boolean(options.force),
+  )) as StartupResponse;
 
   if (!data.ok) {
     element.innerHTML = `
@@ -5076,9 +5137,9 @@ async function loadStartup(options = {}) {
     return;
   }
 
-  const cfg = data.config || {};
-  const jars = Array.isArray(data.jars) ? data.jars : [];
-  const hasCurrentJar = jars.includes(cfg.jar);
+  const cfg: StartupConfig = data.config || {};
+  const jars: string[] = Array.isArray(data.jars) ? data.jars : [];
+  const hasCurrentJar = jars.includes(String(cfg.jar || ''));
   const port = data.serverPort;
   const owner = isOwnerSession();
 
@@ -5251,22 +5312,23 @@ async function loadStartup(options = {}) {
   $('btnSaveStartup')?.addEventListener('click', saveStartup);
 
   $('btnDetectMcVersion')?.addEventListener('click', async () => {
-    const btn = $('btnDetectMcVersion');
-    const jar = $('stJar')?.value || '';
-    if (btn) {
-      btn.disabled = true;
+    const btn = $btn('btnDetectMcVersion') || $('btnDetectMcVersion');
+    const jarEl = $select('stJar') || $input('stJar');
+    const jar = jarEl && 'value' in jarEl ? jarEl.value : '';
+    if (btn && 'disabled' in btn) {
+      (btn as HTMLButtonElement).disabled = true;
       btn.textContent = '⟳ Detectando…';
     }
     try {
-      const data = await api('/api/startup/detect-version', {
+      const data = (await api('/api/startup/detect-version', {
         method: 'POST',
         // api()/rpcCloud() serializa los objetos JSON. No serializar aquí
         // para evitar que el Agent reciba una cadena JSON en vez del objeto.
         body: { jar: jar || undefined, force: true, persist: true },
-      });
-      if (!data?.ok && data?.error) throw new Error(data.error);
-      const version = data.version || '';
-      const input = $('stMinecraftVersion');
+      })) as ApiResult & { version?: string; source?: string };
+      if (!data?.ok && data?.error) throw new Error(String(data.error));
+      const version = String(data.version || '');
+      const input = $input('stMinecraftVersion');
       if (input) input.value = version;
       const hint = $('stVersionHint');
       if (hint) {
@@ -5282,82 +5344,84 @@ async function loadStartup(options = {}) {
           : 'No se encontró versión en el JAR',
         version ? 'ok' : 'err'
       );
-    } catch (error) {
-      toast(`❌ ${error.message}`, 'err');
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      toast(`❌ ${message}`, 'err');
     } finally {
-      if (btn) {
-        btn.disabled = false;
+      if (btn && 'disabled' in btn) {
+        (btn as HTMLButtonElement).disabled = false;
         btn.textContent = '🔍 Detectar';
       }
     }
   });
 
-  $('stJavaOverride')?.addEventListener('change', event => {
-    const input = $('stJavaOverridePath');
-    if (input) {
-      input.style.display = event.target.checked ? 'block' : 'none';
+  $input('stJavaOverride')?.addEventListener('change', event => {
+    const input = $input('stJavaOverridePath');
+    const target = event.target as HTMLInputElement | null;
+    if (input && target) {
+      input.style.display = target.checked ? 'block' : 'none';
     }
   });
 
-  $('stMinecraftVersion')?.addEventListener('input', event => {
-    const version = event.target.value.trim();
+  $input('stMinecraftVersion')?.addEventListener('input', event => {
+    const target = event.target as HTMLInputElement | null;
+    if (!target) return;
+    const version = target.value.trim();
     const runtime = requiredJavaLabel(version);
     const label = $('stJavaManagedLabel');
     if (label) label.textContent = runtime;
   });
 
   $('btnAikarFlags')?.addEventListener('click', () => {
-    const input = $('stArgs');
-
+    const input = $input('stArgs');
     if (!input) return;
-
     input.value = AIKAR_FLAGS;
     toast('⚡ Flags de Aikar aplicados — recuerda GUARDAR', 'ok');
   });
 }
 
 async function saveStartup() {
-  const jarSelect = $('stJar');
+  const jarSelect = $select('stJar') || $input('stJar');
 
-  if (!jarSelect || !jarSelect.value) {
+  if (!jarSelect || !('value' in jarSelect) || !jarSelect.value) {
     toast('❌ No hay ningún .jar seleccionable', 'err');
     return;
   }
 
-  const portValue = $('stPort')?.value.trim();
+  const portValue = $input('stPort')?.value.trim();
   const owner = isOwnerSession();
 
-  const body = {
+  const body: StartupConfig = {
     jar: jarSelect.value,
-    minecraftVersion: $('stMinecraftVersion')?.value.trim() || '',
-    minMemoryMb: Number($('stMinMem')?.value) || 1024,
-    maxMemoryMb: Number($('stMaxMem')?.value) || 2048,
-    stopCommand: $('stStopCmd')?.value.trim() || 'stop',
-    autoRestartOnCrash: Boolean($('stAutoRestart')?.checked),
-    autoStartOnBoot: Boolean($('stAutoStart')?.checked),
+    minecraftVersion: $input('stMinecraftVersion')?.value.trim() || '',
+    minMemoryMb: Number($input('stMinMem')?.value) || 1024,
+    maxMemoryMb: Number($input('stMaxMem')?.value) || 2048,
+    stopCommand: $input('stStopCmd')?.value.trim() || 'stop',
+    autoRestartOnCrash: Boolean($input('stAutoRestart')?.checked),
+    autoStartOnBoot: Boolean($input('stAutoStart')?.checked),
     serverPort: portValue ? Number(portValue) : undefined,
   };
 
   if (owner) {
-    body.javaPath = $('stJavaOverridePath')?.value.trim() || '';
-    body.javaMode = Boolean($('stJavaOverride')?.checked) ? 'override' : 'managed';
-    body.javaOverridePath = $('stJavaOverride')?.checked
-      ? ($('stJavaOverridePath')?.value.trim() || '')
+    body.javaPath = $input('stJavaOverridePath')?.value.trim() || '';
+    body.javaMode = Boolean($input('stJavaOverride')?.checked) ? 'override' : 'managed';
+    body.javaOverridePath = $input('stJavaOverride')?.checked
+      ? ($input('stJavaOverridePath')?.value.trim() || '')
       : '';
-    body.extraArgs = $('stArgs')?.value.trim() || '';
+    body.extraArgs = $input('stArgs')?.value.trim() || '';
   }
 
-  const button = $('btnSaveStartup');
+  const button = $btn('btnSaveStartup') || $('btnSaveStartup');
 
-  if (button) {
-    button.disabled = true;
+  if (button && 'disabled' in button) {
+    (button as HTMLButtonElement).disabled = true;
     button.textContent = 'GUARDANDO...';
   }
 
-  const data = await postJSON('/api/startup', body);
+  const data = (await postJSON('/api/startup', body)) as ApiResult;
 
-  if (button) {
-    button.disabled = false;
+  if (button && 'disabled' in button) {
+    (button as HTMLButtonElement).disabled = false;
     button.textContent = '💾 GUARDAR';
   }
 
@@ -5455,7 +5519,7 @@ function renderSettings() {
 
     try {
       await navigator.clipboard.writeText(agentId);
-      flashButton(event.currentTarget, 'Copiado');
+      flashButton(event.currentTarget as HTMLElement | null, 'Copiado');
     } catch {
       toast('No se pudo copiar.', 'err');
     }
@@ -5475,7 +5539,7 @@ function renderSettings() {
    19. REGISTRO DE ACTIVIDAD
    ══════════════════════════════════════════════ */
 
-function addActivity(message, level = 'info', icon = '📌') {
+function addActivity(message: string, level: string = 'info', icon: string = '📌'): void {
   activities.push({
     message,
     level,
@@ -5507,8 +5571,8 @@ function renderActivity() {
     return;
   }
 
-  const counts = activities.reduce((acc, item) => {
-    const level = item.level || 'info';
+  const counts = activities.reduce<Record<string, number>>((acc, item) => {
+    const level = String(item.level || 'info');
     acc[level] = (acc[level] || 0) + 1;
     return acc;
   }, {});
@@ -5556,7 +5620,7 @@ function renderActivity() {
    20. NAVEGACIÓN (switchView)
    ══════════════════════════════════════════════ */
 
-function prefetchView(id) {
+function prefetchView(id: string | undefined): void {
   if (!agentOnline || !id) return;
   // Solo calienta la caché HTTP; no toca el DOM.
   switch (id) {
@@ -5588,7 +5652,7 @@ function prefetchView(id) {
   }
 }
 
-function switchView(id) {
+function switchView(id: string): void {
   const editorOpen = Boolean(currentFile && $('filesEditorPanel')?.style.display !== 'none');
   if (editorOpen && id !== 'files' && !closeFileEditor()) return;
   document.querySelectorAll('.view').forEach(view => view.classList.remove('active'));
