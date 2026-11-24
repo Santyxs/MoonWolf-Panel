@@ -1968,10 +1968,9 @@ async fn compile_dashboard_ts() -> anyhow::Result<CompiledDashboard> {
         );
     }
 
-    let out_path = std::env::temp_dir().join(format!(
-        "moonwolf-dashboard-{}.js",
-        std::process::id()
-    ));
+    let out_dir = std::env::temp_dir().join(format!("moonwolf-ts-{}", std::process::id()));
+    tokio::fs::create_dir_all(&out_dir).await?;
+    let out_path = out_dir.join("dashboard.js");
 
     info!("Compilando dashboard.ts con TypeScript (tsc)...");
 
@@ -1980,9 +1979,11 @@ async fn compile_dashboard_ts() -> anyhow::Result<CompiledDashboard> {
         .arg("--target")
         .arg("ES2020")
         .arg("--module")
-        .arg("None")
-        .arg("--outFile")
-        .arg(&out_path)
+        .arg("preserve")
+        .arg("--lib")
+        .arg("DOM,ES2020")
+        .arg("--outDir")
+        .arg(&out_dir)
         .arg("--strict")
         .arg("--skipLibCheck")
         .arg("--esModuleInterop")
@@ -2000,7 +2001,7 @@ async fn compile_dashboard_ts() -> anyhow::Result<CompiledDashboard> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let _ = tokio::fs::remove_file(&out_path).await;
+        let _ = tokio::fs::remove_dir_all(&out_dir).await;
         anyhow::bail!(
             "Error al compilar dashboard.ts (el servidor no arrancará hasta que se corrija):\n{stderr}{stdout}"
         );
@@ -2009,7 +2010,7 @@ async fn compile_dashboard_ts() -> anyhow::Result<CompiledDashboard> {
     let js_bytes = tokio::fs::read(&out_path).await.map_err(|e| {
         anyhow::anyhow!("tsc terminó bien pero no se pudo leer {}: {e}", out_path.display())
     })?;
-    let _ = tokio::fs::remove_file(&out_path).await;
+    let _ = tokio::fs::remove_dir_all(&out_dir).await;
 
     if js_bytes.is_empty() {
         anyhow::bail!("tsc generó un JavaScript vacío");
