@@ -4929,7 +4929,22 @@ async function loadBackups(options = {}) {
 
 const BACKUP_PROGRESS_POLL_MS = 500;
 
-function setBackupProgressUI({ label, pct, width, state }) {
+interface BackupProgressPayload {
+  active?: boolean;
+  phase?: string;
+  percent?: number;
+  processedBytes?: number;
+  totalBytes?: number;
+}
+
+interface BackupProgressUiState {
+  label?: string;
+  pct?: string;
+  width?: number;
+  state?: 'normal' | 'indeterminate' | 'done' | 'error';
+}
+
+function setBackupProgressUI({ label, pct, width, state }: BackupProgressUiState): void {
   const box = $('backupProgress');
   if (!box) return;
 
@@ -4938,16 +4953,22 @@ function setBackupProgressUI({ label, pct, width, state }) {
     if (state !== 'normal') box.classList.add(state);
   }
 
-  if (label !== undefined) $('backupProgressLabel').textContent = label;
-  if (pct !== undefined) $('backupProgressPct').textContent = pct;
+  const labelEl = $('backupProgressLabel');
+  if (label !== undefined && labelEl) labelEl.textContent = label;
+
+  const pctEl = $('backupProgressPct');
+  if (pct !== undefined && pctEl) pctEl.textContent = pct;
 
   if (width !== undefined) {
-    $('backupProgressFill').style.width = `${width}%`;
-    $('backupProgressBar').setAttribute('aria-valuenow', String(Math.round(width)));
+    const fillEl = $('backupProgressFill');
+    if (fillEl) fillEl.style.width = `${width}%`;
+
+    const barEl = $('backupProgressBar');
+    if (barEl) barEl.setAttribute('aria-valuenow', String(Math.round(width)));
   }
 }
 
-function showBackupProgress() {
+function showBackupProgress(): void {
   const box = $('backupProgress');
   if (!box) return;
 
@@ -4960,24 +4981,25 @@ function showBackupProgress() {
   });
 }
 
-function hideBackupProgress(delay = 0) {
+function hideBackupProgress(delay: number = 0): void {
   setTimeout(() => {
     const box = $('backupProgress');
     if (!box) return;
 
     box.hidden = true;
     box.classList.remove('indeterminate', 'done', 'error');
-    $('backupProgressFill').style.width = '0%';
+    const fillEl = $('backupProgressFill');
+    if (fillEl) fillEl.style.width = '0%';
   }, delay);
 }
 
-async function pollBackupProgress() {
+async function pollBackupProgress(): Promise<void> {
   try {
-    const data = await api('/api/backups/progress');
+    const raw: unknown = await api('/api/backups/progress');
+    if (!isRecord(raw) || !raw['ok'] || !isRecord(raw['progress'])) return;
 
-    if (!data.ok || !data.progress || !data.progress.active) return;
-
-    const progress = data.progress;
+    const progress = raw['progress'] as BackupProgressPayload;
+    if (!progress.active) return;
 
     if (progress.phase === 'flush') {
       setBackupProgressUI({
@@ -4989,9 +5011,11 @@ async function pollBackupProgress() {
     }
 
     const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+    const processedMb = ((Number(progress.processedBytes) || 0) / 1024 / 1024).toFixed(1);
+    const totalMb = ((Number(progress.totalBytes) || 0) / 1024 / 1024).toFixed(1);
 
     setBackupProgressUI({
-      label: `Comprimiendo archivos… (${(progress.processedBytes / 1024 / 1024).toFixed(1)} / ${(progress.totalBytes / 1024 / 1024).toFixed(1)} MB)`,
+      label: `Comprimiendo archivos… (${processedMb} / ${totalMb} MB)`,
       pct: `${percent}%`,
       width: percent,
     });
@@ -4999,11 +5023,11 @@ async function pollBackupProgress() {
   }
 }
 
-async function createBackup() {
+async function createBackup(): Promise<void> {
   const name = prompt('Nombre para la copia de seguridad (opcional):', '');
   if (name === null) return;
 
-  const button = $('btnNewBackup');
+  const button = $btn('btnNewBackup');
 
   if (button) {
     button.disabled = true;
@@ -5012,16 +5036,18 @@ async function createBackup() {
 
   showBackupProgress();
 
-  const poll = setInterval(pollBackupProgress, BACKUP_PROGRESS_POLL_MS);
+  const poll = setInterval(() => { void pollBackupProgress(); }, BACKUP_PROGRESS_POLL_MS);
   void pollBackupProgress();
 
   try {
-    const data = await postJSON('/api/backups', { name: name.trim() });
+    const raw: unknown = await postJSON('/api/backups', { name: name.trim() });
+    const data = isRecord(raw) ? raw : {};
 
-    if (!data.ok) {
-      setBackupProgressUI({ label: data.error, pct: '✕', state: 'error' });
+    if (!data['ok']) {
+      const errMsg = typeof data['error'] === 'string' ? data['error'] : 'Error al crear la copia de seguridad.';
+      setBackupProgressUI({ label: errMsg, pct: '✕', state: 'error' });
       hideBackupProgress(4000);
-      toast(`❌ ${data.error}`, 'err');
+      toast(`❌ ${errMsg}`, 'err');
       return;
     }
 
@@ -5033,18 +5059,22 @@ async function createBackup() {
     });
     hideBackupProgress(2500);
 
+    const warningMsg = typeof data['warning'] === 'string' ? data['warning'] : '';
+    const sizeMb = data['sizeMb'] ?? '?';
     toast(
-      data.warning
-        ? `⚠️ ${data.warning}`
-        : `✅ Copia de seguridad creada (${data.sizeMb} MB)`,
-      data.warning ? 'warn' : 'ok'
+      warningMsg
+        ? `⚠️ ${warningMsg}`
+        : `✅ Copia de seguridad creada (${String(sizeMb)} MB)`,
+      warningMsg ? 'warn' : 'ok'
     );
 
-    invalidateViewCache('backups'); loadBackups({ soft: false });
+    invalidateViewCache('backups');
+    void loadBackups({ soft: false });
   } catch (error: unknown) {
-    setBackupProgressUI({ label: (error instanceof Error ? error.message : String(error)), pct: '✕', state: 'error' });
+    const errMsg = error instanceof Error ? error.message : String(error);
+    setBackupProgressUI({ label: errMsg, pct: '✕', state: 'error' });
     hideBackupProgress(4000);
-    toast(`❌ ${error.message}`, 'err');
+    toast(`❌ ${errMsg}`, 'err');
   } finally {
     clearInterval(poll);
     if (button) {
@@ -5054,7 +5084,7 @@ async function createBackup() {
   }
 }
 
-async function downloadBackup(name) {
+async function downloadBackup(name: string): Promise<void> {
   return downloadUrlWithProgress(
     `/api/backups/download/${encodeURIComponent(name)}`,
     name,
@@ -5062,7 +5092,7 @@ async function downloadBackup(name) {
   );
 }
 
-async function restoreBackup(name) {
+async function restoreBackup(name: string): Promise<void> {
   if (!isOwnerSession()) {
     toast('🔒 Solo el propietario puede restaurar copias.', 'warn');
     return;
@@ -5081,33 +5111,38 @@ async function restoreBackup(name) {
     return;
   }
 
-  const button = document.querySelector(`[data-restore-backup="${CSS.escape(name)}"]`);
+  const button = document.querySelector<HTMLButtonElement>(`[data-restore-backup="${CSS.escape(name)}"]`);
   if (button) { button.disabled = true; }
 
   toast('⏳ Restaurando copia... el servidor puede tardar en reiniciar.', 'info');
 
   try {
-    const data = await postJSON(
+    const raw: unknown = await postJSON(
       `/api/backups/${encodeURIComponent(name)}/restore`,
       {}
     );
+    const data = isRecord(raw) ? raw : {};
 
-    if (!data.ok) {
-      throw new Error(data.error || 'No se pudo restaurar la copia.');
+    if (!data['ok']) {
+      const errMsg = typeof data['error'] === 'string' ? data['error'] : 'No se pudo restaurar la copia.';
+      throw new Error(errMsg);
     }
 
+    const restartFailed = Boolean(data['restartFailed']);
+    const wasRunning = Boolean(data['wasRunning']);
     toast(
-      data.restartFailed
+      restartFailed
         ? '⚠️ Copia restaurada, pero Minecraft no pudo reiniciarse. Revisa la consola.'
-        : data.wasRunning
+        : wasRunning
           ? '✅ Copia restaurada. Minecraft se está iniciando.'
           : '✅ Copia restaurada.',
-      data.restartFailed ? 'warn' : 'ok'
+      restartFailed ? 'warn' : 'ok'
     );
     addActivity(`Copia restaurada: ${name}`, 'ok', '♻️');
-    invalidateViewCache('backups'); loadBackups({ soft: false });
+    invalidateViewCache('backups');
+    void loadBackups({ soft: false });
   } catch (error: unknown) {
-    toast(`❌ ${(error instanceof Error ? error.message : String(error))}`, 'err');
+    toast(`❌ ${error instanceof Error ? error.message : String(error)}`, 'err');
     if (button) { button.disabled = false; }
   }
 }
@@ -5116,7 +5151,25 @@ async function restoreBackup(name) {
    16. PUERTOS
    ══════════════════════════════════════════════ */
 
-async function loadPorts(options = {}) {
+interface ServerPortInfo {
+  port: number | string;
+  name: string;
+  description: string;
+  protocol: string;
+  state: 'open' | 'closed' | 'disabled' | string;
+}
+
+interface ServerPortsProperties {
+  serverPort?: number;
+  queryPort?: number;
+  rconPort?: number;
+  rconPassword?: string;
+  hasRconPassword?: boolean;
+  enableQuery?: boolean;
+  enableRcon?: boolean;
+}
+
+async function loadPorts(options: SoftLoadOptions = {}): Promise<void> {
   const element = $('portList');
   if (!element) return;
 
@@ -5127,11 +5180,20 @@ async function loadPorts(options = {}) {
   }
 
   try {
-    const data = await cachedApi('ports', '/api/ports', undefined, 20_000, Boolean(options.force));
-    if (!data.ok) throw new Error(data.error || 'No se pudieron cargar los puertos');
+    const raw: unknown = await cachedApi('ports', '/api/ports', undefined, 20_000, Boolean(options.force));
+    if (!isRecord(raw) || !raw['ok']) {
+      const errMsg = isRecord(raw) && typeof raw['error'] === 'string'
+        ? raw['error']
+        : 'No se pudieron cargar los puertos';
+      throw new Error(errMsg);
+    }
 
-    const props = data.properties || {};
-    const ports = Array.isArray(data.ports) ? data.ports : [];
+    const props: ServerPortsProperties = isRecord(raw['properties'])
+      ? (raw['properties'] as ServerPortsProperties)
+      : {};
+    const ports: ServerPortInfo[] = Array.isArray(raw['ports'])
+      ? (raw['ports'] as ServerPortInfo[])
+      : [];
 
     element.innerHTML = `
       <div class="ports-toolbar">
@@ -5145,7 +5207,7 @@ async function loadPorts(options = {}) {
       <div class="ports-grid">
         ${ports
           .map(
-            port => `
+            (port: ServerPortInfo) => `
           <div class="port-row">
             <div class="port-num">${escHtml(port.port)}</div>
             <div class="port-info">
@@ -5232,34 +5294,35 @@ async function loadPorts(options = {}) {
       </div>
     `;
 
-    $('btnRefreshPorts')?.addEventListener('click', () => loadPorts({ force: true }));
-    $('btnSavePorts')?.addEventListener('click', savePorts);
+    $('btnRefreshPorts')?.addEventListener('click', () => { void loadPorts({ force: true }); });
+    $('btnSavePorts')?.addEventListener('click', () => { void savePorts(); });
   } catch (error: unknown) {
     element.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-msg">${escHtml((error instanceof Error ? error.message : String(error)))}</div><button class="small-btn" id="btnRetryPorts">↺ Reintentar</button></div>`;
-    $('btnRetryPorts')?.addEventListener('click', () => loadPorts({ force: true }));
+    $('btnRetryPorts')?.addEventListener('click', () => { void loadPorts({ force: true }); });
   }
 }
 
-async function savePorts() {
-  const body = {
-    serverPort: Number($('portMinecraft')?.value),
-    queryPort: Number($('portQuery')?.value),
-    rconPort: Number($('portRcon')?.value),
-    enableQuery: Boolean($('portEnableQuery')?.checked),
-    enableRcon: Boolean($('portEnableRcon')?.checked),
-    rconPassword: $('portRconPassword')?.value || '',
+async function savePorts(): Promise<void> {
+  const body: ServerPortsProperties = {
+    serverPort: Number($input('portMinecraft')?.value),
+    queryPort: Number($input('portQuery')?.value),
+    rconPort: Number($input('portRcon')?.value),
+    enableQuery: Boolean($input('portEnableQuery')?.checked),
+    enableRcon: Boolean($input('portEnableRcon')?.checked),
+    rconPassword: $input('portRconPassword')?.value || '',
   };
 
-  const button = $('btnSavePorts');
+  const button = $btn('btnSavePorts');
   if (button) {
     button.disabled = true;
     button.textContent = 'GUARDANDO...';
   }
 
   try {
-    const data = await postJSON('/api/ports', body);
-    if (!data.ok) {
-      toast(`❌ ${data.error}`, 'err');
+    const raw: unknown = await postJSON('/api/ports', body);
+    const data = isRecord(raw) ? raw : {};
+    if (!data['ok']) {
+      toast(`❌ ${String(data['error'] || 'Error al guardar puertos')}`, 'err');
       return;
     }
 
@@ -6187,14 +6250,15 @@ function bindEvents() {
     const name = isDir ? trimmed.slice(0, -1) : trimmed;
     if (!name) return;
 
-    const data = await postJSON('/api/files/create', {
+    const rawCreate: unknown = await postJSON('/api/files/create', {
       path: currentDir,
       name,
       isDir,
     });
+    const data = isRecord(rawCreate) ? rawCreate : {};
 
-    if (!data.ok) {
-      toast(`❌ ${data.error}`, 'err');
+    if (!data['ok']) {
+      toast(`❌ ${String(data['error'] || 'Error al crear el archivo')}`, 'err');
       return;
     }
 
