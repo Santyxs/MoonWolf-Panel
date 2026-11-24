@@ -46,6 +46,11 @@ interface CodeMirrorDoc {
   somethingSelected(): boolean;
 }
 
+interface CodeMirrorCursorPos {
+  line: number;
+  ch: number;
+}
+
 interface CodeMirrorEditor {
   getValue(): string;
   setValue(value: string): void;
@@ -58,6 +63,11 @@ interface CodeMirrorEditor {
   refresh(): void;
   setSize(width: string | number | null, height: string | number | null): void;
   getWrapperElement(): HTMLElement;
+  toTextArea?(): void;
+  scrollTo?(x: number | null, y: number | null): void;
+  setCursor?(pos: CodeMirrorCursorPos): void;
+  getCursor?(): CodeMirrorCursorPos;
+  lineCount?(): number;
 }
 
 interface CodeMirrorStatic {
@@ -66,9 +76,24 @@ interface CodeMirrorStatic {
   modes?: Record<string, unknown>;
 }
 
+interface SaveFilePickerOptions {
+  suggestedName?: string;
+}
+
+interface WritableFileStreamLike {
+  write(chunk: Uint8Array | BufferSource | string | Blob): Promise<void>;
+  close(): Promise<void>;
+  abort(reason?: unknown): Promise<void>;
+}
+
+interface SaveFileHandleLike {
+  createWritable(): Promise<WritableFileStreamLike>;
+}
+
 interface Window {
   io?: SocketIoStatic;
   CodeMirror?: CodeMirrorStatic;
+  showSaveFilePicker?: (options?: SaveFilePickerOptions) => Promise<SaveFileHandleLike>;
 }
 
 declare const io: SocketIoStatic | undefined;
@@ -163,7 +188,7 @@ interface RpcInit {
   method?: string;
   headers?: HeadersInit;
   body?: unknown;
-  onProgress?: (progress: unknown) => void;
+  onProgress?: (done: number, total: number) => void;
   onHeaders?: (headers: unknown) => void;
   onChunk?: (chunk: Uint8Array) => void;
   signal?: AbortSignal;
@@ -206,6 +231,12 @@ interface StartupConfig {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function getErrorMessage(error: unknown, fallback = 'Error desconocido'): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (isRecord(error) && typeof error['message'] === 'string') return error['message'];
+  return String(error ?? fallback);
 }
 
 function toIceServers(value: unknown): RTCIceServer[] {
@@ -3371,103 +3402,115 @@ async function uploadSelectedFiles(fileList: ArrayLike<UploadFile> | UploadFile[
 }
 
 let activeDownloadAbort: AbortController | null = null;
+let activeDownloadWriter: WritableFileStreamLike | null = null;
 
-async function downloadUrlWithProgress(pathname: string, filename: string, title: string = 'Descargando archivo'): Promise<void> {
+async function downloadUrlWithProgress(
+  pathname: string,
+  filename: string,
+  title: string = 'Descargando archivo'
+): Promise<void> {
   const panel = $('uploadProgressPanel');
   const startedAt = Date.now();
   let receivedBytes = 0;
   let totalBytes = 0;
-  let activeDownloadWriter = null;
+  let writable: WritableFileStreamLike | null = null;
+  let saveHandle: SaveFileHandleLike | null = null;
 
   activeDownloadAbort = new AbortController();
 
   if (panel) {
     panel.hidden = false;
     panel.classList.remove('upload-progress-error');
-    if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = title;
-    if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = filename;
-    if ($('uploadProgressPercent')) $('uploadProgressPercent').textContent = '0%';
-    if ($('uploadProgressFill')) $('uploadProgressFill').style.width = '0%';
-    if ($('uploadProgressFiles')) $('uploadProgressFiles').textContent = '1 archivo';
-    if ($('uploadProgressBytes')) $('uploadProgressBytes').textContent = 'Iniciando transferencia…';
-    if ($('uploadProgressSpeed')) $('uploadProgressSpeed').textContent = '—';
-    if ($('uploadProgressEta')) $('uploadProgressEta').textContent = 'Calculando tiempo…';
-    if ($('uploadProgressError')) $('uploadProgressError').textContent = '';
-    if ($('uploadProgressRetry')) $('uploadProgressRetry').hidden = true;
-    if ($('uploadProgressPause')) $('uploadProgressPause').hidden = true;
-    if ($('uploadProgressCancel')) {
-      $('uploadProgressCancel').hidden = false;
-      $('uploadProgressCancel').disabled = false;
-    }
+    const titleEl = $('uploadProgressTitle');
+    const currentEl = $('uploadProgressCurrent');
+    const percentEl = $('uploadProgressPercent');
+    const fillEl = $('uploadProgressFill');
+    const cancelEl = $btn('uploadProgressCancel');
+    if (titleEl) titleEl.textContent = title;
+    if (currentEl) currentEl.textContent = filename;
+    if (percentEl) percentEl.textContent = '0%';
+    if (fillEl) fillEl.style.width = '0%';
+    if (cancelEl) cancelEl.hidden = false;
   }
 
-  const onProgress = (done, total) => {
-    receivedBytes = done;
-    if (total) totalBytes = total;
-    if (!panel) return;
-
+  const onProgress = (done: number, total: number) => {
+    receivedBytes = Number(done) || 0;
+    totalBytes = Number(total) || 0;
+    const elapsedSec = Math.max(0.001, (Date.now() - startedAt) / 1000);
+    const speed = receivedBytes / elapsedSec;
     const percent = totalBytes > 0 ? Math.min(100, Math.round((receivedBytes / totalBytes) * 100)) : 0;
-    const elapsed = Math.max((Date.now() - startedAt) / 1000, 0.001);
-    const speed = receivedBytes / elapsed;
-    const eta = (totalBytes > receivedBytes && speed > 0) ? (totalBytes - receivedBytes) / speed : 0;
+    const remainingBytes = totalBytes > 0 ? Math.max(0, totalBytes - receivedBytes) : 0;
+    const eta = speed > 0 ? remainingBytes / speed : 0;
 
-    if ($('uploadProgressPercent')) $('uploadProgressPercent').textContent = totalBytes > 0 ? `${percent}%` : formatUploadBytes(receivedBytes);
-    if ($('uploadProgressFill')) $('uploadProgressFill').style.width = totalBytes > 0 ? `${percent}%` : '60%';
-    if ($('uploadProgressBytes')) {
-      $('uploadProgressBytes').textContent = totalBytes > 0
-        ? `${formatUploadBytes(receivedBytes)} de ${formatUploadBytes(totalBytes)}`
-        : formatUploadBytes(receivedBytes);
-    }
-    if ($('uploadProgressSpeed')) $('uploadProgressSpeed').textContent = speed > 0 ? `${formatUploadBytes(speed)}/s` : '—';
-    if ($('uploadProgressEta')) {
-      $('uploadProgressEta').textContent = totalBytes > 0 ? (percent >= 100 ? 'Finalizando…' : formatUploadEta(eta)) : 'Descargando…';
+    const percentEl = $('uploadProgressPercent');
+    const fillEl = $('uploadProgressFill');
+    const speedEl = $('uploadProgressSpeed');
+    const etaEl = $('uploadProgressEta');
+
+    if (percentEl) percentEl.textContent = totalBytes > 0 ? `${percent}%` : formatUploadBytes(receivedBytes);
+    if (fillEl) fillEl.style.width = totalBytes > 0 ? `${percent}%` : '35%';
+    if (speedEl) speedEl.textContent = speed > 0 ? `${formatUploadBytes(speed)}/s` : '—';
+    if (etaEl) {
+      etaEl.textContent = totalBytes > 0
+        ? (percent >= 100 ? 'Finalizando…' : formatUploadEta(eta))
+        : 'Descargando…';
     }
   };
 
   try {
-    let writable = null;
-    let saveHandle = null;
-    const canStreamToDisk = typeof window.showSaveFilePicker === 'function';
-    if (canStreamToDisk) {
-      saveHandle = await window.showSaveFilePicker({ suggestedName: filename });
+    const picker = window.showSaveFilePicker;
+    const canStreamToDisk = typeof picker === 'function';
+    if (canStreamToDisk && picker) {
+      saveHandle = await picker({ suggestedName: filename });
       writable = await saveHandle.createWritable();
       activeDownloadWriter = writable;
     }
+
     const result = await rpcHttp(pathname, {
       onProgress,
       signal: activeDownloadAbort.signal,
       ...(writable ? {
-        onHeaders: async head => {
-          if (head?.status < 200 || head?.status >= 300) {
-            await writable.abort().catch(() => {});
+        onHeaders: async (head: unknown) => {
+          const status = isRecord(head) && typeof head['status'] === 'number' ? head['status'] : 200;
+          if (status < 200 || status >= 300) {
+            if (writable) await writable.abort().catch(() => {});
             writable = null;
             activeDownloadWriter = null;
           }
         },
-        onChunk: async chunk => {
+        onChunk: async (chunk: Uint8Array) => {
           if (writable) await writable.write(chunk);
         },
       } : {}),
     });
 
-    if (!hasResultBody(result) && !result?.streamed || result.ok === false) {
+    const resultObj = isRecord(result) ? result : {};
+    const resultOk = resultObj['ok'] !== false;
+    const isStreamed = Boolean(resultObj['streamed']);
+
+    if ((!hasResultBody(result) && !isStreamed) || !resultOk) {
       if (writable) await writable.abort().catch(() => {});
       const errorBytes = decodeResultBody(result);
       const errorText = errorBytes ? new TextDecoder().decode(errorBytes) : '';
-      throw new Error(errorText || result?.data?.error || 'No se pudo descargar el archivo.');
+      const dataError = isRecord(resultObj['data']) && typeof resultObj['data']['error'] === 'string'
+        ? resultObj['data']['error']
+        : '';
+      throw new Error(errorText || dataError || 'No se pudo descargar el archivo.');
     }
 
-    if (result.streamed && writable) {
+    if (isStreamed && writable) {
       await writable.close();
       writable = null;
       activeDownloadWriter = null;
     } else {
       if (writable) await writable.abort().catch(() => {});
       activeDownloadWriter = null;
-      const bytes = decodeResultBody(result);
-      const blob = new Blob([bytes], {
-        type: result.contentType || 'application/octet-stream',
-      });
+      const bytes = decodeResultBody(result) ?? new Uint8Array(0);
+      const blobPart: BlobPart = new Uint8Array(bytes);
+      const contentType = typeof resultObj['contentType'] === 'string'
+        ? resultObj['contentType']
+        : 'application/octet-stream';
+      const blob = new Blob([blobPart], { type: contentType });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
@@ -3477,11 +3520,17 @@ async function downloadUrlWithProgress(pathname: string, filename: string, title
     }
 
     const totalSeconds = (Date.now() - startedAt) / 1000;
-    if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = `Descarga completada en ${formatDuration(totalSeconds)}`;
-    if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = filename;
-    if ($('uploadProgressPercent')) $('uploadProgressPercent').textContent = '100%';
-    if ($('uploadProgressFill')) $('uploadProgressFill').style.width = '100%';
-    if ($('uploadProgressCancel')) $('uploadProgressCancel').hidden = true;
+    const titleEl = $('uploadProgressTitle');
+    const currentEl = $('uploadProgressCurrent');
+    const percentEl = $('uploadProgressPercent');
+    const fillEl = $('uploadProgressFill');
+    const cancelEl = $btn('uploadProgressCancel');
+
+    if (titleEl) titleEl.textContent = `Descarga completada en ${formatDuration(totalSeconds)}`;
+    if (currentEl) currentEl.textContent = filename;
+    if (percentEl) percentEl.textContent = '100%';
+    if (fillEl) fillEl.style.width = '100%';
+    if (cancelEl) cancelEl.hidden = true;
     setTimeout(() => { if (panel && !activeUploadState) panel.hidden = true; }, 3500);
     toast(`✅ Descargado: ${filename}`, 'ok');
   } catch (error: unknown) {
@@ -3489,25 +3538,36 @@ async function downloadUrlWithProgress(pathname: string, filename: string, title
       try { await activeDownloadWriter.abort(); } catch {}
       activeDownloadWriter = null;
     }
-    if (error?.name === 'AbortError' && !activeDownloadAbort?.signal?.aborted) {
+    const errName = error instanceof Error
+      ? error.name
+      : (isRecord(error) && typeof error['name'] === 'string' ? error['name'] : '');
+    const errMessage = getErrorMessage(error, 'Error en la descarga');
+
+    if (errName === 'AbortError' && !activeDownloadAbort?.signal?.aborted) {
       if (panel && !activeUploadState) panel.hidden = true;
       return;
     }
     if (activeDownloadAbort?.signal?.aborted) {
-      if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = 'Descarga cancelada';
-      if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = filename;
+      const titleEl = $('uploadProgressTitle');
+      const currentEl = $('uploadProgressCurrent');
+      if (titleEl) titleEl.textContent = 'Descarga cancelada';
+      if (currentEl) currentEl.textContent = filename;
       setTimeout(() => { if (panel && !activeUploadState) panel.hidden = true; }, 2000);
       toast('Descarga cancelada', 'info');
       return;
     }
     if (panel) {
       panel.classList.add('upload-progress-error');
-      if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = 'Error en la descarga';
-      if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = filename;
-      if ($('uploadProgressError')) $('uploadProgressError').textContent = error.message;
-      if ($('uploadProgressCancel')) $('uploadProgressCancel').hidden = true;
+      const titleEl = $('uploadProgressTitle');
+      const currentEl = $('uploadProgressCurrent');
+      const errorEl = $('uploadProgressError');
+      const cancelEl = $btn('uploadProgressCancel');
+      if (titleEl) titleEl.textContent = 'Error en la descarga';
+      if (currentEl) currentEl.textContent = filename;
+      if (errorEl) errorEl.textContent = errMessage;
+      if (cancelEl) cancelEl.hidden = true;
     }
-    toast(`❌ ${error.message}`, 'err');
+    toast(`❌ ${errMessage}`, 'err');
   } finally {
     activeDownloadAbort = null;
   }
@@ -3521,66 +3581,71 @@ async function downloadFile(rel: string, filename: string): Promise<void> {
   );
 }
 
-function getEditorContent() {
-  return editor ? editor.getValue() : $('mwEditorArea')?.value || '';
+function getEditorContent(): string {
+  return editor ? editor.getValue() : $input('mwEditorArea')?.value || '';
 }
-function editorHasUnsavedChanges() {
+
+function editorHasUnsavedChanges(): boolean {
   return Boolean(currentFile && getEditorContent() !== originalFileContent);
 }
-function confirmEditorExit() {
-  if (!editorHasUnsavedChanges()) return true;
-  return window.confirm(`El archivo "${currentFile.split('/').pop()}" tiene cambios sin guardar. ¿Quieres salir del editor y descartarlos?`);
+
+function confirmEditorExit(): boolean {
+  if (!editorHasUnsavedChanges() || !currentFile) return true;
+  const fileName = currentFile.split('/').pop() || currentFile;
+  return window.confirm(`El archivo "${fileName}" tiene cambios sin guardar. ¿Quieres salir del editor y descartarlos?`);
 }
-function closeFileEditor() {
+
+function closeFileEditor(): boolean {
   if (!confirmEditorExit()) return false;
-  if ($('filesEditorPanel')) $('filesEditorPanel').style.display = 'none';
-  if ($('filesTablePanel')) $('filesTablePanel').style.display = '';
-  if (editor?.toTextArea) editor.toTextArea();
+  const editorPanel = $('filesEditorPanel');
+  const tablePanel = $('filesTablePanel');
+  if (editorPanel) editorPanel.style.display = 'none';
+  if (tablePanel) tablePanel.style.display = '';
+  editor?.toTextArea?.();
   editor = null;
   currentFile = null;
   originalFileContent = '';
   return true;
 }
+
 async function openFile(rel: string): Promise<void> {
   if (currentFile && currentFile !== rel && !confirmEditorExit()) return;
   try {
-    const data = await api(
-      `/api/files/content?path=${encodeURIComponent(rel)}`
-    );
+    const rawData = await api(`/api/files/content?path=${encodeURIComponent(rel)}`);
+    const data = isRecord(rawData) ? rawData : {};
 
-    if (!data.ok) {
-      throw new Error(data.error);
+    if (!data['ok']) {
+      throw new Error(typeof data['error'] === 'string' ? data['error'] : 'No se pudo abrir el archivo.');
     }
 
     currentFile = rel;
-    originalFileContent = data.content || '';
-    if ($('filesTablePanel')) {
-      $('filesTablePanel').style.display = 'none';
-    }
+    const contentText = typeof data['content'] === 'string' ? data['content'] : '';
+    originalFileContent = contentText;
 
-    if ($('filesEditorPanel')) {
-      $('filesEditorPanel').style.display = '';
-    }
+    const tablePanel = $('filesTablePanel');
+    const editorPanel = $('filesEditorPanel');
+    const fileNameEl = $('editorFileName');
+    const saveMsgEl = $('edSaveMsg');
+    const containerEl = $('editorContainer');
 
-    if ($('editorFileName')) {
-      $('editorFileName').innerHTML = `📄 ${escHtml(
-        data.filename || rel.split('/').pop()
-      )}`;
+    if (tablePanel) tablePanel.style.display = 'none';
+    if (editorPanel) editorPanel.style.display = '';
+    if (fileNameEl) {
+      const displayName = typeof data['filename'] === 'string' && data['filename']
+        ? data['filename']
+        : (rel.split('/').pop() || rel);
+      fileNameEl.innerHTML = `📄 ${escHtml(displayName)}`;
     }
+    if (saveMsgEl) saveMsgEl.textContent = '';
 
-    if ($('edSaveMsg')) {
-      $('edSaveMsg').textContent = '';
+    editor?.toTextArea?.();
+
+    if (containerEl) {
+      containerEl.innerHTML = '<textarea id="mwEditorArea"></textarea>';
     }
-
-    if (editor) {
-      editor.toTextArea?.();
-    }
-
-    $('editorContainer').innerHTML = '<textarea id="mwEditorArea"></textarea>';
 
     const ext = String(rel.split('.').pop() || '').toLowerCase();
-
-    const mode = {
+    const modeMap: Record<string, string> = {
       yml: 'yaml',
       yaml: 'yaml',
       json: 'javascript',
@@ -3594,12 +3659,16 @@ async function openFile(rel: string): Promise<void> {
       cmd: 'shell',
       toml: 'toml',
       nginx: 'nginx',
-    }[ext] || 'text/plain';
+    };
+    const mode = modeMap[ext] || 'text/plain';
 
     await ensureCodeMirror(mode);
 
-    if (window.CodeMirror) {
-      editor = CodeMirror.fromTextArea($('mwEditorArea'), {
+    const cmStatic = window.CodeMirror;
+    const textarea = $input('mwEditorArea');
+
+    if (cmStatic && typeof cmStatic.fromTextArea === 'function' && textarea) {
+      editor = cmStatic.fromTextArea(textarea, {
         lineNumbers: true,
         mode,
         theme: 'dracula',
@@ -3607,9 +3676,9 @@ async function openFile(rel: string): Promise<void> {
         viewportMargin: 40,
       });
 
-      editor.setValue(data.content || '');
-      editor.scrollTo(0, 0);
-      editor.setCursor({ line: 0, ch: 0 });
+      editor.setValue(contentText);
+      editor.scrollTo?.(0, 0);
+      editor.setCursor?.({ line: 0, ch: 0 });
 
       editor.on('cursorActivity', updateEditorStatus);
       editor.on('change', updateEditorDirtyState);
@@ -3620,32 +3689,39 @@ async function openFile(rel: string): Promise<void> {
         editor.setSize('100%', '100%');
         editor.refresh();
       });
-    } else {
-      $('mwEditorArea').value = data.content || '';
-      $('mwEditorArea')?.addEventListener('input', updateEditorDirtyState);
+    } else if (textarea) {
+      textarea.value = contentText;
+      textarea.addEventListener('input', updateEditorDirtyState);
       updateEditorDirtyState();
     }
   } catch (error: unknown) {
-    toast(`❌ ${(error instanceof Error ? error.message : String(error))}`, 'err');
+    toast(`❌ ${getErrorMessage(error)}`, 'err');
   }
 }
 
-function updateEditorStatus() {
+function updateEditorStatus(): void {
   if (!editor) return;
 
-  const cursor = editor.getCursor();
+  const cursor = editor.getCursor?.() || { line: 0, ch: 0 };
+  const lineEl = $('edLine');
+  const colEl = $('edCol');
+  const linesEl = $('edLines');
 
-  if ($('edLine')) $('edLine').textContent = cursor.line + 1;
-  if ($('edCol')) $('edCol').textContent = cursor.ch + 1;
-  if ($('edLines')) $('edLines').textContent = editor.lineCount();
+  if (lineEl) lineEl.textContent = String(cursor.line + 1);
+  if (colEl) colEl.textContent = String(cursor.ch + 1);
+  if (linesEl && typeof editor.lineCount === 'function') {
+    linesEl.textContent = String(editor.lineCount());
+  }
 }
 
-function updateEditorDirtyState() {
+function updateEditorDirtyState(): void {
   const dirty = editorHasUnsavedChanges();
   $('btnSaveFile')?.classList.toggle('has-unsaved-changes', dirty);
-  if ($('edSaveMsg')) $('edSaveMsg').textContent = dirty ? 'Cambios sin guardar' : '';
+  const saveMsgEl = $('edSaveMsg');
+  if (saveMsgEl) saveMsgEl.textContent = dirty ? 'Cambios sin guardar' : '';
 }
-function refreshEditorLayout() {
+
+function refreshEditorLayout(): void {
   if (!editor) return;
 
   requestAnimationFrame(() => {
@@ -3658,24 +3734,26 @@ function refreshEditorLayout() {
 window.addEventListener('resize', refreshEditorLayout, { passive: true });
 window.visualViewport?.addEventListener('resize', refreshEditorLayout, { passive: true });
 
-async function saveCurrentFile() {
+async function saveCurrentFile(): Promise<void> {
   if (!currentFile) return;
 
   const content = getEditorContent();
-
-  const data = await postJSON('/api/files/content', {
+  const rawData = await postJSON('/api/files/content', {
     path: currentFile,
     content,
   });
+  const data = isRecord(rawData) ? rawData : {};
 
-  if (!data.ok) {
-    toast(`❌ ${data.error}`, 'err');
+  if (!data['ok']) {
+    toast(`❌ ${typeof data['error'] === 'string' ? data['error'] : 'No se pudo guardar.'}`, 'err');
     return;
   }
+
   originalFileContent = content;
   updateEditorDirtyState();
-  if ($('edSaveMsg')) {
-    $('edSaveMsg').textContent = 'Guardado';
+  const saveMsgEl = $('edSaveMsg');
+  if (saveMsgEl) {
+    saveMsgEl.textContent = 'Guardado';
   }
 
   toast('💾 Archivo guardado', 'ok');
@@ -3685,47 +3763,97 @@ async function saveCurrentFile() {
    11. PLUGINS
    ══════════════════════════════════════════════ */
 
-async function pluginSearch() {
-  const query = $('plgSearchInput')?.value.trim();
+interface PluginSearchItem {
+  id?: string;
+  name?: string;
+  source?: string;
+  icon?: string;
+  description?: string;
+  downloads?: number;
+  premium?: boolean;
+  external?: boolean;
+  [key: string]: unknown;
+}
+
+interface PluginFileItem {
+  url?: string;
+  filename?: string;
+  primary?: boolean;
+  [key: string]: unknown;
+}
+
+interface PluginVersionItem {
+  versionNumber?: string;
+  name?: string;
+  published?: string | number;
+  changelog?: string;
+  changelogIsHtml?: boolean;
+  isExternal?: boolean;
+  externalUrl?: string;
+  files?: PluginFileItem[];
+  [key: string]: unknown;
+}
+
+interface InstalledPluginItem {
+  filename?: string;
+  size?: string | number;
+  modified?: string;
+  [key: string]: unknown;
+}
+
+async function pluginSearch(): Promise<void> {
+  const query = $input('plgSearchInput')?.value.trim() || '';
+  const resultsEl = $('plgResults');
 
   if (!query) return;
 
-  $('plgResults').innerHTML = `
-    <div class="empty-state">
-      <div style="font-size:32px;animation:spin 1s linear infinite">⟳</div>
-      <div class="empty-msg">Buscando...</div>
-    </div>
-  `;
+  if (resultsEl) {
+    resultsEl.innerHTML = `
+      <div class="empty-state">
+        <div style="font-size:32px;animation:spin 1s linear infinite">⟳</div>
+        <div class="empty-msg">Buscando...</div>
+      </div>
+    `;
+  }
 
   try {
-    const data = await api(
+    const rawData = await api(
       `/api/plugins/search?q=${encodeURIComponent(query)}&source=${encodeURIComponent(pluginSource)}`
     );
+    const data = isRecord(rawData) ? rawData : {};
 
-    if (!data.ok) {
-      throw new Error(data.error);
+    if (!data['ok']) {
+      throw new Error(typeof data['error'] === 'string' ? data['error'] : 'Error al buscar plugins.');
     }
 
-    let results = data.results || [];
+    let results: PluginSearchItem[] = Array.isArray(data['results'])
+      ? (data['results'] as PluginSearchItem[])
+      : [];
 
     if (priceFilter === 'free') {
       results = results.filter(plugin => !plugin.premium);
     } else if (priceFilter === 'premium') {
-      results = results.filter(plugin => plugin.premium);
+      results = results.filter(plugin => Boolean(plugin.premium));
     }
 
-    renderPluginResults(results, data.errors || []);
+    const errors: unknown[] = Array.isArray(data['errors']) ? data['errors'] : [];
+    renderPluginResults(results, errors);
   } catch (error: unknown) {
-    $('plgResults').innerHTML = `
-      <div class="empty-state">
-        <div class="empty-msg">${escHtml((error instanceof Error ? error.message : String(error)))}</div>
-      </div>
-    `;
+    if (resultsEl) {
+      resultsEl.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-msg">${escHtml(getErrorMessage(error))}</div>
+        </div>
+      `;
+    }
   }
 }
 
-function renderPluginResults(results, errors) {
-  const formatDownloads = value => {
+function renderPluginResults(results: PluginSearchItem[], errors: unknown[]): void {
+  const resultsEl = $('plgResults');
+  if (!resultsEl) return;
+
+  const formatDownloads = (value: unknown) => {
     const n = Number(value) || 0;
 
     if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
@@ -3738,9 +3866,16 @@ function renderPluginResults(results, errors) {
     ? `<div class="plg-warn-bar">⚠ ${errors.map(escHtml).join(' · ')}</div>`
     : '';
 
+  const tagMap: Record<string, string> = {
+    modrinth: 'MODRINTH',
+    spigot: 'SPIGOT',
+    hangar: 'HANGAR',
+  };
+
   const cards = results
-    .map((plugin, index) => {
-      const tag = ({ modrinth: 'MODRINTH', spigot: 'SPIGOT', hangar: 'HANGAR' })[plugin.source] || String(plugin.source || '').toUpperCase();
+    .map((plugin: PluginSearchItem, index: number) => {
+      const srcKey = String(plugin.source || '').toLowerCase();
+      const tag = tagMap[srcKey] || String(plugin.source || '').toUpperCase();
       const external = plugin.external
         ? '<span class="plg-src-badge">🔗 EXTERNO</span>'
         : '';
@@ -3776,152 +3911,191 @@ function renderPluginResults(results, errors) {
     })
     .join('');
 
-  $('plgResults').innerHTML =
+  resultsEl.innerHTML =
     warning +
     (cards
       ? `<div class="plg-grid">${cards}</div>`
       : `<div class="empty-state"><div class="empty-msg">Sin resultados</div></div>`);
 
-  $('plgResults')
+  resultsEl
     .querySelectorAll('.plg-card')
-    .forEach(card => {
+    .forEach(cardEl => {
+      const card = cardEl as HTMLElement;
       card.addEventListener('click', () =>
-        openPluginVersions(results[Number(card.dataset.index)])
+        openPluginVersions(results[Number(card.dataset['index'])])
       );
     });
 }
 
-async function openPluginVersions(plugin) {
+async function openPluginVersions(plugin: PluginSearchItem | undefined): Promise<void> {
+  if (!plugin) return;
   currentPlugin = plugin;
 
-  $('plgVersionModal').style.display = '';
-  $('plgModalIcon').src = plugin.icon || '';
-  $('plgModalName').textContent = plugin.name;
-  $('plgModalMeta').textContent = `${plugin.source.toUpperCase()} · ${plugin.downloads || 0} descargas`;
+  const modalEl = $('plgVersionModal');
+  const iconEl = $('plgModalIcon') as HTMLImageElement | null;
+  const nameEl = $('plgModalName');
+  const metaEl = $('plgModalMeta');
+  const bodyEl = $('plgModalBody');
 
-  $('plgModalBody').innerHTML = `
-    <div class="empty-state">
-      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
-      <div class="empty-msg">Cargando versiones...</div>
-    </div>
-  `;
+  if (modalEl) modalEl.style.display = '';
+  if (iconEl) iconEl.src = plugin.icon || '';
+  if (nameEl) nameEl.textContent = plugin.name || '';
+  if (metaEl) metaEl.textContent = `${String(plugin.source || '').toUpperCase()} · ${plugin.downloads || 0} descargas`;
 
-  try {
-    const data = await api(
-      `/api/plugins/versions?id=${encodeURIComponent(plugin.id)}&source=${encodeURIComponent(plugin.source)}`
-    );
-
-    if (!data.ok) {
-      throw new Error(data.error);
-    }
-
-    const versions = data.versions || [];
-
-    if (!versions.length) {
-      $('plgModalBody').innerHTML = '<div class="empty-state"><div class="empty-msg">No hay versiones.</div></div>';
-      return;
-    }
-
-    $('plgModalBody').innerHTML = versions
-      .map((version, index) => {
-        const published = version.published
-          ? new Date(version.published).toLocaleString('es-ES')
-          : '';
-
-        const formatChangelog = text => {
-          if (!text) return '';
-          return escHtml(text)
-            .replace(/^#### (.*$)/gim, '<div class="plg-ch-h4">$1</div>')
-            .replace(/^### (.*$)/gim, '<div class="plg-ch-h3">$1</div>')
-            .replace(/^## (.*$)/gim, '<div class="plg-ch-h2">$1</div>')
-            .replace(/^# (.*$)/gim, '<div class="plg-ch-h1">$1</div>')
-            .replace(/^\s*-\s+(.*$)/gim, '<div class="plg-ch-li">• $1</div>')
-            .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
-            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-            .replace(/\*(.*?)\*/g, '<em>$1</em>')
-            .replace(/`([^`]+)`/g, '<code>$1</code>');
-        };
-
-        const changelog = version.changelog
-          ? `<div class="plg-ver-changelog">${version.changelogIsHtml
-              ? version.changelog
-              : formatChangelog(version.changelog)}</div>`
-          : '';
-
-        const action = version.isExternal
-          ? `<a class="plg-dl-btn external" href="${escHtml(version.externalUrl)}" target="_blank" rel="noopener">ABRIR</a>`
-          : `<button class="plg-dl-btn" data-version="${index}">INSTALAR</button>`;
-
-        return `
-          <div class="plg-ver-row">
-            <div class="plg-ver-left">
-              <div class="plg-ver-number">${escHtml(version.versionNumber || version.name || 'Versión')}</div>
-              ${published ? `<div class="plg-ver-meta"><span class="plg-vm">${escHtml(published)}</span></div>` : ''}
-              ${changelog}
-            </div>
-            <div class="plg-ver-right">
-              ${action}
-            </div>
-          </div>
-        `;
-      })
-      .join('');
-
-    $('plgModalBody')
-      .querySelectorAll('[data-version]')
-      .forEach(button => {
-        button.addEventListener('click', () =>
-          installPlugin(versions[Number(button.dataset.version)])
-        );
-      });
-  } catch (error: unknown) {
-    $('plgModalBody').innerHTML = `
+  if (bodyEl) {
+    bodyEl.innerHTML = `
       <div class="empty-state">
-        <div class="empty-msg">${escHtml((error instanceof Error ? error.message : String(error)))}</div>
+        <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
+        <div class="empty-msg">Cargando versiones...</div>
       </div>
     `;
   }
+
+  try {
+    const rawData = await api(
+      `/api/plugins/versions?id=${encodeURIComponent(String(plugin.id || ''))}&source=${encodeURIComponent(String(plugin.source || ''))}`
+    );
+    const data = isRecord(rawData) ? rawData : {};
+
+    if (!data['ok']) {
+      throw new Error(typeof data['error'] === 'string' ? data['error'] : 'No se pudieron cargar las versiones.');
+    }
+
+    const versions: PluginVersionItem[] = Array.isArray(data['versions'])
+      ? (data['versions'] as PluginVersionItem[])
+      : [];
+
+    if (!versions.length) {
+      if (bodyEl) {
+        bodyEl.innerHTML = '<div class="empty-state"><div class="empty-msg">No hay versiones.</div></div>';
+      }
+      return;
+    }
+
+    const formatChangelog = (text: unknown) => {
+      if (!text) return '';
+      return escHtml(text)
+        .replace(/^#### (.*$)/gim, '<div class="plg-ch-h4">$1</div>')
+        .replace(/^### (.*$)/gim, '<div class="plg-ch-h3">$1</div>')
+        .replace(/^## (.*$)/gim, '<div class="plg-ch-h2">$1</div>')
+        .replace(/^# (.*$)/gim, '<div class="plg-ch-h1">$1</div>')
+        .replace(/^\s*-\s+(.*$)/gim, '<div class="plg-ch-li">• $1</div>')
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.*?)\*/g, '<em>$1</em>')
+        .replace(/`([^`]+)`/g, '<code>$1</code>');
+    };
+
+    if (bodyEl) {
+      bodyEl.innerHTML = versions
+        .map((version: PluginVersionItem, index: number) => {
+          const published = version.published
+            ? new Date(version.published).toLocaleString('es-ES')
+            : '';
+
+          const changelog = version.changelog
+            ? `<div class="plg-ver-changelog">${version.changelogIsHtml
+                ? version.changelog
+                : formatChangelog(version.changelog)}</div>`
+            : '';
+
+          const action = version.isExternal
+            ? `<a class="plg-dl-btn external" href="${escHtml(version.externalUrl)}" target="_blank" rel="noopener">ABRIR</a>`
+            : `<button class="plg-dl-btn" data-version="${index}">INSTALAR</button>`;
+
+          return `
+            <div class="plg-ver-row">
+              <div class="plg-ver-left">
+                <div class="plg-ver-number">${escHtml(version.versionNumber || version.name || 'Versión')}</div>
+                ${published ? `<div class="plg-ver-meta"><span class="plg-vm">${escHtml(published)}</span></div>` : ''}
+                ${changelog}
+              </div>
+              <div class="plg-ver-right">
+                ${action}
+              </div>
+            </div>
+          `;
+        })
+        .join('');
+
+      bodyEl
+        .querySelectorAll('[data-version]')
+        .forEach(buttonEl => {
+          const button = buttonEl as HTMLElement;
+          button.addEventListener('click', () =>
+            installPlugin(versions[Number(button.dataset['version'])])
+          );
+        });
+    }
+  } catch (error: unknown) {
+    if (bodyEl) {
+      bodyEl.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-msg">${escHtml(getErrorMessage(error))}</div>
+        </div>
+      `;
+    }
+  }
 }
 
-async function installPlugin(version) {
+async function installPlugin(version: PluginVersionItem | undefined): Promise<void> {
+  if (!version) return;
   if (!isOwnerSession()) {
     toast('🔒 Solo el propietario puede instalar plugins.', 'warn');
     return;
   }
 
-  const file = (version.files || []).find(item => item.primary) || version.files?.[0];
+  const files = Array.isArray(version.files) ? version.files : [];
+  const file = files.find((item: PluginFileItem) => Boolean(item.primary)) || files[0];
 
   if (!file?.url) {
     toast('Esta versión requiere instalación externa.', 'err');
     return;
   }
 
+  const pluginName = isRecord(currentPlugin) && typeof currentPlugin['name'] === 'string'
+    ? currentPlugin['name']
+    : 'plugin';
   const filename =
     file.filename ||
-    `${String(currentPlugin?.name || 'plugin').replace(/[^a-zA-Z0-9._-]/g, '_')}.jar`;
+    `${String(pluginName).replace(/[^a-zA-Z0-9._-]/g, '_')}.jar`;
 
+  const modalBody = $('plgModalBody');
   const installStatus = document.createElement('div');
   installStatus.className = 'plg-install-status installing';
   installStatus.innerHTML = '<span class="plg-install-spinner">⟳</span><strong>Instalando...</strong><span>Descargando y copiando el plugin al servidor</span>';
-  $('plgModalBody')?.prepend(installStatus);
-  const installButtons = $('plgModalBody')?.querySelectorAll('.plg-dl-btn:not(.external)') || [];
-  installButtons.forEach(button => { button.disabled = true; button.classList.add('is-installing'); });
+  modalBody?.prepend(installStatus);
+
+  const installButtons = Array.from(modalBody?.querySelectorAll('.plg-dl-btn:not(.external)') || [])
+    .map(btn => btn as HTMLButtonElement);
+  installButtons.forEach(button => {
+    button.disabled = true;
+    button.classList.add('is-installing');
+  });
+
   try {
-    const data = await postJSON('/api/plugins/install', { url: file.url, filename });
-    if (!data.ok) throw new Error(data.error || 'No se pudo instalar el plugin.');
+    const rawData = await postJSON('/api/plugins/install', { url: file.url, filename });
+    const data = isRecord(rawData) ? rawData : {};
+    if (!data['ok']) {
+      throw new Error(typeof data['error'] === 'string' ? data['error'] : 'No se pudo instalar el plugin.');
+    }
     installStatus.className = 'plg-install-status installed';
     installStatus.innerHTML = `<span>✓</span><strong>Instalado correctamente</strong><span>${escHtml(filename)}</span>`;
     toast(`✅ ${filename} instalado`, 'ok');
     loadInstalledPlugins({ force: true });
   } catch (error: unknown) {
+    const errMsg = getErrorMessage(error);
     installStatus.className = 'plg-install-status failed';
-    installStatus.innerHTML = `<span>⚠</span><strong>Instalación fallida</strong><span>${escHtml((error instanceof Error ? error.message : String(error)))}</span>`;
-    installButtons.forEach(button => { button.disabled = false; button.classList.remove('is-installing'); });
-    toast(`❌ ${error.message}`, 'err');
+    installStatus.innerHTML = `<span>⚠</span><strong>Instalación fallida</strong><span>${escHtml(errMsg)}</span>`;
+    installButtons.forEach(button => {
+      button.disabled = false;
+      button.classList.remove('is-installing');
+    });
+    toast(`❌ ${errMsg}`, 'err');
   }
 }
 
-async function loadInstalledPlugins(options = {}) {
+async function loadInstalledPlugins(options: SoftLoadOptions = {}): Promise<void> {
   const element = $('plgInstalledList');
 
   if (!element) return;
@@ -3929,26 +4103,36 @@ async function loadInstalledPlugins(options = {}) {
   const soft = resolveSoftLoad(options, element);
   if (!soft) {
     element.innerHTML = `
-    <div class="empty-state">
-      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
-      <div class="empty-msg">Cargando...</div>
-    </div>
-  `;
+      <div class="empty-state">
+        <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
+        <div class="empty-msg">Cargando...</div>
+      </div>
+    `;
   }
 
-  const data = await cachedApi('plugins:installed', '/api/plugins/installed', undefined, VIEW_CACHE_TTL_MS, Boolean(options.force));
+  const rawData = await cachedApi(
+    'plugins:installed',
+    '/api/plugins/installed',
+    undefined,
+    VIEW_CACHE_TTL_MS,
+    Boolean(options.force)
+  );
+  const data = isRecord(rawData) ? rawData : {};
 
-  if (!data.ok) {
-    element.innerHTML = `<div class="empty-state">${escHtml(data.error)}</div>`;
+  if (!data['ok']) {
+    element.innerHTML = `<div class="empty-state">${escHtml(data['error'])}</div>`;
     return;
   }
 
   const owner = isOwnerSession();
+  const pluginsList: InstalledPluginItem[] = Array.isArray(data['plugins'])
+    ? (data['plugins'] as InstalledPluginItem[])
+    : [];
 
   element.innerHTML =
-    (data.plugins || [])
+    pluginsList
       .map(
-        plugin => `
+        (plugin: InstalledPluginItem) => `
         <div class="installed-plugin-row">
           <div>
             <strong>☕ ${escHtml(plugin.filename)}</strong>
@@ -3962,21 +4146,23 @@ async function loadInstalledPlugins(options = {}) {
       .join('') ||
     `<div class="empty-state">No hay plugins .jar instalados.</div>`;
 
-  element.querySelectorAll('[data-delete-plugin]').forEach(button => {
+  element.querySelectorAll('[data-delete-plugin]').forEach(buttonEl => {
+    const button = buttonEl as HTMLElement;
     button.addEventListener('click', async () => {
-      const filename = button.dataset.deletePlugin;
+      const filename = button.dataset['deletePlugin'] || '';
 
       if (!confirm(`¿Eliminar ${filename}?`)) {
         return;
       }
 
-      const data = await api(
+      const rawDel = await api(
         `/api/plugins/installed/${encodeURIComponent(filename)}`,
         { method: 'DELETE' }
       );
+      const delData = isRecord(rawDel) ? rawDel : {};
 
-      if (!data.ok) {
-        toast(`❌ ${data.error}`, 'err');
+      if (!delData['ok']) {
+        toast(`❌ ${delData['error']}`, 'err');
       } else {
         loadInstalledPlugins({ force: true });
       }
@@ -3984,26 +4170,50 @@ async function loadInstalledPlugins(options = {}) {
   });
 }
 
-let versionCatalog = [];
+interface VersionSoftwareItem {
+  id: string;
+  label?: string;
+  name?: string;
+  desc?: string;
+  description?: string;
+  category?: string;
+  icon?: string;
+  external?: string;
+  [key: string]: unknown;
+}
+
+interface VersionBuildItem {
+  build?: string | number;
+  channel?: string;
+  loaderVersion?: string;
+  time?: string | number;
+  changes?: string;
+  sha256?: string;
+  installable?: boolean;
+  url?: string;
+  [key: string]: unknown;
+}
+
+let versionCatalog: VersionSoftwareItem[] = [];
 let versionCurrent = {
   software: '',
   version: '',
-  build: '',
+  build: '' as string | number,
 };
 
 /* ══════════════════════════════════════════════
    12. VERSIONES Y SOFTWARE
    ══════════════════════════════════════════════ */
 
-function versionFindSoftware(id) {
-  return versionCatalog.find(item => item.id === id) || {
+function versionFindSoftware(id: string): VersionSoftwareItem {
+  return versionCatalog.find((item: VersionSoftwareItem) => item.id === id) || {
     id,
     label: id,
     desc: '',
   };
 }
 
-function versionCategoryName(category) {
+function versionCategoryName(category: string): string {
   if (category === 'plugins') return 'Versiones de plugins';
   if (category === 'mods' || category === 'mod') return 'Versiones de mods';
   if (category === 'proxy') return 'Versiones de proxy';
@@ -4012,7 +4222,7 @@ function versionCategoryName(category) {
   return 'Servidores de Minecraft';
 }
 
-function renderVersionSoftwareCard(software) {
+function renderVersionSoftwareCard(software: VersionSoftwareItem): string {
   return `
     <button type="button" class="ver-software-card" data-software="${escHtml(software.id)}">
       <div class="ver-software-icon">${software.icon || '📦'}</div>
@@ -4025,7 +4235,7 @@ function renderVersionSoftwareCard(software) {
   `;
 }
 
-function renderVersionSoftware() {
+function renderVersionSoftware(): void {
   const container = $('versionList');
   if (!container) return;
 
@@ -4042,14 +4252,14 @@ function renderVersionSoftware() {
     return;
   }
 
-  const groups = {};
+  const groups: Record<string, VersionSoftwareItem[]> = {};
   for (const item of versionCatalog) {
     const category = item.category || 'plugins';
     (groups[category] ||= []).push(item);
   }
 
   const categoryOrder = ['plugins', 'mods', 'proxy', 'hybrid', 'vanilla'];
-  const categoryIcon = {
+  const categoryIcon: Record<string, string> = {
     plugins: '🧩',
     mods: '🧵',
     proxy: '🌐',
@@ -4059,7 +4269,7 @@ function renderVersionSoftware() {
 
   const orderedGroups = categoryOrder
     .filter(category => groups[category]?.length)
-    .map(category => [category, groups[category]]);
+    .map(category => [category, groups[category]] as [string, VersionSoftwareItem[]]);
 
   container.innerHTML = `
     ${orderedGroups.map(([category, items]) => `
@@ -4076,12 +4286,13 @@ function renderVersionSoftware() {
     `).join('')}
   `;
 
-  container.querySelectorAll('[data-software]').forEach(card => {
-    card.addEventListener('click', () => selectVersionSoftware(card.dataset.software));
+  container.querySelectorAll('[data-software]').forEach(cardEl => {
+    const card = cardEl as HTMLElement;
+    card.addEventListener('click', () => selectVersionSoftware(card.dataset['software'] || ''));
   });
 }
 
-async function selectVersionSoftware(software) {
+async function selectVersionSoftware(software: string): Promise<void> {
   const item = versionFindSoftware(software);
   const container = $('versionList');
   if (!container) return;
@@ -4099,26 +4310,36 @@ async function selectVersionSoftware(software) {
 
   $('verBack')?.addEventListener('click', renderVersionSoftware);
 
-  if (item.external && !['paper', 'purpur', 'folia', 'leaves', 'leaf', 'spigot', 'bukkit', 'mohist', 'arclight', 'magma', 'spongevanilla', 'spongeforge', 'spongeneo', 'fabric', 'quilt', 'vanilla', 'forge', 'neoforge', 'velocity', 'waterfall', 'bungeecord'].includes(software)) {
-    container.querySelector('.ver-loading').outerHTML = `
-      <div class="ver-empty">
-        <div class="ver-empty-icon">🌐</div>
-        <div class="ver-empty-title">Descarga externa</div>
-        <div class="ver-empty-text">MoonWolf no dispone de una API de versiones para este software.</div>
-        <a class="btn btn-primary" href="${escHtml(item.external)}" target="_blank" rel="noopener noreferrer">Abrir web oficial ↗</a>
-      </div>
-    `;
+  const supportedApiSoftware = [
+    'paper', 'purpur', 'folia', 'leaves', 'leaf', 'spigot', 'bukkit',
+    'mohist', 'arclight', 'magma', 'spongevanilla', 'spongeforge', 'spongeneo',
+    'fabric', 'quilt', 'vanilla', 'forge', 'neoforge', 'velocity', 'waterfall', 'bungeecord',
+  ];
+
+  if (item.external && !supportedApiSoftware.includes(software)) {
+    const loadingEl = container.querySelector('.ver-loading');
+    if (loadingEl) {
+      loadingEl.outerHTML = `
+        <div class="ver-empty">
+          <div class="ver-empty-icon">🌐</div>
+          <div class="ver-empty-title">Descarga externa</div>
+          <div class="ver-empty-text">MoonWolf no dispone de una API de versiones para este software.</div>
+          <a class="btn btn-primary" href="${escHtml(item.external)}" target="_blank" rel="noopener noreferrer">Abrir web oficial ↗</a>
+        </div>
+      `;
+    }
     return;
   }
 
   try {
-    const data = await api(`/api/versions/list?software=${encodeURIComponent(software)}`);
+    const rawData = await api(`/api/versions/list?software=${encodeURIComponent(software)}`);
+    const data = isRecord(rawData) ? rawData : {};
 
-    if (!data?.ok) {
-      throw new Error(data?.error || 'No se pudieron cargar las versiones.');
+    if (!data['ok']) {
+      throw new Error(typeof data['error'] === 'string' ? data['error'] : 'No se pudieron cargar las versiones.');
     }
 
-    const versions = Array.isArray(data.versions) ? data.versions : [];
+    const versions: unknown[] = Array.isArray(data['versions']) ? data['versions'] : [];
 
     if (!versions.length) {
       throw new Error('La API no devolvió ninguna versión disponible.');
@@ -4151,22 +4372,27 @@ async function selectVersionSoftware(software) {
     const grid = $('verVersionGrid');
 
     const drawVersions = (filter = '') => {
+      if (!grid) return;
       const q = filter.trim().toLowerCase();
-      const filtered = versions.filter(v => String(v).toLowerCase().includes(q));
+      const filtered = versions.filter((v: unknown) => String(v).toLowerCase().includes(q));
 
-      grid.innerHTML = filtered.map(v => `
+      grid.innerHTML = filtered.map((v: unknown) => `
         <button type="button" class="ver-version-card ${String(v) === String(versionCurrent.version) && software === versionCurrent.software ? 'current' : ''}" data-version="${escHtml(v)}">
           <span>${escHtml(v)}</span>
           ${String(v) === String(versionCurrent.version) && software === versionCurrent.software ? '<small>ACTUAL</small>' : ''}
         </button>
       `).join('') || `<div class="ver-no-results">No hay versiones que coincidan.</div>`;
 
-      grid.querySelectorAll('[data-version]').forEach(btn => {
-        btn.addEventListener('click', () => selectVersionBuilds(software, btn.dataset.version, item));
+      grid.querySelectorAll('[data-version]').forEach(btnEl => {
+        const btn = btnEl as HTMLElement;
+        btn.addEventListener('click', () => selectVersionBuilds(software, btn.dataset['version'] || '', item));
       });
     };
 
-    $('verVersionSearch')?.addEventListener('input', e => drawVersions(e.target.value));
+    $input('verVersionSearch')?.addEventListener('input', (e: Event) => {
+      const target = e.target as HTMLInputElement | null;
+      drawVersions(target?.value || '');
+    });
     drawVersions();
 
   } catch (error: unknown) {
@@ -4176,7 +4402,7 @@ async function selectVersionSoftware(software) {
       box.innerHTML = `
         <div class="ver-empty-icon">⚠️</div>
         <div class="ver-empty-title">No se pudieron cargar las versiones</div>
-        <div class="ver-empty-text">${escHtml((error instanceof Error ? error.message : String(error)) || 'Error desconocido')}</div>
+        <div class="ver-empty-text">${escHtml(getErrorMessage(error, 'Error desconocido'))}</div>
         <button type="button" class="btn btn-primary" id="verRetrySoftware">Reintentar</button>
       `;
       $('verRetrySoftware')?.addEventListener('click', () => selectVersionSoftware(software));
@@ -4184,7 +4410,11 @@ async function selectVersionSoftware(software) {
   }
 }
 
-async function selectVersionBuilds(software, version, item = versionFindSoftware(software)) {
+async function selectVersionBuilds(
+  software: string,
+  version: string,
+  item: VersionSoftwareItem = versionFindSoftware(software)
+): Promise<void> {
   const container = $('versionList');
   if (!container) return;
 
@@ -4206,15 +4436,18 @@ async function selectVersionBuilds(software, version, item = versionFindSoftware
   $('verBackVersions')?.addEventListener('click', () => selectVersionSoftware(software));
 
   try {
-    const data = await api(
+    const rawData = await api(
       `/api/versions/builds?software=${encodeURIComponent(software)}&version=${encodeURIComponent(version)}`
     );
+    const data = isRecord(rawData) ? rawData : {};
 
-    if (!data?.ok) {
-      throw new Error(data?.error || 'No se pudieron cargar los builds.');
+    if (!data['ok']) {
+      throw new Error(typeof data['error'] === 'string' ? data['error'] : 'No se pudieron cargar los builds.');
     }
 
-    const builds = Array.isArray(data.builds) ? data.builds : [];
+    const builds: VersionBuildItem[] = Array.isArray(data['builds'])
+      ? (data['builds'] as VersionBuildItem[])
+      : [];
 
     if (!builds.length) {
       throw new Error('No hay builds disponibles para esta versión.');
@@ -4232,7 +4465,7 @@ async function selectVersionBuilds(software, version, item = versionFindSoftware
       </div>
 
       <div class="ver-build-list">
-        ${builds.map((b, index) => `
+        ${builds.map((b: VersionBuildItem, index: number) => `
           <div class="ver-build-item ${index === 0 ? 'selected' : ''}" data-build="${escHtml(b.build)}">
             <div class="ver-build-main">
               <div class="ver-build-title">Build ${escHtml(b.build)}</div>
@@ -4254,9 +4487,10 @@ async function selectVersionBuilds(software, version, item = versionFindSoftware
 
     $('verBackVersions')?.addEventListener('click', () => selectVersionSoftware(software));
 
-    container.querySelectorAll('[data-build-index]').forEach(button => {
+    container.querySelectorAll('[data-build-index]').forEach(buttonEl => {
+      const button = buttonEl as HTMLElement;
       button.addEventListener('click', () => {
-        const build = builds[Number(button.dataset.buildIndex)];
+        const build = builds[Number(button.dataset['buildIndex'])];
         if (build?.installable === false) return;
         installVersionSelection(software, version, build);
       });
@@ -4268,7 +4502,7 @@ async function selectVersionBuilds(software, version, item = versionFindSoftware
       box.innerHTML = `
         <div class="ver-empty-icon">⚠️</div>
         <div class="ver-empty-title">No se pudieron cargar los builds</div>
-        <div class="ver-empty-text">${escHtml((error instanceof Error ? error.message : String(error)) || 'Error desconocido')}</div>
+        <div class="ver-empty-text">${escHtml(getErrorMessage(error, 'Error desconocido'))}</div>
         <button type="button" class="btn btn-primary" id="verRetryBuilds">Reintentar</button>
       `;
       $('verRetryBuilds')?.addEventListener('click', () => selectVersionBuilds(software, version, item));
@@ -4276,7 +4510,11 @@ async function selectVersionBuilds(software, version, item = versionFindSoftware
   }
 }
 
-async function installVersionSelection(software, version, build) {
+async function installVersionSelection(
+  software: string,
+  version: string,
+  build: VersionBuildItem | undefined
+): Promise<void> {
   if (!isOwnerSession()) {
     toast('🔒 Solo el propietario puede instalar o reemplazar el servidor.', 'warn');
     return;
@@ -4290,25 +4528,31 @@ async function installVersionSelection(software, version, build) {
   try {
     toast('⏳ Descargando e instalando...', 'info');
 
-    const data = await postJSON('/api/versions/install', {
+    const rawData = await postJSON('/api/versions/install', {
       software,
       version,
       build: build?.build ?? '',
       url: build?.url || '',
       loaderVersion: build?.loaderVersion || '',
     });
+    const data = isRecord(rawData) ? rawData : {};
 
-    if (!data?.ok) {
-      throw new Error(data?.error || 'No se pudo instalar la versión.');
+    if (!data['ok']) {
+      throw new Error(typeof data['error'] === 'string' ? data['error'] : 'No se pudo instalar la versión.');
     }
 
-    if (data.type === 'fabric-installer' || data.type === 'quilt-installer' || data.type === 'forge-installer' || data.type === 'neoforge-installer') {
-      const name = data.type === 'forge-installer' ? 'Forge' : (data.type === 'neoforge-installer' ? 'NeoForge' : (data.type === 'quilt-installer' ? 'Quilt' : 'Fabric'));
+    const installType = typeof data['type'] === 'string' ? data['type'] : '';
+    if (installType === 'fabric-installer' || installType === 'quilt-installer' || installType === 'forge-installer' || installType === 'neoforge-installer') {
+      const name = installType === 'forge-installer'
+        ? 'Forge'
+        : (installType === 'neoforge-installer' ? 'NeoForge' : (installType === 'quilt-installer' ? 'Quilt' : 'Fabric'));
       toast(`⚠️ ${name} preparado. Revisa el comando indicado antes de ejecutarlo.`, 'info');
+      const noteText = typeof data['note'] === 'string' ? data['note'] : '';
+      const cmdText = typeof data['installCmd'] === 'string' && data['installCmd'] ? data['installCmd'] : 'No disponible';
       alert(
         `${name} ${version} preparado.\n\n` +
-        `${data.note || ''}\n\n` +
-        `Comando:\n${data.installCmd || 'No disponible'}`
+        `${noteText}\n\n` +
+        `Comando:\n${cmdText}`
       );
     } else {
       toast(`✅ ${label} ${version} instalado correctamente.`, 'ok');
@@ -4316,11 +4560,11 @@ async function installVersionSelection(software, version, build) {
 
     await loadVersionState();
   } catch (error: unknown) {
-    toast(`❌ ${(error instanceof Error ? error.message : String(error))}`, 'err');
+    toast(`❌ ${getErrorMessage(error)}`, 'err');
   }
 }
 
-async function loadVersionState(options = {}) {
+async function loadVersionState(options: SoftLoadOptions = {}): Promise<void> {
   const container = $('versionList');
   const soft = resolveSoftLoad(options, container);
   if (container && !soft) {
@@ -4334,46 +4578,50 @@ async function loadVersionState(options = {}) {
 
   try {
     const force = Boolean(options.force);
-    const [softwareData, startupData] = await Promise.all([
+    const [rawSoftwareData, rawStartupData] = await Promise.all([
       cachedApi('versions:software', '/api/versions/software', undefined, VIEW_CACHE_TTL_MS, force),
       cachedApi('startup', '/api/startup', undefined, VIEW_CACHE_TTL_MS, force),
     ]);
+    const softwareData = isRecord(rawSoftwareData) ? rawSoftwareData : {};
+    const startupData = isRecord(rawStartupData) ? rawStartupData : {};
 
-    if (!softwareData?.ok) {
-      throw new Error(softwareData?.error || 'No se pudo cargar el catálogo de software.');
+    if (!softwareData['ok']) {
+      throw new Error(typeof softwareData['error'] === 'string' ? softwareData['error'] : 'No se pudo cargar el catálogo de software.');
     }
 
-    versionCatalog = Array.isArray(softwareData.software)
-      ? softwareData.software.map(item => ({
-          ...item,
-          icon:
-            item.id === 'paper' ? '📄' :
-            item.id === 'purpur' ? '🟣' :
-            item.id === 'folia' ? '🌲' :
-            item.id === 'fabric' ? '🧵' :
-            item.id === 'forge' ? '🔨' :
-            item.id === 'leaf' ? '🍁' :
-            item.id === 'leaves' ? '🍃' :
-            item.id === 'spigot' ? '🧱' :
-            item.id === 'bukkit' ? '🧺' :
-            item.id === 'magma' ? '🌋' :
-            item.id === 'arclight' ? '💡' :
-            item.id === 'sponge' ? '🧽' :
-            item.id === 'mohist' ? '⚗️' :
-            item.id === 'gale' ? '🌬️' :
-            item.id === 'pufferfish' ? '🐡' :
-            item.id === 'quilt' ? '🧶' :
-            item.id === 'neoforge' ? '⚒️' :
-            item.id === 'vanilla' ? '🌿' :
-            item.id === 'velocity' ? '⚡' :
-            item.id === 'waterfall' ? '🌊' :
-            item.id === 'bungeecord' ? '🔗' : '📦',
-        }))
-      : [];
+    const softwareItems = Array.isArray(softwareData['software']) ? softwareData['software'] : [];
+    versionCatalog = softwareItems
+      .filter((entry: unknown): entry is VersionSoftwareItem => isRecord(entry) && typeof entry['id'] === 'string')
+      .map((item: VersionSoftwareItem) => ({
+        ...item,
+        icon:
+          item.id === 'paper' ? '📄' :
+          item.id === 'purpur' ? '🟣' :
+          item.id === 'folia' ? '🌲' :
+          item.id === 'fabric' ? '🧵' :
+          item.id === 'forge' ? '🔨' :
+          item.id === 'leaf' ? '🍁' :
+          item.id === 'leaves' ? '🍃' :
+          item.id === 'spigot' ? '🧱' :
+          item.id === 'bukkit' ? '🧺' :
+          item.id === 'magma' ? '🌋' :
+          item.id === 'arclight' ? '💡' :
+          item.id === 'sponge' ? '🧽' :
+          item.id === 'mohist' ? '⚗️' :
+          item.id === 'gale' ? '🌬️' :
+          item.id === 'pufferfish' ? '🐡' :
+          item.id === 'quilt' ? '🧶' :
+          item.id === 'neoforge' ? '⚒️' :
+          item.id === 'vanilla' ? '🌿' :
+          item.id === 'velocity' ? '⚡' :
+          item.id === 'waterfall' ? '🌊' :
+          item.id === 'bungeecord' ? '🔗' : '📦',
+      }));
 
+    const startupConfigObj = isRecord(startupData['config']) ? startupData['config'] : {};
     versionCurrent = {
       software: '',
-      version: startupData?.config?.minecraftVersion || '',
+      version: typeof startupConfigObj['minecraftVersion'] === 'string' ? startupConfigObj['minecraftVersion'] : '',
       build: '',
     };
 
@@ -4381,7 +4629,7 @@ async function loadVersionState(options = {}) {
   } catch (error: unknown) {
     versionCatalog = [];
     renderVersionSoftware();
-    toast(`❌ ${(error instanceof Error ? error.message : String(error))}`, 'err');
+    toast(`❌ ${getErrorMessage(error)}`, 'err');
   }
 }
 
@@ -4389,7 +4637,29 @@ async function loadVersionState(options = {}) {
    13. BASES DE DATOS
    ══════════════════════════════════════════════ */
 
-function showDbCredentials(creds) {
+interface DbCredentials {
+  host?: string;
+  port?: string | number;
+  database?: string;
+  user?: string;
+  password?: string;
+}
+
+interface DatabaseSummaryItem {
+  name?: string;
+  tables?: string | number;
+  user?: string;
+  sizeMb?: string | number;
+}
+
+interface DatabaseStatusState {
+  connected: boolean;
+  host?: string;
+  port?: string | number;
+  error?: string;
+}
+
+function showDbCredentials(creds: DbCredentials): void {
   const text =
     `Host: ${creds.host}:${creds.port}\n` +
     `Base de datos: ${creds.database}\n` +
@@ -4405,33 +4675,34 @@ function showDbCredentials(creds) {
   );
 }
 
-async function createDatabase() {
+async function createDatabase(): Promise<void> {
   const name = prompt(
     'Nombre de la nueva base de datos (letras, números y guion bajo, máx. 48 caracteres):'
   );
 
   if (!name) return;
 
-  const data = await postJSON('/api/databases', {
+  const rawData = await postJSON('/api/databases', {
     name: name.trim(),
     createUser: true,
   });
+  const data = isRecord(rawData) ? rawData : {};
 
-  if (!data.ok) {
-    toast(`❌ ${data.error}`, 'err');
+  if (!data['ok']) {
+    toast(`❌ ${typeof data['error'] === 'string' ? data['error'] : 'Error al crear la base de datos.'}`, 'err');
     return;
   }
 
   toast('✅ Base de datos creada', 'ok');
 
-  if (data.credentials) {
-    showDbCredentials(data.credentials);
+  if (isRecord(data['credentials'])) {
+    showDbCredentials(data['credentials'] as DbCredentials);
   }
 
   loadDatabases({ force: true });
 }
 
-async function loadDatabases(options = {}) {
+async function loadDatabases(options: SoftLoadOptions = {}): Promise<void> {
   const container = $('dbList');
 
   if (!container) return;
@@ -4439,22 +4710,30 @@ async function loadDatabases(options = {}) {
   const soft = resolveSoftLoad(options, container);
   if (!soft) {
     container.innerHTML = `
-    <div class="empty-state">
-      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
-      <div class="empty-msg">Conectando con MySQL...</div>
-    </div>
-  `;
+      <div class="empty-state">
+        <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
+        <div class="empty-msg">Conectando con MySQL...</div>
+      </div>
+    `;
   }
 
-  let status = { connected: false };
+  let status: DatabaseStatusState = { connected: false };
 
   try {
     const force = Boolean(options.force);
-    status = await cachedApi('databases:status', '/api/databases/status', undefined, 15_000, force);
+    const rawStatus = await cachedApi('databases:status', '/api/databases/status', undefined, 15_000, force);
+    if (isRecord(rawStatus)) {
+      status = {
+        connected: Boolean(rawStatus['connected']),
+        host: typeof rawStatus['host'] === 'string' ? rawStatus['host'] : undefined,
+        port: typeof rawStatus['port'] === 'string' || typeof rawStatus['port'] === 'number' ? rawStatus['port'] : undefined,
+        error: typeof rawStatus['error'] === 'string' ? rawStatus['error'] : undefined,
+      };
+    }
   } catch (error: unknown) {
     container.innerHTML = `
       <div class="empty-state">
-        <div class="empty-msg">${escHtml((error instanceof Error ? error.message : String(error)))}</div>
+        <div class="empty-msg">${escHtml(getErrorMessage(error))}</div>
       </div>
     `;
     return;
@@ -4475,23 +4754,26 @@ async function loadDatabases(options = {}) {
     return;
   }
 
-  const data = await cachedApi('databases', '/api/databases', undefined, VIEW_CACHE_TTL_MS, Boolean(options.force));
+  const rawData = await cachedApi('databases', '/api/databases', undefined, VIEW_CACHE_TTL_MS, Boolean(options.force));
+  const data = isRecord(rawData) ? rawData : {};
 
-  if (!data.ok) {
+  if (!data['ok']) {
     container.innerHTML = `
       <div class="empty-state">
-        <div class="empty-msg">${escHtml(data.error)}</div>
+        <div class="empty-msg">${escHtml(data['error'])}</div>
       </div>
     `;
     return;
   }
 
-  const databases = data.databases || [];
+  const databases: DatabaseSummaryItem[] = Array.isArray(data['databases'])
+    ? (data['databases'] as DatabaseSummaryItem[])
+    : [];
 
   container.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 4px 14px">
       <span style="font-size:11px;color:var(--muted2)">
-        🟢 Conectado a MySQL — ${escHtml(status.host)}:${escHtml(String(status.port))}
+        🟢 Conectado a MySQL — ${escHtml(status.host || '')}:${escHtml(String(status.port || ''))}
       </span>
       <button class="small-btn" id="btnNewDatabase">➕ Nueva base de datos</button>
     </div>
@@ -4500,7 +4782,7 @@ async function loadDatabases(options = {}) {
       databases.length
         ? databases
             .map(
-              db => `
+              (db: DatabaseSummaryItem) => `
           <div class="backup-row">
             <span class="bk-icon">🗄️</span>
             <span class="bk-name">
@@ -4526,9 +4808,10 @@ async function loadDatabases(options = {}) {
 
   $('btnNewDatabase')?.addEventListener('click', createDatabase);
 
-  container.querySelectorAll('[data-delete-db]').forEach(button => {
+  container.querySelectorAll('[data-delete-db]').forEach(buttonEl => {
+    const button = buttonEl as HTMLElement;
     button.addEventListener('click', async () => {
-      const name = button.dataset.deleteDb;
+      const name = button.dataset['deleteDb'] || '';
 
       if (
         !confirm(
@@ -4538,12 +4821,13 @@ async function loadDatabases(options = {}) {
         return;
       }
 
-      const data = await api(`/api/databases/${encodeURIComponent(name)}`, {
+      const rawDel = await api(`/api/databases/${encodeURIComponent(name)}`, {
         method: 'DELETE',
       });
+      const delData = isRecord(rawDel) ? rawDel : {};
 
-      if (!data.ok) {
-        toast(`❌ ${data.error}`, 'err');
+      if (!delData['ok']) {
+        toast(`❌ ${delData['error']}`, 'err');
         return;
       }
 
@@ -4552,25 +4836,29 @@ async function loadDatabases(options = {}) {
     });
   });
 
-  container.querySelectorAll('[data-reset-db]').forEach(button => {
+  container.querySelectorAll('[data-reset-db]').forEach(buttonEl => {
+    const button = buttonEl as HTMLElement;
     button.addEventListener('click', async () => {
-      const name = button.dataset.resetDb;
+      const name = button.dataset['resetDb'] || '';
 
       if (!confirm(`Restablecer la contraseña del usuario de "${name}"?`)) {
         return;
       }
 
-      const data = await postJSON(
+      const rawReset = await postJSON(
         `/api/databases/${encodeURIComponent(name)}/reset-password`,
         {}
       );
+      const resetData = isRecord(rawReset) ? rawReset : {};
 
-      if (!data.ok) {
-        toast(`❌ ${data.error}`, 'err');
+      if (!resetData['ok']) {
+        toast(`❌ ${resetData['error']}`, 'err');
         return;
       }
 
-      showDbCredentials(data.credentials);
+      if (isRecord(resetData['credentials'])) {
+        showDbCredentials(resetData['credentials'] as DbCredentials);
+      }
     });
   });
 }
@@ -4579,36 +4867,53 @@ async function loadDatabases(options = {}) {
    14. USUARIOS Y TOKENS COMPARTIDOS
    ══════════════════════════════════════════════ */
 
-const SHARE_PERMISSION_LABELS = {
+interface ShareTokenItem {
+  id?: string;
+  label?: string;
+  permission?: string;
+  expiresAt?: string | number | null;
+}
+
+const SHARE_PERMISSION_LABELS: Record<string, string> = {
   read: '👁️ Solo lectura',
   control: '🎮 Control',
   admin: '🛡️ Administrador',
 };
-function sharePermissionLabel(permission) {
-  return SHARE_PERMISSION_LABELS[String(permission || '').toLowerCase()] || SHARE_PERMISSION_LABELS.read;
+
+function sharePermissionLabel(permission: unknown): string {
+  return SHARE_PERMISSION_LABELS[String(permission || '').toLowerCase()] || SHARE_PERMISSION_LABELS['read'];
 }
-async function loadShareTokens() {
+
+async function loadShareTokens(): Promise<void> {
   if (panelPermission !== 'admin') return;
 
   const list = $('shareTokenList');
   if (!list) return;
 
   try {
-    const data = await cloudApi('/api/share-tokens');
-    const tokens = Array.isArray(data.tokens) ? data.tokens : [];
+    const rawData = await cloudApi('/api/share-tokens');
+    const data = isRecord(rawData) ? rawData : {};
+    const tokens: ShareTokenItem[] = Array.isArray(data['tokens'])
+      ? (data['tokens'] as ShareTokenItem[])
+      : [];
 
-    const control = tokens.filter(token => token.permission === 'control').length;
-    const read = tokens.filter(token => token.permission === 'read').length;
-    const admin = tokens.filter(token => token.permission === 'admin').length;
+    const control = tokens.filter((token: ShareTokenItem) => token.permission === 'control').length;
+    const read = tokens.filter((token: ShareTokenItem) => token.permission === 'read').length;
+    const admin = tokens.filter((token: ShareTokenItem) => token.permission === 'admin').length;
 
-    if ($('userStatTotal')) $('userStatTotal').textContent = tokens.length;
-    if ($('userStatControl')) $('userStatControl').textContent = control;
-    if ($('userStatRead')) $('userStatRead').textContent = read;
-    if ($('userStatAdmin')) $('userStatAdmin').textContent = admin;
+    const totalEl = $('userStatTotal');
+    const controlEl = $('userStatControl');
+    const readEl = $('userStatRead');
+    const adminEl = $('userStatAdmin');
+
+    if (totalEl) totalEl.textContent = String(tokens.length);
+    if (controlEl) controlEl.textContent = String(control);
+    if (readEl) readEl.textContent = String(read);
+    if (adminEl) adminEl.textContent = String(admin);
 
     list.innerHTML = tokens.length
       ? tokens
-          .map(token => {
+          .map((token: ShareTokenItem) => {
             const expiry = token.expiresAt
               ? new Date(token.expiresAt).toLocaleString('es-ES')
               : 'Nunca';
@@ -4619,9 +4924,9 @@ async function loadShareTokens() {
                 <strong>${escHtml(token.label || 'Usuario')}</strong>
                 <div class="user-row-meta">
                   <select class="form-input user-permission-select ${escHtml(token.permission)}" data-edit-permission="${escHtml(token.id)}">
-                    <option value="read" ${token.permission === 'read' ? 'selected' : ''}>${SHARE_PERMISSION_LABELS.read}</option>
-                    <option value="control" ${token.permission === 'control' ? 'selected' : ''}>${SHARE_PERMISSION_LABELS.control}</option>
-                    <option value="admin" ${token.permission === 'admin' ? 'selected' : ''}>${SHARE_PERMISSION_LABELS.admin}</option>
+                    <option value="read" ${token.permission === 'read' ? 'selected' : ''}>${SHARE_PERMISSION_LABELS['read']}</option>
+                    <option value="control" ${token.permission === 'control' ? 'selected' : ''}>${SHARE_PERMISSION_LABELS['control']}</option>
+                    <option value="admin" ${token.permission === 'admin' ? 'selected' : ''}>${SHARE_PERMISSION_LABELS['admin']}</option>
                   </select>
                   <span>Caduca: ${escHtml(expiry)}</span>
                 </div>
@@ -4633,48 +4938,51 @@ async function loadShareTokens() {
           .join('')
       : '<div class="empty-state"><div class="empty-icon">👥</div><div class="empty-msg">No hay usuarios con acceso.</div></div>';
 
-    list.querySelectorAll('[data-revoke-share]').forEach(button => {
+    list.querySelectorAll('[data-revoke-share]').forEach(buttonEl => {
+      const button = buttonEl as HTMLButtonElement;
       button.addEventListener('click', async () => {
         button.disabled = true;
         try {
           await cloudApi(
-            `/api/share-tokens/${encodeURIComponent(button.dataset.revokeShare)}`,
+            `/api/share-tokens/${encodeURIComponent(button.dataset['revokeShare'] || '')}`,
             { method: 'DELETE' }
           );
           toast('Acceso revocado.', 'ok');
           await loadShareTokens();
         } catch (error: unknown) {
-          toast((error instanceof Error ? error.message : String(error)), 'err');
+          toast(getErrorMessage(error), 'err');
           button.disabled = false;
         }
       });
     });
-    list.querySelectorAll('[data-edit-permission]').forEach(select => {
-      select.dataset.previousPermission = select.value;
+
+    list.querySelectorAll('[data-edit-permission]').forEach(selectEl => {
+      const select = selectEl as HTMLSelectElement;
+      select.dataset['previousPermission'] = select.value;
       select.addEventListener('change', async () => {
-        const previous = select.dataset.previousPermission;
+        const previous = select.dataset['previousPermission'] || 'read';
         select.disabled = true;
         try {
-          await cloudApi(`/api/share-tokens/${encodeURIComponent(select.dataset.editPermission)}`, {
+          await cloudApi(`/api/share-tokens/${encodeURIComponent(select.dataset['editPermission'] || '')}`, {
             method: 'PATCH',
             body: JSON.stringify({ permission: select.value }),
           });
-          select.dataset.previousPermission = select.value;
+          select.dataset['previousPermission'] = select.value;
           toast(`Permiso actualizado: ${sharePermissionLabel(select.value)}.`, 'ok');
           await loadShareTokens();
         } catch (error: unknown) {
           select.value = previous;
           select.disabled = false;
-          toast((error instanceof Error ? error.message : String(error)), 'err');
+          toast(getErrorMessage(error), 'err');
         }
       });
     });
   } catch (error: unknown) {
-    list.innerHTML = `<div class="empty-state">${escHtml((error instanceof Error ? error.message : String(error)))}</div>`;
+    list.innerHTML = `<div class="empty-state">${escHtml(getErrorMessage(error))}</div>`;
   }
 }
 
-function renderUsers() {
+function renderUsers(): void {
   const element = $('userList');
   if (!element) return;
 
@@ -4779,35 +5087,40 @@ function renderUsers() {
   $('btnRefreshUsers')?.addEventListener('click', loadShareTokens);
 }
 
-function bindShareSettings() {
+function bindShareSettings(): void {
   if (panelPermission !== 'admin') return;
 
   $('btnCreateShare')?.addEventListener('click', async () => {
-    const button = $('btnCreateShare');
-    button.disabled = true;
+    const button = $btn('btnCreateShare');
+    if (button) button.disabled = true;
 
     try {
-      const data = await cloudApi('/api/share-tokens', {
+      const rawData = await cloudApi('/api/share-tokens', {
         method: 'POST',
         body: JSON.stringify({
-          label: $('shareLabel')?.value || '',
-          permission: $('sharePermission')?.value || 'read',
-          expires: $('shareExpiry')?.value || 'never',
+          label: $input('shareLabel')?.value || '',
+          permission: $select('sharePermission')?.value || 'read',
+          expires: $select('shareExpiry')?.value || 'never',
         }),
       });
+      const data = isRecord(rawData) ? rawData : {};
 
-      const token = data.token;
+      const token = typeof data['token'] === 'string' ? data['token'] : '';
       let copied = false;
       try {
-        if (navigator.clipboard?.writeText) {
+        if (navigator.clipboard?.writeText && token) {
           await navigator.clipboard.writeText(token);
           copied = true;
         }
       } catch {}
 
-      $('shareCreatedToken').textContent = token;
-      $('shareCreatedBox').style.display = '';
-      $('shareLabel').value = '';
+      const tokenEl = $('shareCreatedToken');
+      const boxEl = $('shareCreatedBox');
+      const labelInput = $input('shareLabel');
+
+      if (tokenEl) tokenEl.textContent = token;
+      if (boxEl) boxEl.style.display = '';
+      if (labelInput) labelInput.value = '';
       toast(
         copied
           ? 'Token creado y copiado al portapapeles.'
@@ -4816,9 +5129,9 @@ function bindShareSettings() {
       );
       await loadShareTokens();
     } catch (error: unknown) {
-      toast((error instanceof Error ? error.message : String(error)), 'err');
+      toast(getErrorMessage(error), 'err');
     } finally {
-      button.disabled = false;
+      if (button) button.disabled = false;
     }
   });
 
@@ -4839,7 +5152,13 @@ function bindShareSettings() {
    15. BACKUPS
    ══════════════════════════════════════════════ */
 
-async function loadBackups(options = {}) {
+interface BackupSummaryItem {
+  name?: string;
+  date?: string;
+  sizeMb?: string | number;
+}
+
+async function loadBackups(options: SoftLoadOptions = {}): Promise<void> {
   const container = $('backupList');
 
   if (!container) return;
@@ -4847,27 +5166,30 @@ async function loadBackups(options = {}) {
   const soft = resolveSoftLoad(options, container);
   if (!soft) {
     container.innerHTML = `
-    <div class="empty-state">
-      <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
-      <div class="empty-msg">Cargando copias de seguridad...</div>
-    </div>
-  `;
+      <div class="empty-state">
+        <div style="animation:spin 1s linear infinite;font-size:28px">⟳</div>
+        <div class="empty-msg">Cargando copias de seguridad...</div>
+      </div>
+    `;
   }
 
-  const data = await cachedApi('backups', '/api/backups', undefined, VIEW_CACHE_TTL_MS, Boolean(options.force));
+  const rawData = await cachedApi('backups', '/api/backups', undefined, VIEW_CACHE_TTL_MS, Boolean(options.force));
+  const data = isRecord(rawData) ? rawData : {};
 
-  if (!data.ok) {
-    container.innerHTML = `<div class="empty-state"><div class="empty-msg">${escHtml(data.error)}</div></div>`;
+  if (!data['ok']) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-msg">${escHtml(data['error'])}</div></div>`;
     return;
   }
 
-  const backups = data.backups || [];
+  const backups: BackupSummaryItem[] = Array.isArray(data['backups'])
+    ? (data['backups'] as BackupSummaryItem[])
+    : [];
   const owner = isOwnerSession();
 
   container.innerHTML = backups.length
     ? backups
         .map(
-          backup => `
+          (backup: BackupSummaryItem) => `
         <div class="backup-row">
           <span class="bk-icon">🗄️</span>
           <span class="bk-name">
@@ -4888,21 +5210,24 @@ async function loadBackups(options = {}) {
         .join('')
     : '<div class="empty-state"><div class="empty-msg">No hay copias de seguridad todavía.</div></div>';
 
-  container.querySelectorAll('[data-download-backup]').forEach(button => {
+  container.querySelectorAll('[data-download-backup]').forEach(buttonEl => {
+    const button = buttonEl as HTMLElement;
     button.addEventListener('click', () =>
-      downloadBackup(button.dataset.downloadBackup)
+      downloadBackup(button.dataset['downloadBackup'] || '')
     );
   });
 
-  container.querySelectorAll('[data-restore-backup]').forEach(button => {
+  container.querySelectorAll('[data-restore-backup]').forEach(buttonEl => {
+    const button = buttonEl as HTMLElement;
     button.addEventListener('click', () =>
-      restoreBackup(button.dataset.restoreBackup)
+      restoreBackup(button.dataset['restoreBackup'] || '')
     );
   });
 
-  container.querySelectorAll('[data-delete-backup]').forEach(button => {
+  container.querySelectorAll('[data-delete-backup]').forEach(buttonEl => {
+    const button = buttonEl as HTMLElement;
     button.addEventListener('click', async () => {
-      const name = button.dataset.deleteBackup;
+      const name = button.dataset['deleteBackup'] || '';
 
       if (
         !confirm(
@@ -4912,12 +5237,13 @@ async function loadBackups(options = {}) {
         return;
       }
 
-      const result = await api(`/api/backups/${encodeURIComponent(name)}`, {
+      const rawResult = await api(`/api/backups/${encodeURIComponent(name)}`, {
         method: 'DELETE',
       });
+      const result = isRecord(rawResult) ? rawResult : {};
 
-      if (!result.ok) {
-        toast(`❌ ${result.error}`, 'err');
+      if (!result['ok']) {
+        toast(`❌ ${result['error']}`, 'err');
         return;
       }
 
