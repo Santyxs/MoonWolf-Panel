@@ -165,14 +165,42 @@ interface DeleteItem {
 }
 
 
+interface UploadFile extends File {
+  customRelativePath?: string;
+}
+
+interface UploadChunkResponse {
+  ok?: boolean;
+  error?: string;
+  status?: number;
+  isFileConflict?: boolean;
+  isRateLimited?: boolean;
+}
+
+interface UploadError extends Error {
+  status?: number;
+  isFileConflict?: boolean;
+  isRateLimited?: boolean;
+  isCancelled?: boolean;
+}
+
 interface UploadState {
-  finished?: boolean;
-  cancelled?: boolean;
-  paused?: boolean;
-  status?: string;
-  completedFiles?: number;
-  totalFiles?: number;
-  resumeUpload?: (() => void) | null;
+  finished: boolean;
+  cancelled: boolean;
+  paused: boolean;
+  status: string;
+  completedFiles: number;
+  totalFiles: number;
+  totalBytes: number;
+  doneBytes: number;
+  startedAt: number;
+  currentFile?: string;
+  currentFileSize?: number;
+  currentFileDone?: number;
+  resumeUpload: (() => void) | null;
+  rememberConflictChoice?: string | null;
+  conflictQueue?: Promise<unknown>;
+  activeFiles?: number;
   [key: string]: unknown;
 }
 
@@ -3144,14 +3172,14 @@ async function uploadOneFile(file: UploadFile, relativePath: string, progressSta
     await waitForUploadResume(progressState);
     const data = await postUploadChunk(uploadId, target, 0, totalSize, new Uint8Array(), true, overwrite);
     if (!data?.ok) {
-      const uploadError = new Error(data?.error || `No se pudo subir ${file.name}`);
+      const uploadError: UploadError = new Error(data?.error || `No se pudo subir ${file.name}`);
       uploadError.status = data?.status;
       if (data?.status === 409 || data?.isFileConflict || /ya existe un archivo/i.test(uploadError.message)) {
         uploadError.isFileConflict = true;
       }
       throw uploadError;
     }
-    progressState.completedFiles += 1;
+    progressState.completedFiles = (progressState.completedFiles ?? 0) + 1;
     progressState.status = `Subiendo ${progressState.completedFiles}/${progressState.totalFiles}`;
     updateUploadProgress(progressState);
     return;
@@ -3161,14 +3189,14 @@ async function uploadOneFile(file: UploadFile, relativePath: string, progressSta
   let nextChunk = 0;
   let completedChunks = 0;
 
-  const uploadChunkInner = async chunkIndex => {
+  const uploadChunkInner = async (chunkIndex: number): Promise<void> => {
     const offset = chunkIndex * FILE_UPLOAD_CHUNK_SIZE;
     const end = Math.min(offset + FILE_UPLOAD_CHUNK_SIZE, totalSize);
     const buffer = await file.slice(offset, end).arrayBuffer();
     const bytes = new Uint8Array(buffer);
 
-    let data;
-    let lastError;
+    let data: UploadChunkResponse | undefined;
+    let lastError: unknown;
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await waitForUploadResume(progressState);
@@ -3185,7 +3213,7 @@ async function uploadOneFile(file: UploadFile, relativePath: string, progressSta
         );
 
         if (!data?.ok) {
-          const uploadError = new Error(data?.error || `No se pudo subir ${file.name}`);
+          const uploadError: UploadError = new Error(data?.error || `No se pudo subir ${file.name}`);
           uploadError.status = data?.status;
           if (data?.status === 409 || data?.isFileConflict || /ya existe un archivo/i.test(uploadError.message)) {
             uploadError.isFileConflict = true;
@@ -3201,8 +3229,9 @@ async function uploadOneFile(file: UploadFile, relativePath: string, progressSta
       } catch (error: unknown) {
         lastError = error;
         if (attempt < 4) {
-          const delay = error?.isRateLimited ? (1500 * (attempt + 1)) : (500 * (attempt + 1));
-          if (error?.isRateLimited) {
+          const rateLimited = isRecord(error) && Boolean(error['isRateLimited']);
+          const delay = rateLimited ? (1500 * (attempt + 1)) : (500 * (attempt + 1));
+          if (rateLimited) {
             progressState.status = `Esperando por límite de peticiones (${attempt + 1}/5)…`;
             updateUploadProgress(progressState);
           }
@@ -3217,12 +3246,12 @@ async function uploadOneFile(file: UploadFile, relativePath: string, progressSta
 
     completedChunks += 1;
     progressState.currentFileDone = Math.min(totalSize, (progressState.currentFileDone || 0) + bytes.length);
-    progressState.doneBytes += bytes.length;
-    progressState.status = `Subiendo ${progressState.completedFiles + 1}/${progressState.totalFiles} · ${completedChunks}/${chunkCount} bloques`;
+    progressState.doneBytes = (Number(progressState.doneBytes) || 0) + bytes.length;
+    progressState.status = `Subiendo ${(progressState.completedFiles ?? 0) + 1}/${progressState.totalFiles} · ${completedChunks}/${chunkCount} bloques`;
     updateUploadProgress(progressState);
   };
 
-  const uploadChunk = async chunkIndex => {
+  const uploadChunk = async (chunkIndex: number): Promise<void> => {
     await acquireUploadSlot();
     try {
       await uploadChunkInner(chunkIndex);
@@ -3231,7 +3260,7 @@ async function uploadOneFile(file: UploadFile, relativePath: string, progressSta
     }
   };
 
-  const worker = async () => {
+  const worker = async (): Promise<void> => {
     while (true) {
       await waitForUploadResume(progressState);
       if (progressState.cancelled) throw uploadCancelledError();
@@ -3248,12 +3277,20 @@ async function uploadOneFile(file: UploadFile, relativePath: string, progressSta
   );
 
   progressState.currentFileDone = totalSize;
-  progressState.completedFiles += 1;
+  progressState.completedFiles = (progressState.completedFiles ?? 0) + 1;
   progressState.status = `Subiendo ${progressState.completedFiles}/${progressState.totalFiles}`;
   updateUploadProgress(progressState);
 }
 
-function postUploadChunk(uploadId: string, target: string, offset: number, totalSize: number, bytes: Uint8Array, final: boolean, overwrite: boolean): Promise<unknown> {
+function postUploadChunk(
+  uploadId: string,
+  target: string,
+  offset: number,
+  totalSize: number,
+  bytes: Uint8Array,
+  final: boolean,
+  overwrite: boolean
+): Promise<UploadChunkResponse> {
   const params = new URLSearchParams({
     uploadId,
     path: target,
@@ -3268,28 +3305,34 @@ function postUploadChunk(uploadId: string, target: string, offset: number, total
     body: bytes,
   }).then(result => {
     const status = result?.status || 500;
-    let data = result?.data;
+    let parsed: unknown = result?.data;
 
     if (hasResultBody(result)) {
       const bytesResult = decodeResultBody(result);
-      const text = new TextDecoder().decode(bytesResult);
+      const text = new TextDecoder().decode(bytesResult ?? new Uint8Array(0));
       try {
-        data = JSON.parse(text);
+        parsed = JSON.parse(text);
       } catch {
-        data = null;
+        parsed = null;
       }
     }
 
-    if (!data || typeof data !== 'object') {
-      data = { ok: Boolean(result?.ok), status, error: 'Respuesta vacía.' };
-    }
+    const baseObj: Record<string, unknown> = isRecord(parsed)
+      ? parsed
+      : { ok: Boolean(result?.ok), status, error: 'Respuesta vacía.' };
 
-    return { ...data, status };
+    return {
+      ...(baseObj as UploadChunkResponse),
+      status,
+    };
   });
 }
 
-async function uploadSelectedFiles(fileList: ArrayLike<UploadFile> | UploadFile[] | FileList | null | undefined): Promise<void> {
-  const files = Array.from(fileList || {}).filter(file => file && typeof file.size === 'number');
+async function uploadSelectedFiles(
+  fileList: ArrayLike<UploadFile> | UploadFile[] | FileList | null | undefined
+): Promise<void> {
+  const rawList: UploadFile[] = fileList ? Array.from(fileList) : [];
+  const files = rawList.filter(file => file && typeof file.size === 'number');
 
   if (!files.length) return;
   if (!isOwnerSession()) {
@@ -3312,10 +3355,13 @@ async function uploadSelectedFiles(fileList: ArrayLike<UploadFile> | UploadFile[
     doneBytes: 0,
     startedAt: Date.now(),
     status: `Subiendo 1/${files.length}`,
-    paused: false, cancelled: false, finished: false, resumeUpload: null,
+    paused: false,
+    cancelled: false,
+    finished: false,
+    resumeUpload: null,
     rememberConflictChoice: null,
-    conflictQueue: [],
-    activeFiles: [],
+    conflictQueue: Promise.resolve(),
+    activeFiles: 0,
   };
   activeUploadState = progressState;
   updateUploadProgress(progressState);
@@ -3323,11 +3369,13 @@ async function uploadSelectedFiles(fileList: ArrayLike<UploadFile> | UploadFile[
   try {
     let nextFileIndex = 0;
     progressState.conflictQueue = Promise.resolve();
-    const uploadFileWithConflict = async file => {
+    const uploadFileWithConflict = async (file: UploadFile): Promise<void> => {
       const relative = file.customRelativePath || file.webkitRelativePath || file.name;
-      progressState.activeFiles = (progressState.activeFiles || 0) + 1;
-      const parallelLabel = progressState.activeFiles > 1 ? ` · ${progressState.activeFiles} simultáneos` : '';
-      progressState.status = `Subiendo ${Math.min(progressState.completedFiles + 1, progressState.totalFiles)}/${progressState.totalFiles}${parallelLabel}`;
+      progressState.activeFiles = (Number(progressState.activeFiles) || 0) + 1;
+      const parallelLabel = (Number(progressState.activeFiles) || 0) > 1
+        ? ` · ${progressState.activeFiles} simultáneos`
+        : '';
+      progressState.status = `Subiendo ${Math.min((progressState.completedFiles ?? 0) + 1, progressState.totalFiles)}/${progressState.totalFiles}${parallelLabel}`;
       try {
         try {
           await uploadOneFile(file, relative, progressState, false);
@@ -3335,21 +3383,26 @@ async function uploadSelectedFiles(fileList: ArrayLike<UploadFile> | UploadFile[
           if (!isFileConflict(error)) throw error;
           let choice = progressState.rememberConflictChoice;
           if (!choice) {
-            const prompt = progressState.conflictQueue.then(() => askFileConflict(relative));
-            progressState.conflictQueue = prompt.catch(() => ({ choice: 'cancel', applyAll: false }));
-            const res = await prompt;
+            const queuePromise: Promise<unknown> = progressState.conflictQueue ?? Promise.resolve();
+            const promptPromise = queuePromise.then(() => askFileConflict(relative));
+            progressState.conflictQueue = promptPromise.catch(() => ({ choice: 'cancel', applyAll: false }));
+            const res = await promptPromise;
             choice = res.choice;
             if (res.applyAll && (choice === 'replace' || choice === 'keep' || choice === 'numbered')) {
               progressState.rememberConflictChoice = choice;
             }
           }
           if (choice === 'keep') {
-            progressState.completedFiles += 1;
+            progressState.completedFiles = (progressState.completedFiles ?? 0) + 1;
             progressState.status = `Omitiendo ${progressState.completedFiles}/${progressState.totalFiles}`;
             updateUploadProgress(progressState);
             return;
           }
-          if (choice === 'cancel') throw Object.assign(new Error('Subida cancelada por conflicto de archivo'), { isCancelled: true });
+          if (choice === 'cancel') {
+            const cancelErr: UploadError = new Error('Subida cancelada por conflicto de archivo');
+            cancelErr.isCancelled = true;
+            throw cancelErr;
+          }
 
           if (choice === 'numbered') {
             let counter = 1;
@@ -3377,10 +3430,10 @@ async function uploadSelectedFiles(fileList: ArrayLike<UploadFile> | UploadFile[
           await uploadOneFile(file, relative, progressState, true);
         }
       } finally {
-        progressState.activeFiles = Math.max(0, (progressState.activeFiles || 1) - 1);
+        progressState.activeFiles = Math.max(0, (Number(progressState.activeFiles) || 1) - 1);
       }
     };
-    const worker = async () => {
+    const worker = async (): Promise<void> => {
       while (true) {
         const fileIndex = nextFileIndex++;
         if (fileIndex >= files.length) return;
@@ -3391,13 +3444,21 @@ async function uploadSelectedFiles(fileList: ArrayLike<UploadFile> | UploadFile[
     progressState.doneBytes = progressState.totalBytes;
     progressState.completedFiles = progressState.totalFiles;
     updateUploadProgress(progressState);
-    const totalSeconds = (Date.now() - progressState.startedAt) / 1000;
+    const startedAtNum = Number(progressState.startedAt) || Date.now();
+    const totalSeconds = (Date.now() - startedAtNum) / 1000;
     finishUploadProgress(`Subida completada en ${formatDuration(totalSeconds)}`);
     toast(`✅ ${files.length} ${files.length === 1 ? 'archivo subido' : 'archivos subidos'} correctamente`, 'ok');
     populateFiles(currentDir);
   } catch (error: unknown) {
-    finishUploadProgress(error.isCancelled ? 'Subida cancelada' : 'Subida interrumpida', true, (error instanceof Error ? error.message : String(error)) || 'Error desconocido', error.isCancelled);
-    toast(`❌ ${error.message}`, 'err');
+    const isCancelled = isRecord(error) && Boolean(error['isCancelled']);
+    const errMsg = getErrorMessage(error, 'Error desconocido');
+    finishUploadProgress(
+      isCancelled ? 'Subida cancelada' : 'Subida interrumpida',
+      true,
+      errMsg,
+      isCancelled
+    );
+    toast(`❌ ${errMsg}`, 'err');
   }
 }
 
@@ -3665,7 +3726,8 @@ async function openFile(rel: string): Promise<void> {
     await ensureCodeMirror(mode);
 
     const cmStatic = window.CodeMirror;
-    const textarea = $input('mwEditorArea');
+    const textareaEl = $('mwEditorArea');
+    const textarea = textareaEl instanceof HTMLTextAreaElement ? textareaEl : null;
 
     if (cmStatic && typeof cmStatic.fromTextArea === 'function' && textarea) {
       editor = cmStatic.fromTextArea(textarea, {
