@@ -4,25 +4,33 @@
    0. AMBIENT (Socket.IO · CodeMirror)
    ══════════════════════════════════════════════ */
 
+type SocketHandler = (...args: unknown[]) => void;
+
 interface SocketLike {
-  on(event: string, handler: (...args: unknown[]) => void): SocketLike;
-  once(event: string, handler: (...args: unknown[]) => void): SocketLike;
-  off(event: string, handler?: (...args: unknown[]) => void): SocketLike;
+  on(event: string, handler: SocketHandler): SocketLike;
+  once(event: string, handler: SocketHandler): SocketLike;
+  off(event: string, handler?: SocketHandler): SocketLike;
   emit(event: string, ...args: unknown[]): SocketLike;
+  connect(): SocketLike;
   disconnect(): SocketLike;
   connected: boolean;
   id?: string;
+  auth?: Record<string, unknown>;
+  io?: { engine?: { transport?: { name?: string } } };
 }
 
 interface SocketIoOptions {
   path?: string;
   transports?: string[];
-  auth?: Record<string, unknown>;
+  auth?:
+    | Record<string, unknown>
+    | ((callback: (data: Record<string, unknown>) => void) => void);
   reconnection?: boolean;
   reconnectionAttempts?: number;
   reconnectionDelay?: number;
   timeout?: number;
   forceNew?: boolean;
+  autoConnect?: boolean;
   [key: string]: unknown;
 }
 
@@ -86,10 +94,51 @@ interface ViewCacheEntry {
   data: unknown;
 }
 
+
 interface SoftLoadOptions {
   soft?: boolean;
   force?: boolean;
 }
+
+interface ConsoleLogEntry {
+  line?: string;
+  type?: string;
+  ts?: number | string;
+  [key: string]: unknown;
+}
+
+interface FileListItem {
+  name: string;
+  type?: string;
+  size?: number | string;
+  date?: string;
+  path?: string;
+  mtime?: number | string;
+  [key: string]: unknown;
+}
+
+interface FilesApiResponse {
+  ok?: boolean;
+  error?: string;
+  items?: FileListItem[];
+  dir?: string;
+  [key: string]: unknown;
+}
+
+function isFilesApiResponse(value: unknown): value is FilesApiResponse {
+  return isRecord(value);
+}
+
+interface ConflictChoice {
+  choice: 'overwrite' | 'skip' | 'cancel' | string;
+  applyAll: boolean;
+}
+
+interface DeleteItem {
+  path: string;
+  [key: string]: unknown;
+}
+
 
 interface UploadState {
   finished?: boolean;
@@ -107,6 +156,29 @@ interface ActivityEntry {
   level?: string;
   icon?: string;
   time?: string;
+  [key: string]: unknown;
+}
+
+interface RpcInit {
+  method?: string;
+  headers?: HeadersInit;
+  body?: unknown;
+  onProgress?: (progress: unknown) => void;
+  onHeaders?: (headers: unknown) => void;
+  onChunk?: (chunk: Uint8Array) => void;
+  signal?: AbortSignal;
+  [key: string]: unknown;
+}
+
+interface RpcResult {
+  id?: string | null;
+  ok?: boolean;
+  status?: number;
+  contentType?: string;
+  bodyBase64?: string;
+  bodyBytes?: Uint8Array;
+  data?: unknown;
+  error?: string;
   [key: string]: unknown;
 }
 
@@ -130,6 +202,41 @@ interface StartupConfig {
   javaOverridePath?: string;
   extraArgs?: string;
   [key: string]: unknown;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function toIceServers(value: unknown): RTCIceServer[] {
+  if (!Array.isArray(value)) return [];
+  const servers: RTCIceServer[] = [];
+  for (const entry of value) {
+    if (typeof entry === 'string' && entry) {
+      servers.push({ urls: entry });
+      continue;
+    }
+    if (!isRecord(entry)) continue;
+    const urls = entry['urls'];
+    if (typeof urls === 'string' || (Array.isArray(urls) && urls.every(u => typeof u === 'string'))) {
+      const server: RTCIceServer = { urls: urls as string | string[] };
+      const username = entry['username'];
+      const credential = entry['credential'];
+      if (typeof username === 'string') server.username = username;
+      if (typeof credential === 'string') server.credential = credential;
+      servers.push(server);
+    }
+  }
+  return servers;
+}
+
+function isSocketPayload(value: unknown): value is Record<string, unknown> {
+  return isRecord(value);
+}
+
+
+function isStartupResponse(value: unknown): value is StartupResponse {
+  return isRecord(value);
 }
 
 interface StartupResponse extends ApiResult {
@@ -220,7 +327,7 @@ let panelKind: PanelKind =
 let pairingCode = '';
 
 let requestSequence = 0;
-let connectTimer: ReturnType<typeof setTimeout> | null = null;
+let connectTimer: ReturnType<typeof setTimeout> | undefined;
 let reconnectDelay = 1000;
 
 let currentStatus: ServerStatus = 'offline';
@@ -239,7 +346,7 @@ let currentPlugin: unknown = null;
 let pluginSource = 'all';
 let priceFilter = 'all';
 
-const pending: Map<string, unknown> = new Map();
+const pending: Map<string, (result: RpcResult) => void> = new Map();
 const activities: ActivityEntry[] = [];
 
 let lastAgentActivityState: unknown = null;
@@ -322,6 +429,14 @@ const PERMISSION_RANK: Record<Permission, number> = {
   control: 2,
   admin: 3,
 };
+
+function asPermission(value: unknown): Permission {
+  return value === 'read' || value === 'control' || value === 'admin' ? value : 'admin';
+}
+
+function asPanelKind(value: unknown): PanelKind {
+  return value === 'share' ? 'share' : 'owner';
+}
 
 function hasPermission(required: Permission | string): boolean {
   const have = PERMISSION_RANK[panelPermission as Permission] || 0;
@@ -452,7 +567,7 @@ async function ensureCodeMirror(mode?: string): Promise<boolean> {
    5. LOGIN Y SESIÓN
    ══════════════════════════════════════════════ */
 
-function formatLoginCode(raw) {
+function formatLoginCode(raw: unknown): string {
   const clean = String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
   if (!clean) return '';
@@ -631,13 +746,15 @@ function ensureLoginGate() {
 
   document.body.prepend(gate);
 
-  $('loginPassword').addEventListener('input', event => {
-    event.target.value = formatLoginCode(event.target.value);
+  const loginPasswordInput = $input('loginPassword');
+  loginPasswordInput?.addEventListener('input', event => {
+    const target = event.target as HTMLInputElement | null;
+    if (target) target.value = formatLoginCode(target.value);
   });
 
-  $('btnLogin').addEventListener('click', attemptLogin);
+  $('btnLogin')?.addEventListener('click', attemptLogin);
 
-  $('loginPassword').addEventListener('keydown', event => {
+  loginPasswordInput?.addEventListener('keydown', event => {
     if (event.key === 'Enter') {
       attemptLogin();
     }
@@ -651,26 +768,28 @@ function showApp() {
   document.querySelector('.app')?.classList.remove('locked');
 }
 
-function showLogin(message = '') {
+function showLogin(errorMessage: string = ''): void {
   ensureLoginGate();
 
   $('loginGate')?.classList.remove('hidden');
   document.querySelector('.app')?.classList.add('locked');
 
-  if ($('mwCloudError')) {
-    $('mwCloudError').textContent = message;
+  const errorBox = $('mwCloudError');
+  if (errorBox) {
+    errorBox.textContent = errorMessage;
   }
 
-  if ($('loginPassword')) {
-    $('loginPassword').value = pairingCode;
+  const passwordInput = $input('loginPassword');
+  if (passwordInput) {
+    passwordInput.value = pairingCode;
   }
 }
 
-function setSession(session, id, permission = 'admin', kind = 'owner') {
+function setSession(session: string, id: string, permission: unknown = 'admin', kind: unknown = 'owner'): void {
   panelSession = String(session || '');
   agentId = String(id || '');
-  panelPermission = String(permission || 'admin');
-  panelKind = String(kind || 'owner');
+  panelPermission = asPermission(permission);
+  panelKind = asPanelKind(kind);
 
   if (panelSession) {
     sessionStorage.setItem(SESSION_KEY, panelSession);
@@ -694,36 +813,36 @@ function clearSession() {
   pairingCode = '';
 }
 
-function updateSessionMetadata(permission, kind) {
-  panelPermission = String(permission || panelPermission || 'admin');
-  panelKind = String(kind || panelKind || 'owner');
+function updateSessionMetadata(permission: unknown, kind: unknown): void {
+  panelPermission = asPermission(permission || panelPermission || 'admin');
+  panelKind = asPanelKind(kind || panelKind || 'owner');
   sessionStorage.setItem(PERMISSION_KEY, panelPermission);
   sessionStorage.setItem(SESSION_KIND_KEY, panelKind);
 }
 
-async function attemptLogin() {
-  const input = $('loginPassword');
-  const button = $('btnLogin');
+async function attemptLogin(): Promise<void> {
+  const input = $input('loginPassword');
+  const button = $btn('btnLogin') || $('btnLogin');
+  const errorBox = $('mwCloudError');
 
   const code = String(input?.value || '')
     .trim()
     .toUpperCase();
 
   if (!PAIRING_CODE_RE.test(code) && !SHARE_TOKEN_RE.test(code)) {
-    if ($('mwCloudError')) {
-      $('mwCloudError').textContent =
+    if (errorBox) {
+      errorBox.textContent =
         'Código inválido. Usa MW-PXXX-XXXX o un token MW-SHARE-...';
     }
-
     return;
   }
 
-  button.disabled = true;
-  button.textContent = 'Emparejando...';
-
-  if ($('mwCloudError')) {
-    $('mwCloudError').textContent = '';
+  if (button && 'disabled' in button) {
+    (button as HTMLButtonElement).disabled = true;
+    button.textContent = 'Emparejando...';
   }
+
+  if (errorBox) errorBox.textContent = '';
 
   pairingCode = code;
 
@@ -734,10 +853,15 @@ async function attemptLogin() {
       body: JSON.stringify({ code }),
     });
 
-    const data = await response.json();
+    const data = (await response.json()) as ApiResult & {
+      session?: string;
+      agent?: { id?: string };
+      permission?: string;
+      kind?: string;
+    };
 
     if (!response.ok || !data.ok || !data.session || !data.agent?.id) {
-      throw new Error(data.error || 'No se pudo emparejar el panel.');
+      throw new Error(String(data.error || 'No se pudo emparejar el panel.'));
     }
 
     setSession(
@@ -750,18 +874,15 @@ async function attemptLogin() {
 
     await connectCloud(true);
 
-    if ($('mwCloudError')) {
-      $('mwCloudError').textContent = '';
-    }
-  } catch (error) {
+    if (errorBox) errorBox.textContent = '';
+  } catch (error: unknown) {
     pairingCode = '';
-
-    if ($('mwCloudError')) {
-      $('mwCloudError').textContent = error.message;
+    const message = error instanceof Error ? (error instanceof Error ? error.message : String(error)) : String(error);
+    if (errorBox) errorBox.textContent = message;
+    if (button) {
+      button.textContent = 'CONECTAR SERVIDOR';
+      if ('disabled' in button) (button as HTMLButtonElement).disabled = false;
     }
-
-    button.textContent = 'CONECTAR SERVIDOR';
-    button.disabled = false;
   }
 }
 
@@ -769,7 +890,7 @@ async function attemptLogin() {
    6. CONEXIÓN CLOUD (Socket.IO)
    ══════════════════════════════════════════════ */
 
-function clearPending(errorMessage) {
+function clearPending(errorMessage?: string): void {
   for (const [, resolve] of pending) {
     resolve({
       id: null,
@@ -785,7 +906,7 @@ function clearPending(errorMessage) {
   pending.clear();
 }
 
-async function connectCloud(manual = false) {
+async function connectCloud(manual: boolean = false): Promise<void> {
   clearTimeout(connectTimer);
 
   if (!panelSession || !agentId) {
@@ -801,6 +922,10 @@ async function connectCloud(manual = false) {
 
   rpcBinarySupported = false;
   await ensureSocketIo();
+  const socketIo = window.io || io;
+  if (typeof socketIo !== 'function') {
+    throw new Error('Socket.IO no está disponible.');
+  }
 
   if (cloudSocket) {
     try {
@@ -812,17 +937,16 @@ async function connectCloud(manual = false) {
   updateAgentUi();
   updateAgentStatusBadges();
 
-  return new Promise((resolve, reject) => {
+  return new Promise<void>((resolve, reject) => {
     let settled = false;
 
-    const finish = (fn, value) => {
+    const finish = (fn: (value?: unknown) => void, value?: unknown) => {
       if (settled) return;
-
       settled = true;
       fn(value);
     };
 
-    cloudSocket = io(CLOUD_URL, {
+    cloudSocket = socketIo(CLOUD_URL, {
       autoConnect: false,
       path: CLOUD_PATH,
       transports: ['websocket'],
@@ -847,7 +971,7 @@ async function connectCloud(manual = false) {
       updateAgentUi();
       updateAgentStatusBadges();
 
-      finish(resolve);
+      finish(() => resolve());
     });
 
     cloudSocket.once('connect_error', error => {
@@ -869,49 +993,51 @@ async function connectCloud(manual = false) {
     });
 
     cloudSocket.on('direct_config', data => {
-      if (Array.isArray(data?.iceServers) && data.iceServers.length) {
-        // Compatibilidad con servidores antiguos que enviaban URLs como cadenas.
-        const iceServers = data.iceServers
-          .map(server => typeof server === 'string' ? { urls: server } : server)
-          .filter(server => server && (typeof server.urls === 'string' || Array.isArray(server.urls)));
-        if (!iceServers.length) return;
+      if (!isSocketPayload(data)) return;
+      const iceServers = toIceServers(data['iceServers']);
+      if (!iceServers.length) return;
 
-        const changed = JSON.stringify(direct.iceServers) !== JSON.stringify(iceServers);
-        direct.iceServers = iceServers;
-        // Si aún no hay canal y nos llegaron servidores ICE, reintentar con ellos.
-        if (changed && !directReady() && agentOnline) {
-          closeDirectLink(false);
-          startDirectLink();
-        }
+      const changed = JSON.stringify(direct.iceServers) !== JSON.stringify(iceServers);
+      direct.iceServers = iceServers;
+      if (changed && !directReady() && agentOnline) {
+        closeDirectLink(false);
+        void startDirectLink();
       }
     });
 
     cloudSocket.on('direct_signal', async msg => {
       const pc = direct.pc;
-
-      if (!pc) return;
+      if (!pc || !isSocketPayload(msg)) return;
 
       try {
-        if (msg?.type === 'answer') {
-          await pc.setRemoteDescription({ type: 'answer', sdp: String(msg.sdp || '') });
-        } else if (msg?.type === 'candidate' && msg.candidate) {
-          await pc.addIceCandidate({ candidate: msg.candidate, sdpMid: msg.sdpMid });
-        } else if (msg?.type === 'unavailable') {
+        const type = msg['type'];
+        if (type === 'answer') {
+          const sdp = typeof msg['sdp'] === 'string' ? msg['sdp'] : '';
+          await pc.setRemoteDescription({ type: 'answer', sdp });
+        } else if (type === 'candidate' && typeof msg['candidate'] === 'string') {
+          const sdpMid = typeof msg['sdpMid'] === 'string' ? msg['sdpMid'] : undefined;
+          await pc.addIceCandidate({ candidate: msg['candidate'], sdpMid });
+        } else if (type === 'unavailable') {
           closeDirectLink(true);
         }
-      } catch {}
+      } catch {
+        /* señal ICE inválida: se reintentará el canal */
+      }
     });
 
     cloudSocket.on('cloud_ready', data => {
-      setAgentOnline(Boolean(data?.agentOnline));
+      const online = isSocketPayload(data) ? Boolean(data['agentOnline']) : false;
+      setAgentOnline(online);
     });
 
     cloudSocket.on('agent_status', data => {
-      setAgentOnline(Boolean(data?.online));
+      const online = isSocketPayload(data) ? Boolean(data['online']) : false;
+      setAgentOnline(online);
     });
 
     cloudSocket.on('session_info', data => {
-      updateSessionMetadata(data?.permission, data?.kind);
+      if (!isSocketPayload(data)) return;
+      updateSessionMetadata(data['permission'], data['kind']);
       renderSettings();
       renderUsers();
     });
@@ -1007,14 +1133,27 @@ async function connectCloud(manual = false) {
   });
 }
 
-async function cloudApi(pathname, init = {}) {
+async function cloudApi(pathname: string, init: RpcInit = {}): Promise<ApiResult> {
   const headers = new Headers(init.headers || {});
   headers.set('Authorization', `Bearer ${panelSession}`);
-  if (init.body !== undefined && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json');
+  let body: BodyInit | undefined;
+  if (init.body !== undefined) {
+    if (typeof init.body === 'string' || init.body instanceof Blob || init.body instanceof FormData || init.body instanceof URLSearchParams || init.body instanceof ArrayBuffer || ArrayBuffer.isView(init.body)) {
+      body = init.body as BodyInit;
+    } else {
+      if (!headers.has('Content-Type')) {
+        headers.set('Content-Type', 'application/json');
+      }
+      body = JSON.stringify(init.body);
+    }
   }
 
-  const response = await fetch(pathname, { ...init, headers });
+  const response = await fetch(pathname, {
+    method: init.method,
+    headers,
+    body,
+    signal: init.signal,
+  });
   let data = null;
 
   try {
@@ -1028,7 +1167,7 @@ async function cloudApi(pathname, init = {}) {
   return data;
 }
 
-function rpcCloudLegacy(pathname, init = {}) {
+function rpcCloudLegacy(pathname: string, init: RpcInit = {}): Promise<RpcResult> {
   if (!cloudSocket?.connected) {
     return Promise.reject(new Error('MoonWolf Cloud no está conectado.'));
   }
@@ -1053,8 +1192,8 @@ function rpcCloudLegacy(pathname, init = {}) {
     });
 
     try {
-      cloudSocket.emit('rpc', request);
-    } catch (error) {
+      cloudSocket?.emit('rpc', request);
+    } catch (error: unknown) {
       clearTimeout(timeout);
       pending.delete(id);
       reject(error);
@@ -1065,7 +1204,7 @@ function rpcCloudLegacy(pathname, init = {}) {
 const RPC_BINARY_MAGIC = new Uint8Array([0x4d, 0x57, 0x52, 0x31]);
 const RPC_BINARY_MAX_HEADER = 64 * 1024;
 
-function encodeRpcBinaryPacket(header, body) {
+function encodeRpcBinaryPacket(header: unknown, body: Uint8Array): Uint8Array {
   const headerBytes = new TextEncoder().encode(JSON.stringify(header));
   if (!headerBytes.length || headerBytes.length > RPC_BINARY_MAX_HEADER) {
     throw new Error('Cabecera RPC demasiado grande.');
@@ -1079,7 +1218,7 @@ function encodeRpcBinaryPacket(header, body) {
   return packet;
 }
 
-function decodeRpcBinaryPacket(data) {
+function decodeRpcBinaryPacket(data: ArrayBuffer | Uint8Array | ArrayBufferView): { header: RpcResult; body: Uint8Array } | null {
   let bytes;
   if (data instanceof ArrayBuffer) {
     bytes = new Uint8Array(data);
@@ -1107,7 +1246,7 @@ function decodeRpcBinaryPacket(data) {
   }
 }
 
-function rpcCloudBinary(pathname, init = {}) {
+function rpcCloudBinary(pathname: string, init: RpcInit = {}): Promise<RpcResult> {
   if (!cloudSocket?.connected) {
     return Promise.reject(new Error('MoonWolf Cloud no está conectado.'));
   }
@@ -1146,7 +1285,7 @@ function rpcCloudBinary(pathname, init = {}) {
       contentType,
       hasBody,
     }, body);
-  } catch (error) {
+  } catch (error: unknown) {
     return Promise.reject(error);
   }
 
@@ -1163,7 +1302,7 @@ function rpcCloudBinary(pathname, init = {}) {
 
     try {
       cloudSocket.emit('rpc_binary', packet);
-    } catch (error) {
+    } catch (error: unknown) {
       clearTimeout(timeout);
       pending.delete(id);
       reject(error);
@@ -1171,7 +1310,7 @@ function rpcCloudBinary(pathname, init = {}) {
   });
 }
 
-function rpcCloud(pathname, init = {}) {
+function rpcCloud(pathname: string, init: RpcInit = {}): Promise<RpcResult> {
   return rpcBinarySupported
     ? rpcCloudBinary(pathname, init)
     : rpcCloudLegacy(pathname, init);
@@ -1191,7 +1330,33 @@ const DIRECT_ROUTES = [
   ['GET', '/api/backups/download/:name'],
 ];
 
-const direct = {
+interface DirectPendingRequest {
+  resolve: (value: RpcResult) => void;
+  reject: (reason?: unknown) => void;
+  chunks: Uint8Array[];
+  size: number;
+  totalSize: number;
+  head?: Record<string, unknown>;
+  writeChain?: Promise<void>;
+  onProgress?: (loaded: number, total: number) => void;
+  onHeaders?: (headers: Record<string, unknown>) => void | Promise<void>;
+  onChunk?: (chunk: Uint8Array) => void | Promise<void>;
+}
+
+interface DirectState {
+  pc: RTCPeerConnection | null;
+  dc: RTCDataChannel | null;
+  ready: boolean;
+  iceServers: RTCIceServer[];
+  nextId: number;
+  reqs: Map<number, DirectPendingRequest>;
+  waiters: Array<() => void>;
+  retryTimer: ReturnType<typeof setTimeout> | undefined;
+  openTimer: ReturnType<typeof setTimeout> | undefined;
+  failures: number;
+}
+
+const direct: DirectState = {
   pc: null,
   dc: null,
   ready: false,
@@ -1202,8 +1367,8 @@ const direct = {
   nextId: 1,
   reqs: new Map(),
   waiters: [],
-  retryTimer: null,
-  openTimer: null,
+  retryTimer: undefined,
+  openTimer: undefined,
   failures: 0,
 };
 
@@ -1213,35 +1378,35 @@ const direct = {
 
 const directReady = () => direct.ready && direct.dc?.readyState === 'open';
 
-function pathMatchesPattern(pathname, pattern) {
+function pathMatchesPattern(pathname: string, pattern: string): boolean {
   const pathParts = String(pathname || '').split('/');
   const patternParts = String(pattern || '').split('/');
   if (pathParts.length !== patternParts.length) return false;
   return patternParts.every((part, i) => part.startsWith(':') || part === pathParts[i]);
 }
 
-function isDirectRoute(method, pathname) {
+function isDirectRoute(method: string, pathname: string): boolean {
   const route = String(pathname || '').split('?')[0];
   return DIRECT_ROUTES.some(([m, pattern]) =>
     m === method && pathMatchesPattern(route, pattern)
   );
 }
 
-function hasResultBody(result) {
+function hasResultBody(result: RpcResult | null | undefined): boolean {
   return result?.bodyBytes !== undefined || result?.bodyBase64 !== undefined;
 }
 
-function wakeDirect() {
+function wakeDirect(): void {
   const waiters = direct.waiters.splice(0);
   waiters.forEach(resolve => resolve());
 }
 
-function failDirectRequests(error) {
+function failDirectRequests(error: unknown): void {
   for (const req of direct.reqs.values()) req.reject(error);
   direct.reqs.clear();
 }
 
-function scheduleDirectRetry() {
+function scheduleDirectRetry(): void {
   clearTimeout(direct.retryTimer);
 
   if (!cloudSocket?.connected || !agentOnline) return;
@@ -1253,7 +1418,7 @@ function scheduleDirectRetry() {
   direct.retryTimer = setTimeout(startDirectLink, delay);
 }
 
-function closeDirectLink(retry = false) {
+function closeDirectLink(retry: boolean = false): void {
   clearTimeout(direct.openTimer);
 
   const { pc, dc } = direct;
@@ -1280,7 +1445,7 @@ function closeDirectLink(retry = false) {
   else clearTimeout(direct.retryTimer);
 }
 
-async function startDirectLink() {
+async function startDirectLink(): Promise<void> {
   if (direct.pc || directReady()) return;
   if (!cloudSocket?.connected || !agentOnline || typeof RTCPeerConnection === 'undefined') return;
 
@@ -1337,26 +1502,30 @@ async function startDirectLink() {
   }
 }
 
-async function sendDirect(type, id, payload = new Uint8Array(0)) {
-  while (directReady() && direct.dc.bufferedAmount > DIRECT_HIGH_WATER) {
-    await new Promise(resolve => {
+async function sendDirect(type: number, id: number, payload: Uint8Array = new Uint8Array(0)): Promise<void> {
+  while (true) {
+    const openChannel = direct.dc;
+    if (!directReady() || !openChannel) break;
+    if (openChannel.bufferedAmount <= DIRECT_HIGH_WATER) break;
+    await new Promise<void>(resolve => {
       direct.waiters.push(resolve);
       setTimeout(resolve, 2000);
     });
   }
 
-  if (!directReady()) throw new Error('Canal directo no disponible');
+  const channel = direct.dc;
+  if (!directReady() || !channel) {
+    throw new Error('Canal directo no disponible');
+  }
 
   const frame = new Uint8Array(5 + payload.length);
-
   frame[0] = type;
   new DataView(frame.buffer).setUint32(1, id);
   frame.set(payload, 5);
-
-  direct.dc.send(frame);
+  channel.send(frame);
 }
 
-async function onDirectMessage(data) {
+async function onDirectMessage(data: ArrayBuffer | Uint8Array): Promise<void> {
   if (!(data instanceof ArrayBuffer) || data.byteLength < 5) return;
 
   const view = new DataView(data);
@@ -1367,59 +1536,74 @@ async function onDirectMessage(data) {
   if (!req) return;
 
   if (type === DF.RES_HEAD) {
-    req.head = JSON.parse(new TextDecoder().decode(new Uint8Array(data, 5)));
-    req.totalSize = Number(req.head?.contentLength || req.head?.size) || 0;
-    if (typeof req.onHeaders === 'function') {
-      try { await req.onHeaders(req.head); } catch (error) { req.reject(error); direct.reqs.delete(id); return; }
+    const rawHead: unknown = JSON.parse(new TextDecoder().decode(new Uint8Array(data, 5)));
+    if (!isRecord(rawHead)) {
+      req.reject(new Error('Cabecera directa no válida'));
+      direct.reqs.delete(id);
+      return;
     }
-    if (typeof req.onProgress === 'function') {
+    req.head = rawHead;
+    req.totalSize = Number(rawHead['contentLength'] ?? rawHead['size'] ?? 0) || 0;
+    if (req.onHeaders) {
+      try { await req.onHeaders(rawHead); } catch (error: unknown) { req.reject(error); direct.reqs.delete(id); return; }
+    }
+    if (req.onProgress) {
       req.onProgress(0, req.totalSize);
     }
   } else if (type === DF.RES_BODY) {
     const chunk = new Uint8Array(data, 5);
-
     req.size += chunk.length;
-    if (typeof req.onChunk === 'function' && req.head?.status >= 200 && req.head?.status < 300) {
-      req.writeChain = (req.writeChain || Promise.resolve()).then(() => req.onChunk(chunk));
-      req.writeChain.catch(error => {
+    const status = typeof req.head?.['status'] === 'number' ? req.head['status'] : undefined;
+    if (req.onChunk && status !== undefined && status >= 200 && status < 300) {
+      const onChunk = req.onChunk;
+      req.writeChain = (req.writeChain ?? Promise.resolve()).then(() => {
+        const result = onChunk(chunk);
+        return result === undefined ? undefined : Promise.resolve(result).then(() => undefined);
+      });
+      req.writeChain.catch((error: unknown) => {
         if (direct.reqs.has(id)) {
           direct.reqs.delete(id);
           req.reject(error);
-          try { void sendDirect(DF.REQ_END, id); } catch {}
+          try { void sendDirect(DF.REQ_END, id); } catch { /* ignore */ }
         }
       });
     } else {
       req.chunks.push(chunk);
     }
-    if (typeof req.onProgress === 'function') {
+    if (req.onProgress) {
       req.onProgress(req.size, req.totalSize);
     }
   } else if (type === DF.RES_END) {
     direct.reqs.delete(id);
-    try { await req.writeChain; } catch (error) { req.reject(error); return; }
+    try { await req.writeChain; } catch (error: unknown) { req.reject(error); return; }
 
-    const status = req.head?.status || 502;
-    let bytes;
-    if (typeof req.onChunk !== 'function' || status < 200 || status >= 300) {
+    const statusRaw = req.head?.['status'];
+    const status = typeof statusRaw === 'number' ? statusRaw : 502;
+    let bytes: Uint8Array | undefined;
+    if (!req.onChunk || status < 200 || status >= 300) {
       bytes = new Uint8Array(req.size);
       let offset = 0;
       for (const chunk of req.chunks) { bytes.set(chunk, offset); offset += chunk.length; }
     }
 
-    req.resolve({
+    const contentTypeRaw = req.head?.['contentType'];
+    const contentType = typeof contentTypeRaw === 'string' ? contentTypeRaw : 'application/octet-stream';
+    const result: RpcResult = {
       id: null,
       ok: status >= 200 && status < 300,
       status,
-      contentType: req.head?.contentType || 'application/octet-stream',
-      ...(bytes ? { bodyBytes: bytes } : { streamed: true }),
-    });
+      contentType,
+    };
+    if (bytes) result.bodyBytes = bytes;
+    else result['streamed'] = true;
+    req.resolve(result);
   } else if (type === DF.RES_ERR) {
     direct.reqs.delete(id);
     req.reject(new Error(new TextDecoder().decode(new Uint8Array(data, 5))));
   }
 }
 
-async function directRequest(method, pathname, body, { onProgress, onHeaders, onChunk, signal } = {}) {
+async function directRequest(method: string, pathname: string, body?: unknown, { onProgress, onHeaders, onChunk, signal }: Pick<RpcInit, "onProgress" | "onHeaders" | "onChunk" | "signal"> = {}): Promise<RpcResult> {
   const id = direct.nextId++ >>> 0;
   const isBinary = body instanceof Uint8Array;
   const encoder = new TextEncoder();
@@ -1455,12 +1639,12 @@ async function directRequest(method, pathname, body, { onProgress, onHeaders, on
     if (payload) {
       for (let off = 0; off < payload.length; off += DIRECT_FRAME_BYTES) {
         if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-        await sendDirect(DF.REQ_BODY, id, payload.subarray(off, off + DIRECT_FRAME_BYTES));
+        await sendDirect(DF.REQ_BODY, id, new Uint8Array(payload.subarray(off, off + DIRECT_FRAME_BYTES)));
       }
     }
 
     await sendDirect(DF.REQ_END, id);
-  } catch (error) {
+  } catch (error: unknown) {
     direct.reqs.delete(id);
     throw error;
   }
@@ -1468,7 +1652,7 @@ async function directRequest(method, pathname, body, { onProgress, onHeaders, on
   return done;
 }
 
-async function waitForDirectReady(timeoutMs = DIRECT_OPEN_TIMEOUT_MS) {
+async function waitForDirectReady(timeoutMs: number = DIRECT_OPEN_TIMEOUT_MS): Promise<void> {
   const deadline = Date.now() + timeoutMs;
 
   while (!directReady()) {
@@ -1513,7 +1697,7 @@ async function waitForDirectReady(timeoutMs = DIRECT_OPEN_TIMEOUT_MS) {
  * Las rutas de archivos intentan el canal directo (WebRTC). Si no está listo
  * o falla, caen a `rpcCloud` para no bloquear transferencias.
  */
-function rpcHttp(pathname, init = {}) {
+function rpcHttp(pathname: string, init: RpcInit = {}): Promise<RpcResult> {
   const method = String(init.method || 'GET').toUpperCase();
 
   if (isDirectRoute(method, pathname)) {
@@ -1534,7 +1718,7 @@ function rpcHttp(pathname, init = {}) {
   return rpcCloud(pathname, init);
 }
 
-function decodeResultBody(result) {
+function decodeResultBody(result: RpcResult | null | undefined): Uint8Array | null {
   if (result?.bodyBytes) return result.bodyBytes;
 
   if (result?.bodyBase64 === undefined) {
@@ -1551,7 +1735,7 @@ function decodeResultBody(result) {
   return bytes;
 }
 
-async function api(pathname, init = {}) {
+async function api(pathname: string, init: RpcInit = {}): Promise<unknown> {
   const result = await rpcHttp(pathname, init);
 
   const status = result?.status || 500;
@@ -1584,7 +1768,7 @@ async function api(pathname, init = {}) {
   };
 }
 
-function postJSON(pathname, body) {
+function postJSON(pathname: string, body?: unknown): Promise<unknown> {
   return api(pathname, { method: 'POST', body });
 }
 
@@ -1592,7 +1776,7 @@ function postJSON(pathname, body) {
    8. ESTADO DEL AGENTE Y SERVIDOR
    ══════════════════════════════════════════════ */
 
-function setAgentOnline(online) {
+function setAgentOnline(online: boolean): void {
   const nextState = Boolean(online);
   const previousState = agentOnline;
 
@@ -1669,10 +1853,19 @@ function updateAgentStatusBadges() {
   }
 }
 
-function updateStatusUi(status) {
-  status = STATUS[status] ? status : 'offline';
 
-  currentStatus = status;
+function toServerStatus(value: string): ServerStatus {
+  if (value === 'online' || value === 'offline' || value === 'starting' || value === 'restarting' || value === 'stopping') {
+    return value;
+  }
+  return 'offline';
+}
+
+function updateStatusUi(status: string): void {
+  const normalized = toServerStatus(status);
+
+  currentStatus = normalized;
+  status = normalized;
 
   const statusEl = $('sbStatus');
 
@@ -1721,15 +1914,15 @@ async function refreshServerStatus() {
   try {
     const data = await api('/api/status');
     if (STATUS[data?.status]) setStatus(data.status);
-  } catch (error) {
+  } catch (error: unknown) {
     console.warn('[moonwolf] No se pudo sincronizar el estado del servidor:', error);
   }
 }
 
-function setStatus(status) {
+function setStatus(status: string): void {
   updateStatusUi(status);
 
-  const normalized = STATUS[status] ? status : 'offline';
+  const normalized = toServerStatus(status);
 
   if (lastStatusActivity === normalized) {
     return;
@@ -1823,7 +2016,7 @@ let pendingUserMetricCmd = false;
    9. TERMINAL / CONSOLA
    ══════════════════════════════════════════════ */
 
-function shouldIgnoreLog(line) {
+function shouldIgnoreLog(line: unknown): boolean {
   const text = String(line || '');
 
   if (LOG_IGNORE_PATTERNS.some(re => re.test(text))) return true;
@@ -1862,7 +2055,7 @@ const MINECRAFT_COLORS = {
   c: 'red', d: 'light-purple', e: 'yellow', f: 'white',
 };
 
-function xtermColor(index) {
+function xtermColor(index: unknown): string {
   const n = Math.max(0, Math.min(255, Number(index) || 0));
   const base = [
     '#000000', '#800000', '#008000', '#808000', '#000080', '#800080', '#008080', '#c0c0c0',
@@ -1881,7 +2074,7 @@ function xtermColor(index) {
   return `#${[r, g, b].map(part => part.toString(16).padStart(2, '0')).join('')}`;
 }
 
-function renderConsoleText(value) {
+function renderConsoleText(value: unknown): string {
   const text = String(value || '');
   let html = '';
   let cursor = 0;
@@ -2020,7 +2213,7 @@ function renderConsoleText(value) {
   return html;
 }
 
-function getConsoleLogType(entry) {
+function getConsoleLogType(entry: ConsoleLogEntry | null | undefined): string {
   const explicitType = String(entry?.type || 'info').toLowerCase();
   const line = String(entry?.line || '')
     .replace(/\x1b\[[0-9;]*m/g, '')
@@ -2043,7 +2236,7 @@ let consoleFlushScheduled = false;
 const consolePluginStates = new Map();
 let consolePluginListSection = '';
 
-function rememberPluginState(line) {
+function rememberPluginState(line: unknown): void {
   const text = String(line || '');
   const match = text.match(/\b(Enabling|Enabled|Disabling|Disabled)\s+(.+?)\s+v[^\s]+/i);
   if (!match) return;
@@ -2052,7 +2245,7 @@ function rememberPluginState(line) {
   consolePluginStates.set(name.toLowerCase(), /^(?:Enabling|Enabled)$/i.test(match[1]));
 }
 
-function renderPluginListLine(line) {
+function renderPluginListLine(line: unknown): string {
   const text = String(line || '');
   if (!consolePluginListSection) return renderConsoleText(text);
 
@@ -2074,7 +2267,7 @@ function renderPluginListLine(line) {
   return renderConsoleText(prefix) + renderedNames;
 }
 
-function renderConsoleEntry(line) {
+function renderConsoleEntry(line: unknown): string {
   rememberPluginState(line);
   const text = String(line || '');
   if (/\b(?:Paper|Bukkit) Plugins?\s*\(\d+\)\s*:/i.test(text)) {
@@ -2114,7 +2307,7 @@ function flushConsoleLogs() {
   consoleEl.scrollTop = consoleEl.scrollHeight;
 }
 
-function appendLog(entry) {
+function appendLog(entry: ConsoleLogEntry | string | null | undefined): void {
   const consoleEl = $('console');
 
   if (!consoleEl) return;
@@ -2149,7 +2342,7 @@ async function startServer() {
     const data = await api('/api/start', { method: 'POST' });
     if (!data?.ok) throw new Error(data?.error || 'Error al arrancar');
     await refreshServerStatus();
-  } catch (error) {
+  } catch (error: unknown) {
     toast(`No se pudo arrancar: ${error?.message || 'Error de conexión.'}`, 'err');
     await refreshServerStatus();
   }
@@ -2167,7 +2360,7 @@ async function stopServer() {
     const data = await api('/api/stop', { method: 'POST' });
     if (!data?.ok) throw new Error(data?.error || 'Error al detener');
     await refreshServerStatus();
-  } catch (error) {
+  } catch (error: unknown) {
     toast(`No se pudo detener: ${error?.message || 'Error de conexión.'}`, 'err');
     await refreshServerStatus();
   }
@@ -2189,7 +2382,7 @@ async function restartServer() {
     const data = await api('/api/restart', { method: 'POST' });
     if (!data?.ok) throw new Error(data?.error || 'Error al reiniciar');
     await refreshServerStatus();
-  } catch (error) {
+  } catch (error: unknown) {
     toast(`No se pudo reiniciar: ${error?.message || 'Error de conexión.'}`, 'err');
     await refreshServerStatus();
   }
@@ -2235,7 +2428,7 @@ async function sendCmd() {
     }
 
     input.value = '';
-  } catch (error) {
+  } catch (error: unknown) {
     console.warn('[moonwolf] No se pudo enviar el comando:', error);
     toast(`No se pudo enviar el comando: ${error?.message || 'Error de conexión.'}`, 'err');
   } finally {
@@ -2250,7 +2443,7 @@ async function sendCmd() {
    10. ARCHIVOS
    ══════════════════════════════════════════════ */
 
-function fileIcon(type) {
+function fileIcon(type: unknown): string {
   return {
     dir: '📁',
     jar: '☕',
@@ -2259,7 +2452,7 @@ function fileIcon(type) {
   }[type] || '📄';
 }
 
-function populateFiles(dir = '', options = {}) {
+function populateFiles(dir: string = '', options: SoftLoadOptions = {}): void {
   currentDir = dir;
 
   const list = $('fileList');
@@ -2279,15 +2472,15 @@ function populateFiles(dir = '', options = {}) {
   renderBreadcrumb(dir);
 
   cachedApi(`files:${dir}`, `/api/files?dir=${encodeURIComponent(dir)}`, undefined, 15_000, Boolean(options.force))
-    .then(data => {
-      if (!data.ok) {
-        throw new Error(data.error || 'No se pudo leer la carpeta.');
+    .then(raw => {
+      if (!isFilesApiResponse(raw) || !raw.ok) {
+        const err = isFilesApiResponse(raw) && typeof raw.error === 'string' ? raw.error : 'No se pudo leer la carpeta.';
+        throw new Error(err);
       }
 
-      const items = Array.isArray(data.items) ? data.items.slice() : [];
+      const items: FileListItem[] = Array.isArray(raw.items) ? raw.items.slice() : [];
 
-      items.sort(
-        (a, b) =>
+      items.sort((a: FileListItem, b: FileListItem) =>
           (a.type === 'dir' ? -1 : 1) - (b.type === 'dir' ? -1 : 1) ||
           a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
       );
@@ -2376,7 +2569,7 @@ function clearSelectedFiles() {
   document.querySelectorAll('#fileList input[type="checkbox"]').forEach(input => { input.checked = false; });
   updateBulkBar();
 }
-async function runBulkAction(action) {
+async function runBulkAction(action: string | undefined): Promise<void> {
   if (action === 'clear') return clearSelectedFiles();
   const items = Array.from(selectedFilePaths).map(rel => {
     const row = Array.from(document.querySelectorAll('#fileList .file-row')).find(item => item.dataset.path === rel);
@@ -2413,9 +2606,9 @@ async function runBulkAction(action) {
     toast(`✅ ${data.completed || items.length} operación${items.length === 1 ? '' : 'es'} completada${items.length === 1 ? '' : 's'}`, 'ok');
     if (data.failed) toast(`⚠️ ${data.failed} elemento${data.failed === 1 ? '' : 's'} no se pudo procesar`, 'warn');
     populateFiles(currentDir);
-  } catch (error) { toast(`❌ ${error.message}`, 'err'); }
+  } catch (error: unknown) { toast(`❌ ${(error instanceof Error ? error.message : String(error))}`, 'err'); }
 }
-function renderBreadcrumb(dir) {
+function renderBreadcrumb(dir: string): void {
   const trail = $('crumbTrail');
 
   if (!trail) return;
@@ -2440,7 +2633,7 @@ function renderBreadcrumb(dir) {
   });
 }
 
-async function downloadDirectoryAsZip(rel, name) {
+async function downloadDirectoryAsZip(rel: string, name: string): Promise<void> {
   toast(`🗜️ Preparando y comprimiendo "${name}"...`, 'info');
   try {
     const data = await postJSON('/api/files/compress', {
@@ -2455,12 +2648,12 @@ async function downloadDirectoryAsZip(rel, name) {
 
     await downloadFile(zipRel, zipName);
     populateFiles(currentDir);
-  } catch (error) {
-    toast(`❌ ${error.message}`, 'err');
+  } catch (error: unknown) {
+    toast(`❌ ${(error instanceof Error ? error.message : String(error))}`, 'err');
   }
 }
 
-function openFileContext(event, name, type) {
+function openFileContext(event: MouseEvent, name: string, type: string): void {
   event.preventDefault();
 
   document.querySelector('.file-ctx-menu')?.remove();
@@ -2588,8 +2781,8 @@ function openFileContext(event, name, type) {
       toast('✅ Operación completada', 'ok');
 
       populateFiles(currentDir);
-    } catch (error) {
-      toast(`❌ ${error.message}`, 'err');
+    } catch (error: unknown) {
+      toast(`❌ ${(error instanceof Error ? error.message : String(error))}`, 'err');
     }
   });
 
@@ -2604,7 +2797,7 @@ const UPLOAD_MAX_INFLIGHT = 6;
 let uploadInflight = 0;
 const uploadWaiters = [];
 
-async function getFilesFromDataTransfer(dataTransfer) {
+async function getFilesFromDataTransfer(dataTransfer: DataTransfer | null): Promise<UploadFile[]> {
   const items = dataTransfer?.items;
   if (!items || !items.length) {
     return Array.from(dataTransfer?.files || []);
@@ -2685,7 +2878,7 @@ function releaseUploadSlot() {
   else uploadInflight--;
 }
 
-function normalizeUploadRelativePath(value) {
+function normalizeUploadRelativePath(value: unknown): string {
   return String(value || '')
     .replace(/\\/g, '/')
     .replace(/^\/+/, '')
@@ -2694,7 +2887,7 @@ function normalizeUploadRelativePath(value) {
     .join('/');
 }
 
-function formatUploadBytes(value) {
+function formatUploadBytes(value: unknown): string {
   const bytes = Math.max(0, Number(value) || 0);
   if (bytes < 1024) return `${Math.round(bytes)} B`;
   const units = ['KB', 'MB', 'GB', 'TB'];
@@ -2703,7 +2896,7 @@ function formatUploadBytes(value) {
   do { amount /= 1024; index += 1; } while (amount >= 1024 && index < units.length - 1);
   return `${amount >= 100 ? amount.toFixed(0) : amount >= 10 ? amount.toFixed(1) : amount.toFixed(2)} ${units[index]}`;
 }
-function formatUploadEta(seconds) {
+function formatUploadEta(seconds: unknown): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return 'Calculando tiempo…';
   const total = Math.ceil(seconds);
   if (total < 60) return `${total}s restantes`;
@@ -2713,7 +2906,7 @@ function formatUploadEta(seconds) {
   const hours = Math.floor(minutes / 60);
   return `${hours}h ${(minutes % 60).toString().padStart(2, '0')}m restantes`;
 }
-function formatDuration(seconds) {
+function formatDuration(seconds: unknown): string {
   const total = Math.max(1, Math.round(seconds));
   if (total < 60) return `${total}s`;
   const m = Math.floor(total / 60);
@@ -2727,7 +2920,7 @@ function uploadCancelledError() {
   error.isCancelled = true;
   return error;
 }
-async function waitForUploadResume(progressState) {
+async function waitForUploadResume(progressState: UploadState): Promise<void> {
   if (progressState.cancelled) throw uploadCancelledError();
   if (!progressState.paused) return;
   progressState.status = 'Subida pausada';
@@ -2735,7 +2928,7 @@ async function waitForUploadResume(progressState) {
   await new Promise(resolve => { progressState.resumeUpload = resolve; });
   if (progressState.cancelled) throw uploadCancelledError();
 }
-function setUploadControls(visible) {
+function setUploadControls(visible: boolean): void {
   if ($('uploadProgressPause')) {
     $('uploadProgressPause').hidden = !visible;
     $('uploadProgressPause').disabled = false;
@@ -2747,7 +2940,7 @@ function setUploadControls(visible) {
   }
 }
 
-function updateUploadProgress(progressState) {
+function updateUploadProgress(progressState: UploadState): void {
   const panel = $('uploadProgressPanel');
   if (!panel) return;
 
@@ -2800,7 +2993,7 @@ function updateUploadProgress(progressState) {
   }
 }
 
-function finishUploadProgress(message, isError = false, detail = '', hidePanel = false) {
+function finishUploadProgress(message: string, isError: boolean = false, detail: string = '', hidePanel: boolean = false): void {
   const panel = $('uploadProgressPanel');
   if (!panel) return;
 
@@ -2815,7 +3008,7 @@ function finishUploadProgress(message, isError = false, detail = '', hidePanel =
   if (hidePanel) panel.hidden = true;
   if (!isError) setTimeout(() => { panel.hidden = true; }, 3500);
 }
-function askFileConflict(fileName) {
+function askFileConflict(fileName: string): Promise<ConflictChoice> {
   const modal = $('fileConflictModal');
   if (!modal) return Promise.resolve({ choice: 'cancel', applyAll: false });
   if ($('fileConflictName')) $('fileConflictName').textContent = fileName;
@@ -2841,10 +3034,12 @@ function askFileConflict(fileName) {
     });
   });
 }
-function isFileConflict(error) {
-  return Boolean(error?.isFileConflict || error?.status === 409 || /ya existe un archivo/i.test(error?.message || ''));
+function isFileConflict(error: unknown): boolean {
+  if (!isRecord(error)) return false;
+  const message = typeof error['message'] === 'string' ? error['message'] : '';
+  return Boolean(error['isFileConflict'] || error['status'] === 409 || /ya existe un archivo/i.test(message));
 }
-function askFileDeleteConfirm(items) {
+function askFileDeleteConfirm(items: DeleteItem[]): Promise<boolean> {
   const modal = $('fileDeleteModal');
   if (!modal) {
     const list = items.map(item => `• ${item.path}`).join('\n');
@@ -2894,7 +3089,7 @@ function askFileDeleteConfirm(items) {
     document.addEventListener('keydown', onKey);
   });
 }
-async function uploadOneFile(file, relativePath, progressState, overwrite = true) {
+async function uploadOneFile(file: UploadFile, relativePath: string, progressState: UploadState, overwrite: boolean = true): Promise<void> {
   const relCandidate = file.customRelativePath || relativePath || file.webkitRelativePath || file.name;
   progressState.currentFile = relCandidate;
   progressState.currentFileSize = file.size;
@@ -2972,7 +3167,7 @@ async function uploadOneFile(file, relativePath, progressState, overwrite = true
         }
 
         break;
-      } catch (error) {
+      } catch (error: unknown) {
         lastError = error;
         if (attempt < 4) {
           const delay = error?.isRateLimited ? (1500 * (attempt + 1)) : (500 * (attempt + 1));
@@ -3027,7 +3222,7 @@ async function uploadOneFile(file, relativePath, progressState, overwrite = true
   updateUploadProgress(progressState);
 }
 
-function postUploadChunk(uploadId, target, offset, totalSize, bytes, final, overwrite) {
+function postUploadChunk(uploadId: string, target: string, offset: number, totalSize: number, bytes: Uint8Array, final: boolean, overwrite: boolean): Promise<unknown> {
   const params = new URLSearchParams({
     uploadId,
     path: target,
@@ -3062,7 +3257,7 @@ function postUploadChunk(uploadId, target, offset, totalSize, bytes, final, over
   });
 }
 
-async function uploadSelectedFiles(fileList) {
+async function uploadSelectedFiles(fileList: ArrayLike<UploadFile> | UploadFile[] | FileList | null | undefined): Promise<void> {
   const files = Array.from(fileList || {}).filter(file => file && typeof file.size === 'number');
 
   if (!files.length) return;
@@ -3079,7 +3274,7 @@ async function uploadSelectedFiles(fileList) {
 
   lastUploadFiles = files;
 
-  const progressState = {
+  const progressState: UploadState = {
     completedFiles: 0,
     totalFiles: files.length,
     totalBytes: files.reduce((sum, file) => sum + file.size, 0),
@@ -3088,6 +3283,8 @@ async function uploadSelectedFiles(fileList) {
     status: `Subiendo 1/${files.length}`,
     paused: false, cancelled: false, finished: false, resumeUpload: null,
     rememberConflictChoice: null,
+    conflictQueue: [],
+    activeFiles: [],
   };
   activeUploadState = progressState;
   updateUploadProgress(progressState);
@@ -3103,7 +3300,7 @@ async function uploadSelectedFiles(fileList) {
       try {
         try {
           await uploadOneFile(file, relative, progressState, false);
-        } catch (error) {
+        } catch (error: unknown) {
           if (!isFileConflict(error)) throw error;
           let choice = progressState.rememberConflictChoice;
           if (!choice) {
@@ -3167,15 +3364,15 @@ async function uploadSelectedFiles(fileList) {
     finishUploadProgress(`Subida completada en ${formatDuration(totalSeconds)}`);
     toast(`✅ ${files.length} ${files.length === 1 ? 'archivo subido' : 'archivos subidos'} correctamente`, 'ok');
     populateFiles(currentDir);
-  } catch (error) {
-    finishUploadProgress(error.isCancelled ? 'Subida cancelada' : 'Subida interrumpida', true, error.message || 'Error desconocido', error.isCancelled);
+  } catch (error: unknown) {
+    finishUploadProgress(error.isCancelled ? 'Subida cancelada' : 'Subida interrumpida', true, (error instanceof Error ? error.message : String(error)) || 'Error desconocido', error.isCancelled);
     toast(`❌ ${error.message}`, 'err');
   }
 }
 
 let activeDownloadAbort: AbortController | null = null;
 
-async function downloadUrlWithProgress(pathname, filename, title = 'Descargando archivo') {
+async function downloadUrlWithProgress(pathname: string, filename: string, title: string = 'Descargando archivo'): Promise<void> {
   const panel = $('uploadProgressPanel');
   const startedAt = Date.now();
   let receivedBytes = 0;
@@ -3287,7 +3484,7 @@ async function downloadUrlWithProgress(pathname, filename, title = 'Descargando 
     if ($('uploadProgressCancel')) $('uploadProgressCancel').hidden = true;
     setTimeout(() => { if (panel && !activeUploadState) panel.hidden = true; }, 3500);
     toast(`✅ Descargado: ${filename}`, 'ok');
-  } catch (error) {
+  } catch (error: unknown) {
     if (activeDownloadWriter) {
       try { await activeDownloadWriter.abort(); } catch {}
       activeDownloadWriter = null;
@@ -3316,7 +3513,7 @@ async function downloadUrlWithProgress(pathname, filename, title = 'Descargando 
   }
 }
 
-async function downloadFile(rel, filename) {
+async function downloadFile(rel: string, filename: string): Promise<void> {
   return downloadUrlWithProgress(
     `/api/files/download?path=${encodeURIComponent(rel)}`,
     filename,
@@ -3344,7 +3541,7 @@ function closeFileEditor() {
   originalFileContent = '';
   return true;
 }
-async function openFile(rel) {
+async function openFile(rel: string): Promise<void> {
   if (currentFile && currentFile !== rel && !confirmEditorExit()) return;
   try {
     const data = await api(
@@ -3428,8 +3625,8 @@ async function openFile(rel) {
       $('mwEditorArea')?.addEventListener('input', updateEditorDirtyState);
       updateEditorDirtyState();
     }
-  } catch (error) {
-    toast(`❌ ${error.message}`, 'err');
+  } catch (error: unknown) {
+    toast(`❌ ${(error instanceof Error ? error.message : String(error))}`, 'err');
   }
 }
 
@@ -3518,10 +3715,10 @@ async function pluginSearch() {
     }
 
     renderPluginResults(results, data.errors || []);
-  } catch (error) {
+  } catch (error: unknown) {
     $('plgResults').innerHTML = `
       <div class="empty-state">
-        <div class="empty-msg">${escHtml(error.message)}</div>
+        <div class="empty-msg">${escHtml((error instanceof Error ? error.message : String(error)))}</div>
       </div>
     `;
   }
@@ -3677,10 +3874,10 @@ async function openPluginVersions(plugin) {
           installPlugin(versions[Number(button.dataset.version)])
         );
       });
-  } catch (error) {
+  } catch (error: unknown) {
     $('plgModalBody').innerHTML = `
       <div class="empty-state">
-        <div class="empty-msg">${escHtml(error.message)}</div>
+        <div class="empty-msg">${escHtml((error instanceof Error ? error.message : String(error)))}</div>
       </div>
     `;
   }
@@ -3716,9 +3913,9 @@ async function installPlugin(version) {
     installStatus.innerHTML = `<span>✓</span><strong>Instalado correctamente</strong><span>${escHtml(filename)}</span>`;
     toast(`✅ ${filename} instalado`, 'ok');
     loadInstalledPlugins({ force: true });
-  } catch (error) {
+  } catch (error: unknown) {
     installStatus.className = 'plg-install-status failed';
-    installStatus.innerHTML = `<span>⚠</span><strong>Instalación fallida</strong><span>${escHtml(error.message)}</span>`;
+    installStatus.innerHTML = `<span>⚠</span><strong>Instalación fallida</strong><span>${escHtml((error instanceof Error ? error.message : String(error)))}</span>`;
     installButtons.forEach(button => { button.disabled = false; button.classList.remove('is-installing'); });
     toast(`❌ ${error.message}`, 'err');
   }
@@ -3972,14 +4169,14 @@ async function selectVersionSoftware(software) {
     $('verVersionSearch')?.addEventListener('input', e => drawVersions(e.target.value));
     drawVersions();
 
-  } catch (error) {
+  } catch (error: unknown) {
     const box = container.querySelector('.ver-loading');
     if (box) {
       box.className = 'ver-empty';
       box.innerHTML = `
         <div class="ver-empty-icon">⚠️</div>
         <div class="ver-empty-title">No se pudieron cargar las versiones</div>
-        <div class="ver-empty-text">${escHtml(error.message || 'Error desconocido')}</div>
+        <div class="ver-empty-text">${escHtml((error instanceof Error ? error.message : String(error)) || 'Error desconocido')}</div>
         <button type="button" class="btn btn-primary" id="verRetrySoftware">Reintentar</button>
       `;
       $('verRetrySoftware')?.addEventListener('click', () => selectVersionSoftware(software));
@@ -4064,14 +4261,14 @@ async function selectVersionBuilds(software, version, item = versionFindSoftware
         installVersionSelection(software, version, build);
       });
     });
-  } catch (error) {
+  } catch (error: unknown) {
     const box = container.querySelector('.ver-loading');
     if (box) {
       box.className = 'ver-empty';
       box.innerHTML = `
         <div class="ver-empty-icon">⚠️</div>
         <div class="ver-empty-title">No se pudieron cargar los builds</div>
-        <div class="ver-empty-text">${escHtml(error.message || 'Error desconocido')}</div>
+        <div class="ver-empty-text">${escHtml((error instanceof Error ? error.message : String(error)) || 'Error desconocido')}</div>
         <button type="button" class="btn btn-primary" id="verRetryBuilds">Reintentar</button>
       `;
       $('verRetryBuilds')?.addEventListener('click', () => selectVersionBuilds(software, version, item));
@@ -4118,8 +4315,8 @@ async function installVersionSelection(software, version, build) {
     }
 
     await loadVersionState();
-  } catch (error) {
-    toast(`❌ ${error.message}`, 'err');
+  } catch (error: unknown) {
+    toast(`❌ ${(error instanceof Error ? error.message : String(error))}`, 'err');
   }
 }
 
@@ -4181,10 +4378,10 @@ async function loadVersionState(options = {}) {
     };
 
     renderVersionSoftware();
-  } catch (error) {
+  } catch (error: unknown) {
     versionCatalog = [];
     renderVersionSoftware();
-    toast(`❌ ${error.message}`, 'err');
+    toast(`❌ ${(error instanceof Error ? error.message : String(error))}`, 'err');
   }
 }
 
@@ -4254,10 +4451,10 @@ async function loadDatabases(options = {}) {
   try {
     const force = Boolean(options.force);
     status = await cachedApi('databases:status', '/api/databases/status', undefined, 15_000, force);
-  } catch (error) {
+  } catch (error: unknown) {
     container.innerHTML = `
       <div class="empty-state">
-        <div class="empty-msg">${escHtml(error.message)}</div>
+        <div class="empty-msg">${escHtml((error instanceof Error ? error.message : String(error)))}</div>
       </div>
     `;
     return;
@@ -4446,8 +4643,8 @@ async function loadShareTokens() {
           );
           toast('Acceso revocado.', 'ok');
           await loadShareTokens();
-        } catch (error) {
-          toast(error.message, 'err');
+        } catch (error: unknown) {
+          toast((error instanceof Error ? error.message : String(error)), 'err');
           button.disabled = false;
         }
       });
@@ -4465,15 +4662,15 @@ async function loadShareTokens() {
           select.dataset.previousPermission = select.value;
           toast(`Permiso actualizado: ${sharePermissionLabel(select.value)}.`, 'ok');
           await loadShareTokens();
-        } catch (error) {
+        } catch (error: unknown) {
           select.value = previous;
           select.disabled = false;
-          toast(error.message, 'err');
+          toast((error instanceof Error ? error.message : String(error)), 'err');
         }
       });
     });
-  } catch (error) {
-    list.innerHTML = `<div class="empty-state">${escHtml(error.message)}</div>`;
+  } catch (error: unknown) {
+    list.innerHTML = `<div class="empty-state">${escHtml((error instanceof Error ? error.message : String(error)))}</div>`;
   }
 }
 
@@ -4618,8 +4815,8 @@ function bindShareSettings() {
         'ok'
       );
       await loadShareTokens();
-    } catch (error) {
-      toast(error.message, 'err');
+    } catch (error: unknown) {
+      toast((error instanceof Error ? error.message : String(error)), 'err');
     } finally {
       button.disabled = false;
     }
@@ -4844,8 +5041,8 @@ async function createBackup() {
     );
 
     invalidateViewCache('backups'); loadBackups({ soft: false });
-  } catch (error) {
-    setBackupProgressUI({ label: error.message, pct: '✕', state: 'error' });
+  } catch (error: unknown) {
+    setBackupProgressUI({ label: (error instanceof Error ? error.message : String(error)), pct: '✕', state: 'error' });
     hideBackupProgress(4000);
     toast(`❌ ${error.message}`, 'err');
   } finally {
@@ -4909,8 +5106,8 @@ async function restoreBackup(name) {
     );
     addActivity(`Copia restaurada: ${name}`, 'ok', '♻️');
     invalidateViewCache('backups'); loadBackups({ soft: false });
-  } catch (error) {
-    toast(`❌ ${error.message}`, 'err');
+  } catch (error: unknown) {
+    toast(`❌ ${(error instanceof Error ? error.message : String(error))}`, 'err');
     if (button) { button.disabled = false; }
   }
 }
@@ -5037,8 +5234,8 @@ async function loadPorts(options = {}) {
 
     $('btnRefreshPorts')?.addEventListener('click', () => loadPorts({ force: true }));
     $('btnSavePorts')?.addEventListener('click', savePorts);
-  } catch (error) {
-    element.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-msg">${escHtml(error.message)}</div><button class="small-btn" id="btnRetryPorts">↺ Reintentar</button></div>`;
+  } catch (error: unknown) {
+    element.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-msg">${escHtml((error instanceof Error ? error.message : String(error)))}</div><button class="small-btn" id="btnRetryPorts">↺ Reintentar</button></div>`;
     $('btnRetryPorts')?.addEventListener('click', () => loadPorts({ force: true }));
   }
 }
@@ -5069,8 +5266,8 @@ async function savePorts() {
     toast('✅ Puertos guardados. Reinicia el servidor para aplicar los cambios.', 'ok');
     addActivity('Configuración de puertos actualizada', 'ok', '🔌');
     await loadPorts({ force: true });
-  } catch (error) {
-    toast(error.message, 'err');
+  } catch (error: unknown) {
+    toast((error instanceof Error ? error.message : String(error)), 'err');
   } finally {
     if (button) {
       button.disabled = false;
@@ -5119,13 +5316,22 @@ async function loadStartup(options: SoftLoadOptions = {}): Promise<void> {
   `;
   }
 
-  const data = (await cachedApi(
+  const rawStartup = await cachedApi(
     'startup',
     '/api/startup',
     undefined,
     VIEW_CACHE_TTL_MS,
     Boolean(options.force),
-  )) as StartupResponse;
+  );
+  if (!isStartupResponse(rawStartup)) {
+    element.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-msg">Respuesta de arranque no válida</div>
+      </div>
+    `;
+    return;
+  }
+  const data = rawStartup;
 
   if (!data.ok) {
     element.innerHTML = `
@@ -5345,7 +5551,7 @@ async function loadStartup(options: SoftLoadOptions = {}): Promise<void> {
         version ? 'ok' : 'err'
       );
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? (error instanceof Error ? error.message : String(error)) : String(error);
       toast(`❌ ${message}`, 'err');
     } finally {
       if (btn && 'disabled' in btn) {
@@ -5418,7 +5624,15 @@ async function saveStartup() {
     button.textContent = 'GUARDANDO...';
   }
 
-  const data = (await postJSON('/api/startup', body)) as ApiResult;
+  const rawSave = await postJSON('/api/startup', body);
+  if (!isRecord(rawSave)) {
+    toast('❌ Respuesta no válida', 'err');
+    return;
+  }
+  const data: ApiResult = {
+    ok: Boolean(rawSave['ok']),
+    error: typeof rawSave['error'] === 'string' ? rawSave['error'] : undefined,
+  };
 
   if (button && 'disabled' in button) {
     (button as HTMLButtonElement).disabled = false;
@@ -5759,7 +5973,10 @@ function bindEvents() {
 
   document.querySelectorAll('.sb-item').forEach(item => {
     if (!(item instanceof HTMLElement)) return;
-    item.addEventListener('click', () => switchView(item.dataset.view));
+    item.addEventListener('click', () => {
+      const view = item.dataset.view;
+      if (view) switchView(view);
+    });
     item.addEventListener('mouseenter', () => prefetchView(item.dataset.view));
     item.addEventListener('focus', () => prefetchView(item.dataset.view));
   });
