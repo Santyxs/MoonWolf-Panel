@@ -5803,12 +5803,14 @@ function bindEvents() {
       updateUploadProgress(upload);
     }
   });
-  $('uploadProgressCancel')?.addEventListener('click', () => {
+  const uploadProgressCancel = $('uploadProgressCancel') as HTMLButtonElement | null;
+  uploadProgressCancel?.addEventListener('click', () => {
     if (activeDownloadAbort) {
       activeDownloadAbort.abort();
       activeDownloadAbort = null;
-      $('uploadProgressCancel').disabled = true;
-      if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = 'Cancelando descarga…';
+      if (uploadProgressCancel) uploadProgressCancel.disabled = true;
+      const title = $('uploadProgressTitle');
+      if (title) title.textContent = 'Cancelando descarga…';
       return;
     }
     const upload = activeUploadState;
@@ -5816,20 +5818,30 @@ function bindEvents() {
     upload.cancelled = true;
     upload.resumeUpload?.();
     upload.resumeUpload = null;
-    $('uploadProgressCancel').disabled = true;
-    $('uploadProgressPause').disabled = true;
-    if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = 'Cancelando subida…';
-    if ($('uploadProgressPanel')) $('uploadProgressPanel').hidden = true;
+    if (uploadProgressCancel) uploadProgressCancel.disabled = true;
+    const pauseBtn = $('uploadProgressPause') as HTMLButtonElement | null;
+    if (pauseBtn) pauseBtn.disabled = true;
+    const title = $('uploadProgressTitle');
+    if (title) title.textContent = 'Cancelando subida…';
+    const panel = $('uploadProgressPanel');
+    if (panel) panel.hidden = true;
   });
-  $('uploadProgressRetry')?.addEventListener('click', async () => {
+
+  const uploadProgressRetry = $('uploadProgressRetry') as HTMLButtonElement | null;
+  uploadProgressRetry?.addEventListener('click', async () => {
     const files = lastUploadFiles.slice();
     if (!files.length) return;
-    $('uploadProgressRetry').hidden = true;
+    if (uploadProgressRetry) uploadProgressRetry.hidden = true;
     await uploadSelectedFiles(files);
   });
+
   $('fileConflictModal')?.addEventListener('keydown', event => {
-    if (event.key === 'Escape') $('fileConflictModal').querySelector('[data-conflict-choice="cancel"]')?.click();
+    if (event.key === 'Escape') {
+      const cancelBtn = $('fileConflictModal')?.querySelector('[data-conflict-choice="cancel"]');
+      if (cancelBtn instanceof HTMLElement) cancelBtn.click();
+    }
   });
+
   $('btnNewFile')?.addEventListener('click', async () => {
     const raw = prompt('Nombre del nuevo archivo (termina en "/" para carpeta):');
     if (!raw) return;
@@ -5872,7 +5884,8 @@ function bindEvents() {
 
   document.querySelectorAll('.plg-source').forEach(button => {
     button.addEventListener('click', () => {
-      pluginSource = button.dataset.source;
+      if (!(button instanceof HTMLElement)) return;
+      pluginSource = button.dataset.source || 'all';
 
       document.querySelectorAll('.plg-source').forEach(item =>
         item.classList.toggle('active', item === button)
@@ -5882,7 +5895,8 @@ function bindEvents() {
 
   document.querySelectorAll('.plg-price').forEach(button => {
     button.addEventListener('click', () => {
-      priceFilter = button.dataset.price;
+      if (!(button instanceof HTMLElement)) return;
+      priceFilter = button.dataset.price || 'all';
 
       document.querySelectorAll('.plg-price').forEach(item =>
         item.classList.toggle('active', item === button)
@@ -5892,18 +5906,21 @@ function bindEvents() {
 
   document.querySelectorAll('.plg-tab-btn').forEach(button => {
     button.addEventListener('click', () => {
+      if (!(button instanceof HTMLElement)) return;
       const tab = button.dataset.tab;
 
       document.querySelectorAll('.plg-tab-btn').forEach(item =>
         item.classList.toggle('active', item === button)
       );
 
-      if ($('plgTabSearch')) {
-        $('plgTabSearch').style.display = tab === 'search' ? '' : 'none';
+      const plgTabSearch = $('plgTabSearch');
+      if (plgTabSearch) {
+        plgTabSearch.style.display = tab === 'search' ? '' : 'none';
       }
 
-      if ($('plgTabInstalled')) {
-        $('plgTabInstalled').style.display = tab === 'installed' ? '' : 'none';
+      const plgTabInstalled = $('plgTabInstalled');
+      if (plgTabInstalled) {
+        plgTabInstalled.style.display = tab === 'installed' ? '' : 'none';
       }
 
       if (tab === 'installed') {
@@ -5923,14 +5940,16 @@ function bindEvents() {
   $('btnRefreshInstalled')?.addEventListener('click', () => loadInstalledPlugins({ force: true }));
 
   $('btnClosePlgModal')?.addEventListener('click', () => {
-    if ($('plgVersionModal')) {
-      $('plgVersionModal').style.display = 'none';
+    const modal = $('plgVersionModal');
+    if (modal) {
+      modal.style.display = 'none';
     }
   });
 
-  $('plgVersionModal')?.addEventListener('click', event => {
-    if (event.target === $('plgVersionModal')) {
-      $('plgVersionModal').style.display = 'none';
+  const plgVersionModal = $('plgVersionModal');
+  plgVersionModal?.addEventListener('click', event => {
+    if (event.target === plgVersionModal) {
+      plgVersionModal.style.display = 'none';
     }
   });
 
