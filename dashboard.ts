@@ -92,6 +92,13 @@ interface SoftLoadOptions {
 }
 
 interface UploadState {
+  finished?: boolean;
+  cancelled?: boolean;
+  paused?: boolean;
+  status?: string;
+  completedFiles?: number;
+  totalFiles?: number;
+  resumeUpload?: (() => void) | null;
   [key: string]: unknown;
 }
 
@@ -3111,7 +3118,7 @@ async function uploadSelectedFiles(fileList) {
   }
 }
 
-let activeDownloadAbort = null;
+let activeDownloadAbort: AbortController | null = null;
 
 async function downloadUrlWithProgress(pathname, filename, title = 'Descargando archivo') {
   const panel = $('uploadProgressPanel');
@@ -5640,32 +5647,42 @@ function switchView(id) {
    21. TOAST Y HELPERS UI
    ══════════════════════════════════════════════ */
 
-function toast(message, type = 'info') {
+let toastTimer: ReturnType<typeof setTimeout> | null = null;
+
+function toast(message: unknown, type: string = 'info'): void {
   const element = $('toast');
 
   if (!element) return;
 
-  element.textContent = message;
+  element.textContent = String(message);
   element.className = `toast show ${type}`;
 
-  clearTimeout(toast.timer);
+  if (toastTimer !== null) clearTimeout(toastTimer);
 
-  toast.timer = setTimeout(() => {
+  toastTimer = setTimeout(() => {
     element.className = 'toast';
+    toastTimer = null;
   }, 3000);
 }
 
-function flashButton(button, label, duration = 1200) {
+function flashButton(
+  button: HTMLButtonElement | HTMLElement | null | undefined,
+  label: string,
+  duration: number = 1200,
+): void {
   if (!button) return;
 
   const original = button.textContent;
-
   button.textContent = label;
-  button.disabled = true;
+  if ('disabled' in button) {
+    (button as HTMLButtonElement).disabled = true;
+  }
 
   setTimeout(() => {
     button.textContent = original;
-    button.disabled = false;
+    if ('disabled' in button) {
+      (button as HTMLButtonElement).disabled = false;
+    }
   }, duration);
 }
 
@@ -5677,6 +5694,7 @@ function bindEvents() {
   ensureLoginGate();
 
   document.querySelectorAll('.sb-item').forEach(item => {
+    if (!(item instanceof HTMLElement)) return;
     item.addEventListener('click', () => switchView(item.dataset.view));
     item.addEventListener('mouseenter', () => prefetchView(item.dataset.view));
     item.addEventListener('focus', () => prefetchView(item.dataset.view));
@@ -5696,18 +5714,18 @@ function bindEvents() {
 
   document.querySelectorAll('.quick-btn').forEach(button => {
     button.addEventListener('click', () => {
-      const input = $('cmdInput');
-
+      if (!(button instanceof HTMLElement)) return;
+      const input = $('cmdInput') as HTMLInputElement | null;
       if (!input) return;
-
       input.value = button.dataset.cmd || '';
       void sendCmd();
     });
   });
 
   $('btnClearConsole')?.addEventListener('click', () => {
-    if ($('console')) {
-      $('console').innerHTML = '';
+    const consoleEl = $('console');
+    if (consoleEl) {
+      consoleEl.innerHTML = '';
       pendingConsoleLogs.length = 0;
     }
   });
@@ -5734,6 +5752,7 @@ function bindEvents() {
   });
   uploadMenu?.querySelectorAll('[data-upload-mode]').forEach(item => {
     item.addEventListener('click', () => {
+      if (!(item instanceof HTMLElement)) return;
       const mode = item.dataset.uploadMode;
       closeUploadMenu();
       if (mode === 'folder') $('folderUploadInput')?.click();
@@ -5741,68 +5760,101 @@ function bindEvents() {
     });
   });
   document.addEventListener('click', event => {
-    if (uploadMenu && !uploadMenu.contains(event.target)) closeUploadMenu();
+    const target = event.target;
+    if (uploadMenu && target instanceof Node && !uploadMenu.contains(target)) {
+      closeUploadMenu();
+    }
   });
   document.addEventListener('keydown', event => {
     if (event.key === 'Escape') closeUploadMenu();
   });
 
   $('fileUploadInput')?.addEventListener('change', async event => {
-    await uploadSelectedFiles(event.target.files);
-    event.target.value = '';
+    const input = event.target as HTMLInputElement | null;
+    if (!input) return;
+    await uploadSelectedFiles(input.files);
+    input.value = '';
   });
 
   $('folderUploadInput')?.addEventListener('change', async event => {
-    await uploadSelectedFiles(event.target.files);
-    event.target.value = '';
+    const input = event.target as HTMLInputElement | null;
+    if (!input) return;
+    await uploadSelectedFiles(input.files);
+    input.value = '';
   });
+
   $('selectAllFiles')?.addEventListener('change', event => {
+    const source = event.target as HTMLInputElement | null;
+    if (!source) return;
     document.querySelectorAll('#fileList .file-row').forEach(row => {
+      if (!(row instanceof HTMLElement)) return;
       const checkbox = row.querySelector('input[type="checkbox"]');
-      checkbox.checked = event.target.checked;
-      if (checkbox.checked) selectedFilePaths.add(row.dataset.path);
-      else selectedFilePaths.delete(row.dataset.path);
+      if (!(checkbox instanceof HTMLInputElement)) return;
+      checkbox.checked = source.checked;
+      const path = row.dataset.path;
+      if (!path) return;
+      if (checkbox.checked) selectedFilePaths.add(path);
+      else selectedFilePaths.delete(path);
     });
     updateBulkBar();
   });
+
   document.querySelectorAll('[data-bulk-action]').forEach(button => {
-    button.addEventListener('click', () => runBulkAction(button.dataset.bulkAction));
+    button.addEventListener('click', () => {
+      if (!(button instanceof HTMLElement)) return;
+      runBulkAction(button.dataset.bulkAction);
+    });
   });
+
   const filesView = $('view-files');
   const filesLayout = filesView?.querySelector('.files-layout');
   if (filesView && filesLayout) {
-    ['dragenter', 'dragover'].forEach(type => filesView.addEventListener(type, event => {
-      event.preventDefault();
-      event.dataTransfer.dropEffect = 'copy';
-      filesLayout.classList.add('is-dragging');
-    }));
+    ['dragenter', 'dragover'].forEach(type => {
+      filesView.addEventListener(type, event => {
+        const dragEvent = event as DragEvent;
+        dragEvent.preventDefault();
+        if (dragEvent.dataTransfer) {
+          dragEvent.dataTransfer.dropEffect = 'copy';
+        }
+        filesLayout.classList.add('is-dragging');
+      });
+    });
     filesView.addEventListener('dragleave', event => {
-      if (!filesView.contains(event.relatedTarget)) filesLayout.classList.remove('is-dragging');
+      const related = (event as DragEvent).relatedTarget;
+      if (!(related instanceof Node) || !filesView.contains(related)) {
+        filesLayout.classList.remove('is-dragging');
+      }
     });
     filesView.addEventListener('drop', async event => {
-      event.preventDefault();
+      const dragEvent = event as DragEvent;
+      dragEvent.preventDefault();
       filesLayout.classList.remove('is-dragging');
-      const files = await getFilesFromDataTransfer(event.dataTransfer);
+      const files = await getFilesFromDataTransfer(dragEvent.dataTransfer);
       if (files?.length) await uploadSelectedFiles(files);
     });
   }
 
-  $('uploadProgressPause')?.addEventListener('click', () => {
+  const uploadProgressPause = $('uploadProgressPause') as HTMLButtonElement | null;
+  uploadProgressPause?.addEventListener('click', () => {
     const upload = activeUploadState;
     if (!upload || upload.finished) return;
     upload.paused = !upload.paused;
     if (upload.paused) {
       upload.status = 'Subida pausada';
-      $('uploadProgressPause').textContent = '▶ Reanudar';
+      if (uploadProgressPause) uploadProgressPause.textContent = '▶ Reanudar';
       updateUploadProgress(upload);
     } else {
-      upload.status = `Subiendo ${upload.completedFiles + 1}/${upload.totalFiles}`;
-      $('uploadProgressPause').textContent = 'Ⅱ Pausar';
-      upload.resumeUpload?.();
+      const done = Number(upload.completedFiles ?? 0);
+      const total = Number(upload.totalFiles ?? 0);
+      upload.status = `Subiendo ${done + 1}/${total}`;
+      if (uploadProgressPause) uploadProgressPause.textContent = 'Ⅱ Pausar';
+      const resume = upload.resumeUpload;
+      if (typeof resume === 'function') resume();
       upload.resumeUpload = null;
       updateUploadProgress(upload);
     }
   });
+
   const uploadProgressCancel = $('uploadProgressCancel') as HTMLButtonElement | null;
   uploadProgressCancel?.addEventListener('click', () => {
     if (activeDownloadAbort) {
@@ -5816,7 +5868,8 @@ function bindEvents() {
     const upload = activeUploadState;
     if (!upload || upload.finished) return;
     upload.cancelled = true;
-    upload.resumeUpload?.();
+    const resume = upload.resumeUpload;
+    if (typeof resume === 'function') resume();
     upload.resumeUpload = null;
     if (uploadProgressCancel) uploadProgressCancel.disabled = true;
     const pauseBtn = $('uploadProgressPause') as HTMLButtonElement | null;
