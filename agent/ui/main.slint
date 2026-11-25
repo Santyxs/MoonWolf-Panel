@@ -384,9 +384,9 @@ export component MainWindow inherits Window {
     min-width: 320px;
     preferred-width: 360px;
     max-width: 400px;
-    min-height: 470px;
-    preferred-height: 510px;
-    max-height: 570px;
+    min-height: 540px;
+    preferred-height: 600px;
+    max-height: 720px;
     background: Theme.bg;
     icon: @image-url("../../assets/icon.ico");
 
@@ -574,6 +574,17 @@ export component MainWindow inherits Window {
                         }
                     }
                     Divider { }
+                    FieldRow {
+                        caption: "ID DEL AGENTE";
+                        value: root.agent-id;
+                        code: true;
+                    }
+                    Divider { }
+                    FieldRow {
+                        caption: "CARPETA DE CONFIGURACIÓN";
+                        value: root.config-dir;
+                    }
+                    Divider { }
                     Rectangle {
                         height: 54px;
                         background: transparent;
@@ -590,7 +601,7 @@ export component MainWindow inherits Window {
                                 Text {
                                     text: "VERSIÓN";
                                     color: Theme.muted-dim;
-                                    font-size: 8px;
+                                    font-size: 10px;
                                     font-weight: 800;
                                     letter-spacing: 1.4px;
                                     horizontal-alignment: left;
@@ -620,9 +631,9 @@ export component MainWindow inherits Window {
                                 spacing: 2px;
                                 alignment: center;
                                 Text {
-                                    text: "SERVIDOR LOCAL";
+                                    text: root.local-status;
                                     color: Theme.muted-dim;
-                                    font-size: 8px;
+                                    font-size: 10px;
                                     font-weight: 800;
                                     letter-spacing: 1.2px;
                                     horizontal-alignment: left;
@@ -894,19 +905,26 @@ export component MainWindow inherits Window {
                 border-color: Theme.line;
                 clip: true;
 
-                Text {
-                    x: 12px;
-                    y: 10px;
-                    width: parent.width - 24px;
-                    height: parent.height - 20px;
-                    text: root.logs-text == "" ? "No hay registros para este filtro.\nLos eventos del Agent aparecerán aquí." : root.logs-text;
-                    color: root.logs-text == "" ? Theme.log-empty : Theme.log-text;
-                    font-family: "Consolas";
-                    font-size: 10px;
-                    wrap: word-wrap;
-                    overflow: elide;
-                    horizontal-alignment: left;
-                    vertical-alignment: top;
+                ScrollView {
+                    x: 0px;
+                    y: 0px;
+                    width: 100%;
+                    height: 100%;
+                    viewport-width: self.visible-width;
+                    // viewport-height grows with content
+
+                    Text {
+                        x: 12px;
+                        y: 10px;
+                        width: parent.width - 24px;
+                        text: root.logs-text == "" ? "No hay registros para este filtro.\nLos eventos del Agent aparecerán aquí." : root.logs-text;
+                        color: root.logs-text == "" ? Theme.log-empty : Theme.log-text;
+                        font-family: "Consolas";
+                        font-size: 10px;
+                        wrap: word-wrap;
+                        horizontal-alignment: left;
+                        vertical-alignment: top;
+                    }
                 }
             }
         }
