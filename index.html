@@ -18,8 +18,29 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Share+Tech+Mono&display=swap">
   <link rel="stylesheet" href="styles.css?v=20261110-ui-fix">
   <script src="dashboard.js?v=20261124-typescript" defer></script>
+  <style>
+    .skip-link {
+      position: absolute;
+      top: -40px;
+      left: 0;
+      background: var(--accent, #3b82f6);
+      color: #fff;
+      padding: 8px 16px;
+      z-index: 10000;
+      text-decoration: none;
+      font-weight: 600;
+      border-radius: 0 0 4px 0;
+      transition: top 0.2s;
+    }
+    .skip-link:focus {
+      top: 0;
+      outline: 2px solid #fff;
+      outline-offset: 2px;
+    }
+  </style>
 </head>
 <body>
+  <a href="#main-content" class="skip-link">Saltar al contenido principal</a>
   <div class="app">
 
     <!-- 1. SIDEBAR -->
@@ -89,7 +110,7 @@
     </aside>
 
     <!-- 2. MAIN -->
-    <main class="main">
+    <main class="main" id="main-content">
       <!-- 3. VISTA: TERMINAL -->
       <div class="view active" id="view-terminal">
         <div class="page-header">
@@ -354,7 +375,7 @@
       </div>
 
       <!-- 6. MODAL VERSIONES PLUGIN -->
-      <div id="plgVersionModal" class="plg-modal-overlay" style="display:none">
+      <div id="plgVersionModal" class="plg-modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="plgModalName">
         <div class="plg-modal">
           <div class="plg-modal-header">
             <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0">
