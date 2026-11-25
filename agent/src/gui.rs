@@ -300,7 +300,6 @@ pub async fn run(app: Arc<RwLock<AppState>>) -> anyhow::Result<()> {
                         });
                         ui.set_server_dir(snapshot.server_dir.into());
                         ui.set_version(snapshot.version.into());
-                        ui.set_agent_id(snapshot.agent_id.into());
                         ui.set_config_dir(snapshot.config_path.into());
                         ui.set_restart_visible(snapshot.restart_required);
                         let has_update = snapshot.update_available.is_some();
