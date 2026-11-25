@@ -600,6 +600,7 @@ async fn handle_direct_signal(
 pub async fn run(app: Arc<RwLock<AppState>>, panel_url: &str) {
     let mut backoff = RECONNECT_BASE_MS;
     let mut attempt: u32 = 0;
+    let mut consecutive_failures: u32 = 0;
 
     loop {
         if app.read().await.shutting_down {
@@ -617,29 +618,47 @@ pub async fn run(app: Arc<RwLock<AppState>>, panel_url: &str) {
 
         match &result {
             Ok(()) => {
+                consecutive_failures = 0;
                 info!("Cloud: conexión cerrada tras {:?}", duration);
             }
             Err(e) => {
+                consecutive_failures = consecutive_failures.saturating_add(1);
                 error!("Cloud: {e:#}");
                 let mut s = app.write().await;
                 s.cloud_connected = false;
                 s.pairing_code = None;
-                s.add_log("error", humanize_cloud_error(&format!("{e}")));
+                // Evitar inundar el log cuando Cloud está caído largo rato.
+                if consecutive_failures <= 3 || consecutive_failures % 10 == 0 {
+                    s.add_log("error", humanize_cloud_error(&format!("{e}")));
+                }
             }
         }
 
         if duration >= HEALTHY_CONNECTION {
             backoff = RECONNECT_BASE_MS;
+            consecutive_failures = 0;
         } else {
             backoff = (backoff * 2).min(RECONNECT_MAX_MS);
         }
 
-        info!("Reintento de Cloud en {backoff} ms…");
-        {
+        // Log de reintento solo al principio o cada N fallos.
+        if consecutive_failures <= 3 || consecutive_failures % 10 == 0 {
+            info!("Reintento de Cloud en {backoff} ms…");
             let mut s = app.write().await;
             s.add_log("warn", format!("Reconexión programada en {backoff} ms"));
         }
-        sleep_ms(backoff).await;
+
+        // Sueño interrumpible: salir enseguida si el Agent se está cerrando.
+        let mut waited = 0u64;
+        const SLICE_MS: u64 = 500;
+        while waited < backoff {
+            if app.read().await.shutting_down {
+                return;
+            }
+            let step = (backoff - waited).min(SLICE_MS);
+            sleep_ms(step).await;
+            waited += step;
+        }
     }
 }
 
@@ -959,6 +978,7 @@ async fn connect_once(
     let mut last_activity = Instant::now();
     let mut last_stats = Instant::now() - Duration::from_secs(10);
     let mut last_cpu: Option<(u64, u64)> = None; // (proc_time_units, wall_ms)
+    let mut last_stats_payload: Option<String> = None;
     const STATS_INTERVAL: Duration = Duration::from_secs(5);
 
     loop {
@@ -1071,6 +1091,13 @@ async fn connect_once(
                 (s.config.server_dir.clone(), s.mc_pid, s.mc_started_at_ms)
             };
             let stats = collect_server_stats(&app, &server_dir, pid, started, &mut last_cpu).await;
+            // No emitir si no hay cambios relevantes (ahorra ancho de banda y trabajo en el panel).
+            let fingerprint = stats.to_string();
+            if last_stats_payload.as_ref() == Some(&fingerprint) {
+                last_stats = Instant::now();
+                continue;
+            }
+            last_stats_payload = Some(fingerprint);
             if let Err(e) = client
                 .emit(
                     "event",
