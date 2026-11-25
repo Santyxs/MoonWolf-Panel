@@ -1,3 +1,8 @@
+
+/* ══════════════════════════════════════════════
+   1. TOKENS
+   ══════════════════════════════════════════════ */
+
 :root {
   --bg:        #05080d;
   --surface:   #0b1016;
@@ -58,6 +63,11 @@
   --glow-yellow: 0 0 18px rgba(255,204,0,0.15);
 }
 
+
+/* ══════════════════════════════════════════════
+   2. RESET
+   ══════════════════════════════════════════════ */
+
 *, *::before, *::after {
   margin: 0;
   padding: 0;
@@ -116,6 +126,11 @@ select:focus:not(:focus-visible) {
   min-height: 100dvh;
 }
 
+
+/* ══════════════════════════════════════════════
+   2b. ACCESSIBILITY
+   ══════════════════════════════════════════════ */
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -151,6 +166,11 @@ select:focus:not(:focus-visible) {
   outline: 2px solid #fff;
   outline-offset: 2px;
 }
+
+
+/* ══════════════════════════════════════════════
+   3. SIDEBAR
+   ══════════════════════════════════════════════ */
 
 .sidebar {
   width: var(--sidebar-w);
@@ -333,6 +353,11 @@ select:focus:not(:focus-visible) {
   flex-shrink: 0;
 }
 
+
+/* ══════════════════════════════════════════════
+   4. MAIN
+   ══════════════════════════════════════════════ */
+
 .main {
   margin-left: var(--sidebar-w);
   flex: 1;
@@ -379,6 +404,11 @@ select:focus:not(:focus-visible) {
   to   { opacity: 1; transform: none; }
 }
 
+
+/* ══════════════════════════════════════════════
+   5. PANEL
+   ══════════════════════════════════════════════ */
+
 .panel {
   background: linear-gradient(145deg, rgba(15,21,29,.98), rgba(11,16,22,.98));
   border: 1px solid var(--border);
@@ -409,6 +439,11 @@ select:focus:not(:focus-visible) {
   align-items: center;
   gap: var(--sp-sm);
 }
+
+
+/* ══════════════════════════════════════════════
+   6. SHARED BUTTON BASE
+   ══════════════════════════════════════════════ */
 
 .small-btn,
 .save-btn,
@@ -446,6 +481,11 @@ select:focus:not(:focus-visible) {
   background: rgba(255,68,85,0.06);
 }
 
+
+/* ══════════════════════════════════════════════
+   7. UPLOAD MENU
+   ══════════════════════════════════════════════ */
+
 .upload-menu { position: relative; display: inline-flex; }
 .upload-menu-trigger { display: inline-flex; align-items: center; gap: 6px; }
 .upload-menu-caret { font-size: 10px; line-height: 1; color: var(--muted); transition: transform var(--t-fast); }
@@ -472,6 +512,11 @@ select:focus:not(:focus-visible) {
 .upload-menu-item:hover, .upload-menu-item:focus-visible {
   background: var(--accentDim); color: var(--accent); outline: none;
 }
+
+
+/* ══════════════════════════════════════════════
+   8. SERVER CONTROLS
+   ══════════════════════════════════════════════ */
 
 .controls {
   display: grid;
@@ -538,6 +583,11 @@ select:focus:not(:focus-visible) {
 .btn-primary:disabled { opacity: 0.4; }
 a.btn-primary { text-decoration: none; }
 
+
+/* ══════════════════════════════════════════════
+   9. STATS GRID
+   ══════════════════════════════════════════════ */
+
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
@@ -583,6 +633,11 @@ a.btn-primary { text-decoration: none; }
 .stat-value.tps-warn { color: var(--yellow); text-shadow: 0 0 16px rgba(255,204,0,.2); }
 .stat-value.tps-bad  { color: var(--red); text-shadow: 0 0 16px rgba(255,68,85,.2); }
 
+
+/* ══════════════════════════════════════════════
+   10. CONSOLE
+   ══════════════════════════════════════════════ */
+
 .console {
   height: 620px;
   overflow-y: auto;
@@ -601,6 +656,11 @@ a.btn-primary { text-decoration: none; }
 .log-line.success .log-text { color: var(--green); }
 .log-line.system  .log-text { color: var(--accent); }
 .log-line.cmd     .log-text { color: var(--purple); }
+
+
+/* ══════════════════════════════════════════════
+   11. ANSI (terminal)
+   ══════════════════════════════════════════════ */
 
 .ansi-bold      { font-weight: 700; }
 .ansi-italic    { font-style: italic; }
@@ -624,6 +684,11 @@ a.btn-primary { text-decoration: none; }
 .ansi-bright-magenta { color: #e8baff; }
 .ansi-bright-cyan    { color: #83efff; }
 .ansi-bright-white   { color: #ffffff; }
+
+
+/* ══════════════════════════════════════════════
+   12. Códigos § de Minecraft — paleta del cliente
+   ══════════════════════════════════════════════ */
 
 .mc-black        { color: #000000; }
 .mc-dark-blue    { color: #0000AA; }
@@ -706,6 +771,11 @@ a.btn-primary { text-decoration: none; }
   font-size: var(--fs-xs);
   margin-bottom: 2px;
 }
+
+
+/* ══════════════════════════════════════════════
+   13. FILE MANAGER
+   ══════════════════════════════════════════════ */
 
 .files-layout.is-dragging {
   position: relative;
@@ -980,6 +1050,11 @@ a.btn-primary { text-decoration: none; }
 .CodeMirror-scrollbar-filler,
 .CodeMirror-gutter-filler { background: #0b1016; }
 
+
+/* ══════════════════════════════════════════════
+   14. FILE CONTEXT MENU
+   ══════════════════════════════════════════════ */
+
 .file-ctx-menu {
   position: fixed;
   z-index: 1000;
@@ -1029,6 +1104,11 @@ a.btn-primary { text-decoration: none; }
   .files-bulkbar { align-items: flex-start; flex-direction: column; }
   .upload-progress-meta { display: grid; grid-template-columns: 1fr 1fr; }
 }
+
+
+/* ══════════════════════════════════════════════
+   15. PLUGINS
+   ══════════════════════════════════════════════ */
 
 .plg-tab-btn {
   background: var(--surface2);
@@ -1485,6 +1565,11 @@ a.btn-primary { text-decoration: none; }
 }
 .installed-plugin-row .small-btn { flex-shrink: 0; }
 
+
+/* ══════════════════════════════════════════════
+   16. VERSIONES — SERVIDORES POR CATEGORÍA
+   ══════════════════════════════════════════════ */
+
 #versionList {
   display: flex;
   flex-direction: column;
@@ -1612,6 +1697,11 @@ a.btn-primary { text-decoration: none; }
   }
 
 }
+
+
+/* ══════════════════════════════════════════════
+   17. VERSIONES DE MINECRAFT
+   ══════════════════════════════════════════════ */
 
 .ver-loading-page,
 .ver-loading {
@@ -1804,6 +1894,11 @@ a.btn-primary { text-decoration: none; }
   margin-top: 7px;
 }
 
+
+/* ══════════════════════════════════════════════
+   18. USERS
+   ══════════════════════════════════════════════ */
+
 .user-list { padding: var(--sp-sm); }
 
 .icon-btn {
@@ -1822,6 +1917,11 @@ a.btn-primary { text-decoration: none; }
 }
 .icon-btn:hover      { border-color: var(--red);    color: var(--red);    background: rgba(255,68,85,0.06); }
 .icon-btn.edit:hover { border-color: var(--accent); color: var(--accent); background: var(--accentDim); }
+
+
+/* ══════════════════════════════════════════════
+   19. BACKUPS
+   ══════════════════════════════════════════════ */
 
 .backup-list { padding: var(--sp-sm); }
 .backup-row  {
@@ -1846,6 +1946,11 @@ a.btn-primary { text-decoration: none; }
   color: var(--yellow);
   background: rgba(255,204,0,.08);
 }
+
+
+/* ══════════════════════════════════════════════
+   20. PORTS
+   ══════════════════════════════════════════════ */
 
 .port-list { padding: var(--sp-sm); }
 .port-row  {
@@ -1931,6 +2036,11 @@ a.btn-primary { text-decoration: none; }
   .ports-toolbar { align-items:flex-start; }
 }
 
+
+/* ══════════════════════════════════════════════
+   21. STARTUP
+   ══════════════════════════════════════════════ */
+
 .startup-form    { padding: 18px; display: flex; flex-direction: column; gap: 18px; }
 .form-group      { display: flex; flex-direction: column; gap: 6px; }
 .form-label      {
@@ -1978,6 +2088,11 @@ a.btn-primary { text-decoration: none; }
   box-shadow: 0 0 16px rgba(0,200,255,0.12);
   transform: translateY(-1px);
 }
+
+
+/* ══════════════════════════════════════════════
+   22. Toggle cards (startup + ports)
+   ══════════════════════════════════════════════ */
 
 .startup-toggles {
   display: grid;
@@ -2053,6 +2168,11 @@ a.btn-primary { text-decoration: none; }
   flex-shrink: 0;
 }
 
+
+/* ══════════════════════════════════════════════
+   23. Toggle switch
+   ══════════════════════════════════════════════ */
+
 .toggle {
   position: relative;
   display: inline-block;
@@ -2103,6 +2223,11 @@ a.btn-primary { text-decoration: none; }
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+
+
+/* ══════════════════════════════════════════════
+   24. SETTINGS
+   ══════════════════════════════════════════════ */
 
 .settings-list {
   padding: 10px;
@@ -2269,6 +2394,11 @@ a.btn-primary { text-decoration: none; }
   transform: translateY(0);
 }
 
+
+/* ══════════════════════════════════════════════
+   25. ACTIVITY LOG
+   ══════════════════════════════════════════════ */
+
 .activity-list {
   padding: 0;
   min-height: 280px;
@@ -2426,6 +2556,11 @@ a.btn-primary { text-decoration: none; }
   background: rgba(255, 68, 85, 0.08);
 }
 
+
+/* ══════════════════════════════════════════════
+   26. EMPTY STATE & TOAST
+   ══════════════════════════════════════════════ */
+
 .empty-state {
   display: flex;
   flex-direction: column;
@@ -2468,6 +2603,11 @@ a.btn-primary { text-decoration: none; }
 .toast.warn { border-color: var(--yellow); color: var(--yellow); background: rgba(255,204,0,0.06); }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+
+/* ══════════════════════════════════════════════
+   27. RESPONSIVE
+   ══════════════════════════════════════════════ */
 
 @media (max-width: 768px) {
   :root { --sidebar-w: 58px; }
@@ -2543,6 +2683,11 @@ a.btn-primary { text-decoration: none; }
     width: 100%;
   }
 }
+
+
+/* ══════════════════════════════════════════════
+   28. USERS
+   ══════════════════════════════════════════════ */
 
 .user-stats-grid {
   display: grid;
@@ -2718,6 +2863,11 @@ a.btn-primary { text-decoration: none; }
   .stat-value { font-size: 14px; }
   .toast { right: 10px; bottom: 10px; left: 10px; max-width: none; }
 }
+
+
+/* ══════════════════════════════════════════════
+   29. BACKUP PROGRESS
+   ══════════════════════════════════════════════ */
 
 .backup-progress {
   margin-bottom: var(--sp-lg);
