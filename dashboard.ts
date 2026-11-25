@@ -137,7 +137,6 @@ interface ViewCacheEntry {
   data: unknown;
 }
 
-
 interface SoftLoadOptions {
   soft?: boolean;
   force?: boolean;
@@ -223,7 +222,6 @@ interface DeleteItem {
   [key: string]: unknown;
 }
 
-
 interface UploadFile extends File {
   customRelativePath?: string;
 }
@@ -271,7 +269,6 @@ interface ActivityEntry {
   [key: string]: unknown;
 }
 
-/** Cabecera de respuesta del canal directo WebRTC. */
 interface DirectResponseHead {
   ok?: boolean;
   status?: number;
@@ -300,7 +297,7 @@ interface RpcResult {
   contentLength?: number;
   bodyBase64?: string;
   bodyBytes?: Uint8Array;
-  /** true cuando el cuerpo se entregó por onChunk sin bufferizar. */
+  
   streamed?: boolean;
   data?: unknown;
   error?: string;
@@ -429,7 +426,6 @@ function isSocketPayload(value: unknown): value is Record<string, unknown> {
   return isRecord(value);
 }
 
-
 function isStartupConfig(value: unknown): value is StartupConfig {
   return isRecord(value) &&
     optionalField(value, 'jar', isString) &&
@@ -487,7 +483,6 @@ interface StartupResponse extends ApiResult {
 const CLOUD_URL: string = location.origin;
 const CLOUD_PATH = '/socket.io' as const;
 
-// Reutilizar codificadores evita crear instancias durante cada petición RPC.
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
 
@@ -498,7 +493,6 @@ const AGENT_KEY = 'moonwolf_agent_id' as const;
 const PERMISSION_KEY = 'moonwolf_panel_permission' as const;
 const SESSION_KIND_KEY = 'moonwolf_panel_kind' as const;
 
-/** Caché de nodos por id. Solo guarda elementos aún conectados al documento. */
 const domCache = new Map<string, HTMLElement>();
 
 function $(id: string): HTMLElement | null {
@@ -527,7 +521,6 @@ function $btn(id: string): HTMLButtonElement | null {
   return el instanceof HTMLButtonElement ? el : null;
 }
 
-/** Invalida la caché DOM (un id o toda). */
 function invalidateDom(id?: string): void {
   if (id) domCache.delete(id);
   else domCache.clear();
@@ -541,7 +534,6 @@ function escHtml(value: unknown): string {
     .replace(/"/g, '&quot;');
 }
 
-/** Retrasa la ejecución hasta que dejen de llegar llamadas durante `ms`. */
 function debounce<Args extends unknown[]>(
   fn: (...args: Args) => void,
   ms: number,
@@ -556,7 +548,6 @@ function debounce<Args extends unknown[]>(
   };
 }
 
-/** Como máximo una ejecución cada `ms` (leading + trailing). */
 function throttle<Args extends unknown[]>(
   fn: (...args: Args) => void,
   ms: number,
@@ -633,7 +624,7 @@ let currentDir = '';
 let currentPlugin: unknown = null;
 let pluginSource = 'all';
 let priceFilter = 'all';
-/** Generación de búsqueda: descarta respuestas obsoletas si el usuario busca otra vez. */
+
 let pluginSearchGeneration = 0;
 
 const pending: Map<string, (result: RpcResult) => void> = new Map();
@@ -656,7 +647,6 @@ function getViewCache(key: string, ttl: number = VIEW_CACHE_TTL_MS): unknown | n
     return null;
   }
 
-  // Refresh LRU order without extending the entry's original TTL.
   viewCache.delete(key);
   viewCache.set(key, entry);
   return entry.data;
@@ -706,7 +696,7 @@ function cachedApi(
   let request: Promise<unknown>;
   request = api(pathname, init)
     .then((data: unknown) => {
-      // A forced refresh supersedes any older in-flight request for this key.
+
       if (viewInflight.get(cacheKey) === request && isRecord(data) && data['ok'] !== false) {
         setViewCache(cacheKey, data);
       }
@@ -867,7 +857,6 @@ async function ensureCodeMirror(mode?: string): Promise<boolean> {
     return false;
   }
 }
-
 
 /* ══════════════════════════════════════════════
    5. LOGIN Y SESIÓN
@@ -1321,7 +1310,7 @@ async function connectCloud(manual: boolean = false): Promise<void> {
           closeDirectLink(true);
         }
       } catch {
-        /* señal ICE inválida: se reintentará el canal */
+        
       }
     });
 
@@ -1495,8 +1484,7 @@ function sendCloudRpcRequest(
     };
 
     const abortHandler = (): void => {
-      // This cancels the panel's wait and releases its pending slot. It does not
-      // claim to cancel work that the Agent may already have started remotely.
+
       finish(() => reject(new DOMException('Aborted', 'AbortError')));
     };
 
@@ -1608,8 +1596,7 @@ function rpcCloudBinary(pathname: string, init: RpcInit = {}): Promise<RpcResult
       body = new Uint8Array(rawBody.buffer as ArrayBuffer, rawBody.byteOffset, rawBody.byteLength);
       contentType = headers.get('Content-Type') || 'application/octet-stream';
     } else {
-      // Conserva el comportamiento anterior de reqwest::RequestBuilder::json,
-      // incluidos los cuerpos de tipo string (se serializan como JSON string).
+
       body = TEXT_ENCODER.encode(JSON.stringify(rawBody));
       contentType = 'application/json';
     }
@@ -1905,7 +1892,7 @@ async function onDirectMessage(data: ArrayBuffer | Uint8Array): Promise<void> {
         if (direct.reqs.has(id)) {
           direct.reqs.delete(id);
           req.reject(error);
-          try { void sendDirect(DF.REQ_END, id); } catch { /* ignore */ }
+          try { void sendDirect(DF.REQ_END, id); } catch {  }
         }
       });
     } else {
@@ -1990,7 +1977,6 @@ async function directRequest(method: string, pathname: string, body?: unknown, {
     signal.addEventListener('abort', abortHandler, { once: true });
   }
 
-  // Evitar un rechazo sin gestionar si se cancela antes de llegar al await.
   done.catch(() => {});
 
   try {
@@ -2087,12 +2073,6 @@ async function waitForDirectReady(
   }
 }
 
-/**
- * Enruta una petición HTTP.
- *
- * Las rutas de archivos intentan el canal directo (WebRTC). Si no está listo
- * o falla, caen a `rpcCloud` para no bloquear transferencias.
- */
 function rpcHttp(pathname: string, init: RpcInit = {}): Promise<RpcResult> {
   const method = String(init.method || 'GET').toUpperCase();
 
@@ -2176,7 +2156,6 @@ function setAgentOnline(online: boolean): void {
   const nextState = Boolean(online);
   const previousState = agentOnline;
 
-  // startDirectLink() comprueba agentOnline: actualizarlo antes de invocarlo.
   agentOnline = nextState;
   if (nextState) startDirectLink();
   else closeDirectLink(false);
@@ -2249,7 +2228,6 @@ function updateAgentStatusBadges() {
   }
 }
 
-
 function toServerStatus(value: string): ServerStatus {
   if (value === 'online' || value === 'offline' || value === 'starting' || value === 'restarting' || value === 'stopping') {
     return value;
@@ -2285,7 +2263,7 @@ function updateStatusUi(status: string): void {
   const stopButton = $btn('btnStop');
 
   if (stopButton) {
-    // Permitir parar también mientras arranca o reinicia (evitar quedarse colgado en STARTING).
+
     const canStop = ['online', 'starting', 'restarting', 'stopping'].includes(status);
     stopButton.disabled = !canStop || !agentOnline;
   }
@@ -2399,7 +2377,6 @@ const LOG_IGNORE_PATTERNS = [
   /Thread RCON Client \/127\.0\.0\.1 (started|shutting down)/i,
 ];
 
-// Respuestas típicas de list/tps/tick query (solo tras spam automático del agent)
 const METRIC_REPLY_PATTERNS = [
   /There are \d+ of a max of \d+ players online/i,
   /TPS from last 1m,? 5m,? 15m:/i,
@@ -2411,8 +2388,6 @@ const METRIC_REPLY_PATTERNS = [
 
 const METRIC_CMD_RE = /^(list|tps|tick query)\s*$/i;
 
-// Tras eco de sonda automática del agent (legacy / agents viejos): ocultar respuestas.
-// Los comandos manuales del usuario se distinguen con pendingUserMetricCmd (sin ventana global).
 let suppressMetricRepliesUntil = 0;
 let pendingUserMetricCmd = false;
 
@@ -2425,9 +2400,6 @@ function shouldIgnoreLog(line: unknown): boolean {
 
   if (LOG_IGNORE_PATTERNS.some(re => re.test(text))) return true;
 
-  // Eco de list/tps/tick query:
-  // - Si el usuario lo acaba de pedir (pendingUserMetricCmd), mostrar eco + respuesta.
-  // - Si no (sonda automática del Agent legada), ocultar eco y respuestas breves.
   if (/^\s*>\s*(list|tps|tick query)\s*$/i.test(text)) {
     if (pendingUserMetricCmd) {
       pendingUserMetricCmd = false;
@@ -2523,7 +2495,6 @@ function renderConsoleText(value: unknown): string {
     append(text.slice(cursor, match.index));
     cursor = match.index + match[0].length;
 
-    // Minecraft 1.16+: §x§R§R§G§G§B§B
     if (!match[1] && !match[2] && /^\u00a7x/i.test(match[0])) {
       const hex = match[0].replace(/\u00a7/gi, '').slice(1);
       if (/^[0-9a-f]{6}$/i.test(hex)) {
@@ -2535,7 +2506,6 @@ function renderConsoleText(value: unknown): string {
       continue;
     }
 
-    // Minecraft legacy formatting codes.
     if (match[2]) {
       const code = match[2].toLowerCase();
       if (Object.prototype.hasOwnProperty.call(MINECRAFT_COLORS, code)) {
@@ -2554,11 +2524,10 @@ function renderConsoleText(value: unknown): string {
       } else if (code === 'm') {
         strike = true;
       }
-      // §k (obfuscated) intentionally remains readable rather than scrambling output.
+
       continue;
     }
 
-    // ANSI SGR formatting, including 256-color and true-color foreground/background.
     const codes = (match[1] || '0').split(';').map(part => part === '' ? 0 : Number(part));
     for (let i = 0; i < codes.length; i++) {
       const code = codes[i];
@@ -2628,7 +2597,6 @@ function getConsoleLogType(entry: ConsoleLogEntry | null | undefined): string {
     .replace(/\u00a7(?:x(?:\u00a7[0-9a-f]){6}|[0-9a-fk-or])/gi, '')
     .slice(0, 220);
 
-  // Java/Minecraft loggers commonly print their level inside brackets, even on stdout.
   if (/\b(?:ERROR|FATAL|SEVERE)\b(?=[\]/:])/i.test(line)) return 'error';
   if (/\b(?:WARN|WARNING)\b(?=[\]/:])/i.test(line)) return 'warn';
   if (/^\s*>/.test(line)) return 'cmd';
@@ -2640,8 +2608,6 @@ const MAX_CONSOLE_LINES = 3_000;
 const pendingConsoleLogs: ConsoleLogEntry[] = [];
 let consoleFlushScheduled = false;
 
-// Bukkit/Paper no siempre conserva los estilos de /plugins al volcar la salida
-// a stdout. Recuperamos el estado conocido a partir de los mensajes de carga.
 const consolePluginStates = new Map<string, boolean>();
 let consolePluginListSection = '';
 
@@ -2658,8 +2624,6 @@ function renderPluginListLine(line: unknown): string {
   const text = String(line || '');
   if (!consolePluginListSection) return renderConsoleText(text);
 
-  // Paper/Bukkit divide las listas largas en varias líneas. La primera lleva
-  // "- ", pero las continuaciones no; ambas deben colorearse igual.
   const loggerMatch = text.match(/^(.*?\]:\s*)(.*)$/);
   const prefix = loggerMatch?.[1] ?? '';
   let namesText = loggerMatch?.[2] ?? text;
@@ -2669,7 +2633,7 @@ function renderPluginListLine(line: unknown): string {
     const cleanName = name.trim();
     if (!cleanName) return '';
     const enabled = consolePluginStates.get(cleanName.toLowerCase());
-    // Verde por defecto; rojo si los logs registraron que se deshabilitó.
+
     const color = enabled === false ? 'mc-red' : 'mc-green';
     return `<span class="${color}">${escHtml(cleanName)}</span>`;
   }).join('<span>, </span>');
@@ -2684,14 +2648,13 @@ function renderConsoleEntry(line: unknown): string {
     return renderConsoleText(text);
   }
   if (consolePluginListSection) {
-    // La salida de /plugins usa una línea con guion y después continuaciones
-    // sin guion. Detectamos ambas por el separador de nombres.
+
     const loggerMatch = text.match(/^.*?\]:\s*(.*)$/);
     const content = loggerMatch?.[1] ?? text;
     if (/^-\s*[^,]+/.test(content) || /,\s*[^,]+/.test(content)) {
       return renderPluginListLine(text);
     }
-    // La siguiente sección del log ya no pertenece a la lista de plugins.
+
     if (!/\b(?:INFO|WARN|ERROR)\b/i.test(text)) consolePluginListSection = '';
   }
   return renderConsoleText(text);
@@ -2712,12 +2675,11 @@ function flushConsoleLogs() {
     fragment.appendChild(div);
   }
 
-  // Mantener un máximo fijo de líneas evita que el DOM crezca sin límite.
   const excess = consoleEl.childElementCount + fragment.childElementCount - MAX_CONSOLE_LINES;
   if (excess >= consoleEl.childElementCount && excess > 0) {
     consoleEl.replaceChildren();
   } else if (excess > 0) {
-    // removeChild en bucle corto; para lotes grandes usamos un único reflow vía Range.
+
     if (excess > 80) {
       const range = document.createRange();
       range.setStartBefore(consoleEl.firstChild!);
@@ -2831,8 +2793,6 @@ async function sendCmd() {
   const button = $btn('btnSendCmd');
   if (!input || sendingConsoleCommand) return;
 
-  // El prefijo "/" ya aparece en la interfaz; también aceptamos que el
-  // usuario lo escriba manualmente y evitamos enviarlo duplicado al servidor.
   const rawCmd = input.value;
   const cmd = rawCmd.trim().replace(/^\/+/, '').trim();
   if (!cmd) return;
@@ -2847,7 +2807,6 @@ async function sendCmd() {
     return;
   }
 
-  // Solo tras validar conexión: marcar comando manual de métricas (sin ventana global).
   if (METRIC_CMD_RE.test(cmd)) {
     pendingUserMetricCmd = true;
     suppressMetricRepliesUntil = 0;
@@ -3021,7 +2980,6 @@ function populateFiles(dir: string = '', options: SoftLoadOptions = {}): void {
           const relativePath = requestedDir ? `${requestedDir}/${item.name}` : item.name;
           const checked = selectedFilePaths.has(relativePath) ? 'checked' : '';
 
-          // Keep metadata for selections made in a different directory too.
           if (selectedFilePaths.has(relativePath)) {
             selectedFileTypes.set(relativePath, item.type === 'dir');
           }
@@ -3770,7 +3728,7 @@ async function uploadOneFile(file: UploadFile, relativePath: string, progressSta
         break;
       } catch (error: unknown) {
         lastError = error;
-        // 409 Conflict: no tiene sentido reintentar — el archivo ya existe.
+
         if (isRecord(error) && Boolean(error['isFileConflict'])) {
           throw error;
         }
@@ -4470,7 +4428,7 @@ async function pluginSearch(): Promise<void> {
     const rawData = await api(
       `/api/plugins/search?q=${encodeURIComponent(query)}&source=${encodeURIComponent(pluginSource)}`
     );
-    // Respuesta obsoleta: el usuario ya lanzó otra búsqueda.
+
     if (generation !== pluginSearchGeneration) return;
 
     const data = isRecord(rawData) ? rawData : {};
@@ -6087,7 +6045,7 @@ async function pollBackupProgress(signal?: AbortSignal): Promise<void> {
       width: percent,
     });
   } catch {
-    // A transient polling failure must not stop the backup operation.
+
   }
 }
 
@@ -6688,8 +6646,7 @@ async function loadStartup(options: SoftLoadOptions = {}): Promise<void> {
     try {
       const rawData = await api('/api/startup/detect-version', {
         method: 'POST',
-        // api()/rpcCloud() serializa los objetos JSON. No serializar aquí
-        // para evitar que el Agent reciba una cadena JSON en vez del objeto.
+
         body: { jar: jar || undefined, force: true, persist: true },
       });
       if (!isVersionDetectionResponse(rawData)) {
@@ -7000,7 +6957,7 @@ function renderActivity() {
 
 function prefetchView(id: string | undefined): void {
   if (!agentOnline || !id) return;
-  // Solo calienta la caché HTTP; no toca el DOM.
+
   switch (id) {
     case 'files':
       cachedApi(`files:${currentDir || ''}`, `/api/files?dir=${encodeURIComponent(currentDir || '')}`, undefined, 15_000);
@@ -7135,7 +7092,6 @@ function flashButton(
 function bindEvents() {
   ensureLoginGate();
 
-  // Delegación en el sidebar: un solo listener en lugar de 3 por ítem.
   const sidebar = document.querySelector('.sidebar');
   if (sidebar instanceof HTMLElement) {
     sidebar.addEventListener('click', event => {
