@@ -26,6 +26,9 @@ use crate::{AppState, LOCAL_PORT, LogEntry, sleep_ms};
 const RECONNECT_BASE_MS: u64 = 1_000;
 const RECONNECT_MAX_MS: u64 = 30_000;
 const CONNECT_WAIT_MS: u64 = 20_000;
+/// Contador de connect_error para no inundar logs durante reintentos.
+static CONNECT_ERROR_LOG_COUNT: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const HEALTHY_CONNECTION: Duration = Duration::from_secs(60);
@@ -720,6 +723,7 @@ async fn connect_once(
                     warn!("No se pudo anunciar RPC binario: {e}");
                 }
                 {
+                    CONNECT_ERROR_LOG_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
                     let mut s = app.write().await;
                     s.cloud_connected = true;
                     s.add_log("info", "Conectado a MoonWolf Cloud.");
@@ -749,11 +753,20 @@ async fn connect_once(
             let app = Arc::clone(&app_on_error);
             async move {
                 let msg = payload_debug(&payload);
-                warn!("Cloud error event: {msg}");
-                let mut s = app.write().await;
-                s.cloud_connected = false;
-                s.pairing_code = None;
-                s.add_log("error", humanize_cloud_error(&msg));
+                let n = CONNECT_ERROR_LOG_COUNT
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    + 1;
+                if n <= 3 || n % 10 == 0 {
+                    warn!("Cloud error event (#{n}): {msg}");
+                    let mut s = app.write().await;
+                    s.cloud_connected = false;
+                    s.pairing_code = None;
+                    s.add_log("error", humanize_cloud_error(&msg));
+                } else {
+                    let mut s = app.write().await;
+                    s.cloud_connected = false;
+                    s.pairing_code = None;
+                }
             }
             .boxed()
         })
@@ -763,14 +776,24 @@ async fn connect_once(
                 let app = Arc::clone(&app);
                 async move {
                     let msg = payload_debug(&payload);
-                    error!("connect_error: {msg}");
-                    let mut s = app.write().await;
-                    s.cloud_connected = false;
-                    s.pairing_code = None;
-                    s.add_log(
-                        "error",
-                        humanize_cloud_error(&format!("connect_error: {msg}")),
-                    );
+                    let n = CONNECT_ERROR_LOG_COUNT
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        + 1;
+                    // Primeros 3 y luego cada 10: evita spam mientras Cloud está caído.
+                    if n <= 3 || n % 10 == 0 {
+                        error!("connect_error (#{n}): {msg}");
+                        let mut s = app.write().await;
+                        s.cloud_connected = false;
+                        s.pairing_code = None;
+                        s.add_log(
+                            "error",
+                            humanize_cloud_error(&format!("connect_error: {msg}")),
+                        );
+                    } else {
+                        let mut s = app.write().await;
+                        s.cloud_connected = false;
+                        s.pairing_code = None;
+                    }
                 }
                 .boxed()
             }
