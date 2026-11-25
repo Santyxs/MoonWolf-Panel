@@ -774,8 +774,9 @@ async fn connect_once(
                 let app = Arc::clone(&app);
                 async move {
                     let msg = payload_debug(&payload);
-                    let n =
-                        CONNECT_ERROR_LOG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    let n = CONNECT_ERROR_LOG_COUNT
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        + 1;
                     // Primeros 3 y luego cada 10: evita spam mientras Cloud está caído.
                     if n <= 3 || n % 10 == 0 {
                         error!("connect_error (#{n}): {msg}");
