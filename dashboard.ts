@@ -4,12 +4,30 @@
    0. AMBIENT (Socket.IO · CodeMirror)
    ══════════════════════════════════════════════ */
 
-type SocketHandler = (...args: any[]) => void;
+interface SocketEventMap {
+  connect: [];
+  connect_error: [error: unknown];
+  direct_config: [data: unknown];
+  direct_signal: [message: unknown];
+  cloud_ready: [data: unknown];
+  agent_status: [data: unknown];
+  session_info: [data: unknown];
+  share_revoked: [];
+  status: [status: unknown];
+  log: [entry: unknown];
+  log_batch: [entries: unknown];
+  history: [entries: unknown];
+  stats: [stats: unknown];
+  rpc_result: [result: unknown];
+  agent_capabilities: [data: unknown];
+  rpc_result_binary: [packet: unknown];
+  disconnect: [reason: unknown];
+}
 
 interface SocketLike {
-  on(event: string, handler: SocketHandler): SocketLike;
-  once(event: string, handler: SocketHandler): SocketLike;
-  off(event: string, handler?: SocketHandler): SocketLike;
+  on<K extends keyof SocketEventMap>(event: K, handler: (...args: SocketEventMap[K]) => void): SocketLike;
+  once<K extends keyof SocketEventMap>(event: K, handler: (...args: SocketEventMap[K]) => void): SocketLike;
+  off<K extends keyof SocketEventMap>(event: K, handler?: (...args: SocketEventMap[K]) => void): SocketLike;
   emit(event: string, ...args: unknown[]): SocketLike;
   connect(): SocketLike;
   disconnect(): SocketLike;
@@ -151,12 +169,52 @@ interface FilesApiResponse {
   [key: string]: unknown;
 }
 
-function isFilesApiResponse(value: unknown): value is FilesApiResponse {
-  return isRecord(value);
+function isString(value: unknown): value is string {
+  return typeof value === 'string';
 }
 
+function isNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isStringOrNumber(value: unknown): value is string | number {
+  return isString(value) || isNumber(value);
+}
+
+function isArrayOf<T>(value: unknown, guard: (item: unknown) => item is T): value is T[] {
+  return Array.isArray(value) && value.every(guard);
+}
+
+function optionalField<T>(
+  record: Record<string, unknown>,
+  key: string,
+  guard: (value: unknown) => value is T,
+): boolean {
+  return record[key] === undefined || guard(record[key]);
+}
+
+function isFileListItem(value: unknown): value is FileListItem {
+  return isRecord(value) &&
+    isString(value['name']) &&
+    optionalField(value, 'type', isString) &&
+    optionalField(value, 'size', isStringOrNumber) &&
+    optionalField(value, 'date', isString) &&
+    optionalField(value, 'path', isString) &&
+    optionalField(value, 'mtime', isStringOrNumber);
+}
+
+function isFilesApiResponse(value: unknown): value is FilesApiResponse {
+  return isRecord(value) &&
+    optionalField(value, 'ok', (item): item is boolean => typeof item === 'boolean') &&
+    optionalField(value, 'error', isString) &&
+    optionalField(value, 'dir', isString) &&
+    (value['items'] === undefined || isArrayOf(value['items'], isFileListItem));
+}
+
+type FileConflictChoice = 'replace' | 'keep' | 'numbered' | 'cancel';
+
 interface ConflictChoice {
-  choice: 'overwrite' | 'skip' | 'cancel' | string;
+  choice: FileConflictChoice;
   applyAll: boolean;
 }
 
@@ -199,7 +257,7 @@ interface UploadState {
   currentFileSize?: number;
   currentFileDone?: number;
   resumeUpload: (() => void) | null;
-  rememberConflictChoice?: string | null;
+  rememberConflictChoice?: FileConflictChoice | null;
   conflictQueue?: Promise<unknown>;
   activeFiles?: number;
   [key: string]: unknown;
@@ -242,6 +300,33 @@ interface ApiResult {
   [key: string]: unknown;
 }
 
+interface PairResponse extends ApiResult {
+  session: string;
+  agent: { id: string };
+  permission?: Permission;
+  kind?: PanelKind;
+}
+
+interface VersionDetectionResponse extends ApiResult {
+  version?: string;
+  source?: string;
+}
+
+function isVersionDetectionResponse(value: unknown): value is VersionDetectionResponse {
+  return isApiResult(value) &&
+    optionalField(value, 'version', isString) &&
+    optionalField(value, 'source', isString);
+}
+
+function isPairResponse(value: unknown): value is PairResponse {
+  if (!isApiResult(value) || !isString(value['session']) || !value['session']) return false;
+  const agent = value['agent'];
+  if (!isRecord(agent) || !isString(agent['id']) || !agent['id']) return false;
+  if (value['permission'] !== undefined && !isPermission(value['permission'])) return false;
+  if (value['kind'] !== undefined && !isPanelKind(value['kind'])) return false;
+  return true;
+}
+
 interface StartupConfig {
   jar?: string;
   minecraftVersion?: string;
@@ -259,7 +344,37 @@ interface StartupConfig {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isApiResult(value: unknown): value is ApiResult {
+  return isRecord(value) &&
+    optionalField(value, 'ok', (item): item is boolean => typeof item === 'boolean') &&
+    optionalField(value, 'error', isString);
+}
+
+function getApiError(value: unknown, fallback: string): string {
+  return isApiResult(value) && typeof value.error === 'string' && value.error
+    ? value.error
+    : fallback;
+}
+
+function isPermission(value: unknown): value is Permission {
+  return value === 'read' || value === 'control' || value === 'admin';
+}
+
+function isPanelKind(value: unknown): value is PanelKind {
+  return value === 'owner' || value === 'share';
+}
+
+function isRpcResult(value: unknown): value is RpcResult & { id: string } {
+  return isRecord(value) &&
+    isString(value['id']) &&
+    optionalField(value, 'ok', (item): item is boolean => typeof item === 'boolean') &&
+    optionalField(value, 'status', isNumber) &&
+    optionalField(value, 'contentType', isString) &&
+    optionalField(value, 'bodyBase64', isString) &&
+    optionalField(value, 'error', isString);
 }
 
 function getErrorMessage(error: unknown, fallback = 'Error desconocido'): string {
@@ -278,14 +393,20 @@ function toIceServers(value: unknown): RTCIceServer[] {
     }
     if (!isRecord(entry)) continue;
     const urls = entry['urls'];
-    if (typeof urls === 'string' || (Array.isArray(urls) && urls.every(u => typeof u === 'string'))) {
-      const server: RTCIceServer = { urls: urls as string | string[] };
-      const username = entry['username'];
-      const credential = entry['credential'];
-      if (typeof username === 'string') server.username = username;
-      if (typeof credential === 'string') server.credential = credential;
-      servers.push(server);
+    let normalizedUrls: string | string[] | null = null;
+    if (isString(urls)) {
+      normalizedUrls = urls;
+    } else if (Array.isArray(urls) && urls.every(isString)) {
+      normalizedUrls = urls.filter(isString);
     }
+    if (normalizedUrls === null) continue;
+
+    const server: RTCIceServer = { urls: normalizedUrls };
+    const username = entry['username'];
+    const credential = entry['credential'];
+    if (typeof username === 'string') server.username = username;
+    if (typeof credential === 'string') server.credential = credential;
+    servers.push(server);
   }
   return servers;
 }
@@ -295,8 +416,40 @@ function isSocketPayload(value: unknown): value is Record<string, unknown> {
 }
 
 
+function isStartupConfig(value: unknown): value is StartupConfig {
+  return isRecord(value) &&
+    optionalField(value, 'jar', isString) &&
+    optionalField(value, 'minecraftVersion', isString) &&
+    optionalField(value, 'minMemoryMb', isNumber) &&
+    optionalField(value, 'maxMemoryMb', isNumber) &&
+    optionalField(value, 'stopCommand', isString) &&
+    optionalField(value, 'autoRestartOnCrash', (item): item is boolean => typeof item === 'boolean') &&
+    optionalField(value, 'autoStartOnBoot', (item): item is boolean => typeof item === 'boolean') &&
+    optionalField(value, 'serverPort', isNumber) &&
+    optionalField(value, 'javaPath', isString) &&
+    optionalField(value, 'javaMode', isString) &&
+    optionalField(value, 'javaOverridePath', isString) &&
+    optionalField(value, 'extraArgs', isString);
+}
+
 function isStartupResponse(value: unknown): value is StartupResponse {
-  return isRecord(value);
+  if (!isApiResult(value)) return false;
+  if (value['config'] !== undefined && !isStartupConfig(value['config'])) return false;
+  if (value['jars'] !== undefined && !isArrayOf(value['jars'], isString)) return false;
+  if (value['serverPort'] !== undefined && !isNumber(value['serverPort'])) return false;
+  if (value['versionDetection'] !== undefined) {
+    const detection = value['versionDetection'];
+    if (!isRecord(detection) ||
+        !optionalField(detection, 'autoDetected', (item): item is boolean => typeof item === 'boolean') ||
+        !optionalField(detection, 'source', isString)) return false;
+  }
+  if (value['javaRuntime'] !== undefined) {
+    const runtime = value['javaRuntime'];
+    if (!isRecord(runtime) ||
+        !optionalField(runtime, 'javaMajor', (item): item is string | number => isString(item) || isNumber(item)) ||
+        !optionalField(runtime, 'installed', (item): item is boolean => typeof item === 'boolean')) return false;
+  }
+  return true;
 }
 
 interface StartupResponse extends ApiResult {
@@ -380,10 +533,8 @@ let cloudSocket: SocketLike | null = null;
 let rpcBinarySupported = false;
 let panelSession: string = sessionStorage.getItem(SESSION_KEY) || '';
 let agentId: string = sessionStorage.getItem(AGENT_KEY) || '';
-let panelPermission: Permission =
-  (sessionStorage.getItem(PERMISSION_KEY) as Permission | null) || 'admin';
-let panelKind: PanelKind =
-  (sessionStorage.getItem(SESSION_KIND_KEY) as PanelKind | null) || 'owner';
+let panelPermission: Permission = asPermission(sessionStorage.getItem(PERMISSION_KEY));
+let panelKind: PanelKind = asPanelKind(sessionStorage.getItem(SESSION_KIND_KEY));
 let pairingCode = '';
 
 let requestSequence = 0;
@@ -434,7 +585,7 @@ function invalidateViewCache(key?: string): void {
 
 function sectionHasContent(element: Element | null | undefined): boolean {
   if (!element) return false;
-  const html = (element as HTMLElement).innerHTML || '';
+  const html = element.innerHTML || '';
   if (!html.trim()) return false;
   return !/Cargando|Conectando|ver-loading/i.test(html);
 }
@@ -459,7 +610,7 @@ function cachedApi(
 
   const request = api(pathname, init)
     .then((data: unknown) => {
-      if (data && typeof data === 'object' && (data as { ok?: boolean }).ok !== false) {
+      if (isRecord(data) && data['ok'] !== false) {
         setViewCache(cacheKey, data);
       }
       return data;
@@ -491,17 +642,15 @@ const PERMISSION_RANK: Record<Permission, number> = {
 };
 
 function asPermission(value: unknown): Permission {
-  return value === 'read' || value === 'control' || value === 'admin' ? value : 'admin';
+  return isPermission(value) ? value : 'read';
 }
 
 function asPanelKind(value: unknown): PanelKind {
-  return value === 'share' ? 'share' : 'owner';
+  return isPanelKind(value) ? value : 'share';
 }
 
-function hasPermission(required: Permission | string): boolean {
-  const have = PERMISSION_RANK[panelPermission as Permission] || 0;
-  const need = PERMISSION_RANK[required as Permission] || 99;
-  return have >= need;
+function hasPermission(required: Permission): boolean {
+  return PERMISSION_RANK[panelPermission] >= PERMISSION_RANK[required];
 }
 
 function isOwnerSession(): boolean {
@@ -845,7 +994,7 @@ function showLogin(errorMessage: string = ''): void {
   }
 }
 
-function setSession(session: string, id: string, permission: unknown = 'admin', kind: unknown = 'owner'): void {
+function setSession(session: string, id: string, permission: unknown = 'read', kind: unknown = 'share'): void {
   panelSession = String(session || '');
   agentId = String(id || '');
   panelPermission = asPermission(permission);
@@ -868,14 +1017,14 @@ function setSession(session: string, id: string, permission: unknown = 'admin', 
   }
 }
 
-function clearSession() {
-  setSession('', '', 'admin', 'owner');
+function clearSession(): void {
+  setSession('', '', 'read', 'share');
   pairingCode = '';
 }
 
 function updateSessionMetadata(permission: unknown, kind: unknown): void {
-  panelPermission = asPermission(permission || panelPermission || 'admin');
-  panelKind = asPanelKind(kind || panelKind || 'owner');
+  if (permission !== undefined) panelPermission = asPermission(permission);
+  if (kind !== undefined) panelKind = asPanelKind(kind);
   sessionStorage.setItem(PERMISSION_KEY, panelPermission);
   sessionStorage.setItem(SESSION_KIND_KEY, panelKind);
 }
@@ -913,22 +1062,17 @@ async function attemptLogin(): Promise<void> {
       body: JSON.stringify({ code }),
     });
 
-    const data = (await response.json()) as ApiResult & {
-      session?: string;
-      agent?: { id?: string };
-      permission?: string;
-      kind?: string;
-    };
+    const payload: unknown = await response.json();
 
-    if (!response.ok || !data.ok || !data.session || !data.agent?.id) {
-      throw new Error(String(data.error || 'No se pudo emparejar el panel.'));
+    if (!response.ok || !isPairResponse(payload)) {
+      throw new Error(getApiError(payload, 'No se pudo emparejar el panel.'));
     }
 
     setSession(
-      data.session,
-      data.agent.id,
-      data.permission || 'admin',
-      data.kind || 'owner'
+      payload.session,
+      payload.agent.id,
+      payload.permission ?? 'read',
+      payload.kind ?? 'share'
     );
     pairingCode = '';
 
@@ -937,7 +1081,7 @@ async function attemptLogin(): Promise<void> {
     if (errorBox) errorBox.textContent = '';
   } catch (error: unknown) {
     pairingCode = '';
-    const message = error instanceof Error ? (error instanceof Error ? error.message : String(error)) : String(error);
+    const message = getErrorMessage(error, 'No se pudo emparejar el panel.');
     if (errorBox) errorBox.textContent = message;
     if (button) {
       button.textContent = 'CONECTAR SERVIDOR';
@@ -1034,13 +1178,12 @@ async function connectCloud(manual: boolean = false): Promise<void> {
       finish(() => resolve());
     });
 
-    cloudSocket.once('connect_error', (error: any) => {
+    cloudSocket.once('connect_error', (error: unknown) => {
       cloudConnecting = false;
       updateAgentUi();
       updateAgentStatusBadges();
 
-      const message =
-        error?.message || 'No se pudo conectar con MoonWolf Cloud.';
+      const message = getErrorMessage(error, 'No se pudo conectar con MoonWolf Cloud.');
 
       addActivity(message, 'warn', '⚠️');
 
@@ -1075,7 +1218,7 @@ async function connectCloud(manual: boolean = false): Promise<void> {
           const sdp = typeof msg['sdp'] === 'string' ? msg['sdp'] : '';
           await pc.setRemoteDescription({ type: 'answer', sdp });
         } else if (type === 'candidate' && typeof msg['candidate'] === 'string') {
-          const sdpMid = typeof msg['sdpMid'] === 'string' ? msg['sdpMid'] : undefined;
+          const sdpMid = typeof msg['sdpMid'] === 'string' ? msg['sdpMid'] : null;
           await pc.addIceCandidate({ candidate: msg['candidate'], sdpMid });
         } else if (type === 'unavailable') {
           closeDirectLink(true);
@@ -1107,7 +1250,9 @@ async function connectCloud(manual: boolean = false): Promise<void> {
       showLogin('Este acceso compartido ha sido revocado.');
     });
 
-    cloudSocket.on('status', setStatus);
+    cloudSocket.on('status', status => {
+      if (isString(status)) setStatus(status);
+    });
     cloudSocket.on('log', appendLog);
     cloudSocket.on('log_batch', entries => {
       if (Array.isArray(entries)) entries.forEach(appendLog);
@@ -1126,24 +1271,24 @@ async function connectCloud(manual: boolean = false): Promise<void> {
 
     cloudSocket.on('stats', updateStats);
 
-    cloudSocket.on('rpc_result', (result: any) => {
-      const resolveRequest = pending.get(result?.id);
-
+    cloudSocket.on('rpc_result', result => {
+      if (!isRpcResult(result)) return;
+      const resolveRequest = pending.get(result.id);
       if (!resolveRequest) return;
 
       pending.delete(result.id);
       resolveRequest(result);
     });
 
-    cloudSocket.on('agent_capabilities', (data: any) => {
-      rpcBinarySupported = Boolean(data?.rpcBinary);
+    cloudSocket.on('agent_capabilities', data => {
+      rpcBinarySupported = isRecord(data) && data['rpcBinary'] === true;
     });
 
-    cloudSocket.on('rpc_result_binary', async (packet: any) => {
-      if (typeof Blob !== 'undefined' && packet instanceof Blob) {
-        packet = await packet.arrayBuffer();
-      }
-      const decoded = decodeRpcBinaryPacket(packet);
+    cloudSocket.on('rpc_result_binary', async packet => {
+      const binaryPacket: unknown = typeof Blob !== 'undefined' && packet instanceof Blob
+        ? await packet.arrayBuffer()
+        : packet;
+      const decoded = decodeRpcBinaryPacket(binaryPacket);
       if (!decoded) return;
 
       const id = String(decoded.header?.id ?? '');
@@ -1172,7 +1317,7 @@ async function connectCloud(manual: boolean = false): Promise<void> {
 
       clearPending('Conexión con MoonWolf Cloud perdida.');
 
-      addActivity(`Cloud desconectado (${reason})`, 'warn', '⚠️');
+      addActivity(`Cloud desconectado (${String(reason)})`, 'warn', '⚠️');
 
       if (manual) {
         showLogin(
@@ -1208,12 +1353,11 @@ async function cloudApi(pathname: string, init: RpcInit = {}): Promise<ApiResult
     }
   }
 
-  const response = await fetch(pathname, {
-    method: init.method,
-    headers,
-    body,
-    signal: init.signal,
-  });
+  const requestInit: RequestInit = { headers };
+  if (init.method !== undefined) requestInit.method = init.method;
+  if (body !== undefined) requestInit.body = body;
+  if (init.signal !== undefined) requestInit.signal = init.signal;
+  const response = await fetch(pathname, requestInit);
   let data = null;
 
   try {
@@ -1278,11 +1422,11 @@ function encodeRpcBinaryPacket(header: unknown, body: Uint8Array): Uint8Array {
   return packet;
 }
 
-function decodeRpcBinaryPacket(data: ArrayBuffer | Uint8Array | ArrayBufferView): { header: RpcResult; body: Uint8Array } | null {
-  let bytes;
+function decodeRpcBinaryPacket(data: unknown): { header: RpcResult & { id: string }; body: Uint8Array } | null {
+  let bytes: Uint8Array;
   if (data instanceof ArrayBuffer) {
     bytes = new Uint8Array(data);
-  } else if (ArrayBuffer.isView(data)) {
+  } else if (ArrayBuffer.isView(data) && data.buffer instanceof ArrayBuffer) {
     bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   } else {
     return null;
@@ -1298,8 +1442,8 @@ function decodeRpcBinaryPacket(data: ArrayBuffer | Uint8Array | ArrayBufferView)
   if (!headerLength || headerLength > RPC_BINARY_MAX_HEADER || 8 + headerLength > bytes.length) return null;
 
   try {
-    const header = JSON.parse(new TextDecoder().decode(bytes.subarray(8, 8 + headerLength)));
-    if (!header || typeof header !== 'object' || Array.isArray(header)) return null;
+    const header: unknown = JSON.parse(new TextDecoder().decode(bytes.subarray(8, 8 + headerLength)));
+    if (!isRpcResult(header)) return null;
     return { header, body: bytes.slice(8 + headerLength) };
   } catch {
     return null;
@@ -1382,7 +1526,7 @@ const DIRECT_FRAME_BYTES = 16 * 1024;
 const DIRECT_HIGH_WATER = 4 * 1024 * 1024;
 const DIRECT_OPEN_TIMEOUT_MS = 15_000;
 
-const DIRECT_ROUTES = [
+const DIRECT_ROUTES: ReadonlyArray<readonly [method: string, pattern: string]> = [
   ['GET', '/api/files'],
   ['GET', '/api/files/content'],
   ['POST', '/api/files/content'],
@@ -1447,9 +1591,9 @@ function pathMatchesPattern(pathname: string, pattern: string): boolean {
 }
 
 function isDirectRoute(method: string, pathname: string): boolean {
-  const route = String(pathname || '').split('?')[0];
-  return DIRECT_ROUTES.some(([m, pattern]) =>
-    m === method && pathMatchesPattern(route, pattern)
+  const route = String(pathname || '').split('?')[0] ?? '';
+  return DIRECT_ROUTES.some(routeEntry =>
+    routeEntry[0] === method && pathMatchesPattern(route, routeEntry[1] ?? '')
   );
 }
 
@@ -1678,7 +1822,18 @@ async function directRequest(method: string, pathname: string, body?: unknown, {
     : isBinary ? body : encoder.encode(typeof body === 'string' ? body : JSON.stringify(body));
 
   const done = new Promise<RpcResult>((resolve, reject) => {
-    direct.reqs.set(id, { resolve, reject, head: null, chunks: [], size: 0, onProgress, onHeaders, onChunk, totalSize: 0, writeChain: Promise.resolve() });
+    direct.reqs.set(id, {
+      resolve,
+      reject,
+      head: null,
+      chunks: [],
+      size: 0,
+      totalSize: 0,
+      writeChain: Promise.resolve(),
+      ...(onProgress ? { onProgress } : {}),
+      ...(onHeaders ? { onHeaders } : {}),
+      ...(onChunk ? { onChunk } : {}),
+    });
   });
 
   if (signal) {
@@ -1764,10 +1919,10 @@ function rpcHttp(pathname: string, init: RpcInit = {}): Promise<RpcResult> {
   if (isDirectRoute(method, pathname)) {
     return waitForDirectReady().then(() =>
       directRequest(method, pathname, init.body, {
-        onProgress: init.onProgress,
-        onHeaders: init.onHeaders,
-        onChunk: init.onChunk,
-        signal: init.signal,
+        ...(init.onProgress ? { onProgress: init.onProgress } : {}),
+        ...(init.onHeaders ? { onHeaders: init.onHeaders } : {}),
+        ...(init.onChunk ? { onChunk: init.onChunk } : {}),
+        ...(init.signal !== undefined ? { signal: init.signal } : {}),
       })
     ).catch(error => {
       if (init.signal?.aborted || error?.name === 'AbortError') throw error;
@@ -1811,7 +1966,7 @@ async function api(pathname: string, init: RpcInit = {}): Promise<unknown> {
       contentType.includes('text/')
     ) {
       try {
-        return JSON.parse(text);
+        return JSON.parse(text) as unknown;
       } catch {
         return {
           ok: status >= 200 && status < 300,
@@ -1973,8 +2128,10 @@ function updateStatusUi(status: string): void {
 async function refreshServerStatus() {
   if (!agentOnline || !cloudSocket?.connected) return;
   try {
-    const data = await api('/api/status') as any;
-    if (data?.status && STATUS[toServerStatus(data.status)]) setStatus(data.status);
+    const data = await api('/api/status');
+    if (isRecord(data) && isString(data['status']) && STATUS[toServerStatus(data['status'])]) {
+      setStatus(data['status']);
+    }
   } catch (error: unknown) {
     console.warn('[moonwolf] No se pudo sincronizar el estado del servidor:', error);
   }
@@ -1998,16 +2155,17 @@ function setStatus(status: string): void {
   );
 }
 
-function updateStats(stats: any = {}) {
-  const players = Number(stats?.players);
-  const maxPlayers = Number(stats?.maxPlayers);
-  const tps = Number(stats?.tps);
-  const processMemory = Number(stats?.processMemory);
-  const cpuUsage = Number(stats?.cpuUsage);
+function updateStats(payload: unknown): void {
+  const stats = isRecord(payload) ? payload : {};
+  const players = Number(stats['players']);
+  const maxPlayers = Number(stats['maxPlayers']);
+  const tps = Number(stats['tps']);
+  const processMemory = Number(stats['processMemory']);
+  const cpuUsage = Number(stats['cpuUsage']);
 
   const safePlayers = Number.isFinite(players) ? players : 0;
   const safeMaxPlayers = Number.isFinite(maxPlayers) ? maxPlayers : 0;
-  const hasTps = stats?.tps !== null && stats?.tps !== undefined && Number.isFinite(tps);
+  const hasTps = stats['tps'] !== null && stats['tps'] !== undefined && Number.isFinite(tps);
   const safeTps = hasTps ? tps : 0;
   const safeProcessMemory = Number.isFinite(processMemory) ? processMemory : 0;
   const safeCpu = Number.isFinite(cpuUsage) ? cpuUsage : 0;
@@ -2030,7 +2188,7 @@ function updateStats(stats: any = {}) {
 
   const statUptime = $('statUptime');
   if (statUptime) {
-    statUptime.textContent = stats?.uptime || '0h 0m';
+    statUptime.textContent = isString(stats['uptime']) ? stats['uptime'] : '0h 0m';
   }
 
   const statMemProc = $('statMemProc');
@@ -2038,10 +2196,10 @@ function updateStats(stats: any = {}) {
     statMemProc.innerHTML = `${safeProcessMemory}<span class="stat-unit"> MB</span>`;
   }
 
-  const sys = stats?.sysMemory || { used: 0, total: 0 };
+  const sys = isRecord(stats['sysMemory']) ? stats['sysMemory'] : {};
 
-  const used = Number(sys.used);
-  const total = Number(sys.total);
+  const used = Number(sys['used']);
+  const total = Number(sys['total']);
 
   const safeUsed = Number.isFinite(used) ? used : 0;
   const safeTotal = Number.isFinite(total) ? total : 0;
@@ -2127,16 +2285,16 @@ function xtermColor(index: unknown): string {
     '#000000', '#800000', '#008000', '#808000', '#000080', '#800080', '#008080', '#c0c0c0',
     '#808080', '#ff0000', '#00ff00', '#ffff00', '#0000ff', '#ff00ff', '#00ffff', '#ffffff',
   ];
-  if (n < 16) return base[n];
+  if (n < 16) return base[n] ?? base[0] ?? '#000000';
   if (n >= 232) {
     const shade = 8 + (n - 232) * 10;
     return `#${shade.toString(16).padStart(2, '0').repeat(3)}`;
   }
   const value = n - 16;
   const levels = [0, 95, 135, 175, 215, 255];
-  const r = levels[Math.floor(value / 36)];
-  const g = levels[Math.floor((value % 36) / 6)];
-  const b = levels[value % 6];
+  const r = levels[Math.floor(value / 36)] ?? 0;
+  const g = levels[Math.floor((value % 36) / 6)] ?? 0;
+  const b = levels[value % 6] ?? 0;
   return `#${[r, g, b].map(part => part.toString(16).padStart(2, '0')).join('')}`;
 }
 
@@ -2224,6 +2382,7 @@ function renderConsoleText(value: unknown): string {
     const codes = (match[1] || '0').split(';').map(part => part === '' ? 0 : Number(part));
     for (let i = 0; i < codes.length; i++) {
       const code = codes[i];
+      if (code === undefined) continue;
       if (code === 0) {
         resetFormatting();
       } else if (code === 1) {
@@ -2242,9 +2401,6 @@ function renderConsoleText(value: unknown): string {
         underline = false;
       } else if (code === 29) {
         strike = false;
-      } else if (ANSI_COLORS[code]) {
-        colorClass = `ansi-${ANSI_COLORS[code]}`;
-        inlineColor = '';
       } else if (code === 39) {
         colorClass = '';
         inlineColor = '';
@@ -2270,6 +2426,12 @@ function renderConsoleText(value: unknown): string {
           inlineBackground = hex;
         }
         i += 4;
+      } else {
+        const ansiColor = ANSI_COLORS[code];
+        if (ansiColor) {
+          colorClass = `ansi-${ansiColor}`;
+          inlineColor = '';
+        }
       }
     }
   }
@@ -2299,16 +2461,16 @@ let consoleFlushScheduled = false;
 
 // Bukkit/Paper no siempre conserva los estilos de /plugins al volcar la salida
 // a stdout. Recuperamos el estado conocido a partir de los mensajes de carga.
-const consolePluginStates = new Map();
+const consolePluginStates = new Map<string, boolean>();
 let consolePluginListSection = '';
 
 function rememberPluginState(line: unknown): void {
   const text = String(line || '');
   const match = text.match(/\b(Enabling|Enabled|Disabling|Disabled)\s+(.+?)\s+v[^\s]+/i);
-  if (!match) return;
-  const name = match[2].trim();
-  if (!name) return;
-  consolePluginStates.set(name.toLowerCase(), /^(?:Enabling|Enabled)$/i.test(match[1]));
+  const action = match?.[1];
+  const name = match?.[2]?.trim();
+  if (!action || !name) return;
+  consolePluginStates.set(name.toLowerCase(), /^(?:Enabling|Enabled)$/i.test(action));
 }
 
 function renderPluginListLine(line: unknown): string {
@@ -2318,8 +2480,8 @@ function renderPluginListLine(line: unknown): string {
   // Paper/Bukkit divide las listas largas en varias líneas. La primera lleva
   // "- ", pero las continuaciones no; ambas deben colorearse igual.
   const loggerMatch = text.match(/^(.*?\]:\s*)(.*)$/);
-  const prefix = loggerMatch ? loggerMatch[1] : '';
-  let namesText = loggerMatch ? loggerMatch[2] : text;
+  const prefix = loggerMatch?.[1] ?? '';
+  let namesText = loggerMatch?.[2] ?? text;
   if (namesText.startsWith('- ')) namesText = namesText.slice(2);
   const names = namesText.split(/,\s*/);
   const renderedNames = names.map(name => {
@@ -2344,7 +2506,7 @@ function renderConsoleEntry(line: unknown): string {
     // La salida de /plugins usa una línea con guion y después continuaciones
     // sin guion. Detectamos ambas por el separador de nombres.
     const loggerMatch = text.match(/^.*?\]:\s*(.*)$/);
-    const content = loggerMatch ? loggerMatch[1] : text;
+    const content = loggerMatch?.[1] ?? text;
     if (/^-\s*[^,]+/.test(content) || /,\s*[^,]+/.test(content)) {
       return renderPluginListLine(text);
     }
@@ -2373,12 +2535,17 @@ function flushConsoleLogs() {
   consoleEl.scrollTop = consoleEl.scrollHeight;
 }
 
-function appendLog(entry: ConsoleLogEntry | string | null | undefined): void {
+function appendLog(entry: unknown): void {
   const consoleEl = $('console');
-
   if (!consoleEl) return;
 
-  const rawEntry = (typeof entry === 'object' && entry !== null) ? entry : { line: String(entry || '') };
+  const rawEntry: ConsoleLogEntry = isRecord(entry)
+    ? {
+        line: isString(entry['line']) ? entry['line'] : String(entry['line'] ?? ''),
+        ...(isString(entry['time']) ? { time: entry['time'] } : {}),
+        ...(isString(entry['type']) ? { type: entry['type'] } : {}),
+      }
+    : { line: String(entry ?? '') };
   const line = String(rawEntry.line || '');
 
   if (shouldIgnoreLog(line)) {
@@ -2406,8 +2573,8 @@ async function startServer() {
   setStatus('starting');
 
   try {
-    const data = await api('/api/start', { method: 'POST' }) as any;
-    if (!data?.ok) throw new Error(data?.error || 'Error al arrancar');
+    const data = await api('/api/start', { method: 'POST' });
+    if (!isApiResult(data) || data.ok !== true) throw new Error(getApiError(data, 'Error al arrancar'));
     await refreshServerStatus();
   } catch (error: unknown) {
     toast(`No se pudo arrancar: ${getErrorMessage(error, 'Error de conexión.')}`, 'err');
@@ -2424,8 +2591,8 @@ async function stopServer() {
   setStatus('stopping');
 
   try {
-    const data = await api('/api/stop', { method: 'POST' }) as any;
-    if (!data?.ok) throw new Error(data?.error || 'Error al detener');
+    const data = await api('/api/stop', { method: 'POST' });
+    if (!isApiResult(data) || data.ok !== true) throw new Error(getApiError(data, 'Error al detener'));
     await refreshServerStatus();
   } catch (error: unknown) {
     toast(`No se pudo detener: ${getErrorMessage(error, 'Error de conexión.')}`, 'err');
@@ -2446,8 +2613,8 @@ async function restartServer() {
   setStatus('restarting');
 
   try {
-    const data = await api('/api/restart', { method: 'POST' }) as any;
-    if (!data?.ok) throw new Error(data?.error || 'Error al reiniciar');
+    const data = await api('/api/restart', { method: 'POST' });
+    if (!isApiResult(data) || data.ok !== true) throw new Error(getApiError(data, 'Error al reiniciar'));
     await refreshServerStatus();
   } catch (error: unknown) {
     toast(`No se pudo reiniciar: ${getErrorMessage(error, 'Error de conexión.')}`, 'err');
@@ -2489,9 +2656,9 @@ async function sendCmd() {
   if (button) button.disabled = true;
 
   try {
-    const data = await postJSON('/api/command', { cmd }) as any;
-    if (!data?.ok) {
-      throw new Error(data?.error || 'El Agent rechazó el comando.');
+    const data = await postJSON('/api/command', { cmd });
+    if (!isApiResult(data) || data.ok !== true) {
+      throw new Error(getApiError(data, 'El Agent rechazó el comando.'));
     }
 
     input.value = '';
@@ -2609,12 +2776,12 @@ function populateFiles(dir: string = '', options: SoftLoadOptions = {}): void {
         );
       });
     })
-    .catch((error: any) => {
+    .catch((error: unknown) => {
       list.innerHTML = `
         <div class="file-load-error" role="alert">
           <div class="empty-icon">⚠</div>
           <div class="empty-msg">No se pudo cargar esta carpeta</div>
-          <div class="empty-detail">${escHtml(error?.message || String(error))}</div>
+          <div class="empty-detail">${escHtml(getErrorMessage(error))}</div>
           <button class="small-btn" id="btnRetryFiles" type="button">↻ Reintentar</button>
         </div>
       `;
@@ -2628,7 +2795,7 @@ function updateBulkBar() {
   const countEl = $('selectedFilesCount');
   if (countEl) countEl.textContent = String(count);
   bar?.classList.toggle('visible', count > 0);
-  const selectAll = $('selectAllFiles') as HTMLInputElement | null;
+  const selectAll = $input('selectAllFiles');
   const rows = document.querySelectorAll<HTMLElement>('#fileList .file-row');
   if (selectAll) {
     selectAll.checked = rows.length > 0 && Array.from(rows).every(row => selectedFilePaths.has(row.dataset.path || ''));
@@ -2671,11 +2838,15 @@ async function runBulkAction(action: string | undefined): Promise<void> {
     if (confirmed !== 'delete') return;
   }
   try {
-    const data = await postJSON('/api/files/bulk', { action, items, destination }) as any;
-    if (!data.ok) throw new Error(data.error || 'La operación masiva falló');
+    const data = await postJSON('/api/files/bulk', { action, items, destination });
+    if (!isApiResult(data) || data.ok !== true) {
+      throw new Error(getApiError(data, 'La operación masiva falló'));
+    }
+    const completed = isNumber(data['completed']) && data['completed'] > 0 ? data['completed'] : items.length;
+    const failed = isNumber(data['failed']) ? data['failed'] : 0;
     clearSelectedFiles();
-    toast(`✅ ${data.completed || items.length} operación${items.length === 1 ? '' : 'es'} completada${items.length === 1 ? '' : 's'}`, 'ok');
-    if (data.failed) toast(`⚠️ ${data.failed} elemento${data.failed === 1 ? '' : 's'} no se pudo procesar`, 'warn');
+    toast(`✅ ${completed} operación${completed === 1 ? '' : 'es'} completada${completed === 1 ? '' : 's'}`, 'ok');
+    if (failed > 0) toast(`⚠️ ${failed} elemento${failed === 1 ? '' : 's'} no se pudo procesar`, 'warn');
     populateFiles(currentDir);
   } catch (error: unknown) { toast(`❌ ${(error instanceof Error ? error.message : String(error))}`, 'err'); }
 }
@@ -2710,10 +2881,12 @@ async function downloadDirectoryAsZip(rel: string, name: string): Promise<void> 
     const data = await postJSON('/api/files/compress', {
       path: rel,
       name,
-    }) as any;
-    if (!data.ok) throw new Error(data.error || 'No se pudo comprimir la carpeta');
+    });
+    if (!isApiResult(data) || data.ok !== true) {
+      throw new Error(getApiError(data, 'No se pudo comprimir la carpeta'));
+    }
 
-    const zipName = data.zipName || `${name}.zip`;
+    const zipName = isString(data['zipName']) && data['zipName'] ? data['zipName'] : `${name}.zip`;
     const parentDir = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '';
     const zipRel = parentDir ? `${parentDir}/${zipName}` : zipName;
 
@@ -2775,9 +2948,11 @@ function openFileContext(event: MouseEvent, name: string, type: string): void {
         const data = await postJSON('/api/files/rename', {
           path: rel,
           newName,
-        }) as any;
+        });
 
-        if (!data.ok) throw new Error(data.error);
+        if (!isApiResult(data) || data.ok !== true) {
+          throw new Error(getApiError(data, 'No se pudo renombrar el archivo'));
+        }
       }
 
       if (action === 'copy') {
@@ -2795,9 +2970,11 @@ function openFileContext(event: MouseEvent, name: string, type: string): void {
         const data = await postJSON('/api/files/copy', {
           path: rel,
           dest: target,
-        }) as any;
+        });
 
-        if (!data.ok) throw new Error(data.error);
+        if (!isApiResult(data) || data.ok !== true) {
+          throw new Error(getApiError(data, 'No se pudo copiar el archivo'));
+        }
       }
 
       if (action === 'move') {
@@ -2815,9 +2992,11 @@ function openFileContext(event: MouseEvent, name: string, type: string): void {
         const data = await postJSON('/api/files/move', {
           path: rel,
           dest: target,
-        }) as any;
+        });
 
-        if (!data.ok) throw new Error(data.error);
+        if (!isApiResult(data) || data.ok !== true) {
+          throw new Error(getApiError(data, 'No se pudo mover el archivo'));
+        }
       }
 
       if (action === 'download') {
@@ -2832,9 +3011,11 @@ function openFileContext(event: MouseEvent, name: string, type: string): void {
         const data = await postJSON('/api/files/compress', {
           path: rel,
           name,
-        }) as any;
+        });
 
-        if (!data.ok) throw new Error(data.error);
+        if (!isApiResult(data) || data.ok !== true) {
+          throw new Error(getApiError(data, 'No se pudo comprimir la carpeta'));
+        }
       }
 
       if (action === 'delete') {
@@ -2845,9 +3026,11 @@ function openFileContext(event: MouseEvent, name: string, type: string): void {
         const data = await postJSON('/api/files/delete', {
           path: rel,
           isDir: type === 'dir',
-        }) as any;
+        });
 
-        if (!data.ok) throw new Error(data.error);
+        if (!isApiResult(data) || data.ok !== true) {
+          throw new Error(getApiError(data, 'No se pudo eliminar el archivo'));
+        }
       }
 
       toast('✅ Operación completada', 'ok');
@@ -2875,12 +3058,13 @@ async function getFilesFromDataTransfer(dataTransfer: DataTransfer | null): Prom
     return Array.from(dataTransfer?.files || []);
   }
 
-  const entries = [];
-  const fallbackFiles = [];
+  const entries: FileSystemEntry[] = [];
+  const fallbackFiles: UploadFile[] = [];
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
-    if (item.kind === 'file') {
+    if (!item || item.kind !== 'file') continue;
+    {
       const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
       if (entry) {
         entries.push(entry);
@@ -2897,10 +3081,19 @@ async function getFilesFromDataTransfer(dataTransfer: DataTransfer | null): Prom
 
   const resultFiles: UploadFile[] = [];
 
-  async function traverseEntry(entry: any, parentPath = '') {
-    if (entry.isFile) {
-      return new Promise<void>(resolve => {
-        entry.file((file: File) => {
+  function isFileEntry(entry: FileSystemEntry): entry is FileSystemFileEntry {
+    return entry.isFile;
+  }
+
+  function isDirectoryEntry(entry: FileSystemEntry): entry is FileSystemDirectoryEntry {
+    return entry.isDirectory;
+  }
+
+  async function traverseEntry(entry: FileSystemEntry, parentPath = ''): Promise<void> {
+    if (isFileEntry(entry)) {
+      const fileEntry = entry;
+      await new Promise<void>(resolve => {
+        fileEntry.file(file => {
           const rel = parentPath ? `${parentPath}/${file.name}` : file.name;
           Object.defineProperty(file, 'customRelativePath', {
             value: rel,
@@ -2911,11 +3104,12 @@ async function getFilesFromDataTransfer(dataTransfer: DataTransfer | null): Prom
           resolve();
         }, () => resolve());
       });
-    } else if (entry.isDirectory) {
-      const dirReader = entry.createReader();
-      const nextPath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
-      const readBatch = () => new Promise<any[]>(resolve => {
-        dirReader.readEntries((entries: any[]) => resolve(entries || []), () => resolve([]));
+    } else if (isDirectoryEntry(entry)) {
+      const directoryEntry = entry;
+      const dirReader = directoryEntry.createReader();
+      const nextPath = parentPath ? `${parentPath}/${directoryEntry.name}` : directoryEntry.name;
+      const readBatch = () => new Promise<FileSystemEntry[]>(resolve => {
+        dirReader.readEntries(batch => resolve(batch), () => resolve([]));
       });
       while (true) {
         const batch = await readBatch();
@@ -3128,7 +3322,7 @@ function askFileConflict(fileName: string): Promise<ConflictChoice> {
 
   modal.hidden = false;
   return new Promise<ConflictChoice>(resolve => {
-    const finish = (choice: string) => {
+    const finish = (choice: FileConflictChoice) => {
       const applyAll = Boolean(applyAllInput?.checked);
       modal.hidden = true;
       modal.querySelectorAll('[data-conflict-choice]').forEach(el => {
@@ -3142,7 +3336,13 @@ function askFileConflict(fileName: string): Promise<ConflictChoice> {
     };
     modal.querySelectorAll('[data-conflict-choice]').forEach(el => {
       const button = el as ActionButtonEl;
-      const handler = () => finish(button.dataset['conflictChoice'] || 'cancel');
+      const handler = () => {
+        const value = button.dataset['conflictChoice'];
+        const choice: FileConflictChoice = value === 'replace' || value === 'keep' || value === 'numbered'
+          ? value
+          : 'cancel';
+        finish(choice);
+      };
       button._conflictHandler = handler;
       button.addEventListener('click', handler);
     });
@@ -3242,7 +3442,7 @@ async function uploadOneFile(file: UploadFile, relativePath: string, progressSta
     const data = await postUploadChunk(uploadId, target, 0, totalSize, new Uint8Array(), true, overwrite);
     if (!data?.ok) {
       const uploadError: UploadError = new Error(data?.error || `No se pudo subir ${file.name}`);
-      uploadError.status = data?.status;
+      if (typeof data?.status === 'number') uploadError.status = data.status;
       if (data?.status === 409 || data?.isFileConflict || /ya existe un archivo/i.test(uploadError.message)) {
         uploadError.isFileConflict = true;
       }
@@ -3283,7 +3483,7 @@ async function uploadOneFile(file: UploadFile, relativePath: string, progressSta
 
         if (!data?.ok) {
           const uploadError: UploadError = new Error(data?.error || `No se pudo subir ${file.name}`);
-          uploadError.status = data?.status;
+          if (typeof data?.status === 'number') uploadError.status = data.status;
           if (data?.status === 409 || data?.isFileConflict || /ya existe un archivo/i.test(uploadError.message)) {
             uploadError.isFileConflict = true;
             throw uploadError;
@@ -3506,7 +3706,9 @@ async function uploadSelectedFiles(
       while (true) {
         const fileIndex = nextFileIndex++;
         if (fileIndex >= files.length) return;
-        await uploadFileWithConflict(files[fileIndex]);
+        const file = files[fileIndex];
+        if (!file) return;
+        await uploadFileWithConflict(file);
       }
     };
     await Promise.all(Array.from({ length: Math.min(3, files.length) }, worker));
@@ -3906,6 +4108,18 @@ interface PluginSearchItem {
   [key: string]: unknown;
 }
 
+function isPluginSearchItem(value: unknown): value is PluginSearchItem {
+  return isRecord(value) &&
+    optionalField(value, 'id', isString) &&
+    optionalField(value, 'name', isString) &&
+    optionalField(value, 'source', isString) &&
+    optionalField(value, 'icon', isString) &&
+    optionalField(value, 'description', isString) &&
+    optionalField(value, 'downloads', isNumber) &&
+    optionalField(value, 'premium', (item): item is boolean => typeof item === 'boolean') &&
+    optionalField(value, 'external', (item): item is boolean => typeof item === 'boolean');
+}
+
 interface PluginFileItem {
   url?: string;
   filename?: string;
@@ -3925,11 +4139,37 @@ interface PluginVersionItem {
   [key: string]: unknown;
 }
 
+function isPluginFileItem(value: unknown): value is PluginFileItem {
+  return isRecord(value) &&
+    optionalField(value, 'url', isString) &&
+    optionalField(value, 'filename', isString) &&
+    optionalField(value, 'primary', (item): item is boolean => typeof item === 'boolean');
+}
+
+function isPluginVersionItem(value: unknown): value is PluginVersionItem {
+  return isRecord(value) &&
+    optionalField(value, 'versionNumber', isString) &&
+    optionalField(value, 'name', isString) &&
+    optionalField(value, 'published', isStringOrNumber) &&
+    optionalField(value, 'changelog', isString) &&
+    optionalField(value, 'changelogIsHtml', (item): item is boolean => typeof item === 'boolean') &&
+    optionalField(value, 'isExternal', (item): item is boolean => typeof item === 'boolean') &&
+    optionalField(value, 'externalUrl', isString) &&
+    (value['files'] === undefined || isArrayOf(value['files'], isPluginFileItem));
+}
+
 interface InstalledPluginItem {
   filename?: string;
   size?: string | number;
   modified?: string;
   [key: string]: unknown;
+}
+
+function isInstalledPluginItem(value: unknown): value is InstalledPluginItem {
+  return isRecord(value) &&
+    optionalField(value, 'filename', isString) &&
+    optionalField(value, 'size', isStringOrNumber) &&
+    optionalField(value, 'modified', isString);
 }
 
 async function pluginSearch(): Promise<void> {
@@ -3957,8 +4197,8 @@ async function pluginSearch(): Promise<void> {
       throw new Error(typeof data['error'] === 'string' ? data['error'] : 'Error al buscar plugins.');
     }
 
-    let results: PluginSearchItem[] = Array.isArray(data['results'])
-      ? (data['results'] as PluginSearchItem[])
+    let results: PluginSearchItem[] = isArrayOf(data['results'], isPluginSearchItem)
+      ? data['results']
       : [];
 
     if (priceFilter === 'free') {
@@ -4092,8 +4332,8 @@ async function openPluginVersions(plugin: PluginSearchItem | undefined): Promise
       throw new Error(typeof data['error'] === 'string' ? data['error'] : 'No se pudieron cargar las versiones.');
     }
 
-    const versions: PluginVersionItem[] = Array.isArray(data['versions'])
-      ? (data['versions'] as PluginVersionItem[])
+    const versions: PluginVersionItem[] = isArrayOf(data['versions'], isPluginVersionItem)
+      ? data['versions']
       : [];
 
     if (!versions.length) {
@@ -4256,8 +4496,8 @@ async function loadInstalledPlugins(options: SoftLoadOptions = {}): Promise<void
   }
 
   const owner = isOwnerSession();
-  const pluginsList: InstalledPluginItem[] = Array.isArray(data['plugins'])
-    ? (data['plugins'] as InstalledPluginItem[])
+  const pluginsList: InstalledPluginItem[] = isArrayOf(data['plugins'], isInstalledPluginItem)
+    ? data['plugins']
     : [];
 
   element.innerHTML =
@@ -4313,6 +4553,17 @@ interface VersionSoftwareItem {
   [key: string]: unknown;
 }
 
+function isVersionSoftwareItem(value: unknown): value is VersionSoftwareItem {
+  return isRecord(value) && isString(value['id']) &&
+    optionalField(value, 'label', isString) &&
+    optionalField(value, 'name', isString) &&
+    optionalField(value, 'desc', isString) &&
+    optionalField(value, 'description', isString) &&
+    optionalField(value, 'category', isString) &&
+    optionalField(value, 'icon', isString) &&
+    optionalField(value, 'external', isString);
+}
+
 interface VersionBuildItem {
   build?: string | number;
   channel?: string;
@@ -4323,6 +4574,18 @@ interface VersionBuildItem {
   installable?: boolean;
   url?: string;
   [key: string]: unknown;
+}
+
+function isVersionBuildItem(value: unknown): value is VersionBuildItem {
+  return isRecord(value) &&
+    optionalField(value, 'build', isStringOrNumber) &&
+    optionalField(value, 'channel', isString) &&
+    optionalField(value, 'loaderVersion', isString) &&
+    optionalField(value, 'time', isStringOrNumber) &&
+    optionalField(value, 'changes', isString) &&
+    optionalField(value, 'sha256', isString) &&
+    optionalField(value, 'installable', (item): item is boolean => typeof item === 'boolean') &&
+    optionalField(value, 'url', isString);
 }
 
 let versionCatalog: VersionSoftwareItem[] = [];
@@ -4576,8 +4839,8 @@ async function selectVersionBuilds(
       throw new Error(typeof data['error'] === 'string' ? data['error'] : 'No se pudieron cargar los builds.');
     }
 
-    const builds: VersionBuildItem[] = Array.isArray(data['builds'])
-      ? (data['builds'] as VersionBuildItem[])
+    const builds: VersionBuildItem[] = isArrayOf(data['builds'], isVersionBuildItem)
+      ? data['builds']
       : [];
 
     if (!builds.length) {
@@ -4720,9 +4983,10 @@ async function loadVersionState(options: SoftLoadOptions = {}): Promise<void> {
       throw new Error(typeof softwareData['error'] === 'string' ? softwareData['error'] : 'No se pudo cargar el catálogo de software.');
     }
 
-    const softwareItems = Array.isArray(softwareData['software']) ? softwareData['software'] : [];
+    const softwareItems = isArrayOf(softwareData['software'], isVersionSoftwareItem)
+      ? softwareData['software']
+      : [];
     versionCatalog = softwareItems
-      .filter((entry: unknown): entry is VersionSoftwareItem => isRecord(entry) && typeof entry['id'] === 'string')
       .map((item: VersionSoftwareItem) => ({
         ...item,
         icon:
@@ -4776,11 +5040,28 @@ interface DbCredentials {
   password?: string;
 }
 
+function isDbCredentials(value: unknown): value is DbCredentials {
+  return isRecord(value) &&
+    optionalField(value, 'host', isString) &&
+    optionalField(value, 'port', isStringOrNumber) &&
+    optionalField(value, 'database', isString) &&
+    optionalField(value, 'user', isString) &&
+    optionalField(value, 'password', isString);
+}
+
 interface DatabaseSummaryItem {
   name?: string;
   tables?: string | number;
   user?: string;
   sizeMb?: string | number;
+}
+
+function isDatabaseSummaryItem(value: unknown): value is DatabaseSummaryItem {
+  return isRecord(value) &&
+    optionalField(value, 'name', isString) &&
+    optionalField(value, 'tables', isStringOrNumber) &&
+    optionalField(value, 'user', isString) &&
+    optionalField(value, 'sizeMb', isStringOrNumber);
 }
 
 interface DatabaseStatusState {
@@ -4826,8 +5107,8 @@ async function createDatabase(): Promise<void> {
 
   toast('✅ Base de datos creada', 'ok');
 
-  if (isRecord(data['credentials'])) {
-    showDbCredentials(data['credentials'] as DbCredentials);
+  if (isDbCredentials(data['credentials'])) {
+    showDbCredentials(data['credentials']);
   }
 
   loadDatabases({ force: true });
@@ -4855,10 +5136,12 @@ async function loadDatabases(options: SoftLoadOptions = {}): Promise<void> {
     const rawStatus = await cachedApi('databases:status', '/api/databases/status', undefined, 15_000, force);
     if (isRecord(rawStatus)) {
       status = {
-        connected: Boolean(rawStatus['connected']),
-        host: typeof rawStatus['host'] === 'string' ? rawStatus['host'] : undefined,
-        port: typeof rawStatus['port'] === 'string' || typeof rawStatus['port'] === 'number' ? rawStatus['port'] : undefined,
-        error: typeof rawStatus['error'] === 'string' ? rawStatus['error'] : undefined,
+        connected: rawStatus['connected'] === true,
+        ...(typeof rawStatus['host'] === 'string' ? { host: rawStatus['host'] } : {}),
+        ...(typeof rawStatus['port'] === 'string' || typeof rawStatus['port'] === 'number'
+          ? { port: rawStatus['port'] }
+          : {}),
+        ...(typeof rawStatus['error'] === 'string' ? { error: rawStatus['error'] } : {}),
       };
     }
   } catch (error: unknown) {
@@ -4897,8 +5180,8 @@ async function loadDatabases(options: SoftLoadOptions = {}): Promise<void> {
     return;
   }
 
-  const databases: DatabaseSummaryItem[] = Array.isArray(data['databases'])
-    ? (data['databases'] as DatabaseSummaryItem[])
+  const databases: DatabaseSummaryItem[] = isArrayOf(data['databases'], isDatabaseSummaryItem)
+    ? data['databases']
     : [];
 
   container.innerHTML = `
@@ -4987,8 +5270,8 @@ async function loadDatabases(options: SoftLoadOptions = {}): Promise<void> {
         return;
       }
 
-      if (isRecord(resetData['credentials'])) {
-        showDbCredentials(resetData['credentials'] as DbCredentials);
+      if (isDbCredentials(resetData['credentials'])) {
+        showDbCredentials(resetData['credentials']);
       }
     });
   });
@@ -5005,14 +5288,23 @@ interface ShareTokenItem {
   expiresAt?: string | number | null;
 }
 
-const SHARE_PERMISSION_LABELS: Record<string, string> = {
+function isShareTokenItem(value: unknown): value is ShareTokenItem {
+  return isRecord(value) &&
+    optionalField(value, 'id', isString) &&
+    optionalField(value, 'label', isString) &&
+    optionalField(value, 'permission', isString) &&
+    (value['expiresAt'] === undefined || value['expiresAt'] === null || isStringOrNumber(value['expiresAt']));
+}
+
+const SHARE_PERMISSION_LABELS: Record<Permission, string> = {
   read: '👁️ Solo lectura',
   control: '🎮 Control',
   admin: '🛡️ Administrador',
 };
 
 function sharePermissionLabel(permission: unknown): string {
-  return SHARE_PERMISSION_LABELS[String(permission || '').toLowerCase()] || SHARE_PERMISSION_LABELS['read'];
+  const key = String(permission || '').toLowerCase();
+  return isPermission(key) ? SHARE_PERMISSION_LABELS[key] : SHARE_PERMISSION_LABELS.read;
 }
 
 async function loadShareTokens(): Promise<void> {
@@ -5024,8 +5316,8 @@ async function loadShareTokens(): Promise<void> {
   try {
     const rawData = await cloudApi('/api/share-tokens');
     const data = isRecord(rawData) ? rawData : {};
-    const tokens: ShareTokenItem[] = Array.isArray(data['tokens'])
-      ? (data['tokens'] as ShareTokenItem[])
+    const tokens: ShareTokenItem[] = isArrayOf(data['tokens'], isShareTokenItem)
+      ? data['tokens']
       : [];
 
     const control = tokens.filter((token: ShareTokenItem) => token.permission === 'control').length;
@@ -5289,6 +5581,13 @@ interface BackupSummaryItem {
   sizeMb?: string | number;
 }
 
+function isBackupSummaryItem(value: unknown): value is BackupSummaryItem {
+  return isRecord(value) &&
+    optionalField(value, 'name', isString) &&
+    optionalField(value, 'date', isString) &&
+    optionalField(value, 'sizeMb', isStringOrNumber);
+}
+
 async function loadBackups(options: SoftLoadOptions = {}): Promise<void> {
   const container = $('backupList');
 
@@ -5312,8 +5611,8 @@ async function loadBackups(options: SoftLoadOptions = {}): Promise<void> {
     return;
   }
 
-  const backups: BackupSummaryItem[] = Array.isArray(data['backups'])
-    ? (data['backups'] as BackupSummaryItem[])
+  const backups: BackupSummaryItem[] = isArrayOf(data['backups'], isBackupSummaryItem)
+    ? data['backups']
     : [];
   const owner = isOwnerSession();
 
@@ -5394,6 +5693,15 @@ interface BackupProgressPayload {
   totalBytes?: number;
 }
 
+function isBackupProgressPayload(value: unknown): value is BackupProgressPayload {
+  return isRecord(value) &&
+    optionalField(value, 'active', (item): item is boolean => typeof item === 'boolean') &&
+    optionalField(value, 'phase', isString) &&
+    optionalField(value, 'percent', isNumber) &&
+    optionalField(value, 'processedBytes', isNumber) &&
+    optionalField(value, 'totalBytes', isNumber);
+}
+
 interface BackupProgressUiState {
   label?: string;
   pct?: string;
@@ -5453,9 +5761,9 @@ function hideBackupProgress(delay: number = 0): void {
 async function pollBackupProgress(): Promise<void> {
   try {
     const raw: unknown = await api('/api/backups/progress');
-    if (!isRecord(raw) || !raw['ok'] || !isRecord(raw['progress'])) return;
+    if (!isRecord(raw) || raw['ok'] !== true || !isBackupProgressPayload(raw['progress'])) return;
 
-    const progress = raw['progress'] as BackupProgressPayload;
+    const progress = raw['progress'];
     if (!progress.active) return;
 
     if (progress.phase === 'flush') {
@@ -5626,6 +5934,26 @@ interface ServerPortsProperties {
   enableRcon?: boolean;
 }
 
+function isServerPortInfo(value: unknown): value is ServerPortInfo {
+  return isRecord(value) &&
+    isStringOrNumber(value['port']) &&
+    isString(value['name']) &&
+    isString(value['description']) &&
+    isString(value['protocol']) &&
+    isString(value['state']);
+}
+
+function isServerPortsProperties(value: unknown): value is ServerPortsProperties {
+  return isRecord(value) &&
+    optionalField(value, 'serverPort', isNumber) &&
+    optionalField(value, 'queryPort', isNumber) &&
+    optionalField(value, 'rconPort', isNumber) &&
+    optionalField(value, 'rconPassword', isString) &&
+    optionalField(value, 'hasRconPassword', (item): item is boolean => typeof item === 'boolean') &&
+    optionalField(value, 'enableQuery', (item): item is boolean => typeof item === 'boolean') &&
+    optionalField(value, 'enableRcon', (item): item is boolean => typeof item === 'boolean');
+}
+
 async function loadPorts(options: SoftLoadOptions = {}): Promise<void> {
   const element = $('portList');
   if (!element) return;
@@ -5645,11 +5973,11 @@ async function loadPorts(options: SoftLoadOptions = {}): Promise<void> {
       throw new Error(errMsg);
     }
 
-    const props: ServerPortsProperties = isRecord(raw['properties'])
-      ? (raw['properties'] as ServerPortsProperties)
+    const props: ServerPortsProperties = isServerPortsProperties(raw['properties'])
+      ? raw['properties']
       : {};
-    const ports: ServerPortInfo[] = Array.isArray(raw['ports'])
-      ? (raw['ports'] as ServerPortInfo[])
+    const ports: ServerPortInfo[] = isArrayOf(raw['ports'], isServerPortInfo)
+      ? raw['ports']
       : [];
 
     element.innerHTML = `
@@ -6046,14 +6374,18 @@ async function loadStartup(options: SoftLoadOptions = {}): Promise<void> {
       btn.textContent = '⟳ Detectando…';
     }
     try {
-      const data = (await api('/api/startup/detect-version', {
+      const rawData = await api('/api/startup/detect-version', {
         method: 'POST',
         // api()/rpcCloud() serializa los objetos JSON. No serializar aquí
         // para evitar que el Agent reciba una cadena JSON en vez del objeto.
         body: { jar: jar || undefined, force: true, persist: true },
-      })) as ApiResult & { version?: string; source?: string };
-      if (!data?.ok && data?.error) throw new Error(String(data.error));
-      const version = String(data.version || '');
+      });
+      if (!isVersionDetectionResponse(rawData)) {
+        throw new Error('Respuesta de detección de versión no válida.');
+      }
+      const data = rawData;
+      if (data.ok === false && data.error) throw new Error(data.error);
+      const version = data.version || '';
       const input = $input('stMinecraftVersion');
       if (input) input.value = version;
       const hint = $('stVersionHint');
@@ -6125,7 +6457,7 @@ async function saveStartup() {
     stopCommand: $input('stStopCmd')?.value.trim() || 'stop',
     autoRestartOnCrash: Boolean($input('stAutoRestart')?.checked),
     autoStartOnBoot: Boolean($input('stAutoStart')?.checked),
-    serverPort: portValue ? Number(portValue) : undefined,
+    ...(portValue ? { serverPort: Number(portValue) } : {}),
   };
 
   if (owner) {
@@ -6150,8 +6482,8 @@ async function saveStartup() {
     return;
   }
   const data: ApiResult = {
-    ok: Boolean(rawSave['ok']),
-    error: typeof rawSave['error'] === 'string' ? rawSave['error'] : undefined,
+    ok: rawSave['ok'] === true,
+    ...(typeof rawSave['error'] === 'string' ? { error: rawSave['error'] } : {}),
   };
 
   if (button && 'disabled' in button) {
