@@ -552,6 +552,7 @@ let cloudConnecting = false;
 let editor: CodeMirrorEditor | null = null;
 let currentFile: string | null = null;
 let selectedFilePaths: Set<string> = new Set();
+const selectedFileTypes: Map<string, boolean> = new Map();
 let lastUploadFiles: File[] = [];
 let activeUploadState: UploadState | null = null;
 let originalFileContent = '';
@@ -568,18 +569,34 @@ let lastAgentActivityState: unknown = null;
 let lastStatusActivity: unknown = null;
 
 const VIEW_CACHE_TTL_MS = 45_000;
+const VIEW_CACHE_MAX_ENTRIES = 100;
 const viewCache: Map<string, ViewCacheEntry> = new Map();
 const viewInflight: Map<string, Promise<unknown>> = new Map();
 
 function getViewCache(key: string, ttl: number = VIEW_CACHE_TTL_MS): unknown | null {
   const entry = viewCache.get(key);
   if (!entry) return null;
-  if (Date.now() - entry.at > ttl) return null;
+
+  if (Date.now() - entry.at >= ttl) {
+    viewCache.delete(key);
+    return null;
+  }
+
+  // Refresh LRU order without extending the entry's original TTL.
+  viewCache.delete(key);
+  viewCache.set(key, entry);
   return entry.data;
 }
 
 function setViewCache(key: string, data: unknown): void {
+  viewCache.delete(key);
   viewCache.set(key, { at: Date.now(), data });
+
+  while (viewCache.size > VIEW_CACHE_MAX_ENTRIES) {
+    const oldest = viewCache.keys().next();
+    if (oldest.done) break;
+    viewCache.delete(oldest.value);
+  }
 }
 
 function invalidateViewCache(key?: string): void {
@@ -612,9 +629,11 @@ function cachedApi(
     viewInflight.delete(cacheKey);
   }
 
-  const request = api(pathname, init)
+  let request: Promise<unknown>;
+  request = api(pathname, init)
     .then((data: unknown) => {
-      if (isRecord(data) && data['ok'] !== false) {
+      // A forced refresh supersedes any older in-flight request for this key.
+      if (viewInflight.get(cacheKey) === request && isRecord(data) && data['ok'] !== false) {
         setViewCache(cacheKey, data);
       }
       return data;
@@ -1375,6 +1394,60 @@ async function cloudApi(pathname: string, init: RpcInit = {}): Promise<ApiResult
   return data;
 }
 
+function sendCloudRpcRequest(
+  id: string,
+  signal: AbortSignal | null | undefined,
+  send: () => void,
+): Promise<RpcResult> {
+  if (signal?.aborted) {
+    return Promise.reject(new DOMException('Aborted', 'AbortError'));
+  }
+
+  return new Promise<RpcResult>((resolve, reject) => {
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+
+    const cleanup = (): void => {
+      if (timeout !== undefined) clearTimeout(timeout);
+      pending.delete(id);
+      if (abortHandler) signal?.removeEventListener('abort', abortHandler);
+    };
+
+    const finish = (settle: () => void): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      settle();
+    };
+
+    const abortHandler = (): void => {
+      // This cancels the panel's wait and releases its pending slot. It does not
+      // claim to cancel work that the Agent may already have started remotely.
+      finish(() => reject(new DOMException('Aborted', 'AbortError')));
+    };
+
+    timeout = setTimeout(() => {
+      finish(() => reject(new Error('MoonWolf Agent no respondió a la solicitud. Comprueba la conexión e inténtalo de nuevo.')));
+    }, 125_000);
+
+    pending.set(id, result => finish(() => resolve(result)));
+
+    if (signal) {
+      signal.addEventListener('abort', abortHandler, { once: true });
+      if (signal.aborted) {
+        abortHandler();
+        return;
+      }
+    }
+
+    try {
+      send();
+    } catch (error: unknown) {
+      finish(() => reject(error));
+    }
+  });
+}
+
 function rpcCloudLegacy(pathname: string, init: RpcInit = {}): Promise<RpcResult> {
   if (!cloudSocket?.connected) {
     return Promise.reject(new Error('MoonWolf Cloud no está conectado.'));
@@ -1388,24 +1461,8 @@ function rpcCloudLegacy(pathname: string, init: RpcInit = {}): Promise<RpcResult
     body: init.body ?? undefined,
   };
 
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      pending.delete(id);
-      reject(new Error('MoonWolf Agent no respondió a la solicitud. Comprueba la conexión e inténtalo de nuevo.'));
-    }, 125_000);
-
-    pending.set(id, result => {
-      clearTimeout(timeout);
-      resolve(result);
-    });
-
-    try {
-      cloudSocket?.emit('rpc', request);
-    } catch (error: unknown) {
-      clearTimeout(timeout);
-      pending.delete(id);
-      reject(error);
-    }
+  return sendCloudRpcRequest(id, init.signal, () => {
+    cloudSocket?.emit('rpc', request);
   });
 }
 
@@ -1497,25 +1554,9 @@ function rpcCloudBinary(pathname: string, init: RpcInit = {}): Promise<RpcResult
     return Promise.reject(error);
   }
 
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      pending.delete(id);
-      reject(new Error('MoonWolf Agent no respondió a la solicitud. Comprueba la conexión e inténtalo de nuevo.'));
-    }, 125_000);
-
-    pending.set(id, result => {
-      clearTimeout(timeout);
-      resolve(result);
-    });
-
-    try {
-      if (!cloudSocket) throw new Error('MoonWolf Cloud no está conectado');
-      cloudSocket.emit('rpc_binary', packet);
-    } catch (error: unknown) {
-      clearTimeout(timeout);
-      pending.delete(id);
-      reject(error);
-    }
+  return sendCloudRpcRequest(id, init.signal, () => {
+    if (!cloudSocket) throw new Error('MoonWolf Cloud no está conectado');
+    cloudSocket.emit('rpc_binary', packet);
   });
 }
 
@@ -2723,12 +2764,92 @@ function fileIcon(type: unknown): string {
   return icons[t] || '📄';
 }
 
+const FILE_NAME_COLLATOR = new Intl.Collator(undefined, { sensitivity: 'base' });
+const boundFileLists = new WeakSet<HTMLElement>();
+const boundBreadcrumbs = new WeakSet<HTMLElement>();
+let fileListRequestGeneration = 0;
+
+function setFileSelection(path: string, isDir: boolean, selected: boolean): void {
+  if (selected) {
+    selectedFilePaths.add(path);
+    selectedFileTypes.set(path, isDir);
+  } else {
+    selectedFilePaths.delete(path);
+    selectedFileTypes.delete(path);
+  }
+}
+
+function bindFileListEvents(list: HTMLElement): void {
+  if (boundFileLists.has(list)) return;
+  boundFileLists.add(list);
+
+  list.addEventListener('change', (event: Event) => {
+    const input = event.target;
+    if (!(input instanceof HTMLInputElement) || !input.matches('input[type="checkbox"]')) return;
+
+    const row = input.closest<HTMLElement>('.file-row');
+    if (!row || !list.contains(row)) return;
+
+    const path = row.dataset.path;
+    if (!path) return;
+
+    setFileSelection(path, row.dataset.type === 'dir', input.checked);
+    updateBulkBar();
+  });
+
+  list.addEventListener('dblclick', (event: MouseEvent) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target || target.closest('input[type="checkbox"], .file-select')) return;
+
+    const row = target.closest<HTMLElement>('.file-row');
+    if (!row || !list.contains(row)) return;
+
+    const path = row.dataset.path || '';
+    const type = row.dataset.type || '';
+    if (!path) return;
+
+    if (type === 'dir') {
+      populateFiles(path);
+    } else if (type !== 'jar') {
+      openFile(path);
+    }
+  });
+
+  list.addEventListener('contextmenu', (event: MouseEvent) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const row = target?.closest<HTMLElement>('.file-row');
+    if (!row || !list.contains(row)) return;
+
+    openFileContext(
+      event,
+      row.dataset.name || '',
+      row.dataset.type || '',
+      row.dataset.path || '',
+    );
+  });
+}
+
+function bindBreadcrumbEvents(trail: HTMLElement): void {
+  if (boundBreadcrumbs.has(trail)) return;
+  boundBreadcrumbs.add(trail);
+
+  trail.addEventListener('click', (event: MouseEvent) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const crumb = target?.closest<HTMLElement>('.crumb');
+    if (!crumb || !trail.contains(crumb)) return;
+    populateFiles(crumb.dataset.path || '');
+  });
+}
+
 function populateFiles(dir: string = '', options: SoftLoadOptions = {}): void {
-  currentDir = dir;
+  const requestedDir = dir;
+  currentDir = requestedDir;
+  const requestGeneration = ++fileListRequestGeneration;
 
   const list = $('fileList');
 
   if (!list) return;
+  bindFileListEvents(list);
 
   const soft = resolveSoftLoad(options, list);
   if (!soft) {
@@ -2740,10 +2861,12 @@ function populateFiles(dir: string = '', options: SoftLoadOptions = {}): void {
   `;
   }
 
-  renderBreadcrumb(dir);
+  renderBreadcrumb(requestedDir);
 
-  cachedApi(`files:${dir}`, `/api/files?dir=${encodeURIComponent(dir)}`, undefined, 15_000, Boolean(options.force))
+  cachedApi(`files:${requestedDir}`, `/api/files?dir=${encodeURIComponent(requestedDir)}`, undefined, 15_000, Boolean(options.force))
     .then(raw => {
+      if (requestGeneration !== fileListRequestGeneration) return;
+
       if (!isFilesApiResponse(raw) || !raw.ok) {
         const err = isFilesApiResponse(raw) && typeof raw.error === 'string' ? raw.error : 'No se pudo leer la carpeta.';
         throw new Error(err);
@@ -2752,8 +2875,8 @@ function populateFiles(dir: string = '', options: SoftLoadOptions = {}): void {
       const items: FileListItem[] = Array.isArray(raw.items) ? raw.items.slice() : [];
 
       items.sort((a: FileListItem, b: FileListItem) =>
-          (a.type === 'dir' ? -1 : 1) - (b.type === 'dir' ? -1 : 1) ||
-          a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+        Number(b.type === 'dir') - Number(a.type === 'dir') ||
+        FILE_NAME_COLLATOR.compare(a.name, b.name)
       );
 
       if (!items.length) {
@@ -2768,50 +2891,32 @@ function populateFiles(dir: string = '', options: SoftLoadOptions = {}): void {
       }
 
       list.innerHTML = items
-        .map(
-          item => `
-          <div class="file-row" data-name="${escHtml(item.name)}" data-type="${escHtml(item.type)}" data-path="${escHtml(currentDir ? `${currentDir}/${item.name}` : item.name)}">
-            <label class="file-select"><input type="checkbox" aria-label="Seleccionar ${escHtml(item.name)}"></label>
-            <span class="file-name" style="flex:1">
-              ${fileIcon(item.type)}
-              <span>${escHtml(item.name)}</span>
-            </span>
-            <span style="width:90px;text-align:right;color:var(--muted2)">${escHtml(item.size)}</span>
-            <span style="width:140px;text-align:right;color:var(--muted2)">${escHtml(item.date)}</span>
-          </div>
-        `
-        )
-        .join('');
+        .map(item => {
+          const relativePath = requestedDir ? `${requestedDir}/${item.name}` : item.name;
+          const checked = selectedFilePaths.has(relativePath) ? 'checked' : '';
 
-      list.querySelectorAll<HTMLElement>('.file-row').forEach(row => {
-        const checkbox = row.querySelector<HTMLInputElement>('input[type="checkbox"]');
-        const rowPath = row.dataset.path || '';
-        if (selectedFilePaths.has(rowPath) && checkbox) checkbox.checked = true;
-        checkbox?.addEventListener('click', event => event.stopPropagation());
-        checkbox?.addEventListener('change', () => {
-          if (checkbox.checked) selectedFilePaths.add(rowPath);
-          else selectedFilePaths.delete(rowPath);
-          updateBulkBar();
-        });
-        row.addEventListener('dblclick', () => {
-          const name = row.dataset.name || '';
-          const type = row.dataset.type || '';
-
-          const rel = currentDir ? `${currentDir}/${name}` : name;
-
-          if (type === 'dir') {
-            populateFiles(rel);
-          } else if (type !== 'jar') {
-            openFile(rel);
+          // Keep metadata for selections made in a different directory too.
+          if (selectedFilePaths.has(relativePath)) {
+            selectedFileTypes.set(relativePath, item.type === 'dir');
           }
-        });
 
-        row.addEventListener('contextmenu', (event: MouseEvent) =>
-          openFileContext(event, row.dataset.name || '', row.dataset.type || '')
-        );
-      });
+          return `
+            <div class="file-row" data-name="${escHtml(item.name)}" data-type="${escHtml(item.type)}" data-path="${escHtml(relativePath)}">
+              <label class="file-select"><input type="checkbox" aria-label="Seleccionar ${escHtml(item.name)}" ${checked}></label>
+              <span class="file-name" style="flex:1">
+                ${fileIcon(item.type)}
+                <span>${escHtml(item.name)}</span>
+              </span>
+              <span style="width:90px;text-align:right;color:var(--muted2)">${escHtml(item.size)}</span>
+              <span style="width:140px;text-align:right;color:var(--muted2)">${escHtml(item.date)}</span>
+            </div>
+          `;
+        })
+        .join('');
     })
     .catch((error: unknown) => {
+      if (requestGeneration !== fileListRequestGeneration) return;
+
       list.innerHTML = `
         <div class="file-load-error" role="alert">
           <div class="empty-icon">⚠</div>
@@ -2820,7 +2925,7 @@ function populateFiles(dir: string = '', options: SoftLoadOptions = {}): void {
           <button class="small-btn" id="btnRetryFiles" type="button">↻ Reintentar</button>
         </div>
       `;
-      $('btnRetryFiles')?.addEventListener('click', () => populateFiles(currentDir, { force: true }));
+      $('btnRetryFiles')?.addEventListener('click', () => populateFiles(requestedDir, { force: true }));
     });
 }
 
@@ -2832,22 +2937,31 @@ function updateBulkBar() {
   bar?.classList.toggle('visible', count > 0);
   const selectAll = $input('selectAllFiles');
   const rows = document.querySelectorAll<HTMLElement>('#fileList .file-row');
+  let rowCount = 0;
+  let selectedInView = 0;
+
+  rows.forEach(row => {
+    rowCount++;
+    if (selectedFilePaths.has(row.dataset.path || '')) selectedInView++;
+  });
+
   if (selectAll) {
-    selectAll.checked = rows.length > 0 && Array.from(rows).every(row => selectedFilePaths.has(row.dataset.path || ''));
-    selectAll.indeterminate = !selectAll.checked && Array.from(rows).some(row => selectedFilePaths.has(row.dataset.path || ''));
+    selectAll.checked = rowCount > 0 && selectedInView === rowCount;
+    selectAll.indeterminate = selectedInView > 0 && selectedInView < rowCount;
   }
 }
-function clearSelectedFiles() {
+function clearSelectedFiles(): void {
   selectedFilePaths.clear();
+  selectedFileTypes.clear();
   document.querySelectorAll<HTMLInputElement>('#fileList input[type="checkbox"]').forEach(input => { input.checked = false; });
   updateBulkBar();
 }
 async function runBulkAction(action: string | undefined): Promise<void> {
   if (action === 'clear') return clearSelectedFiles();
-  const items = Array.from(selectedFilePaths).map(rel => {
-    const row = Array.from(document.querySelectorAll<HTMLElement>('#fileList .file-row')).find(item => item.dataset.path === rel);
-    return { path: rel, isDir: row?.dataset.type === 'dir' };
-  });
+  const items = Array.from(selectedFilePaths, path => ({
+    path,
+    isDir: selectedFileTypes.get(path) === true,
+  }));
   if (!items.length) return;
   if (action === 'download') {
     const count = items.length;
@@ -2894,6 +3008,8 @@ function renderBreadcrumb(dir: string): void {
 
   let acc = '';
 
+  bindBreadcrumbEvents(trail);
+
   trail.innerHTML = parts
     .map((part, index) => {
       acc += (index ? '/' : '') + part;
@@ -2904,10 +3020,6 @@ function renderBreadcrumb(dir: string): void {
       `;
     })
     .join('');
-
-  trail.querySelectorAll<HTMLElement>('.crumb').forEach(crumb => {
-    crumb.addEventListener('click', () => populateFiles(crumb.dataset.path || ''));
-  });
 }
 
 async function downloadDirectoryAsZip(rel: string, name: string): Promise<void> {
@@ -2932,12 +3044,12 @@ async function downloadDirectoryAsZip(rel: string, name: string): Promise<void> 
   }
 }
 
-function openFileContext(event: MouseEvent, name: string, type: string): void {
+function openFileContext(event: MouseEvent, name: string, type: string, path?: string): void {
   event.preventDefault();
 
   document.querySelector('.file-ctx-menu')?.remove();
 
-  const rel = currentDir ? `${currentDir}/${name}` : name;
+  const rel = path || (currentDir ? `${currentDir}/${name}` : name);
 
   const menu = document.createElement('div');
 
@@ -5793,10 +5905,26 @@ function hideBackupProgress(delay: number = 0): void {
   }, delay);
 }
 
-async function pollBackupProgress(): Promise<void> {
+function waitForAbortableDelay(delayMs: number, signal: AbortSignal): Promise<void> {
+  return new Promise(resolve => {
+    let timer: ReturnType<typeof setTimeout>;
+
+    const finish = (): void => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', finish);
+      resolve();
+    };
+
+    timer = setTimeout(finish, delayMs);
+    signal.addEventListener('abort', finish, { once: true });
+    if (signal.aborted) finish();
+  });
+}
+
+async function pollBackupProgress(signal?: AbortSignal): Promise<void> {
   try {
-    const raw: unknown = await api('/api/backups/progress');
-    if (!isRecord(raw) || raw['ok'] !== true || !isBackupProgressPayload(raw['progress'])) return;
+    const raw: unknown = await api('/api/backups/progress', signal ? { signal } : {});
+    if (signal?.aborted || !isRecord(raw) || raw['ok'] !== true || !isBackupProgressPayload(raw['progress'])) return;
 
     const progress = raw['progress'];
     if (!progress.active) return;
@@ -5820,6 +5948,15 @@ async function pollBackupProgress(): Promise<void> {
       width: percent,
     });
   } catch {
+    // A transient polling failure must not stop the backup operation.
+  }
+}
+
+async function runBackupProgressPolling(signal: AbortSignal): Promise<void> {
+  while (!signal.aborted) {
+    await pollBackupProgress(signal);
+    if (signal.aborted) return;
+    await waitForAbortableDelay(BACKUP_PROGRESS_POLL_MS, signal);
   }
 }
 
@@ -5836,8 +5973,8 @@ async function createBackup(): Promise<void> {
 
   showBackupProgress();
 
-  const poll = setInterval(() => { void pollBackupProgress(); }, BACKUP_PROGRESS_POLL_MS);
-  void pollBackupProgress();
+  const pollController = new AbortController();
+  const pollTask = runBackupProgressPolling(pollController.signal);
 
   try {
     const raw: unknown = await postJSON('/api/backups', { name: name.trim() });
@@ -5876,7 +6013,8 @@ async function createBackup(): Promise<void> {
     hideBackupProgress(4000);
     toast(`❌ ${errMsg}`, 'err');
   } finally {
-    clearInterval(poll);
+    pollController.abort();
+    await pollTask;
     if (button) {
       button.disabled = false;
       button.textContent = '➕ Nueva copia';
@@ -6961,8 +7099,8 @@ function bindEvents() {
       checkbox.checked = source.checked;
       const path = row.dataset.path;
       if (!path) return;
-      if (checkbox.checked) selectedFilePaths.add(path);
-      else selectedFilePaths.delete(path);
+      const rowType = row.dataset.type;
+      setFileSelection(path, rowType === 'dir', checkbox.checked);
     });
     updateBulkBar();
   });
