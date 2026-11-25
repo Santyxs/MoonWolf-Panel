@@ -484,8 +484,18 @@ const AGENT_KEY = 'moonwolf_agent_id' as const;
 const PERMISSION_KEY = 'moonwolf_panel_permission' as const;
 const SESSION_KIND_KEY = 'moonwolf_panel_kind' as const;
 
+/** Caché de nodos por id. Solo guarda elementos aún conectados al documento. */
+const domCache = new Map<string, HTMLElement>();
+
 function $(id: string): HTMLElement | null {
-  return document.getElementById(id);
+  const cached = domCache.get(id);
+  if (cached) {
+    if (cached.isConnected) return cached;
+    domCache.delete(id);
+  }
+  const el = document.getElementById(id);
+  if (el) domCache.set(id, el);
+  return el;
 }
 
 function $input(id: string): HTMLInputElement | null {
@@ -503,12 +513,60 @@ function $btn(id: string): HTMLButtonElement | null {
   return el instanceof HTMLButtonElement ? el : null;
 }
 
+/** Invalida la caché DOM (un id o toda). */
+function invalidateDom(id?: string): void {
+  if (id) domCache.delete(id);
+  else domCache.clear();
+}
+
 function escHtml(value: unknown): string {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+/** Retrasa la ejecución hasta que dejen de llegar llamadas durante `ms`. */
+function debounce<Args extends unknown[]>(
+  fn: (...args: Args) => void,
+  ms: number,
+): (...args: Args) => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return (...args: Args) => {
+    if (timer !== undefined) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = undefined;
+      fn(...args);
+    }, ms);
+  };
+}
+
+/** Como máximo una ejecución cada `ms` (leading + trailing). */
+function throttle<Args extends unknown[]>(
+  fn: (...args: Args) => void,
+  ms: number,
+): (...args: Args) => void {
+  let last = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return (...args: Args) => {
+    const now = Date.now();
+    const remaining = ms - (now - last);
+    if (remaining <= 0) {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      last = now;
+      fn(...args);
+    } else if (timer === undefined) {
+      timer = setTimeout(() => {
+        last = Date.now();
+        timer = undefined;
+        fn(...args);
+      }, remaining);
+    }
+  };
 }
 
 const AIKAR_FLAGS =
@@ -561,6 +619,8 @@ let currentDir = '';
 let currentPlugin: unknown = null;
 let pluginSource = 'all';
 let priceFilter = 'all';
+/** Generación de búsqueda: descarta respuestas obsoletas si el usuario busca otra vez. */
+let pluginSearchGeneration = 0;
 
 const pending: Map<string, (result: RpcResult) => void> = new Map();
 const activities: ActivityEntry[] = [];
@@ -2600,8 +2660,20 @@ function flushConsoleLogs() {
 
   // Mantener un máximo fijo de líneas evita que el DOM crezca sin límite.
   const excess = consoleEl.childElementCount + fragment.childElementCount - MAX_CONSOLE_LINES;
-  for (let i = 0; i < excess; i++) {
-    consoleEl.firstElementChild?.remove();
+  if (excess >= consoleEl.childElementCount && excess > 0) {
+    consoleEl.replaceChildren();
+  } else if (excess > 0) {
+    // removeChild en bucle corto; para lotes grandes usamos un único reflow vía Range.
+    if (excess > 80) {
+      const range = document.createRange();
+      range.setStartBefore(consoleEl.firstChild!);
+      range.setEndAfter(consoleEl.children[excess - 1]!);
+      range.deleteContents();
+    } else {
+      for (let i = 0; i < excess; i++) {
+        consoleEl.firstElementChild?.remove();
+      }
+    }
   }
 
   consoleEl.appendChild(fragment);
@@ -4325,6 +4397,8 @@ async function pluginSearch(): Promise<void> {
 
   if (!query) return;
 
+  const generation = ++pluginSearchGeneration;
+
   if (resultsEl) {
     resultsEl.innerHTML = `
       <div class="empty-state">
@@ -4338,6 +4412,9 @@ async function pluginSearch(): Promise<void> {
     const rawData = await api(
       `/api/plugins/search?q=${encodeURIComponent(query)}&source=${encodeURIComponent(pluginSource)}`
     );
+    // Respuesta obsoleta: el usuario ya lanzó otra búsqueda.
+    if (generation !== pluginSearchGeneration) return;
+
     const data = isRecord(rawData) ? rawData : {};
 
     if (!data['ok']) {
@@ -4357,6 +4434,7 @@ async function pluginSearch(): Promise<void> {
     const errors: unknown[] = Array.isArray(data['errors']) ? data['errors'] : [];
     renderPluginResults(results, errors);
   } catch (error: unknown) {
+    if (generation !== pluginSearchGeneration) return;
     if (resultsEl) {
       resultsEl.innerHTML = `
         <div class="empty-state">
@@ -4930,9 +5008,12 @@ async function selectVersionSoftware(software: string): Promise<void> {
       });
     };
 
+    const onVersionSearch = debounce((value: string) => {
+      drawVersions(value);
+    }, 120);
     $input('verVersionSearch')?.addEventListener('input', (e: Event) => {
       const target = e.target as HTMLInputElement | null;
-      drawVersions(target?.value || '');
+      onVersionSearch(target?.value || '');
     });
     drawVersions();
 
@@ -6996,15 +7077,34 @@ function flashButton(
 function bindEvents() {
   ensureLoginGate();
 
-  document.querySelectorAll('.sb-item').forEach(item => {
-    if (!(item instanceof HTMLElement)) return;
-    item.addEventListener('click', () => {
+  // Delegación en el sidebar: un solo listener en lugar de 3 por ítem.
+  const sidebar = document.querySelector('.sidebar');
+  if (sidebar instanceof HTMLElement) {
+    sidebar.addEventListener('click', event => {
+      const item = event.target instanceof Element
+        ? event.target.closest('.sb-item')
+        : null;
+      if (!(item instanceof HTMLElement) || !sidebar.contains(item)) return;
       const view = item.dataset.view;
       if (view) switchView(view);
     });
-    item.addEventListener('mouseenter', () => prefetchView(item.dataset.view));
-    item.addEventListener('focus', () => prefetchView(item.dataset.view));
-  });
+    sidebar.addEventListener('mouseover', event => {
+      const item = event.target instanceof Element
+        ? event.target.closest('.sb-item')
+        : null;
+      if (item instanceof HTMLElement && sidebar.contains(item)) {
+        prefetchView(item.dataset.view);
+      }
+    });
+    sidebar.addEventListener('focusin', event => {
+      const item = event.target instanceof Element
+        ? event.target.closest('.sb-item')
+        : null;
+      if (item instanceof HTMLElement && sidebar.contains(item)) {
+        prefetchView(item.dataset.view);
+      }
+    });
+  }
 
   $('btnStart')?.addEventListener('click', startServer);
   $('btnStop')?.addEventListener('click', stopServer);
