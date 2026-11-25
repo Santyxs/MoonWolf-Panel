@@ -30,7 +30,7 @@ rand = "0.10.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 walkdir = "2"
-generic-array = "1.4.5"
+generic-array = "1.4.9"
 matchit = "0.8.4"
 anyhow = "1"
 bytes = "1"
