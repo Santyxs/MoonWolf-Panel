@@ -128,7 +128,7 @@ select:focus:not(:focus-visible) {
 
 
 /* ══════════════════════════════════════════════
-   2b. ACCESSIBILITY
+   3. ACCESSIBILITY
    ══════════════════════════════════════════════ */
 
 .sr-only {
@@ -169,7 +169,7 @@ select:focus:not(:focus-visible) {
 
 
 /* ══════════════════════════════════════════════
-   3. SIDEBAR
+   4. SIDEBAR
    ══════════════════════════════════════════════ */
 
 .sidebar {
@@ -355,7 +355,7 @@ select:focus:not(:focus-visible) {
 
 
 /* ══════════════════════════════════════════════
-   4. MAIN
+   5. MAIN
    ══════════════════════════════════════════════ */
 
 .main {
@@ -406,7 +406,7 @@ select:focus:not(:focus-visible) {
 
 
 /* ══════════════════════════════════════════════
-   5. PANEL
+   6. PANEL
    ══════════════════════════════════════════════ */
 
 .panel {
@@ -442,7 +442,7 @@ select:focus:not(:focus-visible) {
 
 
 /* ══════════════════════════════════════════════
-   6. SHARED BUTTON BASE
+   7. SHARED BUTTON BASE
    ══════════════════════════════════════════════ */
 
 .small-btn,
@@ -483,7 +483,7 @@ select:focus:not(:focus-visible) {
 
 
 /* ══════════════════════════════════════════════
-   7. UPLOAD MENU
+   8. UPLOAD MENU
    ══════════════════════════════════════════════ */
 
 .upload-menu { position: relative; display: inline-flex; }
@@ -515,7 +515,7 @@ select:focus:not(:focus-visible) {
 
 
 /* ══════════════════════════════════════════════
-   8. SERVER CONTROLS
+   9. SERVER CONTROLS
    ══════════════════════════════════════════════ */
 
 .controls {
@@ -585,7 +585,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   9. STATS GRID
+   10. STATS GRID
    ══════════════════════════════════════════════ */
 
 .stats-grid {
@@ -635,7 +635,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   10. CONSOLE
+   11. CONSOLE
    ══════════════════════════════════════════════ */
 
 .console {
@@ -659,7 +659,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   11. ANSI (terminal)
+   12. ANSI (terminal)
    ══════════════════════════════════════════════ */
 
 .ansi-bold      { font-weight: 700; }
@@ -687,7 +687,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   12. Códigos § de Minecraft — paleta del cliente
+   13. Códigos § de Minecraft — paleta del cliente
    ══════════════════════════════════════════════ */
 
 .mc-black        { color: #000000; }
@@ -774,7 +774,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   13. FILE MANAGER
+   14. FILE MANAGER
    ══════════════════════════════════════════════ */
 
 .files-layout.is-dragging {
@@ -1052,7 +1052,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   14. FILE CONTEXT MENU
+   15. FILE CONTEXT MENU
    ══════════════════════════════════════════════ */
 
 .file-ctx-menu {
@@ -1107,7 +1107,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   15. PLUGINS
+   16. PLUGINS
    ══════════════════════════════════════════════ */
 
 .plg-tab-btn {
@@ -1567,7 +1567,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   16. VERSIONES — SERVIDORES POR CATEGORÍA
+   17. VERSIONES — SERVIDORES POR CATEGORÍA
    ══════════════════════════════════════════════ */
 
 #versionList {
@@ -1700,7 +1700,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   17. VERSIONES DE MINECRAFT
+   18. VERSIONES DE MINECRAFT
    ══════════════════════════════════════════════ */
 
 .ver-loading-page,
@@ -1896,7 +1896,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   18. USERS
+   19. USERS
    ══════════════════════════════════════════════ */
 
 .user-list { padding: var(--sp-sm); }
@@ -1920,7 +1920,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   19. BACKUPS
+   20. BACKUPS
    ══════════════════════════════════════════════ */
 
 .backup-list { padding: var(--sp-sm); }
@@ -1949,7 +1949,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   20. PORTS
+   21. PORTS
    ══════════════════════════════════════════════ */
 
 .port-list { padding: var(--sp-sm); }
@@ -2038,7 +2038,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   21. STARTUP
+   22. STARTUP
    ══════════════════════════════════════════════ */
 
 .startup-form    { padding: 18px; display: flex; flex-direction: column; gap: 18px; }
@@ -2091,7 +2091,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   22. Toggle cards (startup + ports)
+   23. Toggle cards (startup + ports)
    ══════════════════════════════════════════════ */
 
 .startup-toggles {
@@ -2170,7 +2170,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   23. Toggle switch
+   24. Toggle switch
    ══════════════════════════════════════════════ */
 
 .toggle {
@@ -2226,7 +2226,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   24. SETTINGS
+   25. SETTINGS
    ══════════════════════════════════════════════ */
 
 .settings-list {
@@ -2396,7 +2396,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   25. ACTIVITY LOG
+   26. ACTIVITY LOG
    ══════════════════════════════════════════════ */
 
 .activity-list {
@@ -2558,7 +2558,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   26. EMPTY STATE & TOAST
+   27. EMPTY STATE & TOAST
    ══════════════════════════════════════════════ */
 
 .empty-state {
@@ -2606,7 +2606,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   27. RESPONSIVE
+   28. RESPONSIVE
    ══════════════════════════════════════════════ */
 
 @media (max-width: 768px) {
@@ -2686,7 +2686,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   28. USERS
+   29. USER STATS
    ══════════════════════════════════════════════ */
 
 .user-stats-grid {
@@ -2866,7 +2866,7 @@ a.btn-primary { text-decoration: none; }
 
 
 /* ══════════════════════════════════════════════
-   29. BACKUP PROGRESS
+   30. BACKUP PROGRESS
    ══════════════════════════════════════════════ */
 
 .backup-progress {
