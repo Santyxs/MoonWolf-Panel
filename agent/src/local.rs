@@ -1492,18 +1492,19 @@ fn backup_first_component_excluded(rel: &Path) -> bool {
 fn collect_backup_files(root: &Path) -> (Vec<(std::path::PathBuf, u64)>, u64) {
     let mut files: Vec<(std::path::PathBuf, u64)> = Vec::new();
     let mut total = 0u64;
-    for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
-        let path = entry.path();
-        if path == root {
-            continue;
+    let walker = WalkDir::new(root).into_iter().filter_entry(|entry| {
+        // No descender en carpetas excluidas (backups, libraries, etc.).
+        if entry.depth() == 0 {
+            return true;
         }
-        let Ok(rel) = path.strip_prefix(root) else {
-            continue;
+        let Ok(rel) = entry.path().strip_prefix(root) else {
+            return false;
         };
-        if backup_first_component_excluded(rel) {
-            continue;
-        }
-        if !entry.file_type().is_file() {
+        !backup_first_component_excluded(rel)
+    });
+    for entry in walker.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path == root || !entry.file_type().is_file() {
             continue;
         }
         let Ok(meta) = entry.metadata() else {
@@ -1514,13 +1515,6 @@ fn collect_backup_files(root: &Path) -> (Vec<(std::path::PathBuf, u64)>, u64) {
         files.push((path.to_path_buf(), size));
     }
     (files, total)
-}
-
-async fn compute_total_bytes(root: &Path) -> u64 {
-    let root_clone = root.to_path_buf();
-    tokio::task::spawn_blocking(move || collect_backup_files(&root_clone).1)
-        .await
-        .unwrap_or(0)
 }
 
 async fn get_backup_progress(
@@ -1694,7 +1688,7 @@ async fn create_backup(
                 }
             }
             for dir in &dirs {
-                let _ = zip.add_directory(dir, options);
+                zip.add_directory(dir, options)?;
             }
 
             let mut processed = 0u64;
@@ -1718,7 +1712,7 @@ async fn create_backup(
                         guard.processed_bytes = processed;
                         guard.total_bytes = total;
                         if total > 0 {
-                            guard.percent = ((processed * 100) / total).min(99) as u32;
+                            guard.percent = (processed.saturating_mul(100) / total).min(99) as u32;
                         }
                     }
                 }
