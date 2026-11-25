@@ -271,15 +271,25 @@ interface ActivityEntry {
   [key: string]: unknown;
 }
 
+/** Cabecera de respuesta del canal directo WebRTC. */
+interface DirectResponseHead {
+  ok?: boolean;
+  status?: number;
+  contentType?: string;
+  contentLength?: number;
+  size?: number;
+  error?: string;
+  [key: string]: unknown;
+}
+
 interface RpcInit {
   method?: string;
   headers?: HeadersInit;
-  body?: unknown;
+  body?: BodyInit | null | object | Uint8Array | ArrayBuffer;
   onProgress?: (done: number, total: number) => void;
-  onHeaders?: (headers: unknown) => void;
+  onHeaders?: (headers: DirectResponseHead) => void | Promise<void>;
   onChunk?: (chunk: Uint8Array) => void;
   signal?: AbortSignal | null;
-  [key: string]: unknown;
 }
 
 interface RpcResult {
@@ -287,11 +297,15 @@ interface RpcResult {
   ok?: boolean;
   status?: number;
   contentType?: string;
+  contentLength?: number;
   bodyBase64?: string;
   bodyBytes?: Uint8Array;
+  /** true cuando el cuerpo se entregó por onChunk sin bufferizar. */
+  streamed?: boolean;
   data?: unknown;
   error?: string;
-  [key: string]: unknown;
+  isFileConflict?: boolean;
+  isRateLimited?: boolean;
 }
 
 interface ApiResult {
@@ -1646,10 +1660,10 @@ interface DirectPendingRequest {
   chunks: Uint8Array[];
   size: number;
   totalSize: number;
-  head?: Record<string, unknown> | null;
+  head?: DirectResponseHead | null;
   writeChain?: Promise<void>;
   onProgress?: (loaded: number, total: number) => void;
-  onHeaders?: (headers: Record<string, unknown>) => void | Promise<void>;
+  onHeaders?: (headers: DirectResponseHead) => void | Promise<void>;
   onChunk?: (chunk: Uint8Array) => void | Promise<void>;
 }
 
@@ -1818,8 +1832,18 @@ async function sendDirect(type: number, id: number, payload: Uint8Array = new Ui
     if (!directReady() || !openChannel) break;
     if (openChannel.bufferedAmount <= DIRECT_HIGH_WATER) break;
     await new Promise<void>(resolve => {
-      direct.waiters.push(resolve);
-      setTimeout(resolve, 2000);
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (timer !== undefined) clearTimeout(timer);
+        const index = direct.waiters.indexOf(finish);
+        if (index !== -1) direct.waiters.splice(index, 1);
+        resolve();
+      };
+      timer = setTimeout(finish, 2000);
+      direct.waiters.push(finish);
     });
   }
 
@@ -1846,7 +1870,14 @@ async function onDirectMessage(data: ArrayBuffer | Uint8Array): Promise<void> {
   if (!req) return;
 
   if (type === DF.RES_HEAD) {
-    const rawHead: unknown = JSON.parse(TEXT_DECODER.decode(new Uint8Array(data, 5)));
+    let rawHead: unknown;
+    try {
+      rawHead = JSON.parse(TEXT_DECODER.decode(new Uint8Array(data, 5)));
+    } catch {
+      req.reject(new Error('Cabecera directa malformada'));
+      direct.reqs.delete(id);
+      return;
+    }
     if (!isRecord(rawHead)) {
       req.reject(new Error('Cabecera directa no válida'));
       direct.reqs.delete(id);
@@ -1905,7 +1936,7 @@ async function onDirectMessage(data: ArrayBuffer | Uint8Array): Promise<void> {
       contentType,
     };
     if (bytes) result.bodyBytes = bytes;
-    else result['streamed'] = true;
+    else result.streamed = true;
     req.resolve(result);
   } else if (type === DF.RES_ERR) {
     direct.reqs.delete(id);
@@ -1994,10 +2025,16 @@ async function directRequest(method: string, pathname: string, body?: unknown, {
     }
   }
 }
-async function waitForDirectReady(timeoutMs: number = DIRECT_OPEN_TIMEOUT_MS): Promise<void> {
+async function waitForDirectReady(
+  timeoutMs: number = DIRECT_OPEN_TIMEOUT_MS,
+  signal?: AbortSignal | null,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
 
   while (!directReady()) {
+    if (signal?.aborted) {
+      throw new DOMException('Espera WebRTC cancelada', 'AbortError');
+    }
     if (!cloudSocket?.connected) {
       throw new Error('MoonWolf Cloud no está conectado. No se ha transferido ningún dato de archivo.');
     }
@@ -2015,20 +2052,37 @@ async function waitForDirectReady(timeoutMs: number = DIRECT_OPEN_TIMEOUT_MS): P
 
     startDirectLink();
 
-    await new Promise<void>(resolve => {
+    await new Promise<void>((resolve, reject) => {
       let settled = false;
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
+      const cleanup = () => {
         if (timer !== undefined) clearTimeout(timer);
         const index = direct.waiters.indexOf(wake);
         if (index !== -1) direct.waiters.splice(index, 1);
+        if (signal) signal.removeEventListener('abort', onAbort);
+      };
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
         resolve();
+      };
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new DOMException('Espera WebRTC cancelada', 'AbortError'));
       };
       const wake = () => finish();
       timer = setTimeout(finish, remaining);
       direct.waiters.push(wake);
+      if (signal) {
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
     });
   }
 }
@@ -2043,7 +2097,7 @@ function rpcHttp(pathname: string, init: RpcInit = {}): Promise<RpcResult> {
   const method = String(init.method || 'GET').toUpperCase();
 
   if (isDirectRoute(method, pathname)) {
-    return waitForDirectReady().then(() =>
+    return waitForDirectReady(DIRECT_OPEN_TIMEOUT_MS, init.signal).then(() =>
       directRequest(method, pathname, init.body, {
         ...(init.onProgress ? { onProgress: init.onProgress } : {}),
         ...(init.onHeaders ? { onHeaders: init.onHeaders } : {}),
@@ -3716,6 +3770,10 @@ async function uploadOneFile(file: UploadFile, relativePath: string, progressSta
         break;
       } catch (error: unknown) {
         lastError = error;
+        // 409 Conflict: no tiene sentido reintentar — el archivo ya existe.
+        if (isRecord(error) && Boolean(error['isFileConflict'])) {
+          throw error;
+        }
         if (attempt < 4) {
           const rateLimited = isRecord(error) && Boolean(error['isRateLimited']);
           const delay = rateLimited ? (1500 * (attempt + 1)) : (500 * (attempt + 1));
