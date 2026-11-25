@@ -410,7 +410,6 @@ export component MainWindow inherits Window {
     in-out property <string> server-dir: "—";
     in-out property <string> version: "—";
     in-out property <string> local-status: "Servidor local";
-    in-out property <string> config-dir: "—";
     in-out property <string> update-text: "";
     in-out property <string> logs-text: "";
     in-out property <bool> cloud-connected: false;
@@ -571,11 +570,6 @@ export component MainWindow inherits Window {
                             root.logs-visible = false;
                             root.serverdir-visible = !root.serverdir-visible;
                         }
-                    }
-                    Divider { }
-                    FieldRow {
-                        caption: "CARPETA DE CONFIGURACIÓN";
-                        value: root.config-dir;
                     }
                     Divider { }
                     Rectangle {
