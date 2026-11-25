@@ -2988,14 +2988,18 @@ async function waitForUploadResume(progressState: UploadState): Promise<void> {
   if (progressState.cancelled) throw uploadCancelledError();
 }
 function setUploadControls(visible: boolean): void {
-  if ($('uploadProgressPause')) {
-    $('uploadProgressPause').hidden = !visible;
-    $('uploadProgressPause').disabled = false;
-    if (visible && activeUploadState) $('uploadProgressPause').textContent = activeUploadState.paused ? '▶ Reanudar' : 'Ⅱ Pausar';
+  const pauseBtn = $btn('uploadProgressPause');
+  if (pauseBtn) {
+    pauseBtn.hidden = !visible;
+    pauseBtn.disabled = false;
+    if (visible && activeUploadState) {
+      pauseBtn.textContent = activeUploadState.paused ? '▶ Reanudar' : 'Ⅱ Pausar';
+    }
   }
-  if ($('uploadProgressCancel')) {
-    $('uploadProgressCancel').hidden = !visible;
-    $('uploadProgressCancel').disabled = false;
+  const cancelBtn = $btn('uploadProgressCancel');
+  if (cancelBtn) {
+    cancelBtn.hidden = !visible;
+    cancelBtn.disabled = false;
   }
 }
 
@@ -3018,38 +3022,48 @@ function updateUploadProgress(progressState: UploadState): void {
   panel.hidden = false;
   setUploadControls(Boolean(activeUploadState && !activeUploadState.finished));
   panel.classList.remove('upload-progress-error');
-  if ($('uploadProgressError')) $('uploadProgressError').textContent = '';
-  if ($('uploadProgressRetry')) $('uploadProgressRetry').hidden = true;
-  if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = progressState.status || `Subiendo ${progressState.completedFiles + 1}/${progressState.totalFiles}`;
 
-  if ($('uploadProgressCurrent')) {
-    $('uploadProgressCurrent').textContent = progressState.currentFile
+  const errorEl = $('uploadProgressError');
+  if (errorEl) errorEl.textContent = '';
+
+  const retryEl = $('uploadProgressRetry');
+  if (retryEl) retryEl.hidden = true;
+
+  const titleEl = $('uploadProgressTitle');
+  if (titleEl) {
+    titleEl.textContent = progressState.status || `Subiendo ${progressState.completedFiles + 1}/${progressState.totalFiles}`;
+  }
+
+  const currentEl = $('uploadProgressCurrent');
+  if (currentEl) {
+    currentEl.textContent = progressState.currentFile
       ? (single
           ? progressState.currentFile
           : `${progressState.currentFile} · ${formatUploadBytes(currentDone)} / ${formatUploadBytes(currentTotal)}`)
       : 'Preparando…';
   }
 
-  if ($('uploadProgressPercent')) $('uploadProgressPercent').textContent = `${percent}%`;
-  if ($('uploadProgressFill')) $('uploadProgressFill').style.width = `${percent}%`;
+  const percentEl = $('uploadProgressPercent');
+  if (percentEl) percentEl.textContent = `${percent}%`;
 
-  if ($('uploadProgressFiles')) {
-    $('uploadProgressFiles').textContent = single
+  const fillEl = $('uploadProgressFill');
+  if (fillEl) fillEl.style.width = `${percent}%`;
+
+  const filesEl = $('uploadProgressFiles');
+  if (filesEl) {
+    filesEl.textContent = single
       ? ''
       : `${Math.min(progressState.completedFiles, progressState.totalFiles)}/${progressState.totalFiles} archivos`;
   }
 
-  if ($('uploadProgressBytes')) {
-    $('uploadProgressBytes').textContent = `${formatUploadBytes(done)} de ${formatUploadBytes(total)}`;
-  }
+  const bytesEl = $('uploadProgressBytes');
+  if (bytesEl) bytesEl.textContent = `${formatUploadBytes(done)} de ${formatUploadBytes(total)}`;
 
-  if ($('uploadProgressSpeed')) {
-    $('uploadProgressSpeed').textContent = speed > 0 ? `${formatUploadBytes(speed)}/s` : '—';
-  }
+  const speedEl = $('uploadProgressSpeed');
+  if (speedEl) speedEl.textContent = speed > 0 ? `${formatUploadBytes(speed)}/s` : '—';
 
-  if ($('uploadProgressEta')) {
-    $('uploadProgressEta').textContent = percent >= 100 ? 'Completado' : formatUploadEta(eta);
-  }
+  const etaEl = $('uploadProgressEta');
+  if (etaEl) etaEl.textContent = percent >= 100 ? 'Completado' : formatUploadEta(eta);
 }
 
 function finishUploadProgress(message: string, isError: boolean = false, detail: string = '', hidePanel: boolean = false): void {
@@ -3058,52 +3072,79 @@ function finishUploadProgress(message: string, isError: boolean = false, detail:
 
   if (activeUploadState) activeUploadState.finished = true;
 
-  if ($('uploadProgressTitle')) $('uploadProgressTitle').textContent = message;
-  if ($('uploadProgressCurrent')) $('uploadProgressCurrent').textContent = isError ? 'La subida se detuvo' : 'Todos los archivos se han procesado';
-  if ($('uploadProgressError')) $('uploadProgressError').textContent = detail;
-  if ($('uploadProgressRetry')) $('uploadProgressRetry').hidden = !isError || !lastUploadFiles.length;
+  const titleEl = $('uploadProgressTitle');
+  if (titleEl) titleEl.textContent = message;
+
+  const currentEl = $('uploadProgressCurrent');
+  if (currentEl) {
+    currentEl.textContent = isError ? 'La subida se detuvo' : 'Todos los archivos se han procesado';
+  }
+
+  const errorEl = $('uploadProgressError');
+  if (errorEl) errorEl.textContent = detail;
+
+  const retryEl = $('uploadProgressRetry');
+  if (retryEl) retryEl.hidden = !isError || !lastUploadFiles.length;
+
   setUploadControls(false);
   panel.classList.toggle('upload-progress-error', isError);
   if (hidePanel) panel.hidden = true;
   if (!isError) setTimeout(() => { panel.hidden = true; }, 3500);
 }
+
+type ActionButtonEl = HTMLElement & {
+  _conflictHandler?: () => void;
+  _deleteHandler?: () => void;
+};
+
 function askFileConflict(fileName: string): Promise<ConflictChoice> {
   const modal = $('fileConflictModal');
   if (!modal) return Promise.resolve({ choice: 'cancel', applyAll: false });
-  if ($('fileConflictName')) $('fileConflictName').textContent = fileName;
-  if ($('fileConflictMessage')) $('fileConflictMessage').textContent = 'Ya existe un archivo con ese nombre. ¿Qué quieres hacer?';
-  const applyAllInput = $('fileConflictApplyAll');
+
+  const nameEl = $('fileConflictName');
+  if (nameEl) nameEl.textContent = fileName;
+
+  const messageEl = $('fileConflictMessage');
+  if (messageEl) messageEl.textContent = 'Ya existe un archivo con ese nombre. ¿Qué quieres hacer?';
+
+  const applyAllInput = $input('fileConflictApplyAll');
   if (applyAllInput) applyAllInput.checked = false;
 
   modal.hidden = false;
-  return new Promise(resolve => {
-    const finish = choice => {
+  return new Promise<ConflictChoice>(resolve => {
+    const finish = (choice: string) => {
       const applyAll = Boolean(applyAllInput?.checked);
       modal.hidden = true;
-      modal.querySelectorAll('[data-conflict-choice]').forEach(button => {
-        button.removeEventListener('click', button._conflictHandler);
-        delete button._conflictHandler;
+      modal.querySelectorAll('[data-conflict-choice]').forEach(el => {
+        const button = el as ActionButtonEl;
+        if (button._conflictHandler) {
+          button.removeEventListener('click', button._conflictHandler);
+          delete button._conflictHandler;
+        }
       });
       resolve({ choice, applyAll });
     };
-    modal.querySelectorAll('[data-conflict-choice]').forEach(button => {
-      const handler = () => finish(button.dataset.conflictChoice);
+    modal.querySelectorAll('[data-conflict-choice]').forEach(el => {
+      const button = el as ActionButtonEl;
+      const handler = () => finish(button.dataset['conflictChoice'] || 'cancel');
       button._conflictHandler = handler;
       button.addEventListener('click', handler);
     });
   });
 }
+
 function isFileConflict(error: unknown): boolean {
   if (!isRecord(error)) return false;
   const message = typeof error['message'] === 'string' ? error['message'] : '';
   return Boolean(error['isFileConflict'] || error['status'] === 409 || /ya existe un archivo/i.test(message));
 }
-function askFileDeleteConfirm(items: DeleteItem[]): Promise<boolean> {
+
+function askFileDeleteConfirm(items: DeleteItem[]): Promise<'delete' | 'cancel'> {
   const modal = $('fileDeleteModal');
   if (!modal) {
     const list = items.map(item => `• ${item.path}`).join('\n');
     const plural = items.length === 1 ? '' : 's';
-    return Promise.resolve(
+    return Promise.resolve<'delete' | 'cancel'>(
       confirm(
         `¿Eliminar ${items.length} elemento${plural} seleccionado${plural}?\n\n${list}\n\nEsta acción no se puede deshacer.`
       )
@@ -3111,9 +3152,13 @@ function askFileDeleteConfirm(items: DeleteItem[]): Promise<boolean> {
         : 'cancel'
     );
   }
-  if ($('fileDeleteCount')) $('fileDeleteCount').textContent = items.length;
-  if ($('fileDeleteList')) {
-    $('fileDeleteList').innerHTML = items
+
+  const countEl = $('fileDeleteCount');
+  if (countEl) countEl.textContent = String(items.length);
+
+  const listEl = $('fileDeleteList');
+  if (listEl) {
+    listEl.innerHTML = items
       .map(item => {
         const label = item.path.split('/').pop() || item.path;
         return `
@@ -3126,22 +3171,30 @@ function askFileDeleteConfirm(items: DeleteItem[]): Promise<boolean> {
       })
       .join('');
   }
+
   modal.hidden = false;
-  return new Promise(resolve => {
-    const finish = choice => {
+  return new Promise<'delete' | 'cancel'>(resolve => {
+    const finish = (choice: 'delete' | 'cancel') => {
       modal.hidden = true;
-      modal.querySelectorAll('[data-delete-choice]').forEach(button => {
-        button.removeEventListener('click', button._deleteHandler);
-        delete button._deleteHandler;
+      modal.querySelectorAll('[data-delete-choice]').forEach(el => {
+        const button = el as ActionButtonEl;
+        if (button._deleteHandler) {
+          button.removeEventListener('click', button._deleteHandler);
+          delete button._deleteHandler;
+        }
       });
       document.removeEventListener('keydown', onKey);
       resolve(choice);
     };
-    const onKey = event => {
+    const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') finish('cancel');
     };
-    modal.querySelectorAll('[data-delete-choice]').forEach(button => {
-      const handler = () => finish(button.dataset.deleteChoice);
+    modal.querySelectorAll('[data-delete-choice]').forEach(el => {
+      const button = el as ActionButtonEl;
+      const handler = () => {
+        const rawChoice = button.dataset['deleteChoice'];
+        finish(rawChoice === 'delete' ? 'delete' : 'cancel');
+      };
       button._deleteHandler = handler;
       button.addEventListener('click', handler);
     });
