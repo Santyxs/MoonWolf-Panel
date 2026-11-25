@@ -20,10 +20,153 @@
   <script src="dashboard.js?v=20261124-typescript" defer></script>
 </head>
 <body>
-  <!-- Optimized structure - full body from original with all type=button and clean head -->
   <div class="app">
-    <!-- Content restored from original with optimizations applied -->
-    <p>See artifacts for full optimized version. Restoring full body next.</p>
+
+    <!-- 1. SIDEBAR -->
+    <nav class="sidebar" aria-label="Navegación principal">
+      <div class="sb-logo">
+        <div class="sb-logo-icon" aria-hidden="true">
+          <img class="sb-logo-svg" src="/icon.ico" width="42" height="42" alt="">
+        </div>
+        <div>
+          <h1>MOONWOLF</h1>
+          <small>PANEL v2.0</small>
+        </div>
+      </div>
+
+      <div class="sb-status offline" id="sbStatus" role="status" aria-live="polite">
+        <div class="sb-dot" aria-hidden="true"></div>
+        <span id="sbStatusText">OFFLINE</span>
+      </div>
+
+      <nav class="sb-section" aria-label="Servidor">
+        <div class="sb-section-label">Servidor</div>
+        <button type="button" class="sb-item active" data-view="terminal" data-label="Terminal" aria-current="page">
+          <span class="sb-icon" aria-hidden="true">📟</span><span>Terminal</span>
+        </button>
+        <button type="button" class="sb-item" data-view="files" data-label="Archivos">
+          <span class="sb-icon" aria-hidden="true">📂</span><span>Archivos</span>
+        </button>
+        <button type="button" class="sb-item" data-view="plugins" data-label="Plugins">
+          <span class="sb-icon" aria-hidden="true">🧩</span><span>Plugins</span>
+        </button>
+        <button type="button" class="sb-item" data-view="versions" data-label="Versiones">
+          <span class="sb-icon" aria-hidden="true">📦</span><span>Versiones</span>
+        </button>
+      </nav>
+
+      <nav class="sb-section" aria-label="Sistema">
+        <div class="sb-section-label">Sistema</div>
+        <button type="button" class="sb-item" data-view="databases" data-label="Bases de datos">
+          <span class="sb-icon" aria-hidden="true">🗂️</span><span>Bases de datos</span>
+        </button>
+        <button type="button" class="sb-item" data-view="users" data-label="Usuarios">
+          <span class="sb-icon" aria-hidden="true">👥</span><span>Usuarios</span>
+        </button>
+        <button type="button" class="sb-item" data-view="backups" data-label="Backups">
+          <span class="sb-icon" aria-hidden="true">💾</span><span>Backups</span>
+        </button>
+        <button type="button" class="sb-item" data-view="ports" data-label="Puertos">
+          <span class="sb-icon" aria-hidden="true">🔌</span><span>Puertos</span>
+        </button>
+      </nav>
+
+      <nav class="sb-section" aria-label="Configuración">
+        <div class="sb-section-label">Configuración</div>
+        <button type="button" class="sb-item" data-view="startup" data-label="Startup">
+          <span class="sb-icon" aria-hidden="true">⚙️</span><span>Startup</span>
+        </button>
+        <button type="button" class="sb-item" data-view="settings" data-label="Ajustes">
+          <span class="sb-icon" aria-hidden="true">🛠️</span><span>Ajustes</span>
+        </button>
+        <button type="button" class="sb-item" data-view="activitylog" data-label="Registro">
+          <span class="sb-icon" aria-hidden="true">📑</span><span>Registro</span>
+        </button>
+      </nav>
+
+      <div class="sb-spacer"></div>
+      <div class="sb-version">MOONWOLF · 2026</div>
+    </nav>
+
+    <!-- 2. MAIN -->
+    <main class="main">
+      <!-- 3. VISTA: TERMINAL -->
+      <div class="view active" id="view-terminal">
+        <div class="page-header">
+          <div>
+            <div class="page-title">TERMINAL</div>
+            <div class="page-sub">Consola del servidor</div>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button type="button" class="btn btn-start" id="btnStart">
+            <span class="btn-icon">▶</span> ARRANCAR
+          </button>
+          <button type="button" class="btn btn-restart" id="btnRestart" disabled>
+            <span class="btn-icon">↺</span> REINICIAR
+          </button>
+          <button type="button" class="btn btn-stop" id="btnStop" disabled>
+            <span class="btn-icon">⏹</span> DETENER
+          </button>
+        </div>
+
+        <div class="stats-grid hidden" id="statsGrid">
+          <div class="stat-card">
+            <span class="stat-label">👥 Jugadores</span>
+            <span class="stat-value" id="statPlayers">0<span class="stat-unit">/0</span></span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">⚡ TPS</span>
+            <span class="stat-value" id="statTps">—</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">⏱️ Uptime</span>
+            <span class="stat-value" id="statUptime">0h 0m</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">💾 Proceso RAM</span>
+            <span class="stat-value" id="statMemProc">0<span class="stat-unit"> MB</span></span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">💽 Sistema RAM</span>
+            <span class="stat-value" id="statMemSys">0<span class="stat-unit"> GB</span></span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">📊 CPU</span>
+            <span class="stat-value" id="statCpu">0<span class="stat-unit"> %</span></span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title"><span>⬛</span> CONSOLA</div>
+            <button type="button" class="small-btn" id="btnClearConsole">LIMPIAR</button>
+          </div>
+          <div class="console" id="console">
+            <div class="log-line system">
+              <span class="log-time">--:--:--</span>
+              <span class="log-text">🌙 Panel iniciado. Pulsa ARRANCAR para encender el servidor.</span>
+            </div>
+          </div>
+          <div class="cmd-row">
+            <span class="cmd-prefix">/</span>
+            <input class="cmd-input" id="cmdInput" placeholder="Escribe un comando..." autocomplete="off">
+            <button type="button" class="cmd-send" id="btnSendCmd">↵</button>
+          </div>
+          <div class="quick-grid">
+            <button type="button" class="quick-btn" data-cmd="list"><span class="qb-label">jugadores</span>list</button>
+            <button type="button" class="quick-btn" data-cmd="tps"><span class="qb-label">rendimiento</span>tps</button>
+            <button type="button" class="quick-btn" data-cmd="time set day"><span class="qb-label">tiempo</span>time set day</button>
+            <button type="button" class="quick-btn" data-cmd="weather clear"><span class="qb-label">clima</span>weather clear</button>
+            <button type="button" class="quick-btn" data-cmd="save-all"><span class="qb-label">mundo</span>save-all</button>
+            <button type="button" class="quick-btn" data-cmd="difficulty peaceful"><span class="qb-label">dificultad</span>peaceful</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- CONTINUED IN NEXT CHUNK - THIS IS INCOMPLETE -->
+    </main>
   </div>
 </body>
 </html>
