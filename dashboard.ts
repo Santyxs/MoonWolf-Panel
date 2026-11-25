@@ -473,6 +473,10 @@ interface StartupResponse extends ApiResult {
 const CLOUD_URL: string = location.origin;
 const CLOUD_PATH = '/socket.io' as const;
 
+// Reutilizar codificadores evita crear instancias durante cada petición RPC.
+const TEXT_ENCODER = new TextEncoder();
+const TEXT_DECODER = new TextDecoder();
+
 const PAIRING_CODE_RE = /^MW-P[A-Z2-9]{3}-[A-Z2-9]{4}$/;
 const SHARE_TOKEN_RE = /^MW-SHARE-[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/;
 const SESSION_KEY = 'moonwolf_panel_session' as const;
@@ -510,13 +514,13 @@ function escHtml(value: unknown): string {
 const AIKAR_FLAGS =
   '-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch -XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 -XX:G1HeapRegionSize=8M -XX:G1ReservePercent=20 -XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1RSetUpdatingPauseTimePercent=5 -XX:SurvivorRatio=32 -XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1';
 
-const STATUS: Record<ServerStatus, StatusMeta> = {
+const STATUS = {
   online: { label: 'ONLINE', icon: '🟢', level: 'ok' },
   offline: { label: 'OFFLINE', icon: '🔴', level: 'info' },
   starting: { label: 'STARTING...', icon: '🟡', level: 'info' },
   restarting: { label: 'RESTARTING...', icon: '🟡', level: 'warn' },
   stopping: { label: 'STOPPING...', icon: '🟠', level: 'warn' },
-};
+} as const satisfies Record<ServerStatus, StatusMeta>;
 
 const DANGEROUS_UPLOAD_EXTENSIONS: ReadonlySet<string> = new Set([
   '.exe', '.com', '.bat', '.cmd', '.ps1', '.psm1', '.vbs', '.vbe',
@@ -1409,7 +1413,7 @@ const RPC_BINARY_MAGIC = new Uint8Array([0x4d, 0x57, 0x52, 0x31]);
 const RPC_BINARY_MAX_HEADER = 64 * 1024;
 
 function encodeRpcBinaryPacket(header: unknown, body: Uint8Array): Uint8Array {
-  const headerBytes = new TextEncoder().encode(JSON.stringify(header));
+  const headerBytes = TEXT_ENCODER.encode(JSON.stringify(header));
   if (!headerBytes.length || headerBytes.length > RPC_BINARY_MAX_HEADER) {
     throw new Error('Cabecera RPC demasiado grande.');
   }
@@ -1442,7 +1446,7 @@ function decodeRpcBinaryPacket(data: unknown): { header: RpcResult & { id: strin
   if (!headerLength || headerLength > RPC_BINARY_MAX_HEADER || 8 + headerLength > bytes.length) return null;
 
   try {
-    const header: unknown = JSON.parse(new TextDecoder().decode(bytes.subarray(8, 8 + headerLength)));
+    const header: unknown = JSON.parse(TEXT_DECODER.decode(bytes.subarray(8, 8 + headerLength)));
     if (!isRpcResult(header)) return null;
     return { header, body: bytes.slice(8 + headerLength) };
   } catch {
@@ -1475,7 +1479,7 @@ function rpcCloudBinary(pathname: string, init: RpcInit = {}): Promise<RpcResult
     } else {
       // Conserva el comportamiento anterior de reqwest::RequestBuilder::json,
       // incluidos los cuerpos de tipo string (se serializan como JSON string).
-      body = new TextEncoder().encode(JSON.stringify(rawBody));
+      body = TEXT_ENCODER.encode(JSON.stringify(rawBody));
       contentType = 'application/json';
     }
   }
@@ -1741,7 +1745,7 @@ async function onDirectMessage(data: ArrayBuffer | Uint8Array): Promise<void> {
   if (!req) return;
 
   if (type === DF.RES_HEAD) {
-    const rawHead: unknown = JSON.parse(new TextDecoder().decode(new Uint8Array(data, 5)));
+    const rawHead: unknown = JSON.parse(TEXT_DECODER.decode(new Uint8Array(data, 5)));
     if (!isRecord(rawHead)) {
       req.reject(new Error('Cabecera directa no válida'));
       direct.reqs.delete(id);
@@ -1804,14 +1808,13 @@ async function onDirectMessage(data: ArrayBuffer | Uint8Array): Promise<void> {
     req.resolve(result);
   } else if (type === DF.RES_ERR) {
     direct.reqs.delete(id);
-    req.reject(new Error(new TextDecoder().decode(new Uint8Array(data, 5))));
+    req.reject(new Error(TEXT_DECODER.decode(new Uint8Array(data, 5))));
   }
 }
 
 async function directRequest(method: string, pathname: string, body?: unknown, { onProgress, onHeaders, onChunk, signal }: Pick<RpcInit, "onProgress" | "onHeaders" | "onChunk" | "signal"> = {}): Promise<RpcResult> {
   const id = direct.nextId++ >>> 0;
   const isBinary = body instanceof Uint8Array;
-  const encoder = new TextEncoder();
 
   if (signal?.aborted) {
     return Promise.reject(new DOMException('Aborted', 'AbortError'));
@@ -1819,7 +1822,10 @@ async function directRequest(method: string, pathname: string, body?: unknown, {
 
   const payload = body === undefined || body === null
     ? null
-    : isBinary ? body : encoder.encode(typeof body === 'string' ? body : JSON.stringify(body));
+    : isBinary ? body : TEXT_ENCODER.encode(typeof body === 'string' ? body : JSON.stringify(body));
+
+  let requestStarted = false;
+  let abortHandler: (() => void) | undefined;
 
   const done = new Promise<RpcResult>((resolve, reject) => {
     direct.reqs.set(id, {
@@ -1837,16 +1843,31 @@ async function directRequest(method: string, pathname: string, body?: unknown, {
   });
 
   if (signal) {
-    signal.addEventListener('abort', () => {
+    abortHandler = () => {
+      const request = direct.reqs.get(id);
+      if (!request) return;
+
       direct.reqs.delete(id);
-      try { sendDirect(DF.REQ_END, id); } catch {}
-    }, { once: true });
+      request.reject(new DOMException('Aborted', 'AbortError'));
+
+      if (requestStarted) {
+        void sendDirect(DF.REQ_END, id).catch(() => {});
+      }
+    };
+
+    signal.addEventListener('abort', abortHandler, { once: true });
   }
 
+  // Evitar un rechazo sin gestionar si se cancela antes de llegar al await.
   done.catch(() => {});
 
   try {
-    await sendDirect(DF.REQ_HEAD, id, encoder.encode(JSON.stringify({
+    if (signal?.aborted) {
+      return await done;
+    }
+
+    requestStarted = true;
+    await sendDirect(DF.REQ_HEAD, id, TEXT_ENCODER.encode(JSON.stringify({
       method,
       path: pathname,
       contentType: isBinary ? 'application/octet-stream' : 'application/json',
@@ -1860,14 +1881,18 @@ async function directRequest(method: string, pathname: string, body?: unknown, {
     }
 
     await sendDirect(DF.REQ_END, id);
+    return await done;
   } catch (error: unknown) {
+    const request = direct.reqs.get(id);
+    if (request) request.reject(error);
     direct.reqs.delete(id);
     throw error;
+  } finally {
+    if (signal && abortHandler) {
+      signal.removeEventListener('abort', abortHandler);
+    }
   }
-
-  return done;
 }
-
 async function waitForDirectReady(timeoutMs: number = DIRECT_OPEN_TIMEOUT_MS): Promise<void> {
   const deadline = Date.now() + timeoutMs;
 
@@ -1959,7 +1984,7 @@ async function api(pathname: string, init: RpcInit = {}): Promise<unknown> {
 
   if (hasResultBody(result)) {
     const bytes = decodeResultBody(result) || new Uint8Array(0);
-    const text = new TextDecoder().decode(bytes);
+    const text = TEXT_DECODER.decode(bytes);
 
     if (
       contentType.includes('application/json') ||
@@ -2456,6 +2481,7 @@ function getConsoleLogType(entry: ConsoleLogEntry | null | undefined): string {
   return ['error', 'warn', 'success', 'system', 'cmd'].includes(explicitType) ? explicitType : 'info';
 }
 
+const MAX_CONSOLE_LINES = 3_000;
 const pendingConsoleLogs: ConsoleLogEntry[] = [];
 let consoleFlushScheduled = false;
 
@@ -2531,6 +2557,12 @@ function flushConsoleLogs() {
     fragment.appendChild(div);
   }
 
+  // Mantener un máximo fijo de líneas evita que el DOM crezca sin límite.
+  const excess = consoleEl.childElementCount + fragment.childElementCount - MAX_CONSOLE_LINES;
+  for (let i = 0; i < excess; i++) {
+    consoleEl.firstElementChild?.remove();
+  }
+
   consoleEl.appendChild(fragment);
   consoleEl.scrollTop = consoleEl.scrollHeight;
 }
@@ -2557,6 +2589,9 @@ function appendLog(entry: unknown): void {
     time: rawEntry.time || '--:--:--',
     type: rawEntry.type || 'info',
   });
+  if (pendingConsoleLogs.length > MAX_CONSOLE_LINES) {
+    pendingConsoleLogs.splice(0, pendingConsoleLogs.length - MAX_CONSOLE_LINES);
+  }
 
   if (!consoleFlushScheduled) {
     consoleFlushScheduled = true;
@@ -3578,7 +3613,7 @@ function postUploadChunk(
 
     if (hasResultBody(result)) {
       const bytesResult = decodeResultBody(result);
-      const text = new TextDecoder().decode(bytesResult ?? new Uint8Array(0));
+      const text = TEXT_DECODER.decode(bytesResult ?? new Uint8Array(0));
       try {
         parsed = JSON.parse(text);
       } catch {
@@ -3823,7 +3858,7 @@ async function downloadUrlWithProgress(
     if ((!hasResultBody(result) && !isStreamed) || !resultOk) {
       if (writable) await writable.abort().catch(() => {});
       const errorBytes = decodeResultBody(result);
-      const errorText = errorBytes ? new TextDecoder().decode(errorBytes) : '';
+      const errorText = errorBytes ? TEXT_DECODER.decode(errorBytes) : '';
       const dataError = isRecord(resultObj['data']) && typeof resultObj['data']['error'] === 'string'
         ? resultObj['data']['error']
         : '';
