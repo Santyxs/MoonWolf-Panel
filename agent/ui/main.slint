@@ -3,19 +3,88 @@ import { LineEdit, VerticalBox, HorizontalBox, ScrollView } from "std-widgets.sl
 // ─── Tema ───────────────────────────────────────────────────────────────────
 
 global Theme {
+    // Surfaces (alineado con styles.css del panel)
     out property <color> bg: #05080d;
     out property <color> card: #0b1016;
+    out property <color> surface2: #0f151d;
+    out property <color> surface3: #141c27;
     out property <color> line: #1b2a3a;
     out property <color> field: #0f151d;
     out property <color> field-border: #2a3c50;
+
+    // Accent
     out property <color> accent: #00c8ff;
     out property <color> accent-soft: #7ee3ff;
     out property <color> accent-deep: #0077aa;
-    out property <color> green: #2ee6a0;
-    out property <color> amber: #f5c242;
-    out property <color> text: #d9e6f2;
+    out property <color> accent-glow: #00c8ff55;
+    out property <color> accent-border: #00c8ff88;
+    out property <color> accent-dim: #00c8ff26;
+
+    // Semantic
+    out property <color> green: #00ff88;
+    out property <color> amber: #ffcc00;
+    out property <color> red: #ff4455;
+    out property <color> danger: #ff5c70;
+    out property <color> danger-bg: #2c1a1f;
+    out property <color> danger-border: #7a3a42;
+    out property <color> danger-hover: #3d2229;
+    out property <color> danger-border-hover: #a24b57;
+    out property <color> danger-text: #ffb4bc;
+
+    // Primary button
+    out property <color> primary: #0a8fbf;
+    out property <color> primary-top: #3fdcff;
+    out property <color> primary-border: #6fe0ff;
+    out property <color> primary-text: #02141c;
+
+    // Text
+    out property <color> text: #d3e0ee;
+    out property <color> text-soft: #a8bccf;
     out property <color> muted: #7a91a8;
     out property <color> muted-dim: #5a7188;
+
+    // Interactive
+    out property <color> hover: #14202c;
+    out property <color> pressed: #0a1118;
+    out property <color> overlay: #020407cc;
+    out property <color> modal-bg: #0a1017;
+    out property <color> modal-border: #1e5a78;
+    out property <color> shadow: #000000d0;
+    out property <color> shadow-soft: #00000066;
+    out property <color> overlay-scrim: #020407cc;
+    out property <color> code-bg: #04070b;
+    out property <color> log-empty: #4a5d70;
+    out property <color> log-text: #b4d4e6;
+
+    // Status OK
+    out property <color> ok-bg-start: #0a2a24;
+    out property <color> ok-border: #1d5a48;
+    out property <color> ok-glow: #00ff8822;
+    out property <color> ok-text: #8fe8c8;
+    out property <color> ok-soft: #5eebc4;
+
+    // Status warn
+    out property <color> warn-bg-start: #2c2615;
+    out property <color> warn-border: #4a4326;
+    out property <color> warn-glow: #ffcc0018;
+    out property <color> warn-text: #d6bf84;
+    out property <color> warn-soft: #f0c878;
+    out property <color> warn-banner-start: #35291a;
+    out property <color> warn-banner-end: #14100a;
+    out property <color> warn-banner-border: #7a5630;
+    out property <color> warn-banner-text: #f0d49a;
+
+    // Info banner
+    out property <color> info-bg-start: #0c2e3e;
+    out property <color> info-border: #1b6a8a;
+    out property <color> info-text: #d2f4ff;
+
+    // Misc surfaces
+    out property <color> panel-grad-top: #0e161f;
+    out property <color> ring-glow: #00c8ff33;
+    out property <color> header-grad-1: #0a1620;
+    out property <color> header-grad-2: #04060a;
+    out property <color> pure-white: #ffffff;
 }
 
 // ─── Componentes ────────────────────────────────────────────────────────────
@@ -29,23 +98,23 @@ component ActionButton inherits Rectangle {
 
     height: 38px;
     border-radius: 10px;
-    background: root.primary ? #0a8fbf
-             : root.danger  ? #2c1a1f
+    background: root.primary ? Theme.primary
+             : root.danger  ? Theme.danger-bg
              : Theme.field;
     border-width: 1px;
-    border-color: root.primary ? #6fe0ff
-                 : root.danger  ? #7a3a42
+    border-color: root.primary ? Theme.primary-border
+                 : root.danger  ? Theme.danger-border
                  : Theme.field-border;
     drop-shadow-blur: root.primary ? 18px : 0px;
     drop-shadow-offset-y: 4px;
-    drop-shadow-color: #00c8ff55;
+    drop-shadow-color: Theme.accent-glow;
 
     animate background { duration: 140ms; easing: ease-out; }
     animate border-color { duration: 140ms; easing: ease-out; }
 
     if root.primary : Rectangle {
         border-radius: root.border-radius;
-        background: @linear-gradient(180deg, #3fdcff 0%, #0a8fbf 100%);
+        background: @linear-gradient(180deg, Theme.primary-top 0%, Theme.primary 100%);
         opacity: ta.pressed ? 0.75 : ta.has-hover ? 1.0 : 0.9;
         animate opacity { duration: 140ms; easing: ease-out; }
     }
@@ -54,7 +123,7 @@ component ActionButton inherits Rectangle {
         width: 100%;
         height: 100%;
         text: root.label;
-        color: root.primary ? #02141c : root.danger ? #ffb4bc : Theme.text;
+        color: root.primary ? Theme.primary-text : root.danger ? Theme.danger-text : Theme.text;
         font-size: root.label-font-size;
         font-weight: 700;
         horizontal-alignment: center;
@@ -70,15 +139,15 @@ component ActionButton inherits Rectangle {
 
     states [
         hover when ta.has-hover && !root.primary && !root.danger: {
-            background: #14202c;
-            border-color: #00c8ff88;
+            background: Theme.hover;
+            border-color: Theme.accent-border;
         }
         hover-danger when ta.has-hover && root.danger: {
-            background: #3d2229;
-            border-color: #a24b57;
+            background: Theme.danger-hover;
+            border-color: Theme.danger-border-hover;
         }
         pressed when ta.pressed && !root.primary: {
-            background: #0a1118;
+            background: Theme.pressed;
         }
     ]
 }
@@ -112,7 +181,7 @@ component FieldRow inherits Rectangle {
         Text {
             text: root.caption;
             color: Theme.muted-dim;
-            font-size: 8px;
+            font-size: 10px;
             font-weight: 800;
             letter-spacing: 1.4px;
             horizontal-alignment: left;
@@ -181,7 +250,7 @@ component LogChip inherits Rectangle {
     border-radius: 13px;
     background: root.active ? root.tone.with-alpha(0.18) : Theme.field;
     border-width: 1px;
-    border-color: root.active ? root.tone : (ta.has-hover ? #00c8ff88 : Theme.field-border);
+    border-color: root.active ? root.tone : (ta.has-hover ? Theme.accent-border : Theme.field-border);
     animate background { duration: 120ms; }
     animate border-color { duration: 120ms; }
 
@@ -208,12 +277,12 @@ component Modal inherits Rectangle {
     property <bool> ready: false;
 
     border-radius: 18px;
-    background: #0a1017;
+    background: Theme.modal-bg;
     border-width: 1px;
-    border-color: #1e5a78;
+    border-color: Theme.modal-border;
     drop-shadow-blur: 40px;
     drop-shadow-offset-y: 10px;
-    drop-shadow-color: #000000d0;
+    drop-shadow-color: Theme.shadow;
     clip: true;
     opacity: root.ready ? 1.0 : 0.0;
     animate opacity { duration: 180ms; easing: ease-out; }
@@ -222,7 +291,7 @@ component Modal inherits Rectangle {
     Rectangle {
         height: 70px;
         y: 0px;
-        background: @linear-gradient(180deg, #00c8ff26 0%, #00c8ff00 100%);
+        background: @linear-gradient(180deg, Theme.accent-dim 0%, transparent 100%);
     }
 
     VerticalBox {
@@ -257,9 +326,9 @@ component Modal inherits Rectangle {
         width: 28px;
         height: 28px;
         border-radius: 8px;
-        background: close-ta.has-hover ? #3a2028 : Theme.field;
+        background: close-ta.has-hover ? Theme.danger-hover : Theme.field;
         border-width: 1px;
-        border-color: close-ta.has-hover ? #8a4a62 : Theme.field-border;
+        border-color: close-ta.has-hover ? Theme.danger-border-hover : Theme.field-border;
         animate background { duration: 120ms; }
 
         Path {
@@ -270,7 +339,7 @@ component Modal inherits Rectangle {
             viewbox-width: 10;
             viewbox-height: 10;
             commands: "M 0 0 L 10 10 M 10 0 L 0 10";
-            stroke: close-ta.has-hover ? #ffb4c4 : #a8bccf;
+            stroke: close-ta.has-hover ? Theme.danger-text : Theme.text-soft;
             stroke-width: 1.6px;
             stroke-line-cap: round;
             animate stroke { duration: 120ms; }
@@ -278,6 +347,8 @@ component Modal inherits Rectangle {
 
         close-ta := TouchArea {
             mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: "Cerrar";
             clicked => { root.close(); }
         }
     }
@@ -358,14 +429,14 @@ export component MainWindow inherits Window {
 
     Rectangle {
         height: 100%;
-        background: @linear-gradient(170deg, #0a1620 0%, #05080d 45%, #04060a 100%);
+        background: @linear-gradient(170deg, Theme.header-grad-1 0%, Theme.bg 45%, Theme.header-grad-2 100%);
 
         Rectangle {
             x: (parent.width - 380px) / 2;
             y: -150px;
             width: 380px;
             height: 300px;
-            background: @radial-gradient(circle, #00c8ff33 0%, #00c8ff00 70%);
+            background: @radial-gradient(circle, Theme.ring-glow 0%, transparent 70%);
         }
 
         VerticalBox {
@@ -395,7 +466,7 @@ export component MainWindow inherits Window {
                     alignment: center;
                     Text {
                         text: "MoonWolf";
-                        color: #ffffff;
+                        color: Theme.pure-white;
                         font-size: 19px;
                         font-weight: 800;
                     }
@@ -415,12 +486,12 @@ export component MainWindow inherits Window {
                 height: 58px;
                 border-radius: 13px;
                 background: root.cloud-connected
-                    ? @linear-gradient(90deg, #0a2a24 0%, #0b1016 75%)
-                    : @linear-gradient(90deg, #2c2615 0%, #0b1016 75%);
+                    ? @linear-gradient(90deg, Theme.ok-bg-start 0%, Theme.card 75%)
+                    : @linear-gradient(90deg, Theme.warn-bg-start 0%, Theme.card 75%);
                 border-width: 1px;
-                border-color: root.cloud-connected ? #1d5a48 : #4a4326;
+                border-color: root.cloud-connected ? Theme.ok-border : Theme.warn-border;
                 drop-shadow-blur: 14px;
-                drop-shadow-color: root.cloud-connected ? #2ee6a022 : #f5c24218;
+                drop-shadow-color: root.cloud-connected ? Theme.ok-glow : Theme.warn-glow;
                 clip: true;
 
                 HorizontalBox {
@@ -443,7 +514,7 @@ export component MainWindow inherits Window {
                         }
                         Text {
                             text: root.cloud-connected ? "Conexión activa con MoonWolf Cloud" : root.status-description;
-                            color: root.cloud-connected ? #8fe8c8 : #d6bf84;
+                            color: root.cloud-connected ? Theme.ok-text : Theme.warn-text;
                             font-size: 10px;
                             overflow: elide;
                             horizontal-alignment: left;
@@ -464,19 +535,19 @@ export component MainWindow inherits Window {
             // ── Tarjeta de información ──
             Rectangle {
                 border-radius: 14px;
-                background: @linear-gradient(180deg, #0e161f 0%, #0a1017 100%);
+                background: @linear-gradient(180deg, Theme.panel-grad-top 0%, Theme.modal-bg 100%);
                 border-width: 1px;
                 border-color: Theme.line;
                 drop-shadow-blur: 18px;
                 drop-shadow-offset-y: 6px;
-                drop-shadow-color: #00000066;
+                drop-shadow-color: Theme.shadow-soft;
                 clip: true;
 
                 // Línea de acento superior
                 Rectangle {
                     y: 0px;
                     height: 2px;
-                    background: @linear-gradient(90deg, #00c8ff00 0%, #00c8ff 50%, #00c8ff00 100%);
+                    background: @linear-gradient(90deg, transparent 0%, Theme.accent 50%, transparent 100%);
                     opacity: 0.55;
                 }
 
@@ -558,7 +629,7 @@ export component MainWindow inherits Window {
                                 }
                                 Text {
                                     text: root.local-ready ? "En funcionamiento" : "Iniciando...";
-                                    color: root.local-ready ? #5eebc4 : #f0c878;
+                                    color: root.local-ready ? Theme.ok-soft : Theme.warn-soft;
                                     font-size: 10px;
                                     font-weight: 700;
                                     horizontal-alignment: left;
@@ -605,15 +676,15 @@ export component MainWindow inherits Window {
             if root.update-visible : Rectangle {
                 height: 56px;
                 border-radius: 14px;
-                background: @linear-gradient(90deg, #0c2e3e 0%, #0a1017 100%);
+                background: @linear-gradient(90deg, Theme.info-bg-start 0%, Theme.modal-bg 100%);
                 border-width: 1px;
-                border-color: #1b6a8a;
+                border-color: Theme.info-border;
                 HorizontalBox {
                     padding: 12px;
                     spacing: 10px;
                     Text {
                         text: root.update-text;
-                        color: #d2f4ff;
+                        color: Theme.info-text;
                         font-size: 11px;
                         font-weight: 600;
                         horizontal-stretch: 1;
@@ -647,15 +718,15 @@ export component MainWindow inherits Window {
             if root.restart-visible : Rectangle {
                 height: 52px;
                 border-radius: 14px;
-                background: @linear-gradient(90deg, #35291a 0%, #14100a 100%);
+                background: @linear-gradient(90deg, Theme.warn-banner-start 0%, Theme.warn-banner-end 100%);
                 border-width: 1px;
-                border-color: #7a5630;
+                border-color: Theme.warn-banner-border;
                 HorizontalBox {
                     padding: 12px;
                     spacing: 10px;
                     Text {
                         text: "Hay un reinicio pendiente";
-                        color: #f0d49a;
+                        color: Theme.warn-banner-text;
                         font-size: 11px;
                         font-weight: 600;
                         horizontal-stretch: 1;
@@ -686,7 +757,7 @@ export component MainWindow inherits Window {
         // ── Fondo oscuro de los modales ──
         if root.settings-visible || root.logs-visible || root.serverdir-visible : Rectangle {
             height: 100%;
-            background: #020407cc;
+            background: Theme.overlay-scrim;
             TouchArea {
                 clicked => {
                     root.settings-visible = false;
@@ -717,9 +788,9 @@ export component MainWindow inherits Window {
             if root.update-visible : Rectangle {
                 height: 56px;
                 border-radius: 12px;
-                background: @linear-gradient(90deg, #0c2e3e 0%, #0a1017 100%);
+                background: @linear-gradient(90deg, Theme.info-bg-start 0%, Theme.modal-bg 100%);
                 border-width: 1px;
-                border-color: #1b6a8a;
+                border-color: Theme.info-border;
                 HorizontalBox {
                     padding-left: 12px;
                     padding-right: 10px;
@@ -727,7 +798,7 @@ export component MainWindow inherits Window {
                     alignment: center;
                     Text {
                         text: root.update-text;
-                        color: #d2f4ff;
+                        color: Theme.info-text;
                         font-size: 11px;
                         font-weight: 600;
                         horizontal-stretch: 1;
@@ -795,7 +866,7 @@ export component MainWindow inherits Window {
                 }
                 LogChip {
                     label: "Error";
-                    tone: #ff5c70;
+                    tone: Theme.danger;
                     active: root.log-filter == 3;
                     clicked => { root.log-filter = 3; root.log-filter-changed(3); }
                 }
@@ -818,7 +889,7 @@ export component MainWindow inherits Window {
                 vertical-stretch: 1;
                 min-height: 180px;
                 border-radius: 12px;
-                background: #04070b;
+                background: Theme.code-bg;
                 border-width: 1px;
                 border-color: Theme.line;
                 clip: true;
@@ -829,7 +900,7 @@ export component MainWindow inherits Window {
                     width: parent.width - 24px;
                     height: parent.height - 20px;
                     text: root.logs-text == "" ? "No hay registros para este filtro.\nLos eventos del Agent aparecerán aquí." : root.logs-text;
-                    color: root.logs-text == "" ? #4a5d70 : #b4d4e6;
+                    color: root.logs-text == "" ? Theme.log-empty : Theme.log-text;
                     font-family: "Consolas";
                     font-size: 10px;
                     wrap: word-wrap;
