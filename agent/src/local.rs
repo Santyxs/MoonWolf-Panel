@@ -1477,33 +1477,50 @@ fn backup_excluded(name: &str) -> bool {
     BACKUP_EXCLUDES.iter().any(|e| e.eq_ignore_ascii_case(name))
 }
 
+fn backup_first_component_excluded(rel: &Path) -> bool {
+    match rel.components().next() {
+        Some(std::path::Component::Normal(name)) => {
+            let name = name.to_string_lossy();
+            backup_excluded(name.as_ref())
+        }
+        _ => false,
+    }
+}
+
+/// Una sola pasada síncrona: lista de archivos a incluir y tamaño total.
+/// Pensada para ejecutarse dentro de `spawn_blocking`.
+fn collect_backup_files(root: &Path) -> (Vec<(std::path::PathBuf, u64)>, u64) {
+    let mut files: Vec<(std::path::PathBuf, u64)> = Vec::new();
+    let mut total = 0u64;
+    for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path == root {
+            continue;
+        }
+        let Ok(rel) = path.strip_prefix(root) else {
+            continue;
+        };
+        if backup_first_component_excluded(rel) {
+            continue;
+        }
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let size = meta.len();
+        total = total.saturating_add(size);
+        files.push((path.to_path_buf(), size));
+    }
+    (files, total)
+}
+
 async fn compute_total_bytes(root: &Path) -> u64 {
     let root_clone = root.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let mut total = 0u64;
-        for entry in WalkDir::new(&root_clone).into_iter().filter_map(|e| e.ok()) {
-            let rel = match entry.path().strip_prefix(&root_clone) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-            let first = rel
-                .components()
-                .next()
-                .map(|c| c.as_os_str().to_string_lossy().to_string())
-                .unwrap_or_default();
-            if backup_excluded(&first) {
-                continue;
-            }
-            if entry.file_type().is_file()
-                && let Ok(meta) = entry.metadata()
-            {
-                total += meta.len();
-            }
-        }
-        total
-    })
-    .await
-    .unwrap_or(0)
+    tokio::task::spawn_blocking(move || collect_backup_files(&root_clone).1)
+        .await
+        .unwrap_or(0)
 }
 
 async fn get_backup_progress(
@@ -1604,7 +1621,8 @@ async fn create_backup(
             p.active = true;
             p.phase = "flush".into();
             p.processed_bytes = 0;
-            p.total_bytes = compute_total_bytes(&root).await;
+            // total_bytes se fija en la pasada del zip (evita WalkDir doble)
+            p.total_bytes = 0;
             p.percent = 0;
             p.started_at = Some(crate::now_ms());
             p.error = None;
@@ -1652,45 +1670,55 @@ async fn create_backup(
         let progress_ref = Arc::clone(&st.backup_progress);
 
         let create_result = tokio::task::spawn_blocking(move || -> anyhow::Result<u64> {
+            // Una pasada: listar archivos + tamaños; luego zip sin segundo WalkDir ni re-stat.
+            let (files, total) = collect_backup_files(&root_clone);
+            if let Ok(mut guard) = progress_ref.try_lock() {
+                guard.total_bytes = total;
+            }
+
             let file = std::fs::File::create(&zip_path_clone)?;
-            let mut zip = ZipWriter::new(file);
+            let mut zip = ZipWriter::new(std::io::BufWriter::with_capacity(256 * 1024, file));
             let options = SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Deflated)
                 .compression_level(Some(6));
 
+            let mut dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            for (path, _) in &files {
+                if let Ok(rel) = path.strip_prefix(&root_clone) {
+                    let mut acc = std::path::PathBuf::new();
+                    let comps: Vec<_> = rel.components().collect();
+                    for comp in comps.iter().take(comps.len().saturating_sub(1)) {
+                        acc.push(comp);
+                        dirs.insert(acc.to_string_lossy().replace('\\', "/"));
+                    }
+                }
+            }
+            for dir in &dirs {
+                let _ = zip.add_directory(dir, options);
+            }
+
             let mut processed = 0u64;
+            let mut last_reported = 0u64;
+            const PROGRESS_STEP: u64 = 512 * 1024;
 
-            for entry in WalkDir::new(&root_clone).into_iter().filter_map(|e| e.ok()) {
-                let rel = match entry.path().strip_prefix(&root_clone) {
-                    Ok(r) => r,
-                    Err(_) => continue,
+            for (path, size) in &files {
+                let Ok(rel) = path.strip_prefix(&root_clone) else {
+                    continue;
                 };
-                let first = rel
-                    .components()
-                    .next()
-                    .map(|c| c.as_os_str().to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if backup_excluded(&first) {
-                    continue;
-                }
-                if entry.path() == root_clone {
-                    continue;
-                }
-
                 let rel_str = rel.to_string_lossy().replace('\\', "/");
-                if entry.file_type().is_dir() {
-                    zip.add_directory(&rel_str, options)?;
-                } else if entry.file_type().is_file() {
-                    zip.start_file(&rel_str, options)?;
-                    let mut f = std::fs::File::open(entry.path())?;
-                    std::io::copy(&mut f, &mut zip)?;
-                    if let Ok(meta) = entry.metadata() {
-                        processed += meta.len();
-                        if let Ok(mut guard) = progress_ref.try_lock() {
-                            guard.processed_bytes = processed;
-                            if let Some(pct) = (processed * 100).checked_div(guard.total_bytes) {
-                                guard.percent = pct.min(99) as u32;
-                            }
+                zip.start_file(&rel_str, options)?;
+                let f = std::fs::File::open(path)?;
+                let mut reader = std::io::BufReader::with_capacity(256 * 1024, f);
+                std::io::copy(&mut reader, &mut zip)?;
+                processed = processed.saturating_add(*size);
+
+                if processed.saturating_sub(last_reported) >= PROGRESS_STEP || processed == total {
+                    last_reported = processed;
+                    if let Ok(mut guard) = progress_ref.try_lock() {
+                        guard.processed_bytes = processed;
+                        guard.total_bytes = total;
+                        if total > 0 {
+                            guard.percent = ((processed * 100) / total).min(99) as u32;
                         }
                     }
                 }
