@@ -23,7 +23,7 @@
   <div class="app">
 
     <!-- 1. SIDEBAR -->
-    <nav class="sidebar" aria-label="Navegación principal">
+    <aside class="sidebar" aria-label="Navegación principal">
       <div class="sb-logo">
         <div class="sb-logo-icon" aria-hidden="true">
           <img class="sb-logo-svg" src="/icon.ico" width="42" height="42" alt="">
@@ -86,7 +86,7 @@
 
       <div class="sb-spacer"></div>
       <div class="sb-version">MOONWOLF · 2026</div>
-    </nav>
+    </aside>
 
     <!-- 2. MAIN -->
     <main class="main">
@@ -94,7 +94,7 @@
       <div class="view active" id="view-terminal">
         <div class="page-header">
           <div>
-            <div class="page-title">TERMINAL</div>
+            <h2 class="page-title">TERMINAL</h2>
             <div class="page-sub">Consola del servidor</div>
           </div>
         </div>
@@ -150,9 +150,10 @@
             </div>
           </div>
           <div class="cmd-row">
-            <span class="cmd-prefix">/</span>
-            <input class="cmd-input" id="cmdInput" placeholder="Escribe un comando..." autocomplete="off">
-            <button type="button" class="cmd-send" id="btnSendCmd">↵</button>
+            <span class="cmd-prefix" aria-hidden="true">/</span>
+            <label for="cmdInput" class="sr-only">Comando del servidor</label>
+            <input class="cmd-input" id="cmdInput" placeholder="Escribe un comando..." autocomplete="off" aria-label="Comando del servidor">
+            <button type="button" class="cmd-send" id="btnSendCmd" aria-label="Enviar comando">↵</button>
           </div>
           <div class="quick-grid">
             <button type="button" class="quick-btn" data-cmd="list"><span class="qb-label">jugadores</span>list</button>
@@ -169,7 +170,7 @@
       <div class="view" id="view-files">
         <div class="page-header">
           <div>
-            <div class="page-title">ARCHIVOS</div>
+            <h2 class="page-title">ARCHIVOS</h2>
             <div class="page-sub">Explorador de archivos del servidor</div>
           </div>
         </div>
@@ -292,7 +293,7 @@
       <div class="view" id="view-plugins">
         <div class="page-header">
           <div>
-            <div class="page-title">PLUGINS</div>
+            <h2 class="page-title">PLUGINS</h2>
             <div class="page-sub">Busca, descarga e instala plugins desde Modrinth, Spigot y Hangar</div>
           </div>
           <div style="display:flex;gap:8px;align-items:center">
@@ -305,9 +306,10 @@
         <div id="plgTabSearch">
           <div class="plg-search-bar panel">
             <div class="plg-search-inner">
-              <div class="plg-search-icon">🔍</div>
+              <div class="plg-search-icon" aria-hidden="true">🔍</div>
+              <label for="plgSearchInput" class="sr-only">Buscar plugins</label>
               <input id="plgSearchInput" class="plg-search-input" type="text"
-                placeholder="LuckPerms, EssentialsX, WorldEdit..." autocomplete="off">
+                placeholder="LuckPerms, EssentialsX, WorldEdit..." autocomplete="off" aria-label="Buscar plugins">
               <div class="plg-source-pills">
                 <button type="button" class="plg-source active" data-source="all">⚫️ TODOS</button>
                 <button type="button" class="plg-source" data-source="modrinth">🟢 MODRINTH</button>
@@ -362,7 +364,7 @@
                 <div id="plgModalMeta" style="font-size:11px;color:var(--muted2);margin-top:2px">—</div>
               </div>
             </div>
-            <button type="button" class="plg-modal-close" id="btnClosePlgModal">✕</button>
+            <button type="button" class="plg-modal-close" id="btnClosePlgModal" aria-label="Cerrar modal">✕</button>
           </div>
           <div id="plgModalBody" class="plg-modal-body"></div>
         </div>
@@ -372,7 +374,7 @@
       <div class="view" id="view-versions">
         <div class="page-header">
           <div>
-            <div class="page-title">VERSIONES DE MINECRAFT</div>
+            <h2 class="page-title">VERSIONES DE MINECRAFT</h2>
             <div class="page-sub">Gestión de las versiones de Minecraft disponibles para tu servidor</div>
           </div>
         </div>
@@ -383,7 +385,7 @@
       <div class="view" id="view-databases">
         <div class="page-header">
           <div>
-            <div class="page-title">BASES DE DATOS</div>
+            <h2 class="page-title">BASES DE DATOS</h2>
             <div class="page-sub">Gestión de bases de datos del servidor</div>
           </div>
         </div>
@@ -394,7 +396,7 @@
       <div class="view" id="view-users">
         <div class="page-header">
           <div>
-            <div class="page-title">USUARIOS</div>
+            <h2 class="page-title">USUARIOS</h2>
             <div class="page-sub">Personas con acceso a este panel</div>
           </div>
         </div>
@@ -405,7 +407,7 @@
       <div class="view" id="view-backups">
         <div class="page-header">
           <div>
-            <div class="page-title">COPIAS DE SEGURIDAD</div>
+            <h2 class="page-title">COPIAS DE SEGURIDAD</h2>
             <div class="page-sub">Gestión de las copias de seguridad del servidor</div>
           </div>
           <button type="button" class="small-btn" id="btnNewBackup">➕ Nueva copia</button>
@@ -428,7 +430,8 @@
                 <span>Se comprimirán todos los archivos del servidor en un ZIP. El nombre es opcional.</span>
               </div>
             </div>
-            <input class="backup-name-input" id="backupNameInput" type="text" maxlength="80" placeholder="Nombre (opcional)" autocomplete="off" spellcheck="false">
+            <label for="backupNameInput" class="sr-only">Nombre de la copia de seguridad</label>
+            <input class="backup-name-input" id="backupNameInput" type="text" maxlength="80" placeholder="Nombre (opcional)" autocomplete="off" spellcheck="false" aria-label="Nombre de la copia de seguridad">
             <div class="backup-name-actions">
               <button class="small-btn" id="btnBackupNameCancel" type="button">Cancelar</button>
               <button class="small-btn conflict-numbered" id="btnBackupNameCreate" type="button">💾 Crear copia</button>
@@ -442,7 +445,7 @@
       <div class="view" id="view-ports">
         <div class="page-header">
           <div>
-            <div class="page-title">PUERTOS</div>
+            <h2 class="page-title">PUERTOS</h2>
             <div class="page-sub">Configuración y monitorización de puertos</div>
           </div>
         </div>
@@ -453,7 +456,7 @@
       <div class="view" id="view-startup">
         <div class="page-header">
           <div>
-            <div class="page-title">STARTUP</div>
+            <h2 class="page-title">STARTUP</h2>
             <div class="page-sub">Configuración de arranque del servidor</div>
           </div>
         </div>
@@ -464,7 +467,7 @@
       <div class="view" id="view-settings">
         <div class="page-header">
           <div>
-            <div class="page-title">AJUSTES</div>
+            <h2 class="page-title">AJUSTES</h2>
             <div class="page-sub">Configuración general del panel</div>
           </div>
         </div>
@@ -475,7 +478,7 @@
       <div class="view" id="view-activitylog">
         <div class="page-header">
           <div>
-            <div class="page-title">REGISTRO DE ACTIVIDAD</div>
+            <h2 class="page-title">REGISTRO DE ACTIVIDAD</h2>
             <div class="page-sub">Historial de acciones y eventos</div>
           </div>
         </div>
