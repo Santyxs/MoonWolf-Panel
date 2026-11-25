@@ -7089,9 +7089,7 @@ function flashButton(
    22. EVENTOS E INICIALIZACIÓN
    ══════════════════════════════════════════════ */
 
-function bindEvents() {
-  ensureLoginGate();
-
+function bindSidebarEvents(): void {
   const sidebar = document.querySelector('.sidebar');
   if (sidebar instanceof HTMLElement) {
     sidebar.addEventListener('click', event => {
@@ -7119,7 +7117,9 @@ function bindEvents() {
       }
     });
   }
+}
 
+function bindServerControlEvents(): void {
   $('btnStart')?.addEventListener('click', startServer);
   $('btnStop')?.addEventListener('click', stopServer);
   $('btnRestart')?.addEventListener('click', restartServer);
@@ -7149,7 +7149,9 @@ function bindEvents() {
       pendingConsoleLogs.length = 0;
     }
   });
+}
 
+function bindFilesEvents(): void {
   $('crumbHome')?.addEventListener('click', () => populateFiles(''));
 
   const uploadMenu = $('uploadMenu');
@@ -7355,7 +7357,9 @@ function bindEvents() {
       saveCurrentFile();
     }
   });
+}
 
+function bindPluginsEvents(): void {
   document.querySelectorAll('.plg-source').forEach(button => {
     button.addEventListener('click', () => {
       if (!(button instanceof HTMLElement)) return;
@@ -7426,8 +7430,20 @@ function bindEvents() {
       plgVersionModal.style.display = 'none';
     }
   });
+}
 
+function bindBackupEvents(): void {
   $('btnNewBackup')?.addEventListener('click', createBackup);
+}
+
+function bindEvents(): void {
+  ensureLoginGate();
+
+  bindSidebarEvents();
+  bindServerControlEvents();
+  bindFilesEvents();
+  bindPluginsEvents();
+  bindBackupEvents();
 
   updateAgentUi();
   updateStatusUi(currentStatus);
