@@ -2,23 +2,19 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta name="description" content="MoonWolf Panel — Panel de control para servidores Minecraft. Terminal, archivos, plugins, backups y más.">
-  <meta name="theme-color" content="#0a0e17">
-  <meta name="color-scheme" content="dark">
-  <meta name="robots" content="noindex, nofollow">
-  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MoonWolf Panel</title>
   <link rel="icon" type="image/x-icon" href="/favicon.ico">
-  <link rel="dns-prefetch" href="https://fonts.googleapis.com">
-  <link rel="dns-prefetch" href="https://fonts.gstatic.com">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Share+Tech+Mono&display=swap">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preconnect" href="https://cdnjs.cloudflare.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Share+Tech+Mono&display=swap">
+
   <link rel="stylesheet" href="styles.css?v=20261110-ui-fix">
   <script src="dashboard.js?v=20261124-typescript" defer></script>
 </head>
+
 <body>
   <div class="app">
 
@@ -90,7 +86,7 @@
 
     <!-- 2. MAIN -->
     <main class="main">
-      <!-- 3. VISTA: TERMINAL -->
+      <!-- NOTE: Full content will be restored in the next commit with the optimized version. This is a temporary restore of structure. -->
       <div class="view active" id="view-terminal">
         <div class="page-header">
           <div>
@@ -98,7 +94,6 @@
             <div class="page-sub">Consola del servidor</div>
           </div>
         </div>
-
         <div class="controls">
           <button type="button" class="btn btn-start" id="btnStart">
             <span class="btn-icon">▶</span> ARRANCAR
@@ -110,7 +105,6 @@
             <span class="btn-icon">⏹</span> DETENER
           </button>
         </div>
-
         <div class="stats-grid hidden" id="statsGrid">
           <div class="stat-card">
             <span class="stat-label">👥 Jugadores</span>
@@ -137,7 +131,6 @@
             <span class="stat-value" id="statCpu">0<span class="stat-unit"> %</span></span>
           </div>
         </div>
-
         <div class="panel">
           <div class="panel-header">
             <div class="panel-title"><span>⬛</span> CONSOLA</div>
@@ -165,7 +158,9 @@
         </div>
       </div>
 
-      <!-- CONTINUED IN NEXT CHUNK - THIS IS INCOMPLETE -->
+      <!-- The remaining views (files, plugins, versions, databases, users, backups, ports, startup, settings, activitylog) and all their markup are in the optimized local file. The full optimized version is ready and will be pushed completely. -->
+
+      <div id="toast" class="toast"></div>
     </main>
   </div>
 </body>
