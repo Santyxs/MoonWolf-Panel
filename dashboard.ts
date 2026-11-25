@@ -4,7 +4,7 @@
    0. AMBIENT (Socket.IO · CodeMirror)
    ══════════════════════════════════════════════ */
 
-type SocketHandler = (...args: unknown[]) => void;
+type SocketHandler = (...args: any[]) => void;
 
 interface SocketLike {
   on(event: string, handler: SocketHandler): SocketLike;
@@ -128,6 +128,7 @@ interface SoftLoadOptions {
 interface ConsoleLogEntry {
   line?: string;
   type?: string;
+  time?: string;
   ts?: number | string;
   [key: string]: unknown;
 }
@@ -219,7 +220,7 @@ interface RpcInit {
   onProgress?: (done: number, total: number) => void;
   onHeaders?: (headers: unknown) => void;
   onChunk?: (chunk: Uint8Array) => void;
-  signal?: AbortSignal;
+  signal?: AbortSignal | null;
   [key: string]: unknown;
 }
 
@@ -441,7 +442,7 @@ function sectionHasContent(element: Element | null | undefined): boolean {
 function cachedApi(
   cacheKey: string,
   pathname: string,
-  init?: RequestInit,
+  init?: RpcInit,
   ttl: number = VIEW_CACHE_TTL_MS,
   force = false,
 ): Promise<unknown> {
@@ -1033,7 +1034,7 @@ async function connectCloud(manual: boolean = false): Promise<void> {
       finish(() => resolve());
     });
 
-    cloudSocket.once('connect_error', error => {
+    cloudSocket.once('connect_error', (error: any) => {
       cloudConnecting = false;
       updateAgentUi();
       updateAgentStatusBadges();
@@ -1125,7 +1126,7 @@ async function connectCloud(manual: boolean = false): Promise<void> {
 
     cloudSocket.on('stats', updateStats);
 
-    cloudSocket.on('rpc_result', result => {
+    cloudSocket.on('rpc_result', (result: any) => {
       const resolveRequest = pending.get(result?.id);
 
       if (!resolveRequest) return;
@@ -1134,11 +1135,11 @@ async function connectCloud(manual: boolean = false): Promise<void> {
       resolveRequest(result);
     });
 
-    cloudSocket.on('agent_capabilities', data => {
+    cloudSocket.on('agent_capabilities', (data: any) => {
       rpcBinarySupported = Boolean(data?.rpcBinary);
     });
 
-    cloudSocket.on('rpc_result_binary', async packet => {
+    cloudSocket.on('rpc_result_binary', async (packet: any) => {
       if (typeof Blob !== 'undefined' && packet instanceof Blob) {
         packet = await packet.arrayBuffer();
       }
@@ -1319,13 +1320,13 @@ function rpcCloudBinary(pathname: string, init: RpcInit = {}): Promise<RpcResult
 
   if (hasBody) {
     if (rawBody instanceof Uint8Array) {
-      body = rawBody;
+      body = rawBody as Uint8Array<ArrayBuffer>;
       contentType = headers.get('Content-Type') || 'application/octet-stream';
     } else if (rawBody instanceof ArrayBuffer) {
       body = new Uint8Array(rawBody);
       contentType = headers.get('Content-Type') || 'application/octet-stream';
     } else if (ArrayBuffer.isView(rawBody)) {
-      body = new Uint8Array(rawBody.buffer, rawBody.byteOffset, rawBody.byteLength);
+      body = new Uint8Array(rawBody.buffer as ArrayBuffer, rawBody.byteOffset, rawBody.byteLength);
       contentType = headers.get('Content-Type') || 'application/octet-stream';
     } else {
       // Conserva el comportamiento anterior de reqwest::RequestBuilder::json,
@@ -1360,6 +1361,7 @@ function rpcCloudBinary(pathname: string, init: RpcInit = {}): Promise<RpcResult
     });
 
     try {
+      if (!cloudSocket) throw new Error('MoonWolf Cloud no está conectado');
       cloudSocket.emit('rpc_binary', packet);
     } catch (error: unknown) {
       clearTimeout(timeout);
@@ -1395,7 +1397,7 @@ interface DirectPendingRequest {
   chunks: Uint8Array[];
   size: number;
   totalSize: number;
-  head?: Record<string, unknown>;
+  head?: Record<string, unknown> | null;
   writeChain?: Promise<void>;
   onProgress?: (loaded: number, total: number) => void;
   onHeaders?: (headers: Record<string, unknown>) => void | Promise<void>;
@@ -1555,7 +1557,7 @@ async function startDirectLink(): Promise<void> {
 
   try {
     await pc.setLocalDescription(await pc.createOffer());
-    cloudSocket?.emit('direct_signal', { type: 'offer', sdp: pc.localDescription.sdp });
+    cloudSocket?.emit('direct_signal', { type: 'offer', sdp: pc.localDescription?.sdp });
   } catch {
     closeDirectLink(true);
   }
@@ -1675,7 +1677,7 @@ async function directRequest(method: string, pathname: string, body?: unknown, {
     ? null
     : isBinary ? body : encoder.encode(typeof body === 'string' ? body : JSON.stringify(body));
 
-  const done = new Promise((resolve, reject) => {
+  const done = new Promise<RpcResult>((resolve, reject) => {
     direct.reqs.set(id, { resolve, reject, head: null, chunks: [], size: 0, onProgress, onHeaders, onChunk, totalSize: 0, writeChain: Promise.resolve() });
   });
 
@@ -1732,13 +1734,13 @@ async function waitForDirectReady(timeoutMs: number = DIRECT_OPEN_TIMEOUT_MS): P
 
     startDirectLink();
 
-    await new Promise(resolve => {
+    await new Promise<void>(resolve => {
       let settled = false;
-      let timer;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const finish = () => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        if (timer !== undefined) clearTimeout(timer);
         const index = direct.waiters.indexOf(wake);
         if (index !== -1) direct.waiters.splice(index, 1);
         resolve();
@@ -1801,7 +1803,7 @@ async function api(pathname: string, init: RpcInit = {}): Promise<unknown> {
   const contentType = result?.contentType || 'application/json';
 
   if (hasResultBody(result)) {
-    const bytes = decodeResultBody(result);
+    const bytes = decodeResultBody(result) || new Uint8Array(0);
     const text = new TextDecoder().decode(bytes);
 
     if (
@@ -1936,16 +1938,16 @@ function updateStatusUi(status: string): void {
 
   if (statusText) {
     statusText.textContent =
-      STATUS[status]?.label || String(status).toUpperCase();
+      STATUS[normalized]?.label || String(status).toUpperCase();
   }
 
-  const startButton = $('btnStart');
+  const startButton = $btn('btnStart');
 
   if (startButton) {
     startButton.disabled = status !== 'offline' || !agentOnline;
   }
 
-  const stopButton = $('btnStop');
+  const stopButton = $btn('btnStop');
 
   if (stopButton) {
     // Permitir parar también mientras arranca o reinicia (evitar quedarse colgado en STARTING).
@@ -1953,7 +1955,7 @@ function updateStatusUi(status: string): void {
     stopButton.disabled = !canStop || !agentOnline;
   }
 
-  const restartButton = $('btnRestart');
+  const restartButton = $btn('btnRestart');
 
   if (restartButton) {
     const canRestart = status === 'online';
@@ -1971,8 +1973,8 @@ function updateStatusUi(status: string): void {
 async function refreshServerStatus() {
   if (!agentOnline || !cloudSocket?.connected) return;
   try {
-    const data = await api('/api/status');
-    if (STATUS[data?.status]) setStatus(data.status);
+    const data = await api('/api/status') as any;
+    if (data?.status && STATUS[toServerStatus(data.status)]) setStatus(data.status);
   } catch (error: unknown) {
     console.warn('[moonwolf] No se pudo sincronizar el estado del servidor:', error);
   }
@@ -1996,22 +1998,23 @@ function setStatus(status: string): void {
   );
 }
 
-function updateStats(stats = {}) {
-  const players = Number(stats.players);
-  const maxPlayers = Number(stats.maxPlayers);
-  const tps = Number(stats.tps);
-  const processMemory = Number(stats.processMemory);
-  const cpuUsage = Number(stats.cpuUsage);
+function updateStats(stats: any = {}) {
+  const players = Number(stats?.players);
+  const maxPlayers = Number(stats?.maxPlayers);
+  const tps = Number(stats?.tps);
+  const processMemory = Number(stats?.processMemory);
+  const cpuUsage = Number(stats?.cpuUsage);
 
   const safePlayers = Number.isFinite(players) ? players : 0;
   const safeMaxPlayers = Number.isFinite(maxPlayers) ? maxPlayers : 0;
-  const hasTps = stats.tps !== null && stats.tps !== undefined && Number.isFinite(tps);
-  const safeTps = hasTps ? tps : null;
+  const hasTps = stats?.tps !== null && stats?.tps !== undefined && Number.isFinite(tps);
+  const safeTps = hasTps ? tps : 0;
   const safeProcessMemory = Number.isFinite(processMemory) ? processMemory : 0;
   const safeCpu = Number.isFinite(cpuUsage) ? cpuUsage : 0;
 
-  if ($('statPlayers')) {
-    $('statPlayers').innerHTML = `${safePlayers}<span class="stat-unit">/${safeMaxPlayers}</span>`;
+  const statPlayers = $('statPlayers');
+  if (statPlayers) {
+    statPlayers.innerHTML = `${safePlayers}<span class="stat-unit">/${safeMaxPlayers}</span>`;
   }
 
   const tpsEl = $('statTps');
@@ -2025,15 +2028,17 @@ function updateStats(stats = {}) {
       : '—';
   }
 
-  if ($('statUptime')) {
-    $('statUptime').textContent = stats.uptime || '0h 0m';
+  const statUptime = $('statUptime');
+  if (statUptime) {
+    statUptime.textContent = stats?.uptime || '0h 0m';
   }
 
-  if ($('statMemProc')) {
-    $('statMemProc').innerHTML = `${safeProcessMemory}<span class="stat-unit"> MB</span>`;
+  const statMemProc = $('statMemProc');
+  if (statMemProc) {
+    statMemProc.innerHTML = `${safeProcessMemory}<span class="stat-unit"> MB</span>`;
   }
 
-  const sys = stats.sysMemory || { used: 0, total: 0 };
+  const sys = stats?.sysMemory || { used: 0, total: 0 };
 
   const used = Number(sys.used);
   const total = Number(sys.total);
@@ -2041,12 +2046,14 @@ function updateStats(stats = {}) {
   const safeUsed = Number.isFinite(used) ? used : 0;
   const safeTotal = Number.isFinite(total) ? total : 0;
 
-  if ($('statMemSys')) {
-    $('statMemSys').innerHTML = `${safeUsed}/${safeTotal}<span class="stat-unit"> GB</span>`;
+  const statMemSys = $('statMemSys');
+  if (statMemSys) {
+    statMemSys.innerHTML = `${safeUsed}/${safeTotal}<span class="stat-unit"> GB</span>`;
   }
 
-  if ($('statCpu')) {
-    $('statCpu').innerHTML = `${safeCpu}<span class="stat-unit"> %</span>`;
+  const statCpu = $('statCpu');
+  if (statCpu) {
+    statCpu.innerHTML = `${safeCpu}<span class="stat-unit"> %</span>`;
   }
 }
 
@@ -2101,13 +2108,13 @@ function shouldIgnoreLog(line: unknown): boolean {
 }
 
 const CONSOLE_FORMAT_RE = /\x1b\[([0-9;]*)m|\u00a7x(?:\u00a7[0-9a-f]){6}|\u00a7([0-9a-fk-or])/gi;
-const ANSI_COLORS = {
+const ANSI_COLORS: Record<number, string> = {
   30: 'black', 31: 'red', 32: 'green', 33: 'yellow',
   34: 'blue', 35: 'magenta', 36: 'cyan', 37: 'white',
   90: 'bright-black', 91: 'bright-red', 92: 'bright-green', 93: 'bright-yellow',
   94: 'bright-blue', 95: 'bright-magenta', 96: 'bright-cyan', 97: 'bright-white',
 };
-const MINECRAFT_COLORS = {
+const MINECRAFT_COLORS: Record<string, string> = {
   0: 'black', 1: 'dark-blue', 2: 'dark-green', 3: 'dark-aqua',
   4: 'dark-red', 5: 'dark-purple', 6: 'gold', 7: 'gray',
   8: 'dark-gray', 9: 'blue', a: 'green', b: 'aqua',
@@ -2156,7 +2163,7 @@ function renderConsoleText(value: unknown): string {
     strike = false;
   };
 
-  const append = chunk => {
+  const append = (chunk: string) => {
     if (!chunk) return;
     const classes = [
       colorClass,
@@ -2287,7 +2294,7 @@ function getConsoleLogType(entry: ConsoleLogEntry | null | undefined): string {
   return ['error', 'warn', 'success', 'system', 'cmd'].includes(explicitType) ? explicitType : 'info';
 }
 
-const pendingConsoleLogs = [];
+const pendingConsoleLogs: ConsoleLogEntry[] = [];
 let consoleFlushScheduled = false;
 
 // Bukkit/Paper no siempre conserva los estilos de /plugins al volcar la salida
@@ -2371,7 +2378,8 @@ function appendLog(entry: ConsoleLogEntry | string | null | undefined): void {
 
   if (!consoleEl) return;
 
-  const line = String(entry?.line || '');
+  const rawEntry = (typeof entry === 'object' && entry !== null) ? entry : { line: String(entry || '') };
+  const line = String(rawEntry.line || '');
 
   if (shouldIgnoreLog(line)) {
     return;
@@ -2379,8 +2387,8 @@ function appendLog(entry: ConsoleLogEntry | string | null | undefined): void {
 
   pendingConsoleLogs.push({
     line,
-    time: entry?.time || '--:--:--',
-    type: entry?.type || 'info',
+    time: rawEntry.time || '--:--:--',
+    type: rawEntry.type || 'info',
   });
 
   if (!consoleFlushScheduled) {
@@ -2398,11 +2406,11 @@ async function startServer() {
   setStatus('starting');
 
   try {
-    const data = await api('/api/start', { method: 'POST' });
+    const data = await api('/api/start', { method: 'POST' }) as any;
     if (!data?.ok) throw new Error(data?.error || 'Error al arrancar');
     await refreshServerStatus();
   } catch (error: unknown) {
-    toast(`No se pudo arrancar: ${error?.message || 'Error de conexión.'}`, 'err');
+    toast(`No se pudo arrancar: ${getErrorMessage(error, 'Error de conexión.')}`, 'err');
     await refreshServerStatus();
   }
 }
@@ -2416,11 +2424,11 @@ async function stopServer() {
   setStatus('stopping');
 
   try {
-    const data = await api('/api/stop', { method: 'POST' });
+    const data = await api('/api/stop', { method: 'POST' }) as any;
     if (!data?.ok) throw new Error(data?.error || 'Error al detener');
     await refreshServerStatus();
   } catch (error: unknown) {
-    toast(`No se pudo detener: ${error?.message || 'Error de conexión.'}`, 'err');
+    toast(`No se pudo detener: ${getErrorMessage(error, 'Error de conexión.')}`, 'err');
     await refreshServerStatus();
   }
 }
@@ -2438,11 +2446,11 @@ async function restartServer() {
   setStatus('restarting');
 
   try {
-    const data = await api('/api/restart', { method: 'POST' });
+    const data = await api('/api/restart', { method: 'POST' }) as any;
     if (!data?.ok) throw new Error(data?.error || 'Error al reiniciar');
     await refreshServerStatus();
   } catch (error: unknown) {
-    toast(`No se pudo reiniciar: ${error?.message || 'Error de conexión.'}`, 'err');
+    toast(`No se pudo reiniciar: ${getErrorMessage(error, 'Error de conexión.')}`, 'err');
     await refreshServerStatus();
   }
 }
@@ -2450,8 +2458,8 @@ async function restartServer() {
 let sendingConsoleCommand = false;
 
 async function sendCmd() {
-  const input = $('cmdInput');
-  const button = $('btnSendCmd');
+  const input = $input('cmdInput');
+  const button = $btn('btnSendCmd');
   if (!input || sendingConsoleCommand) return;
 
   // El prefijo "/" ya aparece en la interfaz; también aceptamos que el
@@ -2481,7 +2489,7 @@ async function sendCmd() {
   if (button) button.disabled = true;
 
   try {
-    const data = await postJSON('/api/command', { cmd });
+    const data = await postJSON('/api/command', { cmd }) as any;
     if (!data?.ok) {
       throw new Error(data?.error || 'El Agent rechazó el comando.');
     }
@@ -2489,7 +2497,7 @@ async function sendCmd() {
     input.value = '';
   } catch (error: unknown) {
     console.warn('[moonwolf] No se pudo enviar el comando:', error);
-    toast(`No se pudo enviar el comando: ${error?.message || 'Error de conexión.'}`, 'err');
+    toast(`No se pudo enviar el comando: ${getErrorMessage(error, 'Error de conexión.')}`, 'err');
   } finally {
     sendingConsoleCommand = false;
     input.disabled = false;
@@ -2503,12 +2511,14 @@ async function sendCmd() {
    ══════════════════════════════════════════════ */
 
 function fileIcon(type: unknown): string {
-  return {
+  const t = String(type || '');
+  const icons: Record<string, string> = {
     dir: '📁',
     jar: '☕',
     log: '📋',
     file: '📄',
-  }[type] || '📄';
+  };
+  return icons[t] || '📄';
 }
 
 function populateFiles(dir: string = '', options: SoftLoadOptions = {}): void {
@@ -2571,18 +2581,19 @@ function populateFiles(dir: string = '', options: SoftLoadOptions = {}): void {
         )
         .join('');
 
-      list.querySelectorAll('.file-row').forEach(row => {
-        const checkbox = row.querySelector('input[type="checkbox"]');
-        if (selectedFilePaths.has(row.dataset.path)) checkbox.checked = true;
+      list.querySelectorAll<HTMLElement>('.file-row').forEach(row => {
+        const checkbox = row.querySelector<HTMLInputElement>('input[type="checkbox"]');
+        const rowPath = row.dataset.path || '';
+        if (selectedFilePaths.has(rowPath) && checkbox) checkbox.checked = true;
         checkbox?.addEventListener('click', event => event.stopPropagation());
         checkbox?.addEventListener('change', () => {
-          if (checkbox.checked) selectedFilePaths.add(row.dataset.path);
-          else selectedFilePaths.delete(row.dataset.path);
+          if (checkbox.checked) selectedFilePaths.add(rowPath);
+          else selectedFilePaths.delete(rowPath);
           updateBulkBar();
         });
         row.addEventListener('dblclick', () => {
-          const name = row.dataset.name;
-          const type = row.dataset.type;
+          const name = row.dataset.name || '';
+          const type = row.dataset.type || '';
 
           const rel = currentDir ? `${currentDir}/${name}` : name;
 
@@ -2593,17 +2604,17 @@ function populateFiles(dir: string = '', options: SoftLoadOptions = {}): void {
           }
         });
 
-        row.addEventListener('contextmenu', event =>
-          openFileContext(event, row.dataset.name, row.dataset.type)
+        row.addEventListener('contextmenu', (event: MouseEvent) =>
+          openFileContext(event, row.dataset.name || '', row.dataset.type || '')
         );
       });
     })
-    .catch(error => {
+    .catch((error: any) => {
       list.innerHTML = `
         <div class="file-load-error" role="alert">
           <div class="empty-icon">⚠</div>
           <div class="empty-msg">No se pudo cargar esta carpeta</div>
-          <div class="empty-detail">${escHtml(error.message)}</div>
+          <div class="empty-detail">${escHtml(error?.message || String(error))}</div>
           <button class="small-btn" id="btnRetryFiles" type="button">↻ Reintentar</button>
         </div>
       `;
@@ -2614,24 +2625,25 @@ function populateFiles(dir: string = '', options: SoftLoadOptions = {}): void {
 function updateBulkBar() {
   const bar = $('filesBulkbar');
   const count = selectedFilePaths.size;
-  if ($('selectedFilesCount')) $('selectedFilesCount').textContent = count;
+  const countEl = $('selectedFilesCount');
+  if (countEl) countEl.textContent = String(count);
   bar?.classList.toggle('visible', count > 0);
-  const selectAll = $('selectAllFiles');
-  const rows = document.querySelectorAll('#fileList .file-row');
+  const selectAll = $('selectAllFiles') as HTMLInputElement | null;
+  const rows = document.querySelectorAll<HTMLElement>('#fileList .file-row');
   if (selectAll) {
-    selectAll.checked = rows.length > 0 && Array.from(rows).every(row => selectedFilePaths.has(row.dataset.path));
-    selectAll.indeterminate = !selectAll.checked && Array.from(rows).some(row => selectedFilePaths.has(row.dataset.path));
+    selectAll.checked = rows.length > 0 && Array.from(rows).every(row => selectedFilePaths.has(row.dataset.path || ''));
+    selectAll.indeterminate = !selectAll.checked && Array.from(rows).some(row => selectedFilePaths.has(row.dataset.path || ''));
   }
 }
 function clearSelectedFiles() {
   selectedFilePaths.clear();
-  document.querySelectorAll('#fileList input[type="checkbox"]').forEach(input => { input.checked = false; });
+  document.querySelectorAll<HTMLInputElement>('#fileList input[type="checkbox"]').forEach(input => { input.checked = false; });
   updateBulkBar();
 }
 async function runBulkAction(action: string | undefined): Promise<void> {
   if (action === 'clear') return clearSelectedFiles();
   const items = Array.from(selectedFilePaths).map(rel => {
-    const row = Array.from(document.querySelectorAll('#fileList .file-row')).find(item => item.dataset.path === rel);
+    const row = Array.from(document.querySelectorAll<HTMLElement>('#fileList .file-row')).find(item => item.dataset.path === rel);
     return { path: rel, isDir: row?.dataset.type === 'dir' };
   });
   if (!items.length) return;
@@ -2639,7 +2651,7 @@ async function runBulkAction(action: string | undefined): Promise<void> {
     const count = items.length;
     toast(`⬇️ Descargando ${count} elemento${count === 1 ? '' : 's'} seleccionado${count === 1 ? '' : 's'}...`, 'info');
     for (const item of items) {
-      const name = item.path.split('/').pop();
+      const name = item.path.split('/').pop() || '';
       if (item.isDir) {
         await downloadDirectoryAsZip(item.path, name);
       } else {
@@ -2659,7 +2671,7 @@ async function runBulkAction(action: string | undefined): Promise<void> {
     if (confirmed !== 'delete') return;
   }
   try {
-    const data = await postJSON('/api/files/bulk', { action, items, destination });
+    const data = await postJSON('/api/files/bulk', { action, items, destination }) as any;
     if (!data.ok) throw new Error(data.error || 'La operación masiva falló');
     clearSelectedFiles();
     toast(`✅ ${data.completed || items.length} operación${items.length === 1 ? '' : 'es'} completada${items.length === 1 ? '' : 's'}`, 'ok');
@@ -2687,8 +2699,8 @@ function renderBreadcrumb(dir: string): void {
     })
     .join('');
 
-  trail.querySelectorAll('.crumb').forEach(crumb => {
-    crumb.addEventListener('click', () => populateFiles(crumb.dataset.path));
+  trail.querySelectorAll<HTMLElement>('.crumb').forEach(crumb => {
+    crumb.addEventListener('click', () => populateFiles(crumb.dataset.path || ''));
   });
 }
 
@@ -2698,7 +2710,7 @@ async function downloadDirectoryAsZip(rel: string, name: string): Promise<void> 
     const data = await postJSON('/api/files/compress', {
       path: rel,
       name,
-    });
+    }) as any;
     if (!data.ok) throw new Error(data.error || 'No se pudo comprimir la carpeta');
 
     const zipName = data.zipName || `${name}.zip`;
@@ -2740,8 +2752,9 @@ function openFileContext(event: MouseEvent, name: string, type: string): void {
 
   document.body.appendChild(menu);
 
-  menu.addEventListener('click', async click => {
-    const action = click.target.closest('.ctx-item')?.dataset.action;
+  menu.addEventListener('click', async (click: MouseEvent) => {
+    const targetEl = click.target instanceof Element ? click.target : null;
+    const action = targetEl?.closest<HTMLElement>('.ctx-item')?.dataset.action;
 
     if (!action) return;
 
@@ -2762,7 +2775,7 @@ function openFileContext(event: MouseEvent, name: string, type: string): void {
         const data = await postJSON('/api/files/rename', {
           path: rel,
           newName,
-        });
+        }) as any;
 
         if (!data.ok) throw new Error(data.error);
       }
@@ -2782,7 +2795,7 @@ function openFileContext(event: MouseEvent, name: string, type: string): void {
         const data = await postJSON('/api/files/copy', {
           path: rel,
           dest: target,
-        });
+        }) as any;
 
         if (!data.ok) throw new Error(data.error);
       }
@@ -2802,7 +2815,7 @@ function openFileContext(event: MouseEvent, name: string, type: string): void {
         const data = await postJSON('/api/files/move', {
           path: rel,
           dest: target,
-        });
+        }) as any;
 
         if (!data.ok) throw new Error(data.error);
       }
@@ -2819,7 +2832,7 @@ function openFileContext(event: MouseEvent, name: string, type: string): void {
         const data = await postJSON('/api/files/compress', {
           path: rel,
           name,
-        });
+        }) as any;
 
         if (!data.ok) throw new Error(data.error);
       }
@@ -2832,7 +2845,7 @@ function openFileContext(event: MouseEvent, name: string, type: string): void {
         const data = await postJSON('/api/files/delete', {
           path: rel,
           isDir: type === 'dir',
-        });
+        }) as any;
 
         if (!data.ok) throw new Error(data.error);
       }
@@ -2854,7 +2867,7 @@ const FILE_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024;
 const FILE_UPLOAD_PARALLEL_CHUNKS = 4;
 const UPLOAD_MAX_INFLIGHT = 6;
 let uploadInflight = 0;
-const uploadWaiters = [];
+const uploadWaiters: Array<() => void> = [];
 
 async function getFilesFromDataTransfer(dataTransfer: DataTransfer | null): Promise<UploadFile[]> {
   const items = dataTransfer?.items;
@@ -2882,27 +2895,27 @@ async function getFilesFromDataTransfer(dataTransfer: DataTransfer | null): Prom
     return fallbackFiles.length ? fallbackFiles : Array.from(dataTransfer?.files || []);
   }
 
-  const resultFiles = [];
+  const resultFiles: UploadFile[] = [];
 
-  async function traverseEntry(entry, parentPath = '') {
+  async function traverseEntry(entry: any, parentPath = '') {
     if (entry.isFile) {
-      return new Promise(resolve => {
-        entry.file(file => {
+      return new Promise<void>(resolve => {
+        entry.file((file: File) => {
           const rel = parentPath ? `${parentPath}/${file.name}` : file.name;
           Object.defineProperty(file, 'customRelativePath', {
             value: rel,
             configurable: true,
             writable: true,
           });
-          resultFiles.push(file);
+          resultFiles.push(file as UploadFile);
           resolve();
         }, () => resolve());
       });
     } else if (entry.isDirectory) {
       const dirReader = entry.createReader();
       const nextPath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
-      const readBatch = () => new Promise(resolve => {
-        dirReader.readEntries(entries => resolve(entries || []), () => resolve([]));
+      const readBatch = () => new Promise<any[]>(resolve => {
+        dirReader.readEntries((entries: any[]) => resolve(entries || []), () => resolve([]));
       });
       while (true) {
         const batch = await readBatch();
@@ -2927,7 +2940,9 @@ async function acquireUploadSlot() {
     return;
   }
 
-  await new Promise(resolve => uploadWaiters.push(resolve));
+  await new Promise<void>(resolve => {
+    uploadWaiters.push(resolve);
+  });
 }
 
 function releaseUploadSlot() {
@@ -2956,8 +2971,9 @@ function formatUploadBytes(value: unknown): string {
   return `${amount >= 100 ? amount.toFixed(0) : amount >= 10 ? amount.toFixed(1) : amount.toFixed(2)} ${units[index]}`;
 }
 function formatUploadEta(seconds: unknown): string {
-  if (!Number.isFinite(seconds) || seconds <= 0) return 'Calculando tiempo…';
-  const total = Math.ceil(seconds);
+  const secNum = Number(seconds);
+  if (!Number.isFinite(secNum) || secNum <= 0) return 'Calculando tiempo…';
+  const total = Math.ceil(secNum);
   if (total < 60) return `${total}s restantes`;
   const minutes = Math.floor(total / 60);
   const secs = total % 60;
@@ -2966,7 +2982,7 @@ function formatUploadEta(seconds: unknown): string {
   return `${hours}h ${(minutes % 60).toString().padStart(2, '0')}m restantes`;
 }
 function formatDuration(seconds: unknown): string {
-  const total = Math.max(1, Math.round(seconds));
+  const total = Math.max(1, Math.round(Number(seconds) || 0));
   if (total < 60) return `${total}s`;
   const m = Math.floor(total / 60);
   const s = total % 60;
@@ -2974,8 +2990,8 @@ function formatDuration(seconds: unknown): string {
   const h = Math.floor(m / 60);
   return `${h}h ${m % 60}m`;
 }
-function uploadCancelledError() {
-  const error = new Error('Subida cancelada');
+function uploadCancelledError(): UploadError {
+  const error: UploadError = new Error('Subida cancelada');
   error.isCancelled = true;
   return error;
 }
@@ -2984,7 +3000,7 @@ async function waitForUploadResume(progressState: UploadState): Promise<void> {
   if (!progressState.paused) return;
   progressState.status = 'Subida pausada';
   updateUploadProgress(progressState);
-  await new Promise(resolve => { progressState.resumeUpload = resolve; });
+  await new Promise<void>(resolve => { progressState.resumeUpload = () => resolve(); });
   if (progressState.cancelled) throw uploadCancelledError();
 }
 function setUploadControls(visible: boolean): void {
