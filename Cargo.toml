@@ -14,7 +14,6 @@ path = "server.rs"
 
 [dependencies]
 anyhow = "1.0.104"
-generic-array = "1.4.7"
 matchit = "0.8.4"
 bytes = { version = "1", features = ["serde"] }
 axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1", "json", "query", "form", "matched-path", "tracing"] }
